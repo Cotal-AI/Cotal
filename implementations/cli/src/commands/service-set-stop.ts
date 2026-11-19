@@ -118,7 +118,7 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     } else selected = selectServiceInstance(instances, undefined);
     members.push({ definition, instance: selected!, requested });
   }
-  for (const resolved of presetTargets) announcePresetTarget(resolved, space, presentation);
+  for (const resolved of presetTargets) announcePresetTarget(resolved, space, presentation, args.values.space !== undefined);
   membersStillEligible(members);
   const target = { space, members: members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name, ...(member.requested !== member.definition.name ? { requested: member.requested } : {}) })) };
   const rows: MemberResult[] = members.map((member) => ({ name: member.definition.name, instanceId: member.instance.name, state: "not-attempted", noOp: false, instance: instanceProjection(member.instance), instanceObservation: "selection-before-stop", impact: null }));

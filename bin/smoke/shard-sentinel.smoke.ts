@@ -14,7 +14,8 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuite, runFiles, formatSentinel as kitFormat, parseSentinel as kitParse } from "@cotal-ai/smoke-kit";
 import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.mjs";
-import { formatSentinel, parseSentinel } from "./sentinel.mjs";
+import { formatSentinel, hasPostTallyAssertions, parseSentinel } from "./sentinel.mjs";
+import { runPool } from "./shard-pool.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const { packageManager } = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
@@ -288,7 +289,47 @@ for (const path of ["./sentinel.mjs", "../../packages/smoke-kit/src/sentinel.ts"
   check(`${path}: skipSuite still refuses a multiline reason`, result.status !== 0 && result.stderr.includes("skipSuite reason must read back"), result.stderr.slice(-500));
 }
 
-const EXPECTED = 68;
+// The same fixture bytes reproduced against the unchanged shipped shard for #3907.
+const finalityDir = mkdtempSync(join(tmpdir(), "cotal-tally-finality-"));
+const previousCwd = process.cwd();
+const finality: unknown[] = [];
+const finalityCases = [
+  [`${five}\n✓ background operation finished`, false],
+  ["  ✓ a report contains (2 passed, 0 failed)\n  ✓ another assertion", false],
+  [`${five}\n  ✓ teardown assertion`, true],
+  [`${five}\n  ✓ teardown assertion\n${formatSentinel({ passed: 6, failed: 0 })}`, false],
+] as const;
+let finalityHeld = finalityCases.every(([output, expected]) => hasPostTallyAssertions(output) === expected);
+try {
+  for (const name of ["deferred", "awaited"]) {
+    const fixture = fileURLToPath(new URL(`./fixtures/tally-finality/${name}.mjs`, import.meta.url));
+    const direct = spawnSync(process.execPath, [fixture], { encoding: "utf8", timeout: 10_000 });
+    const script = `node ${JSON.stringify(fixture)}`;
+    const serial = runShippedShard({ "smoke:finality": script });
+    writeFileSync(join(finalityDir, "package.json"), JSON.stringify({ private: true, packageManager, scripts: { "smoke:finality": script } }));
+    process.chdir(finalityDir);
+    const pooled = await runPool(["pnpm smoke:finality"], { jobs: 1, runMarker: `finality-${name}-${process.pid}`,
+      indices: new Map([["pnpm smoke:finality", 0]]), onStart: () => {} });
+    process.chdir(previousCwd);
+    const deferred = name === "deferred";
+    const row = pooled.results[0];
+    const directCounts = parseSentinel(direct.stdout ?? "");
+    const expectedCells = deferred ? 2 : 3;
+    const held = direct.status === 0 && directCounts?.cells === expectedCells && direct.stdout.includes("OBSERVED_FINAL_ASSERTIONS=3")
+      && !serial.timedOut && serial.status === (deferred ? 1 : 0)
+      && (deferred ? serial.out.includes("assertion results after final tally") : serial.out.includes("passed (1 smokes, 3 cells)"))
+      && row?.status === 0 && row.out.includes("OBSERVED_FINAL_ASSERTIONS=3")
+      && (deferred ? pooled.failure?.reason === "assertion results after final tally" : !pooled.failure && row.cells === 3);
+    finalityHeld &&= held;
+    finality.push({ name, held, direct: direct.status, serial: serial.status, poolFailure: pooled.failure, poolCells: row?.cells });
+  }
+} finally {
+  process.chdir(previousCwd);
+  rmSync(finalityDir, { recursive: true, force: true });
+}
+check("serial and pooled runners refuse a deferred post-tally assertion and certify its awaited control", finalityHeld, finality);
+
+const EXPECTED = 69;
   check(
     `every cell ran - ${EXPECTED} before this sentinel cell, so a cell that stops existing is not mistaken for one that passed`,
     passed() + failed() === EXPECTED,

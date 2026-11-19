@@ -18,6 +18,26 @@ nonce, so the broker polices who is calling in the subject grammar itself. See
 [SPEC §13.2](../SPEC.md#132-grammar) for the grammar and [§13.5](../SPEC.md#135-verbs) for
 the verbs (`call`, `cast`, `watch`, `claim`, `scatter`).
 
+A fourth route, `prin`, addresses one process of a principal by its owner, actor, lifecycle UID
+and runtime id, and carries the command set that principal serves about itself, such as the
+`agent` endpoint. Its replies ride `prin-reply`. The registry does not list it, and `describe` and
+`invoke` do not reach it; a caller finds the address in presence. See
+[SPEC §13.21](../SPEC.md#1321-principal-route).
+
+## Journal action coverage
+
+The core journal action rail is public API, but the shipped manager does not use it for
+`spawn` or `launch`. Both commands remain `ephemeral` and accept through `serveSpawnGoal`,
+not through journal submission, decision facts and goal binding. This is an implementation
+limit, not a claim that the journal action contract is available through those commands.
+
+The `ep-journal`, `ep-goaleff`, `ep-epname`, `ep-effects` and `goal-epoch-fence` smoke suites
+exercise the rail's functions and guards with their own inputs. Passing them does not prove
+that a shipped spawn or launch reaches those guards. The `journal-declaration` and
+`journal-model-b` suites separately pin the current command declarations and manager source
+wiring. A green result from those two suites confirms the existing path, not a journal cutover.
+Those source checks do not establish runtime reachability outside the files they inspect.
+
 ## Lifecycle identity
 
 A principal `owner.actor` is a reusable routing alias: a despawn frees the actor name and a
@@ -246,7 +266,9 @@ Cancellation before submission reports `not-executed`. Once submission starts, c
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
 refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
 The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
-before the wait deadline, and late read completions cannot settle an expired observation. Its read
+before the wait deadline, and late read completions cannot settle an expired observation. A result
+read that the broker reports had no responder did not run, so the follower reads again until the
+wait deadline. If no terminal arrives by then, the outcome stays unknown. Its read
 callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
 commands and control connections use that signal. An in-flight dial that finishes after cancellation
 closes without publishing. A local reply-subscription failure prevents publication and is observed
@@ -332,7 +354,9 @@ the skip member while `spawn` lands on a sibling, the command was not run, and t
 re-issues or pins `--on`. `status` reports `classSpawn: false` when that skip is in effect.
 When no manager takes the class queue, the broker answers an unpinned `spawn` with no
 responders, and the caller classifies that `not-executed` (SPEC 13.3).
-A manager that can launch some connectors keeps the class rail. If the queue hands it a
+A launch, model catalog or status read rechecks unavailable applications on the Manager's PATH.
+When the first application becomes available, the Manager subscribes to class `spawn` and `launch`
+without restarting. A manager that can launch some connectors keeps the class rail. If the queue hands it a
 harness its inventory marked unavailable, the refusal names `--on` because the standing serve
 credential cannot read sibling inventories. Pin the capable instance (the whole id, as `ps`
 prints it).

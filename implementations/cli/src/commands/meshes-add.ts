@@ -9,6 +9,7 @@ import {
   classifyJoinTarget,
   findCotalRoot,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   homeCotalDir,
   listSpaceAccounts,
@@ -346,6 +347,12 @@ export function candidateTarget(space: string, server: string, root: string, mod
  *  nothing is recorded yet — the operator is being told what to fix in the command they just ran. */
 export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string, pid?: number): string {
   switch (kind) {
+    case "auth-unsupported":
+      return `✗ the NATS server at ${server} does not enforce the recorded authentication - enable Cotal authentication or check the broker address`;
+    case "jetstream-unsupported":
+      return `✗ the NATS server at ${server} does not have JetStream enabled - enable JetStream or check the broker address`;
+    case "non-nats-listener":
+      return `✗ a non-NATS listener holds ${server} - stop it or choose another broker address`;
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
     case "creds-rejected":
@@ -439,7 +446,7 @@ function portAnswer(host: string, port: number): Promise<"accepted" | "silent" |
  *  when there is no usable one, and never silently redirect a default that still resolves. */
 export function writeRecord(entry: MeshEntry): { adoptedCurrent: boolean; keptCurrent?: string } {
   const cur = getCurrent();
-  const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording
+  const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording
   recordMesh(entry);
   if (!usableCurrent) {
     setAdoptedCurrent(entry.space);

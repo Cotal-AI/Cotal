@@ -313,11 +313,12 @@ assert.ok(sites.some((site) => site.proof === "behavioral"), "the census names i
 // These are esbuild bundles built with `--minify-whitespace`, which also drops the parentheses
 // around a single arrow parameter, so the registration reads `e=>` here and `(e) =>` in the tsc
 // output the rows above name. Both spellings are the same registration; each side is matched
-// against what its own builder emits.
+// against what its own builder emits. A bundler renames the parameter when another binding in
+// the bundle already uses its name (`e3=>`), so the name is matched, not spelled.
 for (const path of BUNDLED_MESH_AGENT_ARTIFACTS) {
   const body = compact(readFileSync(join(root, path), "utf8"));
   assert.equal(
-    occurrences(body, 'this.ep.on("warning",e=>this.handleEndpointWarning(e));'),
+    body.match(/this\.ep\.on\("warning",(\w+)=>this\.handleEndpointWarning\(\1\)\);/g)?.length ?? 0,
     1,
     `${path} carries the MeshAgent warning registration in the actual customer-loaded bundle`,
   );

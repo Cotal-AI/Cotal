@@ -8,7 +8,7 @@ import {
   type ConnectFlags, type RefusalCode,
 } from "@cotal-ai/workspace";
 
-export interface TurnValues extends ConnectFlags {
+interface TurnValues extends ConnectFlags {
   json?: boolean;
   plain?: boolean;
   status?: string;

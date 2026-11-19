@@ -61,7 +61,7 @@ try {
   const cookie = signup.headers.get("set-cookie")!.split(";")[0]!;
   let mixedLoginExit: number | null | undefined;
   async function login(store?: string, mixed = false) {
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+    const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
     delete env.COTAL_HOME;
     if (store) Object.assign(env, { COTAL_HOME: store });
     const child = spawn(process.execPath, ["--import", "tsx", resolve("bin/cotal.ts"), "login", "--idp", base, "--no-browser", "--plain"], { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -178,7 +178,7 @@ try {
   check(completeLoginReport, "mixed-unit login prints complete account and next-step report");
   check(receipt.includes(skippedService) && /overrid|skipp/i.test(receipt) && /\blogs?\b/i.test(receipt), "mixed-unit login names skipped service and points to its own log remedy");
   console.log(`OBSERVED mixed-unit login exit=${mixedLoginExit}; proven-refreshed=${requireIdpSession(serviceHome, base).token === requireIdpSession(operatorStore, base).token}; complete-report=${completeLoginReport}`);
-  const logoutEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const logoutEnv: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_SKIP_CONNECTOR_SEED: "1" };
   delete logoutEnv.COTAL_HOME;
   // Run logout after the renewal check below, keeping the refreshed session alive meanwhile.
   const logout = async () => {

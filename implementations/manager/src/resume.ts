@@ -270,7 +270,7 @@ const releasedSeatReference = z.strictObject({
 
 export type ReleasedSeatReference = z.infer<typeof releasedSeatReference>;
 
-export function releasedSeatReferencePath(root: string, space: string, name: string): string {
+function releasedSeatReferencePath(root: string, space: string, name: string): string {
   return join(root, ".cotal", "seat-records", space, `${name}.runtime-ref`);
 }
 

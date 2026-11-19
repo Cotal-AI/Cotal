@@ -26,7 +26,7 @@
   "mutations": [
     {
       "name": "I1 the loopback face skips the capability gate",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-exchange-routes.ts",
       "find": "  if (policy.requireCapability) {",
       "replace": "  if (policy.requireCapability && false) {",
       "expectRed": "NEGATIVE CONTROL: the SAME capless request against LOOPBACK is still 401",
@@ -35,7 +35,7 @@
     },
     {
       "name": "I2 the public per-peer refusal budget never trips",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-exchange-routes.ts",
       "find": "      return b.length >= PUBLIC_FAILED_PER_MIN;",
       "replace": "      return false;",
       "expectRed": "peer A's refusal flood throttles peer A (429)",
@@ -44,16 +44,17 @@
     },
     {
       "name": "I3 a full bucket refuses before the body is read, valid credentials included (the shape before #802)",
-      "file": "implementations/auth/src/service.ts",
-      "find": "  const peerThrottled = policy.throttled(ctx, peer);\n  const body = await readJsonBody(req);\n  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {",
-      "replace": "  const peerThrottled = policy.throttled(ctx, peer);\n  if (peerThrottled) return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n  const body = await readJsonBody(req);\n  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {",
+      "file": "implementations/auth/src/service-exchange-routes.ts",
+      "find": "  const peerThrottled = policy.throttled(ctx, peer);\n  const body = await readJsonBody(req);",
+      "replace": "  const peerThrottled = policy.throttled(ctx, peer);\n  if (peerThrottled) return send(res, 429, { error: \"too many refused exchanges - wait a minute and retry\" });\n  const body = await readJsonBody(req);",
       "expectRed": "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY",
       "cell": "A VALID TOKEN STILL MINTS (200) FROM A THROTTLED PEER KEY - a full bucket must not deny a request that would succeed",
+      "note": "Re-anchored after the exchange route extraction: target the stable pre-body peer budget decision, before the object guard. The deliberate pre-body refusal is unchanged; no mutation run was performed for this path-only extraction.",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
     },
     {
       "name": "I4 a throttled agent refusal returns its specific 401 reason instead of 429",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-exchange-routes.ts",
       "find": "      return refuseExchange(res, ctx, policy, peer, peerThrottled, `refused an agent exchange: ${reason}`, 401, { error: reason });",
       "replace": "      policy.recordFailure(ctx, peer);\n      console.error(`auth-service: refused an agent exchange: ${reason}`);\n      return send(res, 401, { error: reason });",
       "expectRed": "a FAILED exchange from a throttled key is answered 429, not the refusal reason",
@@ -81,7 +82,7 @@
     },
     {
       "name": "I7 every trusted-proxy peer shares one failure bucket",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-exchange-routes.ts",
       "find": "        if (last) return last;",
       "replace": "        if (last) return \"one-shared-bucket\";",
       "expectRed": "PER-SOURCE ISOLATION: a refused exchange from peer B still gets its own 401 sentence while peer A is throttled",
@@ -90,7 +91,7 @@
     },
     {
       "name": "I8 public refusals also charge the loopback face's refused-exchange budget",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-exchange-routes.ts",
       "find": "    recordFailure: (_ctx, peer) => bucket(peer).push(Date.now()),",
       "replace": "    recordFailure: (ctx, peer) => { bucket(peer).push(Date.now()); ctx.failures.push(Date.now()); },",
       "expectRed": "BUDGET SEPARATION: a refused loopback exchange still gets its own 401 sentence after the public flood",

@@ -46,6 +46,10 @@ export function spacePrefix(space: string): string {
   return `${ROOT}.${token(space)}`;
 }
 
+/** The key of the data part that marks a delivery daemon's notice that a channel post mentioned an
+ *  agent who may not read the channel (SPEC §8). */
+export const MENTION_NOTICE_KEY = "cotalMentionNotice";
+
 /** Canonicalize a `mentions` list for the wire: trim, lowercase, drop empties, dedupe.
  *  Returns `undefined` for an empty result so the field is omitted rather than sent as `[]`.
  *  Presence-agnostic (no roster lookup) — validation lives in the connector. */
@@ -57,9 +61,13 @@ export function normalizeMentions(mentions?: string[]): string[] | undefined {
 
 /** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
  *  priority/wake hint). Every surface that posts typed text derives them the same way. A trailing
- *  `.` or `-` is punctuation, as in `thanks @ops-lead.`, since a chat name cannot end in one. */
+ *  `.` or `-` is punctuation, as in `thanks @ops-lead.`, since a chat name cannot end in one. An `@`
+ *  right after an ASCII letter or digit, `_`, `.`, `-` or `/` starts no mention, so an address such
+ *  as `ana@example.com` or a path such as `/@rover` names no one, and neither does `Done.@rover`.
+ *  Any other character may precede one, so `你好@rover` mentions `rover` in a script written
+ *  without spaces. */
 export function mentionsIn(text: string): string[] {
-  return [...text.matchAll(/@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)].map((m) => m[1]);
+  return [...text.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)].map((m) => m[1]);
 }
 
 /**
@@ -980,8 +988,9 @@ function presenceOptionalString(value: unknown): boolean {
 
 /** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
  *  its KV key, whose `card.name` is blank or has the wrong type, whose `status` has the wrong type,
- *  whose `ts` is not finite, whose printed display fields are present and not strings, or whose
- *  `condition` is present and is not an object with a string `code`, is not a row. `card.id` must be
+ *  whose `ts` is not finite, whose printed display fields are present and not strings, whose
+ *  `condition` is present and is not an object with a string `code`, or whose `prompts` is present
+ *  and is not an object with non-negative integer `open` and `seq`, is not a row. `card.id` must be
  *  a non-empty string and equal the key it was read under: the key is the identity the write grant
  *  proves, and an empty id matches no key. `card.name` must be a non-blank string: a blank name
  *  cannot identify the participant a refusal prints. */
@@ -1003,6 +1012,11 @@ function presenceRowProblem(value: unknown, key: string): string | undefined {
   if (value.condition !== undefined) {
     if (!presenceRecord(value.condition)) return "condition";
     if (typeof value.condition.code !== "string") return "condition.code";
+  }
+  if (value.prompts !== undefined) {
+    if (!presenceRecord(value.prompts)) return "prompts";
+    for (const k of ["open", "seq"] as const)
+      if (!Number.isSafeInteger(value.prompts[k]) || (value.prompts[k] as number) < 0) return `prompts.${k}`;
   }
   return undefined;
 }

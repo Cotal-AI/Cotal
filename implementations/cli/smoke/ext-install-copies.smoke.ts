@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,16 +46,43 @@ if (process.argv[2] === "--restore") {
       npm_config_globalconfig: join(dir, "global.npmrc"), npm_config_update_notifier: "false",
     };
     const child = (args: string[]) => spawnSync(process.execPath, args, { cwd: dir, env, encoding: "utf8", timeout: 180_000 });
-    return { prefix: join(xdg, "cotal", "extensions"), child, cli: (args: string[]) => child([binary, ...args]) };
+    return { prefix: join(xdg, "cotal", "extensions"), env, child, cli: (args: string[]) => child([binary, ...args]) };
   };
   try {
+    if (process.platform === "linux" || process.platform === "darwin") {
+      const dir = join(root, "installed-root");
+      const { child, env } = sandbox(dir);
+      const pkg = join(dir, "prefix/lib/node_modules/cotal-ai");
+      mkdirSync(pkg, { recursive: true });
+      cpSync(join(repo, "bin/package.json"), join(pkg, "package.json"));
+      cpSync(join(repo, "bin/dist"), join(pkg, "dist"), { recursive: true });
+      symlinkSync(join(repo, "bin/node_modules"), join(pkg, "node_modules"));
+      const entry = join(pkg, "dist/cotal.js");
+      const version = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version as string;
+      const expected = join(env.XDG_CONFIG_HOME!, "cotal/installs", createHash("sha256").update(entry).digest("hex"), "sets", version, "cotal/extensions");
+      const before = child([entry, "ext", "root"]);
+      const listed = child([entry, "ext", "--json"]);
+      check("installed root is the retained prefix before initial seeding", before.status === 0 && before.stdout.trim() === expected && listed.status === 0 && JSON.parse(listed.stdout).result.root === expected);
+      check("reading the fresh installed root creates no prefix", !existsSync(expected));
+      const seeded = child([entry, "ext", "seed"]);
+      assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
+      const after = child([entry, "ext", "root"]);
+      check("initial seeding keeps the advertised installed root", after.status === 0 && after.stdout === before.stdout && existsSync(expected));
+    }
     for (const arm of ["remove", "restore"] as const) {
       const dir = join(root, arm);
       const { prefix, child, cli } = sandbox(dir);
+      const invalidAdd = cli(["ext", "add", source, "unexpected-extra-argument"]);
+      check(`${arm}: surplus add operand refuses with usage`, invalidAdd.status === 1 && invalidAdd.stderr.includes("ext add <npm-package>"));
+      check(`${arm}: invalid add leaves the prefix absent`, !existsSync(prefix));
       const added = cli(["ext", "add", source]);
       assert.equal(added.status, 0, `${arm}: stock connector install failed: ${added.stderr.slice(-800)}`);
       const kept = join(prefix, "node_modules", "@cotal-ai", "connector-claude-code");
       check(`${arm}: built-in starts as a copy`, !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
+      const manifestBefore = readFileSync(join(prefix, "extensions.json"), "utf8");
+      const invalidRemove = cli(["ext", "remove", keptName, "unexpected-extra-argument"]);
+      check(`${arm}: surplus remove operand refuses with usage`, invalidRemove.status === 1 && invalidRemove.stderr.includes("ext remove <name>"));
+      check(`${arm}: invalid remove keeps the manifest and installed package`, readFileSync(join(prefix, "extensions.json"), "utf8") === manifestBefore && existsSync(join(kept, "dist", "index.js")));
       const before = digest(join(kept, "dist", "index.js"));
       check(`${arm}: installed bytes match built source`, before === sourceDigest);
       const siblingName = `cotal-ext-copy-${arm}`;
@@ -130,7 +157,7 @@ if (process.argv[2] === "--restore") {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, 29, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 40 : 37, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

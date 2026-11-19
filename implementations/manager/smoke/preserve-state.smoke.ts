@@ -318,7 +318,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("worker", managed("worker", "open_principal_1", handle));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   (manager as unknown as { watchExit: (a: unknown) => void }).watchExit(map.get("worker"));
 
   const accepted = control(manager, "admin", "models", { agent: "preserve-slow-models" });
@@ -448,7 +452,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   let deprovisionStarted!: () => void;
   const started = new Promise<void>((resolve) => { deprovisionStarted = resolve; });
   const blocked = new Promise<void>((resolve) => { releaseDeprovision = resolve; });
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => {
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => {
     deprovisionStarted();
     await blocked;
   };
@@ -475,7 +483,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   map.set("good", managed("good", "open_good", good, "persona"));
   map.set("bad", managed("bad", "open_bad", bad, "persona"));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   const result = await manager.preserveState({ attemptId: "partial", persistInventory: async () => {} });
   check("partial stop reports failure and no preserved state", !result.ok && result.state === "preserving", result);
   check("partial stop attempts every child", good.stops === 1 && bad.stops === 1, `${good.stops}/${bad.stops}`);
@@ -664,7 +676,11 @@ let openInventory: ManagerResumeAgent;
   const principal = principalKey(DEV_OWNER, openInventory.identity.mode === "open" ? openInventory.identity.id : "").key;
   const predecessorUid = openInventory.identity.lifecycleUid;
   const retire = (target: Manager): void => {
-    (target as unknown as { retiring: Map<string, unknown> }).retiring.set(openInventory.name, {
+    (target as unknown as {
+      retirement: {
+        retiring: Map<string, unknown>;
+      };
+    }).retirement.retiring.set(openInventory.name, {
       opId: "retire_worker",
       owner: DEV_OWNER,
       actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
@@ -733,8 +749,16 @@ let openInventory: ManagerResumeAgent;
   let spawns = 0;
   const redriven: Array<{ id: string; name: string; lifecycleUid: string }> = [];
   const manager = managerWith((name) => { spawns++; return fakeHandle(name); });
-  (manager as unknown as { deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void> }).deprovision = async (a) => { redriven.push(a); };
-  (manager as unknown as { retiring: Map<string, unknown> }).retiring.set("worker", {
+  (manager as unknown as {
+    retirement: {
+      deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void>;
+    };
+  }).retirement.deprovision = async (a) => { redriven.push(a); };
+  (manager as unknown as {
+    retirement: {
+      retiring: Map<string, unknown>;
+    };
+  }).retirement.retiring.set("worker", {
     opId: "retire_worker",
     owner: DEV_OWNER,
     actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
@@ -825,7 +849,11 @@ let openInventory: ManagerResumeAgent;
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "signal_gap" });
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await control(manager, "admin", "resumePreserved", { attemptId: "signal_gap", inventory: inventoryOf(openInventory) });
   const committed = await control(manager, "admin", "commitResume", { attemptId: "signal_gap" });
   await manager.stop();
@@ -837,7 +865,11 @@ let openInventory: ManagerResumeAgent;
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "lease_gap" });
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await control(manager, "admin", "resumePreserved", { attemptId: "lease_gap", inventory: inventoryOf(openInventory) });
   const committed = await control(manager, "admin", "commitResume", { attemptId: "lease_gap" });
   const ep = (manager as unknown as { ep: Record<string, unknown> }).ep;
@@ -928,7 +960,11 @@ let openInventory: ManagerResumeAgent;
     return fakeHandle(name);
   }, { resumeAttemptId: "partial_resume" });
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   const second: ManagerResumeAgent = {
     ...openInventory,
     name: "worker-two",
@@ -964,7 +1000,11 @@ let openInventory: ManagerResumeAgent;
     stop: async () => {},
   };
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   const result = await control(manager, "admin", "resumePreserved", {
     attemptId: "late_presence",
     inventory: inventoryOf(openInventory),
@@ -1262,7 +1302,11 @@ let openInventory: ManagerResumeAgent;
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("spared", managed("spared", "spared_id", handle, "persona"));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await manager.stop();
   check("normal stop leaves managed agents running", handle.stops === 0, handle.stops);
   check("normal stop releases detachable local custody", handle.releases === 1, handle.releases);
@@ -1276,7 +1320,11 @@ let openInventory: ManagerResumeAgent;
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("reaped", managed("reaped", "reaped_id", handle, "persona"));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await manager.stop({ withAgents: true });
   check("stop withAgents hard-stops managed agents", handle.stops === 1, handle.stops);
   check("stop withAgents deprovisions managed agents", deprovisions === 1, deprovisions);
@@ -1291,7 +1339,11 @@ let openInventory: ManagerResumeAgent;
   const handle = lingeringHandle("dying");
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("dying", managed("dying", "dying_id", handle, "persona"));
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => {};
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => {};
   const stopped = await control(manager, "admin", "stop", { name: "dying" });
   check("an accepted stop replies without waiting for the child to die", stopped.ok === true, stopped.error);
   const listed = await control(manager, "admin", "ps", {});

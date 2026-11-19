@@ -264,7 +264,8 @@ export class SimHandler implements EffectHandler {
   ): T {
     this.checkFault(ctx);
     const name = ctx.key.name === "" ? ctx.key.kind : ctx.key.name;
-    const entry = scripted?.[name];
+    // An own entry only: a script is parsed JSON, whose `constructor` is inherited (#7050).
+    const entry = scripted !== undefined && Object.hasOwn(scripted, name) ? scripted[name] : undefined;
     const stepKey = stepKeyString(ctx.key);
     if (entry === undefined) {
       throw new SimUnscriptedError(

@@ -12,9 +12,9 @@
  * here only map its outcome to the invocation-time code (`bad-request`, distinct from
  * registration-time `contract-invalid`).
  */
-import type { ValidateFunction } from "ajv/dist/2020.js";
+import type { ContractValidator, ContractValidationError } from "./contract-validator.js";
 import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
-import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
+import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, EP_PRINCIPAL_MAX_DEADLINE_MS, type ParsedEpPrincipalRequest, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
 import type { ControlReply, EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
@@ -361,12 +361,32 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
  *  `handle` mode, subject-equal actor + lifecycleUid) for the targeted forms; `from.id` MUST
  *  equal the subject sender principal (`sender-mismatch`). Currency of `target.actor`/
  *  `target.lifecycleUid` against the live mapping is the handler's fresh-read (`expired`),
- *  deliberately not checkable here. */
-export function checkRequestSubjectAgreement(env: EndpointRequest, subject: ParsedEpRequest): void {
+ *  deliberately not checkable here. On the principal route (SPEC 13.21) the body carries no
+ *  target (`target-mismatch`) and no bind (`bad-request`), it is never a cast (`bad-request`), and a
+ *  deadline of at most {@link EP_PRINCIPAL_MAX_DEADLINE_MS} is required (`bad-request`). */
+export function checkRequestSubjectAgreement(env: EndpointRequest, subject: ParsedEpRequest | ParsedEpPrincipalRequest): void {
   if (env.op.endpoint !== subject.endpoint)
     fail("op-mismatch", `op.endpoint "${env.op.endpoint}" does not agree with the subject endpoint "${subject.endpoint}"`);
   if (env.op.command !== subject.command)
     fail("op-mismatch", `op.command "${env.op.command}" does not agree with the subject command "${subject.command}"`);
+
+  // The principal route (SPEC 13.21): the subject head is the target and its runtime id pins the
+  // process, so a body that names either is refused, never ignored. Every request is a call, and a
+  // call has a deadline.
+  if (subject.plane === "principal-request") {
+    if (env.target !== undefined)
+      fail("target-mismatch", "a body target on the principal route is target-mismatch: the subject head is the target (SPEC 13.21)");
+    if (env.bind !== undefined)
+      fail("bad-request", "a bind on the principal route is refused: the runtime id in the subject pins the process (SPEC 13.21)");
+    if (!env.replyExpected)
+      fail("bad-request", "a cast on the principal route is refused: every command on it is request/reply (SPEC 13.21)");
+    if (env.deadlineMs === undefined)
+      fail("bad-request", "deadlineMs is required on the principal route (SPEC 13.21)");
+    if (env.deadlineMs > EP_PRINCIPAL_MAX_DEADLINE_MS)
+      fail("bad-request", `deadlineMs ${env.deadlineMs} exceeds the principal route's ${EP_PRINCIPAL_MAX_DEADLINE_MS}ms maximum (SPEC 13.21)`);
+    assertSender(env, subject.caller);
+    return;
+  }
 
   // §13.3: deadlineMs is a MUST for call, SCATTER, and journal submissions. Call and journal
   // are enforced at parse time; scatter is only knowable here, where the route is in hand.
@@ -400,7 +420,12 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
       fail("target-mismatch", `in ${t.mode} mode the body target actor and lifecycleUid must equal the subject target triple`);
   }
 
-  const sender = `${subject.caller.owner}.${subject.caller.actor}`;
+  assertSender(env, subject.caller);
+}
+
+/** `from.id` MUST equal the subject's sender principal (`sender-mismatch`, §13.3). */
+function assertSender(env: EndpointRequest, caller: { owner: string; actor: string }): void {
+  const sender = `${caller.owner}.${caller.actor}`;
   if (env.from.id !== sender)
     fail("sender-mismatch", `from.id "${env.from.id}" does not equal the subject sender principal "${sender}"`);
 }
@@ -563,14 +588,11 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
   );
 }
 
-/** The first AJV error as refusal prose: where (`instancePath`, root as "/"), its message, and -
- *  when the keyword is `additionalProperties` - WHICH property was rejected, which AJV carries
- *  only in `params.additionalProperty`. A closed-contract refusal that does not name the key turns
- *  a caller/manager version skew into a guessing game: the operator cannot tell which key to drop
- *  or which side to upgrade. Shared by the args and output sides so the two render in lockstep. */
-function firstErrorDetail(first: { instancePath?: string; message?: string; params?: Record<string, unknown> } | undefined | null): string {
+/** Render the first structured validation failure, including an undeclared property's original
+ * name. Shared by input and output boundaries. No property is recovered by splitting a pointer. */
+function firstErrorDetail(first: ContractValidationError | undefined | null): string {
   if (!first) return "";
-  const extra = typeof first.params?.additionalProperty === "string" ? `: ${JSON.stringify(first.params.additionalProperty)}` : "";
+  const extra = typeof first.additionalProperty === "string" ? `: ${JSON.stringify(first.additionalProperty)}` : "";
   return `: ${first.instancePath || "/"} ${first.message ?? ""}${extra}`;
 }
 
@@ -587,7 +609,7 @@ function firstErrorDetail(first: { instancePath?: string; message?: string; para
  *  ({@link import("./schema-profile.js").compileContract}), which is where the COMPILE-time DoS
  *  lives - not the only place a DoS lives, see the note on `reportValidateBudget` - and where
  *  a false positive fails loudly instead of lying to a caller. */
-export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
+export function assertArgsValid(validate: ContractValidator, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
   const startedCpu = cpuNow();
   const started = Date.now();
@@ -608,7 +630,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
  *  `bad-request`. The §13.8 budget is REPORTED, not enforced, for the same reason as the args side
  *  ({@link reportValidateBudget}). A void output is `undefined`, validated as `null` against the
  *  void schema, mirroring the args side. */
-export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
+export function assertOutputValid(validate: ContractValidator, data: unknown): void {
   const value = data === undefined ? null : data;
   const startedCpu = cpuNow();
   const started = Date.now();

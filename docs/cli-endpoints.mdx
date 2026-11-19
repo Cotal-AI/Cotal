@@ -209,13 +209,15 @@ conflicting current-folder and selected-root account authorities refuse before p
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
 enrollment path, and nothing is written.
+After a local static space is stopped, signer export can still resolve its retained broker
+configuration and validated trust without starting a broker or repeating its address.
 
 
 ### Protected output
 
-`--out` is required. Its parent must exist and pass the protected physical-directory checks. A
-parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
-written.
+`--out` is required. Missing parent directories are created privately with mode `0700`, without
+following symbolic links. The parent must pass the protected physical-directory checks before the
+signer is written. Existing directories are not made less restrictive or repaired.
 Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
 never appear on stdout, in the receipt or in diagnostics. Keep this account-wide signer out of
 logs and support bundles; it is not a least-privilege endpoint credential.
@@ -524,9 +526,8 @@ An opaque low-level auth string alone does not establish receiver-side attenuati
 static-registry signature inspection also does not establish presenter binding or use authority,
 and is not a substitute for that gate.
 
-`endpoint describe --refresh` refuses as unsupported and sends nothing. This CLI keeps no resolved
-contract between calls: each describe makes a fresh describe request and fetches the contracts
-again, so there is no cache for the flag to bypass.
+`endpoint describe --refresh` performs the same fresh native resolution and contract fetch as bare
+`endpoint describe`, because this CLI keeps no resolved contract cache between calls.
 
 A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
 to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another

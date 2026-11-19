@@ -191,7 +191,7 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   );
 }
 
-// -- B3: the cross-process lock covers rebind + complete module evaluation --------------------------
+// -- B3: a competing load waits on the closure through rebind + complete module evaluation ----------
 {
   const ready = join(sandbox, "materialize-ready");
   const release = join(sandbox, "materialize-release");
@@ -202,33 +202,51 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
     `import { existsSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { registry } from "@cotal-ai/core";
-writeFileSync(${JSON.stringify(ready)}, "ready");
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
 while (!existsSync(${JSON.stringify(release)})) await sleep(10);
 registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run: async () => console.log("barrier-ok") });
 `,
   );
   let stdout = "";
   let stderr = "";
-  const first = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox });
+  const first = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox, timeout: 30_000 });
   first.stdout.on("data", (data) => (stdout += data.toString()));
   first.stderr.on("data", (data) => (stderr += data.toString()));
   const firstDone = new Promise<number | null>((resolve) => first.on("close", resolve));
-  const deadline = Date.now() + 10_000;
-  while (!existsSync(ready) && Date.now() < deadline) await sleep(20);
+  let secondDone: Promise<number | null> | undefined;
+  let secondStdout = "";
+  let secondStderr = "";
+  let firstStatus: number | null = null;
+  let secondStatus: number | null = null;
   try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(ready) && Date.now() < deadline) await sleep(20);
     ok("first materializer reaches top-level await while holding the prefix lock", existsSync(ready), stderr);
-    const blocked = cotal(["hello-ext"]);
-    ok(
-      "a competing materializer fails before rebinding the active host's peer",
-      blocked.status === 1 && /(install\/remove|update or mutation) is in progress/.test(blocked.stderr) && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core")),
-      blocked.stderr,
-    );
+    const owner = readFileSync(ready, "utf8");
+    const peerBefore = lstatSync(peer);
+    const second = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox, timeout: 30_000 });
+    second.stdout.on("data", (data) => (secondStdout += data.toString()));
+    second.stderr.on("data", (data) => (secondStderr += data.toString()));
+    let secondClosed = false;
+    secondDone = new Promise<number | null>((resolve) => second.on("close", (status) => { secondClosed = true; resolve(status); }));
+    const notice = `waiting for another cotal command (pid ${owner}) to finish changing this installation`;
+    const waitDeadline = Date.now() + 10_000;
+    while (!secondClosed && !secondStderr.includes(notice) && Date.now() < waitDeadline) await sleep(20);
+    ok("a competing materializer announces the closure holder and stays waiting",
+      !secondClosed && secondStderr.includes(notice) && secondStdout === "", secondStdout + secondStderr);
+    ok("the waiting materializer neither rebinds the peer nor evaluates the module",
+      lstatSync(peer).ino === peerBefore.ino && lstatSync(peer).mtimeMs === peerBefore.mtimeMs
+        && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core"))
+        && readFileSync(ready, "utf8") === owner, secondStderr);
   } finally {
     writeFileSync(release, "release");
+    firstStatus = await firstDone;
+    if (secondDone) secondStatus = await secondDone;
+    writeFileSync(installedIndex, good);
   }
-  const firstStatus = await firstDone;
   ok("the lock holder completes after its module evaluation barrier releases", firstStatus === 0 && /barrier-ok/.test(stdout), stdout + stderr);
-  writeFileSync(installedIndex, good);
+  ok("the waiting materializer resumes successfully after the holder releases",
+    secondStatus === 0 && /barrier-ok/.test(secondStdout), secondStdout + secondStderr);
 }
 
 // -- C: run with LIVE specs ------------------------------------------------------------------------
@@ -533,6 +551,21 @@ registry.register(
   const fixturePid = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
   writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
+  const liveRemoval = cotal(["ext", "remove", "cotal-ext-providers"]);
+  ok("remove preserves a live process and gives a readable refusal",
+    liveRemoval.status === 1 && liveRemoval.stderr.includes(`stop pid ${fixturePid}, then retry`)
+      && !liveRemoval.stderr.includes("\\u000a") && alive(fixturePid)
+      && readFileSync(join(sandbox, ".cotal", "fixture.pid"), "utf8") === String(fixturePid),
+    liveRemoval.stderr);
+  for (const raw of ["", "not-a-pid", "0", "2147483648", `removing:${process.pid}`]) {
+    writeFileSync(join(sandbox, ".cotal", "fixture.pid"), raw);
+    const refused = cotal(["ext", "remove", "cotal-ext-providers"]);
+    ok(`remove preserves unattributable or reserved record ${JSON.stringify(raw)}`,
+      refused.status === 1 && /UNATTRIBUTABLE|extension-removal reservation/.test(refused.stderr)
+        && readFileSync(join(sandbox, ".cotal", "fixture.pid"), "utf8") === raw,
+      refused.stderr);
+  }
+  writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
   for (const name of ["fixture-worker", "manager", "nats", "managre"]) {
     const named = cotal(["down", name]);
     const reason = name === "manager" ? /no manager has been started/ : /no saved service definition resolves this name/;
@@ -559,7 +592,22 @@ registry.register(
   ok("bare down stops an installed extension's process with the stack and clears its artifacts",
     whole.status === 0 && !alive(fixturePid) && !existsSync(join(sandbox, ".cotal", "fixture.pid")) && !existsSync(join(sandbox, ".cotal", "fixture.secret")),
     whole.stdout + whole.stderr);
-  ok("provider extension removes cleanly", cotal(["ext", "remove", "cotal-ext-providers"]).status === 0);
+  const exited = await new Promise<number>((resolve, reject) => {
+    const child = spawn(realNode, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 && child.pid ? resolve(child.pid) : reject(new Error(`child exit ${code}`)));
+  });
+  ok("the stale record names a real process proven gone", !alive(exited));
+  const otherRoot = join(sandbox, "other-root");
+  mkdirSync(join(otherRoot, ".cotal"), { recursive: true });
+  recordMesh({ space: "other", server: "nats://127.0.0.1:1", root: otherRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  const stalePaths = [sandbox, otherRoot].map((root) => join(root, ".cotal", "fixture.pid"));
+  for (const path of stalePaths) writeFileSync(path, String(exited));
+  const staleRemoved = cotal(["ext", "remove", "cotal-ext-providers"]);
+  ok("remove reclaims proven-dead pidfiles in the current and registered roots",
+    staleRemoved.status === 0 && stalePaths.every((path) => !existsSync(path)), staleRemoved.stdout + staleRemoved.stderr);
+  ok("dead-pid removal drops the provider from the installed manifest",
+    !JSON.parse(readFileSync(manifestPath, "utf8")).extensions.some((entry: { pkg: string }) => entry.pkg === "cotal-ext-providers"));
 
   // A provider whose records sit in a folder of their own: remove reserves that folder before the
   // process has ever run, and under a group-writable umask, which the binary inherits, it is 0700.

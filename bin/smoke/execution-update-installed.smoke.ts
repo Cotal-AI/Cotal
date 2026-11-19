@@ -41,6 +41,9 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
   try { updated = await run(["update", "--self"]); }
   finally { active = false; clearInterval(timer); await Promise.all(probes); }
   assert.equal(updated.status, 0, updated.stderr);
+  const selected = await run(["--version"]);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(selected.stdout.split("\n")[0], `cotal-ai ${input.target}`);
   assert.ok(probes.length > 0, "at least one actual public CLI starts during update");
   for (const probe of await Promise.all(probes)) {
     assert.equal(probe.status, 0, probe.stderr);

@@ -1,5 +1,122 @@
 # @cotal-ai/registry
 
+## 0.169.0
+
+### Patch Changes
+
+- Updated dependencies [ec01e0a]
+- Updated dependencies [a59864f]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [c2f9729]
+- Updated dependencies [c4ca691]
+- Updated dependencies [71088a6]
+- Updated dependencies [67d9a30]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [4050457]
+  - @cotal-ai/core@0.169.0
+
+## 0.168.0
+
+### Patch Changes
+
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+
+## 0.167.0
+
+### Patch Changes
+
+- Updated dependencies [ded2be1]
+- Updated dependencies [211142b]
+- Updated dependencies [eead187]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/core@0.167.0
+
+## 0.166.3
+
+### Patch Changes
+
+- Updated dependencies [c1734e0]
+- Updated dependencies [3eeb06f]
+- Updated dependencies [ec9b5cb]
+  - @cotal-ai/core@0.166.3
+
+## 0.166.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.166.2
+
+## 0.166.1
+
+### Patch Changes
+
+- Updated dependencies [1eed7a4]
+- Updated dependencies [ef7e5c4]
+  - @cotal-ai/core@0.166.1
+
+## 0.166.0
+
+### Patch Changes
+
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [a1093f9]
+- Updated dependencies [2e6753b]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/core@0.166.0
+
+## 0.165.4
+
+### Patch Changes
+
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+  - @cotal-ai/core@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- Updated dependencies [f419ba9]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+
+## 0.165.0
+
+### Patch Changes
+
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+  - @cotal-ai/core@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

@@ -19,5 +19,8 @@ ok(kept.includes("from  ada ") && !kept.includes("local.blank"), "a withheld sen
 ok(aheadNote([item("ada")]).includes("from ada "), "a withheld sender name stays");
 ok(aheadNote([item(" ", " ")]).includes("from (unnamed) "), "a blank sender name and id is unnamed");
 ok(aheadNote([item("Ada]")]).includes("from Ada "), "a bracket in a real sender name is still neutralized");
+ok(aheadNote([item("ada")]).includes("from ada (unverified name) "), "a withheld sender's name is marked as its own claim");
+const long = aheadNote([item("n".repeat(300))]);
+ok(long.includes("… (unverified name) is stamped"), "a 300-character withheld sender name keeps the marker after its cut", long.slice(0, 120));
 
 console.log(`inbox ahead blank: ${checks} checks passed`);

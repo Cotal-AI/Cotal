@@ -50,7 +50,11 @@ cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] 
 ```
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
-involved unless you name one with `--on` or request `--detach`. Its exit, or the terminal's, may end the agent. A manager runs the launch only when you
+involved unless you name one with `--on` or request `--detach`. An explicit empty or whitespace-only
+persona refuses with `USAGE_INVALID`, exit 1, before resolving a target. Its exit, or the terminal's,
+may end the agent. On `SIGTERM` or `SIGHUP`, a spawn in this terminal forwards the signal to its
+child process, waits for it to stop, retires the seat's provisioned credentials and launch files,
+and exits with the signal's status. A manager runs the launch only when you
 ask for one. `--detach` (`-d`) hands it to a manager, waits until the agent joins, and returns
 without attaching. `--on <instance>` hands it to that manager and attaches this terminal to the
 agent (see [Managed launch view](cli-agent-views.mdx#managed-launch-view)), when that manager's runtime streams a
@@ -65,7 +69,7 @@ checks its persona and connector before it starts the application: a missing per
 with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
-passed to `--file` is refused with that command.
+passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
 
 On a terminal, a bare `spawn` uses this terminal without asking where to run. When several of
 your Managers are live, one line lists them with the `--on <name>` selectors that launch there.
@@ -420,7 +424,9 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. Claude Code, OpenCode, Codex and pi ask the installed application.
+for connectors that expose one. An empty or whitespace-only `--harness` or `-H` refuses with
+`USAGE_INVALID`, exit 1, before selecting a space or contacting a manager.
+Claude Code, OpenCode, Codex and pi ask the installed application.
 Claude Code lists the models its login can use, and pi lists the models of providers it holds
 credentials for. Jcode reads providers that enable `model_catalog = true` in the operator Jcode
 `config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
@@ -452,7 +458,7 @@ cotal persona [--json|--plain]
 cotal persona show <name> [--json|--plain]
 cotal persona create <name> --file <persona.md>
 cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe <a,b>] [--allow-publish <a,b>]
-cotal persona edit <name>
+cotal persona edit <name> [--json|--plain]
 cotal persona remove <name> --yes
 ```
 
@@ -474,7 +480,9 @@ belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID`
 A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
 which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
-`--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
+`--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
+paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
+Complete files validate all supported fields,
 must name the requested persona and keep their original bytes. A file that names another persona is
 refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
@@ -534,8 +542,10 @@ the edit is not lost. Local
 CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
-with `PERMISSION_DENIED`, and leave it and its files as they were.
-`--json` and `--no-input` refuse editing before an editor opens. That refusal, and a removal
+with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for
+this or any other reason keeps your edited draft and names it, so the edit is not lost.
+`--no-input` refuses editing before an editor opens. Under `--json`, the editor's output goes to
+stderr so stdout carries only the JSON receipt. That `--no-input` refusal, and a removal
 refused for want of `--yes`, give the fix without the command's help.
 
 A catalog file that is not a regular file, such as a FIFO, is not opened: show, edit and remove
@@ -558,7 +568,9 @@ Removing the seeded `default` persona says so in the question and the receipt, s
 Plain confirmation uses numbered choices. Scripts and JSON removal require `--yes/-y`.
 
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
-`show`, `edit`, `new` and `rm --force`. Its `show` requires a prepared or selected space too;
+`show`, `edit`, `new` and `rm --force`. Each named operation takes one persona name; `list` takes none.
+Extra names refuse with `USAGE_INVALID` before reading or changing the catalog.
+Its `show` requires a prepared or selected space too;
 a folder containing only `.cotal/agents` refuses with `TARGET_NOT_FOUND`. Prepare that folder
 with `cotal space create <name> --root <folder>` before reading its catalog offline.
 Its `new` requires `--subscribe`, reads `--from -` from
@@ -606,7 +618,10 @@ requires the caller's native spawn authority.
 When the manager writes the file into this root's catalog, the receipt's `Local files` line names
 it and JSON `localFilesChanged` is true. On a static space the manager records an owner only for
 one of its own seats. The CLI mints a new caller for each call, so its card is operator-owned, as a
-local `persona create` writes it, and the manager does not show it over `--on`. The receipt then
+local `persona create` writes it, and the manager does not show it over `--on`. A repeated create
+is reported as `PERMISSION_DENIED` (exit 2), with a known `not-executed` outcome,
+and leaves the file unchanged. When the catalog is local, the refusal names
+`cotal persona edit <name>` on the manager's host. The receipt for a successful create
 offers `cotal p show <name>` for a file in this root, as the `--on` listing's Next does, and a
 `show --on` that the manager answers not-found names that command when this root's catalog holds
 the file. A peer joined with its own

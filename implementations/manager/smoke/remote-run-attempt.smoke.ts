@@ -6,11 +6,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
   admissionBucket, createRunAdmission, createRunSpec, ensureAdmissionStore, mintGeneration, mintLifecycleUid, newIdentity,
-  openRecordsBucket, readCheckpointStatus, readRunAdmission, readRunRecord, remoteManagerActors, revokeRunAdmission, writeRunStatus,
+  openRecordsBucket, readCheckpointStatus, readRunAdmission, readRunRecord, remoteManagerActors, revokeRunAdmission, writeRunStatus, replayRunJournal, newTakeoverId, createEndpointStreams, activateRun,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authorizeRemoteRunAttempt } from "../../auth/src/manager-authority.js";
@@ -37,6 +37,7 @@ try {
   const nc = await connect({ servers });
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
+  await createEndpointStreams(jsm, kvm, SPACE);
   await ensureAdmissionStore(jsm, kvm, SPACE);
   const admissions = await kvm.open(admissionBucket(SPACE));
   const records = await openRecordsBucket(nc, SPACE, { create: true });
@@ -59,7 +60,7 @@ try {
     observeManagerGate: async () => gate,
     readAdmission: (runId) => readRunAdmission(jsm, SPACE, "manager", runId),
     readRunStatus: async (runId) => (await readRunRecord(records, "manager", runId))?.status?.value,
-    readJournal: async () => [],
+    readJournal: (runId) => replayRunJournal(jetstream(nc), jsm, SPACE, runId, newTakeoverId()),
     checkpointWaiting: async (token) => (await readCheckpointStatus(records, { endpoint: "manager", token }))?.value.state === "waiting",
     checkpointSettled: async () => false,
   });
@@ -81,6 +82,14 @@ try {
   const future = await outcome(authorize(attempt(first, 9, 9)));
   c("a later attempt is exactly the next recorded epoch/fence; a replayed or future attempt refuses",
     typeof next === "object" && String(stale).includes("next recorded epoch") && String(future).includes("next recorded epoch"), { next, stale, future });
+  const interrupted = newRun();
+  await admit(interrupted);
+  await activateRun(jetstream(nc), jsm, { space: SPACE, runId: interrupted, holder: "stopped", epoch: 1, fencingToken: 1, takeoverId: newTakeoverId(), at: Date.now(), expect: "new" });
+  const reused = await outcome(authorize(attempt(interrupted)));
+  const recovered = await outcome(authorize(attempt(interrupted, 2, 2)));
+  const skipped = await outcome(authorize(attempt(interrupted, 3, 3)));
+  c("an activation with no status advances the authorized lease without admitting an equal or skipped token",
+    typeof recovered === "object" && String(reused).includes("next recorded epoch") && String(skipped).includes("next recorded epoch"), { reused, recovered, skipped });
   // Missing / revoked / foreign admission.
   const missing = await outcome(authorize(attempt(newRun())));
   c("an attempt for a run with no admission refuses", String(missing).includes("no admission record"), missing);

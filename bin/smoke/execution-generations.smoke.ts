@@ -45,6 +45,103 @@ try {
       assert.equal(handoffs, 1);
     }
   });
+  check("bootstrap avoids post-Node-12 syntax and named built-in exports", () => {
+    const postNode12FsExports = new Set(["cp", "cpSync", "glob", "globSync", "openAsBlob", "opendir", "opendirSync", "rm", "rmSync", "statfs", "statfsSync"]);
+    const disallowedOperators = new Set<ts.SyntaxKind>([
+      ts.SyntaxKind.QuestionQuestionToken,
+      ts.SyntaxKind.BarBarEqualsToken,
+      ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+      ts.SyntaxKind.QuestionQuestionEqualsToken,
+    ]);
+    for (const file of [join(repo, "bin/cotal.ts"), join(repo, "bin/dist/cotal.js")]) {
+      const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node): void => {
+        assert.equal(ts.isOptionalChain(node), false, `${file} contains optional chaining: ${node.getText(tree)}`);
+        assert.equal(ts.isAwaitExpression(node), false, `${file} contains await: ${node.getText(tree)}`);
+        assert.equal(ts.isPrivateIdentifier(node), false, `${file} contains private identifier: ${node.getText(tree)}`);
+        assert.equal(ts.isBigIntLiteral(node), false, `${file} contains bigint literal: ${node.getText(tree)}`);
+        if (ts.isNumericLiteral(node)) assert.equal(node.getText(tree).includes("_"), false, `${file} contains numeric separator: ${node.getText(tree)}`);
+        if (ts.isBinaryExpression(node)) assert.equal(disallowedOperators.has(node.operatorToken.kind), false, `${file} contains post-ES2019 operator: ${node.getText(tree)}`);
+        if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === "node:fs") {
+          const named = node.importClause?.namedBindings;
+          if (named && ts.isNamedImports(named)) {
+            for (const element of named.elements) {
+              const exported = (element.propertyName ?? element.name).text;
+              assert.equal(postNode12FsExports.has(exported), false, `${file} statically imports post-Node-12 fs export ${exported}`);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(tree);
+    }
+  });
+  check("unsupported Node runtimes receive only the floor diagnostic before V8 flags or program load", () => {
+    const preload = join(scratch, "preload-old-node.mjs");
+    writeFileSync(preload, [
+      'import { syncBuiltinESMExports } from "node:module";',
+      'import v8 from "node:v8";',
+      "const fake = process.env.TEST_FAKE_NODE_VERSION;",
+      "if (fake) {",
+      '  Object.defineProperty(process.versions, "node", { value: fake, configurable: true });',
+      '  Object.defineProperty(process, "version", { value: `v${fake}`, configurable: true });',
+      "}",
+      "const realSetFlags = v8.setFlagsFromString.bind(v8);",
+      'const known = (process.env.TEST_V8_KNOWN_FLAGS ?? "--no-maglev,--no-concurrent-sparkplug").split(",").filter(Boolean);',
+      "v8.setFlagsFromString = (flags) => {",
+      '  if (process.env.TEST_TRACE_V8_FLAGS === "1") process.stderr.write(`V8_FLAG:${flags}\\n`);',
+      "  if (!known.includes(flags)) {",
+      '    process.stderr.write(`Error: unrecognized flag ${flags}\\nTry --help for options\\n`);',
+      "    return;",
+      "  }",
+      "  realSetFlags(flags);",
+      "};",
+      "syncBuiltinESMExports();",
+    ].join("\n"));
+    const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+    const probe = (entry: string, args: string[], extra: Record<string, string>) =>
+      spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, entry, ...args], {
+        env: { ...ambient, COTAL_HOME: join(scratch, "old-node-home"), XDG_CONFIG_HOME: join(scratch, "old-node-cfg"), ...extra },
+        cwd: scratch,
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+    const control = probe(join(root, "dist/cotal.js"), ["--version"], { TEST_TRACE_V8_FLAGS: "1" });
+    assert.equal(control.status, 0, control.stderr);
+    assert.match(control.stderr, /V8_FLAG:--no-maglev/);
+    assert.match(control.stderr, /V8_FLAG:--no-concurrent-sparkplug/);
+    for (const [version, knownFlags, argv] of [
+      ["12.22.9", "", ["--version"]],
+      ["12.22.9", "", ["doctor"]],
+      ["16.20.2", "", ["--version"]],
+      ["16.20.2", "", ["--help"]],
+      ["18.20.8", "--no-concurrent-sparkplug", ["--version"]],
+      ["18.20.8", "--no-concurrent-sparkplug", ["--help"]],
+      ["22.9.0", "--no-maglev,--no-concurrent-sparkplug", ["--version"]],
+    ] as const) {
+      const refused = probe(join(repo, "bin/dist/cotal.js"), [...argv], { TEST_FAKE_NODE_VERSION: version, TEST_V8_KNOWN_FLAGS: knownFlags, TEST_TRACE_V8_FLAGS: "1" });
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.equal(refused.stdout, "");
+      assert.equal(refused.stderr.includes("unrecognized flag"), false, refused.stderr);
+      assert.equal(refused.stderr.includes("V8_FLAG:"), false, refused.stderr);
+      assert.equal(refused.stderr.startsWith(`\ncotal-ai requires Node.js >= 22.10, but this is v${version}.\n`), true, refused.stderr);
+      assert.match(refused.stderr, /nvm install 22\.10 && nvm use 22\.10/);
+    }
+    const launcher = probe(join(repo, "bin/dist/cotal.js"), ["--version"], { COTAL_LAUNCHER: "1", TEST_FAKE_NODE_VERSION: "18.20.8", TEST_V8_KNOWN_FLAGS: "--no-concurrent-sparkplug" });
+    assert.equal(launcher.status, 1, launcher.stderr);
+    assert.equal(launcher.stderr.includes("unrecognized flag"), false, launcher.stderr);
+    assert.match(launcher.stderr, /The Node this install was pinned to has been replaced with an older one\./);
+    const handoff = join(scratch, "handoff.json");
+    writeFileSync(handoff, "{}");
+    assert.equal(probe(join(repo, "bin/dist/cotal.js"), ["--version"], { COTAL_MANAGED_HANDOFF_FILE: handoff, TEST_FAKE_NODE_VERSION: "16.20.2", TEST_V8_KNOWN_FLAGS: "" }).status, 1);
+    assert.equal(existsSync(handoff), true, "non-spawn commands leave the managed handoff file intact");
+    assert.equal(probe(join(repo, "bin/dist/cotal.js"), ["spawn"], { COTAL_MANAGED_HANDOFF_FILE: handoff, TEST_FAKE_NODE_VERSION: "16.20.2", TEST_V8_KNOWN_FLAGS: "" }).status, 1);
+    assert.equal(existsSync(handoff), false, "spawn unlinks the managed handoff file on runtime refusal");
+    const directProgram = probe(join(repo, "bin/dist/cotal-program.js"), ["--version"], { TEST_FAKE_NODE_VERSION: "16.20.2", TEST_V8_KNOWN_FLAGS: "" });
+    assert.equal(directProgram.status, 1, directProgram.stderr);
+    assert.equal(directProgram.stderr.includes("unrecognized flag"), false, directProgram.stderr);
+    assert.equal(directProgram.stderr.startsWith("\ncotal-ai requires Node.js >= 22.10, but this is v16.20.2.\n"), true, directProgram.stderr);
+  });
   check("missing descriptor runs the initial tree and writes no cache or store", () => {
     const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "initial generation");
     assert.equal(existsSync(executionStore(root)), false); assert.equal(existsSync(executionDescriptorPath(root)), false);
@@ -94,17 +191,13 @@ try {
     });
     console.log(`execution generations: ${checks} checks passed; retained selection unavailable on this platform`);
   } else {
-  check("a non-writable package refuses before creating generation storage", () => {
-    chmodSync(root, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; use the owning command/); }
-    finally { chmodSync(root, 0o700); }
-    assert.equal(existsSync(executionStore(root)), false);
-  });
-  check("generation store refuses a non-writable installation before creating it", () => {
-    const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
-    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; use the owning command/); }
-    finally { chmodSync(parent, 0o700); }
-    assert.equal(existsSync(executionStore(root)), false);
+  check("retention restores owner write on user-owned installation directories", () => {
+    const directories = [root, join(root, "dist"), join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];
+    for (const path of directories) chmodSync(path, 0o500);
+    const retained = retainExecutionGeneration(root, source);
+    for (const path of directories) assert.equal(lstatSync(path).mode & 0o777, 0o700);
+    assert.equal(retained.version, "0.2.0");
+    rmSync(executionStore(root), { recursive: true });
   });
   // Homebrew keeps `lib` group-writable and npm under a umask of 0002 creates the package that way.
   const managed = [root, join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];
@@ -237,7 +330,7 @@ try {
   check("a version check from a 0.164.16 or 0.164.17 updater that will refuse its own copy names the manual install and leaves no staging", () => {
     const store = join(scratch, "stuck/lib/.cotal-generations"), staged = join(store, ".installing-AbC123/lib/node_modules/cotal-ai"), abandoned = join(store, ".installing-Zz9999");
     const stage = (): void => { packageAt(staged, "0.3.0", "staged target"); mkdirSync(abandoned, { recursive: true }); writeFileSync(join(abandoned, "left"), "x"); };
-    const under = (umask: string, env: NodeJS.ProcessEnv) => spawnSync("sh", ["-c", `umask ${umask}; exec "$0" "$1" --version`, process.execPath, join(staged, "dist/cotal.js")], { env: { ...process.env, XDG_RUNTIME_DIR: scratch, ...env }, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    const under = (umask: string, env: NodeJS.ProcessEnv) => spawnSync("sh", ["-c", `umask ${umask}; exec "$0" "$1" --version`, process.execPath, join(staged, "dist/cotal.js")], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: scratch, ...env }, cwd: scratch, encoding: "utf8", timeout: 10_000 });
     const probe = spawnSync("sh", ["-c", `umask 002; exec "$0" -e 'const fs=require("fs");fs.mkdirSync("from",{mode:0o700});fs.cpSync("from","to",{recursive:true});process.stdout.write(String(fs.lstatSync("to").mode&0o022))'`, process.execPath], { cwd: mkdtempSync(join(scratch, "probe-")), encoding: "utf8", timeout: 10_000 });
     assert.equal(probe.status, 0, probe.stderr);
     const refuses = probe.stdout !== "0";

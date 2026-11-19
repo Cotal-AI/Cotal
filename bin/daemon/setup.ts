@@ -14,7 +14,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { codeSpan, CommandFailure, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, codeSpan, CommandFailure, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -59,7 +59,7 @@ interface InstallOptions {
   readonly report: (line: string, progress?: SetupStep) => void;
 }
 
-export interface SetupOptions extends InstallOptions {
+interface SetupOptions extends InstallOptions {
   readonly space: string;
   readonly idp?: string;
   readonly clientId?: string;
@@ -112,6 +112,12 @@ function restartProgress(opts: InstallOptions): (detail: string) => void {
 
 /** Install the user service unless it is already installed, then wait for the daemon to answer. */
 async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
+  const release = claimUpdateClosureAccess();
+  try { return await ensureInstalledUnderClosure(opts, steps); }
+  finally { release(); }
+}
+
+async function ensureInstalledUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<string | undefined> {
   let unit: string | undefined;
   let outcome: string, detail: string;
   try {
@@ -186,6 +192,14 @@ function hasNewApplications(manager: HostedManager): boolean {
 }
 
 async function refreshApplications(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
+  // Hosted Managers claim the same closure when they load connectors. Only native service
+  // mutations run under the CLI's claim, not the later wait for a Manager to answer.
+  const release = claimUpdateClosureAccess();
+  try { return await refreshApplicationsUnderClosure(opts, steps); }
+  finally { release(); }
+}
+
+async function refreshApplicationsUnderClosure(opts: InstallOptions, steps: SetupStep[]): Promise<boolean> {
   const installation = installedDaemonIdentity(opts.paths, opts.daemonHome);
   if (!installation.same) throw new CommandFailure("refused", "CONFLICT", `the daemon at ${installation.installed} cannot refresh applications from this installation`, { remedy: `run setup from ${installation.installed}` });
   const refresh = planInstalledPathRefresh(opts.paths, opts.daemonHome);
@@ -453,6 +467,8 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     }))];
     opts.report(`connectors: ${available.length} available`, { step: "applications", outcome: available.length ? "available" : "unavailable", detail: `${available.length} available`, applications: applications.length ? applications : Object.values(names) });
     if (!available.length) {
+      const claudeSetup = manager.connectors?.find(connector => connector.agent === "claude" && connector.reason?.startsWith("Claude wake channel setup failed:"));
+      if (claudeSetup?.reason) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", claudeSetup.reason, { native: { code: "NO_AVAILABLE_CONNECTOR" } });
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no available connector in the hosted Manager's environment", { remedy: `install ${applications.length ? applications.join(" or ") : "Claude Code, Codex, Hermes, Jcode, OpenCode or pi"} and make sure the application runs in this terminal, then run the same setup command again`, native: { code: "NO_AVAILABLE_CONNECTOR" } });
     }
     const registration = prerequisite ? registrationResult(opts, steps, prerequisite) : await requestRegistration(opts, steps);

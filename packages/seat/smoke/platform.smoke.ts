@@ -152,6 +152,57 @@ if (process.platform !== "linux") {
 
   if (process.platform === "linux") {
   {
+    // Run the unchanged Windows entrypoint with controlled executable failures, not a mocked spawn.
+    const tree = mkdtempSync(join(tmpdir(), "cotal-seat-sdk-"));
+    try {
+      const seat = join(tree, "seat");
+      const bin = join(tree, "bin");
+      mkdirSync(join(seat, "scripts"), { recursive: true });
+      mkdirSync(join(tree, "workspace", "native"), { recursive: true });
+      mkdirSync(bin);
+      copyFileSync(join(pkgRoot, "scripts", "build-native.mjs"), join(seat, "scripts", "build-native.mjs"));
+      const pin = JSON.parse(readFileSync(join(pkgRoot, "..", "workspace", "native", "node-sdk.json"), "utf8"));
+      pin.headers = createHash("sha256").update("headers").digest("hex");
+      writeFileSync(join(tree, "workspace", "native", "node-sdk.json"), JSON.stringify(pin));
+      const preload = join(tree, "windows.mjs");
+      writeFileSync(preload, 'Object.defineProperty(process, "platform", { value: "win32" });\n');
+      const curl = join(bin, "curl.exe");
+      const cases = [
+        { name: "empty stderr", body: "exit 22", detail: 'status 22, signal null, stderr ""' },
+        { name: "nonempty stderr", body: "printf 'HTTP failure\\n' >&2\nexit 22", detail: 'status 22, signal null, stderr "HTTP failure"' },
+        { name: "signal", body: 'kill -TERM "$$"', detail: 'status null, signal SIGTERM, stderr ""' },
+        { name: "missing executable", detail: 'status null, signal null, stderr "", error spawnSync curl.exe ENOENT' },
+        {
+          name: "library download",
+          body: 'while [ "$1" != "--output" ]; do shift; done\nshift\ncase "$1" in *headers.tar.gz) printf headers > "$1";; *) exit 22;; esac',
+          detail: 'status 22, signal null, stderr ""',
+          path: `win-${process.arch}/node.lib`,
+        },
+      ];
+      for (const scenario of cases) {
+        if (scenario.body) {
+          writeFileSync(curl, `#!/bin/sh\n${scenario.body}\n`);
+          chmodSync(curl, 0o755);
+        } else {
+          rmSync(curl);
+        }
+        const compile = spawnSync(process.execPath, ["--import", preload, join(seat, "scripts", "build-native.mjs"), "--host"], {
+          cwd: seat,
+          encoding: "utf8",
+          env: childEnv({ PATH: bin, TEMP: tree, VCToolsVersion: "fixture" }),
+        });
+        const path = scenario.path ?? `node-v${pin.version}-headers.tar.gz`;
+        check(
+          `SDK download failure preserves ${scenario.name} diagnostics`,
+          compile.status === 1 && compile.stderr.includes(`Node SDK download failed for ${path}: ${scenario.detail}`),
+          { status: compile.status, stdout: compile.stdout, stderr: compile.stderr },
+        );
+      }
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+  {
     const blocked = mkdtempSync(join(tmpdir(), "cotal-seat-ncc-"));
     try {
       const bin = join(blocked, "bin");

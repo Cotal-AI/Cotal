@@ -21,6 +21,7 @@ import {
   eventChannel,
   mintCreds,
   mintGeneration,
+  mintLifecycleUid,
   newIdentity,
   principalKey,
   registry,
@@ -80,11 +81,15 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  retiring: Map<string, unknown>;
-  freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
-  deprovision: (a: Seat) => Promise<void>;
+  retirement: {
+    retiring: Map<string, unknown>;
+    deprovision: (a: Seat) => Promise<void>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
+  };
 };
-M.managerInstanceId = "smoke-manager-instance";
+M.managerInstanceId = mintLifecycleUid();
 (mgr as unknown as { staticLifecycleEvict?: (principal: string) => Promise<unknown> }).staticLifecycleEvict = async (principal) =>
   ({ principal, kicked: 1, remaining: 0, scanComplete: true, verifiedGone: true });
 (mgr as unknown as { ep: Record<string, unknown> }).ep = {
@@ -214,10 +219,10 @@ try {
     const before = await spawnAs(gone, "inside");
     check("control: before retirement its evidence resolves", before.ok === true, before);
     const seat = seatOf("retiree");
-    M.freeSlot(seat, false, "process-exit");
-    await M.deprovision(seat);
-    for (let i = 0; i < 300 && M.retiring.has("retiree"); i++) await new Promise((r) => setTimeout(r, 100));
-    check("control: the retirement completed", !M.retiring.has("retiree"));
+    M.namesCapacity.freeSlot(seat, false, "process-exit");
+    await M.retirement.deprovision(seat);
+    for (let i = 0; i < 300 && M.retirement.retiring.has("retiree"); i++) await new Promise((r) => setTimeout(r, 100));
+    check("control: the retirement completed", !M.retirement.retiring.has("retiree"));
     const after = await spawnAs(gone, "inside");
     check("a retired spawner's evidence does not resolve, so it hands on no grant", refused(after, /holds no issued evidence.*does not resolve/), after);
   }

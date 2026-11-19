@@ -45,14 +45,14 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, workspaceSecretStore } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const PORT = await freePort();
@@ -593,6 +593,9 @@ try {
   pids.push(boDeliveryPid);
   ok("the delivery daemon is up and alive under the flag", Number.isFinite(boDeliveryPid) && alive(boDeliveryPid), boDeliveryPid);
   ok("the broker still answers under the flag", await portOpen());
+  const boStatus = plain(cli("status", "--plain").stdout);
+  ok("broker-only status keeps Manager as not started even in a root where an earlier manager ran",
+    /Manager\s+not started/.test(boStatus) && !/which exited/.test(boStatus), boStatus);
   // An empty manager registry is a refusal before any manager is asked. It used to fail
   // OPERATION_FAILED, exit 5, as if ps itself had failed. A registration is not proof of a process,
   // so it says no more than the registry showed and names nothing to remove.
@@ -726,8 +729,8 @@ try {
       else await until(() => !alive(pid[window as Member]), 15_000);
       // A folder's stopped space is not selected on its own, so status names it.
       const st = plain(cliIn(irRoot, "status", "--space", irSpace).stdout);
-      ok(`${name}: status reads the members it stopped as not started, and no stale pidfile or exited broker`,
-        stopped.every((m) => new RegExp(`${ROW[m]}\\s+○ not started`).test(st)) && !/stale pidfile|which exited/.test(st), st);
+      ok(`${name}: status reads no stale pidfile or exited broker, and marks the stopped members`,
+        stopped.every((m) => new RegExp(`${ROW[m]}\\s+○ ${m === "manager" && running.includes("nats") ? "stopped" : "not started"}`).test(st)) && !/stale pidfile|broker.*which exited/.test(st), st);
       const finish = cliIn(irRoot, "down", "--yes");
       ok(`${name}: cotal down --yes finishes the stop`, finish.status === 0 && await until(() => MEMBERS.every((m) => !alive(pid[m])), 20_000), finish.stdout + finish.stderr);
     } finally {
@@ -781,6 +784,11 @@ try {
   mkdirSync(join(fgRoot, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(fgRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\nrole: worker\nsubscribe: []\nallowPublish: []\n---\nA supervised seat that exists to be spared.\n");
   writeFileSync(join(fgRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["CORE_DIST", "PIDFILE", "SHIM_BODY"] } }));
+  // Seeding installs the connector, not Claude's user configuration. Declare its wake-channel
+  // server in this project so the shim launch does not depend on the host's Claude setup.
+  writeFileSync(join(fgRoot, ".mcp.json"), JSON.stringify({
+    mcpServers: { cotal: { command: process.execPath, args: [resolve(WT, "extensions", "connector-claude-code", "dist", "seat.cjs")] } },
+  }));
   const fgEnv = {
     ...env, PATH: `${fgBin}:${process.env.PATH ?? ""}`,
     CORE_DIST: coreDist, PIDFILE: fgSeatPidFile, SHIM_BODY: shimBody,
@@ -902,6 +910,90 @@ try {
     rmSync(rgBin, { recursive: true, force: true });
     rmSync(rgOut, { recursive: true, force: true });
     rmSync(rgRoot, { recursive: true, force: true });
+  }
+
+  // 5) Default stack status and ps recovery lines: no-app setup recommendation (#7597), named
+  //    agent status flag validation (#7554), hung/killed manager ps classification (#7616), and
+  //    SIGTERM manager status recovery (#7568).
+  const recPort = await freePort();
+  const recRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-recroot-"));
+  const noAgentBin = mkdtempSync(join(tmpdir(), "cotal-upstack-noagentbin-"));
+  anchors.set(recRoot, recordSmokeSandbox({ root: recRoot, cotalHome: home, xdgConfigHome: configDir }));
+  try {
+    symlinkSync(process.execPath, join(noAgentBin, "node"));
+    const natsBin = resolveOnPath("nats-server");
+    if (natsBin) symlinkSync(natsBin, join(noAgentBin, "nats-server"));
+    for (const dir of ["/usr/bin", "/bin"]) {
+      if (!existsSync(dir)) continue;
+      for (const entry of readdirSync(dir)) {
+        if (["claude", "opencode", "codex", "uv", "jcode", "pi", "node", "nats-server"].includes(entry)) continue;
+        const target = join(dir, entry), link = join(noAgentBin, entry);
+        if (!existsSync(link)) { try { symlinkSync(target, link); } catch { /* skip broken link */ } }
+      }
+    }
+    const recSpace = basename(recRoot);
+    const recRecord = (template: string) => canonicalLocalProcessPath(template, { root: recRoot, space: recSpace });
+    const recBoot = cliIn(recRoot, "up", "--detach", "--server", `nats://127.0.0.1:${recPort}`);
+    ok("recovery rig: up --detach starts the default stack", recBoot.status === 0, plain(recBoot.stdout + recBoot.stderr));
+    let recAnswered = false;
+    for (let i = 0; i < 15 && !recAnswered; i++) {
+      recAnswered = cliIn(recRoot, "ps").status === 0;
+      if (!recAnswered) await sleep(2000);
+    }
+    ok("recovery rig: detached manager answers ps", recAnswered);
+
+    const noAppEnv = { PATH: noAgentBin };
+    const noAppStatus = plain(cliInEnv(recRoot, noAppEnv, "status", "--plain").stdout);
+    const noAppStatusNext = noAppStatus.split("\nNext\n")[1] ?? "";
+    ok("with seeded connectors and no agent binary on PATH, status recommends setup instead of spawn",
+      /Agent applications:\s+not set up/.test(noAppStatus) && /setup\s+Set up an agent application/.test(noAppStatusNext) && !/\bspawn\s+Open your default agent/.test(noAppStatusNext), noAppStatus);
+    const noAppPs = plain(cliInEnv(recRoot, noAppEnv, "ps", "--plain").stdout);
+    const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
+    ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
+      /setup\s+Set up an agent application/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
+
+    for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
+      const bad = cliIn(recRoot, ...badArgs);
+      ok(`${badArgs.join(" ")} fails USAGE_INVALID before querying managers`, bad.status === 1 && /"USAGE_INVALID"/.test(bad.stdout), bad.stdout + bad.stderr);
+    }
+
+    let recMgrPid = Number(readFileSync(recRecord(MANAGER_PIDFILE), "utf8").trim());
+    pids.push(recMgrPid, Number(readFileSync(join(recRoot, ".cotal", "nats.pid"), "utf8").trim()), Number(readFileSync(recRecord(DELIVERY_PIDFILE), "utf8").trim()));
+    process.kill(recMgrPid, "SIGSTOP");
+    try {
+      for (const psArgs of [["ps", "--plain"], ["ps", "--slots", "--plain"]] as const) {
+        const hungPs = cliIn(recRoot, ...psArgs);
+        const hungOut = plain(hungPs.stdout + hungPs.stderr);
+        ok(`${psArgs.join(" ")} on a hung default-stack manager names its pid and the kill -KILL + cotal up recovery step`,
+          hungPs.status === 2 && hungOut.includes(`this space's stack manager (pid ${recMgrPid}) is running but did not answer`) && hungOut.includes(`end that process with kill -KILL ${recMgrPid}; then bare \`cotal up\` starts the manager again`), hungOut);
+      }
+    } finally {
+      process.kill(recMgrPid, "SIGCONT");
+    }
+
+    process.kill(recMgrPid, "SIGTERM");
+    ok("default-stack manager exits and removes its pidfile on SIGTERM", await until(() => !alive(recMgrPid) && !existsSync(recRecord(MANAGER_PIDFILE)), 15_000));
+    const termStatus = plain(cliIn(recRoot, "status", "--plain").stdout);
+    const termNextFirst = termStatus.split("\nNext\n")[1]?.split("\n")[0] ?? "";
+    ok("after SIGTERM to the manager, status marks Manager stopped and puts cotal up first under Next",
+      /Manager\s+stopped/.test(termStatus) && /up\s+Restart this folder's manager, which exited/.test(termNextFirst), termStatus);
+
+    const recHeal = cliIn(recRoot, "up");
+    ok("bare up restores the SIGTERM-stopped manager", recHeal.status === 0 && existsSync(recRecord(MANAGER_PIDFILE)), plain(recHeal.stdout + recHeal.stderr));
+    recMgrPid = Number(readFileSync(recRecord(MANAGER_PIDFILE), "utf8").trim());
+    pids.push(recMgrPid);
+    process.kill(recMgrPid, "SIGKILL");
+    ok("restored manager exits on SIGKILL with its pidfile left behind", await until(() => !alive(recMgrPid), 10_000) && existsSync(recRecord(MANAGER_PIDFILE)));
+    for (const psArgs of [["ps", "--plain"], ["ps", "--slots", "--plain"]] as const) {
+      const deadPs = cliIn(recRoot, ...psArgs);
+      const deadOut = plain(deadPs.stdout + deadPs.stderr);
+      ok(`${psArgs.join(" ")} after SIGKILL to a default-stack manager says no manager runs and names bare cotal up`,
+        deadPs.status === 2 && deadOut.includes("no manager is running for this space, so it has no managed agents to list") && deadOut.includes(`start the stack's manager with bare \`cotal up\` in ${realpathSync(recRoot)}; a stack started with --no-manager has none`), deadOut);
+    }
+  } finally {
+    cliIn(recRoot, "down", "--yes");
+    rmSync(noAgentBin, { recursive: true, force: true });
+    rmSync(recRoot, { recursive: true, force: true });
   }
 
   console.log(`\nUP-STACK LIVE SMOKE OK ✅ (${pass} checks)`);

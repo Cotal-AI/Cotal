@@ -101,6 +101,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // session rail and frame codec re-export for the console bundle. "./launch-material" is the
 // launch-material reader the lifecycle hook relay imports without loading the barrel, and
 // "./peer-label" is the peer label its frame rendering prints, for the same reason.
+// "./control-exchange" is the control exchange the same relay runs, again without the barrel.
 // "./secret-fs" is the secret-file writers the Claude native binding hook imports, again without
 // the barrel; it maps to an entry naming the barrel's writers, never the module and its test seam.
 // "./command", "./loopback" and "./subjects" are the argument parser, the loopback-literal check and
@@ -110,13 +111,16 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // entry and its build-time validator generator; their callers never load the barrel, so their
 // entry functions live only there.
 // "./advisory-lock" is the lock the OpenCode launcher bundles to claim an agent's database, which
-// would otherwise bundle the barrel.)
+// would otherwise bundle the barrel.
+// "./contract-validator" is the interpreter a generated validator module imports at run time; a
+// browser target loads that module without the barrel, so its one function lives only there.)
 {
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
   const keys = Object.keys(pkg.exports ?? {});
   const ALLOWED_SUBPATHS = new Map<string, { module: string; additions: readonly string[] }>([
     ["./session-browser", { module: "session-browser", additions: [] }],
     ["./launch-material", { module: "launch-material", additions: [] }],
+    ["./control-exchange", { module: "control-exchange", additions: [] }],
     ["./peer-label", { module: "peer-label", additions: [] }],
     ["./secret-fs", { module: "secret-fs-entry", additions: [] }],
     ["./command", { module: "command", additions: [] }],
@@ -126,6 +130,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./presence-ages", { module: "presence-ages", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
+    ["./contract-validator", { module: "contract-validator", additions: ["prepareContractValidator"] }],
   ]);
   const unexpected = keys.filter((k) => k !== "." && !ALLOWED_SUBPATHS.has(k));
   c(`core's package "exports" map is the barrel "." plus only allow-listed subpaths (no wildcard/opaque deep import)`,

@@ -29,9 +29,15 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
 const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts");
-const src = readFileSync(SRC, "utf8");
+const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
+const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
+c("the discovery reference distinguishes function coverage from a shipped journal action path",
+  coverageDoc.includes("## Journal action coverage")
+    && coverageDoc.includes("Passing them does not prove")
+    && coverageDoc.includes("not a journal cutover"));
+console.log("\nCoverage scope: source wiring only, not a shipped journal action path. See docs/control-discovery.mdx#journal-action-coverage.");
 console.log("\n── the span this suite reads, asserted rather than assumed ──");
 // Every cell below is a count over this text. A file that moved, or an anchor that was renamed,
 // would make the counts trivially zero and several claims vacuously true.
@@ -62,9 +68,11 @@ console.log("\n── WRONG-TODAY (2/2): the reconcile index is written and filt
 // the once task accepted inside spawn. Pin each writer and its index-before-bind ordering,
 // as well as the total, so a missing path cannot be hidden by a duplicate elsewhere.
 const methodBody = (name: string): string => {
-  const start = src.indexOf(`private async ${name}(`);
+  const start = src.indexOf(`async ${name}(`);
   const end = src.indexOf("\n  private ", start + 1);
-  return start < 0 || end < 0 ? "" : src.slice(start, end);
+  const nextPublic = src.indexOf("\n  async ", start + 1);
+  const boundary = nextPublic < 0 ? end : end < 0 ? nextPublic : Math.min(end, nextPublic);
+  return start < 0 || boundary < 0 ? "" : src.slice(start, boundary);
 };
 for (const [name, writer] of [
   ["serveSpawnGoal", "recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, owner: agentTriple.owner"],
@@ -87,7 +95,7 @@ c("WRONG-TODAY: only spawn, turn, and once-task acceptance write goalidx",
 // The sweep's skip reads two in-memory maps now (the turn relay keeps its own twin); both are the
 // same Model-B dependence on a live incarnation's memory, and both go when the flip lands.
 c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances` (and its turn twin), IN-MEMORY maps the serve paths fill",
-  count("this.goalAcceptances.has(key) || this.turnAcceptances.has(key)") === 1
+  count("this.goalAcceptances.has(key) || this.turnRelay.hasAcceptance(key)") === 1
     && count("this.goalAcceptances.set(") === 1);
 pending("the CANONICALIZER writes goalidx create-only BEFORE the bind (step 4a), so the index no longer depends on a live manager's memory");
 

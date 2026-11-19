@@ -131,6 +131,8 @@ Each seat has a private Jcode instance and home under `<manager-workspace>/.cota
 The connector never attaches to your operator-run bridge or its live session inventory.
 It refreshes provider credentials for the seat and gives Jcode a stdio MCP entry for the shared `cotal_*` tools.
 
+Startup failures name the seat's private connector diagnostic log, which retains the underlying Jcode error.
+Raw startup output stays private because provider failures can contain credentials.
 See the [Jcode connector reference](jcode-connector-reference.mdx) for process cleanup, credential copying, startup checks, and recovery.
 
 ## Watch events [#event-plane]
@@ -158,6 +160,8 @@ Correct that directory's permissions yourself; the connector does not widen them
 `sessions_enumeration_failed` identifies a failed stored-session lookup when session creation also cannot proceed.
 
 The connector keeps an owner-only log at `<private-home>/logs/connector-<timestamp>-<pid>.log`.
+A `workspace log:` path in a launch refusal is relative to the manager's workspace, not the seat's working folder.
+Open it on the manager host to read the harness's startup errors, which can contain credentials.
 If the manager reports readiness as `uncertain`, inspect `cotal ps` or attach to the allocated seat before launching another.
 A host `readiness_timeout` is different: the connector kills its private tree and never joins.
 

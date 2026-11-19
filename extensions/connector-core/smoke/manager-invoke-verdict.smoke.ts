@@ -352,7 +352,37 @@ for (const [label, config, expected] of [
       && unbound.calls.join(",") === "purge", unbound);
 }
 
-const EXPECTED_CELLS = 90;
+// These constructed replies grade retry bookkeeping, not broker delivery. The real two-Manager
+// readiness suite separately observes the allocation count through the shipped tool.
+{
+  const agent = selfAgent(cfg);
+  let launches = 0;
+  let state: "starting" | "unavailable" | "joined" = "starting";
+  (agent as unknown as { ep: unknown }).ep = {
+    principal: { owner: "local", actor: "caller" },
+    invokeService: async (_endpoint: string, command: string) => {
+      if (command === "ps") {
+        if (state === "unavailable") throw new Error("census unavailable");
+        return { responder: { instanceId: "a".repeat(26), epoch: 0 }, reply: { ok: true, data: [{ name: "retry-seat", lifecycleUid: "u".repeat(26), presenceIdentityVerified: state === "joined", status: "running" }] } };
+      }
+      launches++;
+      return { responder: { instanceId: "a".repeat(26), epoch: 0 }, reply: { ok: false, error: { code: "uncertain", message: "still starting" }, data: { name: "retry-seat", uid: "u".repeat(26), goalId: `retry-goal-${launches}` } } };
+    },
+  };
+  const first = await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "a", beta: "b" } });
+  const retry = await agent.spawn("retry-seat", undefined, { launchOptions: { beta: "b", alpha: "a" } });
+  check("equivalent option ordering reuses the pending goal", launches === 1 && (retry.data as { goalId: string }).goalId === (first.data as { goalId: string }).goalId, retry);
+  state = "unavailable";
+  await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "a", beta: "b" } });
+  check("an unavailable census cannot authorize a duplicate", launches === 1, launches);
+  await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "different" } });
+  check("a different spawn request remains distinct", launches === 2, launches);
+  state = "joined";
+  await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "a", beta: "b" } });
+  check("verified exact-incarnation join releases the pending claim", launches === 3, launches);
+}
+
+const EXPECTED_CELLS = 94;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

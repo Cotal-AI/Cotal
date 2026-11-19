@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSpaceAuth, mintCreds, newIdentity, registry, setupSpaceStreams, type AgentHandle, type Connector, type Runtime, type RuntimeReference } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, authDir, isCommandFailure, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { processStartToken } from "@cotal-ai/seat";
 import { Manager } from "../src/manager.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
+import { managerServiceStopScope } from "../src/service-child.js";
 import { bootBroker } from "./_boot-broker.js";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
@@ -35,6 +36,7 @@ const broker = await bootBroker(auth);
 console.log(JSON.stringify({ receipt: "broker", pid: broker.pid, birth: processStartToken(broker.pid), servers: broker.servers }));
 saveSpaceAuth(authDir(workspaceRoot), auth);
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "seat.md"), "---\nname: seat\n---\n");
+writeFileSync(join(workspaceRoot, ".cotal", "agents", "pending.md"), "---\nname: pending\n---\n");
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const connector: Connector = {
@@ -63,6 +65,37 @@ try {
   (manager as unknown as { runtime: Runtime }).runtime = runtime;
   bystander = new LegacyPtyRuntime().spawn("bystander", { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: "/usr/bin:/bin" } }, root);
   console.log(JSON.stringify({ receipt: "bystander", pid: bystander.pid, birth: processStartToken(bystander.pid!) }));
+  const waiting: Connector = { kind: "connector", name: "shutdown-pending", requires: ["node"], readinessTimeoutMs: 125_000,
+    buildLaunch: () => ({ command: process.execPath, args: ["-e", "process.on('SIGTERM',()=>{});console.log('PENDING_ARMED');setInterval(()=>{},1000)"], env: { PATH: "/usr/bin:/bin" } }) };
+  registry.register(waiting);
+  (manager as unknown as { runtime: Runtime }).runtime = new LegacyPtyRuntime();
+  const starting = manager.startAgent({ name: "pending", agent: waiting.name, cwd: repoRoot, events: false });
+  const live = (manager as unknown as { agents: Map<string, { id: string; lifecycleUid: string; handle: AgentHandle }> }).agents;
+  await until(() => live.has("pending"), "pending seat was not launched").catch(async (error) => { throw new Error(`${(error as Error).message}: ${JSON.stringify(await starting)}`); });
+  const pending = live.get("pending")!;
+  const pendingSession = pending.handle.attach();
+  let pendingOutput = (await pendingSession.backlog()).toString();
+  const off = pendingSession.onData((chunk) => { pendingOutput += chunk.toString(); });
+  try { await until(() => pendingOutput.includes("PENDING_ARMED"), "pending seat never installed its signal handler"); }
+  finally { off(); }
+  const observation = manager.localServiceObservation();
+  assert.ok(observation);
+  let blocked: unknown;
+  try { managerServiceStopScope(observation, false); } catch (error) { blocked = error; }
+  check("native in-flight stop names its real blocker and inspection command", isCommandFailure(blocked) && blocked.message.includes("lifecycleInFlight: 1") && Boolean(blocked.remedy?.includes("`cotal ps`")));
+  const secrets = Object.values(agentLifecycleSecretFilePaths(workspaceRoot, space, "pending", pending.lifecycleUid));
+  check("pending seat has local credentials before shutdown", secrets.some((path) => existsSync(path)));
+  const began = Date.now();
+  await manager.stop();
+  const verdict = await starting;
+  manager = undefined;
+  check("shutdown cancels readiness before the CLI escalation window", Date.now() - began < 15_000 && !verdict.ok);
+  check("default stop verifies the SIGTERM-ignoring PTY exited", pending.handle.status() === "exited");
+  check("default stop deprovisions the in-flight seat", secrets.every((path) => !existsSync(path)));
+  check("the independent bystander is still running", bystander.status() === "running");
+  manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
+  await manager.start();
+  (manager as unknown as { runtime: Runtime }).runtime = runtime;
   const spawned = await manager.startAgent({ name: "seat", agent: connector.name, cwd: repoRoot, events: false });
   check("real manager admitted the native custodial seat", spawned.ok);
   const agents = (manager as unknown as { agents: Map<string, { handle: AgentHandle }> }).agents;
@@ -88,7 +121,8 @@ try {
   check("native reaper removed the completed custody record", !existsSync(recordPath));
   check("shutdown does not report a lost custody reference", !diagnostics.some((line) => line.includes("no custody reference reached this terminal")));
   check("independent native bystander remains running", bystander.status() === "running");
-  check("the full native regression ran", checks === 8);
+  check("the full native regression ran", checks === 14);
+
   console.log(`SHUTDOWN CUSTODY (${checks} checks)`);
 } finally {
   console.error = originalError;

@@ -12,7 +12,7 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { globalConfigDir } from "@cotal-ai/core";
+import { connectorConfigDir } from "@cotal-ai/workspace";
 import { inspectLock, extensionNpmMutationPath } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
@@ -48,6 +48,16 @@ function atThisVersion(spec: string): string {
   return /^@cotal-ai\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;
 }
 
+export function validateExtArguments(args: ParsedArgs): void {
+  const [sub] = args.positionals;
+  const v = args.values as FlagValues<typeof extFlags>;
+  presentationOf(v);
+  if (sub !== "seed" && (v.repair || v.reset || v.force)) {
+    const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
+    throw usage(`${flag} belongs to \`cotal ext seed\``);
+  }
+}
+
 /**
  * `cotal ext` — operator-installed extensions. `add` installs an npm package into the
  * cotal-owned prefix (never the user's project), imports it ONCE so it self-registers into the
@@ -65,6 +75,7 @@ function atThisVersion(spec: string): string {
  */
 
 export async function ext(args: ParsedArgs): Promise<void> {
+  validateExtArguments(args);
   const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
@@ -73,7 +84,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
   // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
   if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
+  if (sub === "add" && rest.length === 1 && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
@@ -88,7 +99,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     for (const line of lines) console.log(line);
     return;
   }
-  if (sub === "remove" && rest[0]) return remove(rest[0]);
+  if (sub === "remove" && rest.length === 1 && rest[0]) return remove(rest[0]);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
@@ -106,7 +117,9 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+  // The prefix verifier requires every host-compatible dependency, including native optional
+  // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--include=optional"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const mutation = beginExtensionNpmMutation();
@@ -222,7 +235,7 @@ export async function installExtensionSet(
   opts?: { isolate?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
-  const ownerConfig = globalConfigDir();
+  const ownerConfig = connectorConfigDir();
   const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
   if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
   const stage = stageExtensions();
@@ -233,12 +246,28 @@ export async function installExtensionSet(
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
+    // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
+    // to reinstall them while reconciling other packages. Their original download directory may be gone.
+    const absent = manifestBefore.extensions.filter(entry =>
+      !requests.some(request => request.pkg === entry.pkg) &&
+      lstatSync(join(stage.prefix, "node_modules", entry.pkg), { throwIfNoEntry: false }) === undefined);
     // Make all local dependency specs independent of the stage directory's later promotion.
     for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item);
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item) as {
+          dependencies?: Record<string, string>;
+          packages?: Record<string, { dependencies?: Record<string, string> }>;
+        };
+      const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
+      for (const entry of absent) {
+        if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
+        delete dependencies[entry.pkg];
+        for (const key of Object.keys(value.packages ?? {})) {
+          if (key === `node_modules/${entry.pkg}` || key.startsWith(`node_modules/${entry.pkg}/node_modules/`)) delete value.packages![key];
+        }
+      }
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     for (const request of requests) {
@@ -582,9 +611,22 @@ async function removeUnlocked(pkg: string): Promise<void> {
   if (!entry) throw new Error(`no installed extension "${pkg}" - see \`cotal ext list\``);
   assertExtensionServiceInstancesStopped(pkg);
   const processes = await extensionProcesses(entry);
-  const recorded = processes.filter(({ pidPath }) => existsSync(pidPath));
+  const recorded = processes.filter(({ pidPath }) => {
+    if (!existsSync(pidPath)) return false;
+    const before = lstatSync(pidPath);
+    if (!before.isFile()) return true;
+    const raw = readFileSync(pidPath, "utf8");
+    const pid = parsePid(raw);
+    if (pid === undefined || probeLiveness(pid) !== "dead") return true;
+    // A concurrent startup may have replaced the stale record. Reclaim only the file we probed;
+    // the create-only reservations below still fence startup for the duration of uninstall.
+    const current = lstatSync(pidPath);
+    if (current.dev !== before.dev || current.ino !== before.ino || readFileSync(pidPath, "utf8") !== raw) return true;
+    rmSync(pidPath);
+    return false;
+  });
   if (recorded.length)
-    throw new Error(`${pkg} still owns recorded local processes:\n${recorded.map(describeProcess).map((item) => `  ${item}`).join("\n")}\nStop or clean them from the listed mesh roots before removing the extension.`);
+    throw new Error(`${pkg} still owns recorded local processes: ${recorded.map(describeProcess).join("; ")}. Stop or clean them from the listed mesh roots before removing the extension.`);
 
   // Reserve every provider pidfile through uninstall. A concurrent extension startup then loses
   // its own atomic pid claim instead of coming online after the liveness scan but before removal.

@@ -1,5 +1,226 @@
 # @cotal-ai/auth
 
+## 0.169.0
+
+### Patch Changes
+
+- 018f2b2: Keep service host record parsing and immutable bounds in a dedicated internal module without changing host operation behavior.
+- 3f04b38: Scope CLI subcommand help and flag validation across `config`, `run`, `daemon`, `manager`, `service`, `service-endpoint`, and `ext`, and emit JSON envelopes for `daemon --json` usage refusals.
+- 67d9a30: Recover workflow runs after an activation stops before recording its status, reject unsupported check and resume flags before connecting, and keep missing-run remedies on the selected space and manager.
+- cadeb7f: List each account computer once and show which sign-in address holds a local space connection when another account is refused.
+- 14ee8cd: Separate auth service configuration and manifest parsing into an internal module.
+  
+  Keep existing service exports and startup validation behavior unchanged.
+- 4050457: Fix participant tool payload history reads without widening owner or event-channel access.
+- Updated dependencies [ec01e0a]
+- Updated dependencies [f5aee20]
+- Updated dependencies [a9cb553]
+- Updated dependencies [a59864f]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [e9bee41]
+- Updated dependencies [58c16f7]
+- Updated dependencies [55e3e40]
+- Updated dependencies [37a700f]
+- Updated dependencies [c2f9729]
+- Updated dependencies [c4ca691]
+- Updated dependencies [71088a6]
+- Updated dependencies [67d9a30]
+- Updated dependencies [e7fa3bf]
+- Updated dependencies [eee44d8]
+- Updated dependencies [1360657]
+- Updated dependencies [f5aee20]
+- Updated dependencies [3e4862f]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [f5aee20]
+- Updated dependencies [4050457]
+- Updated dependencies [1a968ba]
+- Updated dependencies [339d6ee]
+- Updated dependencies [a6496a5]
+- Updated dependencies [de57e89]
+- Updated dependencies [2a71cc3]
+  - @cotal-ai/core@0.169.0
+  - @cotal-ai/workspace@0.169.0
+  - @cotal-ai/lang@0.169.0
+
+## 0.168.0
+
+### Patch Changes
+
+- d164a59: Keep the auth HTTP exchange handler and face policy in a dedicated module while preserving the existing listener behavior and host-facing exports.
+- Updated dependencies [4ad482d]
+- Updated dependencies [6546892]
+- Updated dependencies [b0e70a5]
+  - @cotal-ai/core@0.168.0
+  - @cotal-ai/workspace@0.168.0
+  - @cotal-ai/lang@0.168.0
+
+## 0.167.0
+
+### Minor Changes
+
+- 211142b: An agent can now serve commands about itself, such as its pending harness prompts, to its owner's sessions over the control surface, with no registration and no Manager.
+  
+  Core adds the principal route (SPEC §13.21): requests on `cotal.<space>.ep.prin.<endpoint>.<owner>.<actor>.<lifecycleUid>.<runtimeId>.<command>.<authority>.<caller>.<nonce>`, replies on `ep.prin-reply`, and a no-responders sentinel no serving credential can publish on. A process serves it with `CotalEndpoint.servePrincipal`, whose `ready` resolves only after the broker accepted the subscription and which binds again after every reconnect, and calls it with `CotalEndpoint.callPrincipal`. Both routes now run one shared request pipeline. A cluster command declares the authority words it admits in `authorities` (`owner` or `grant`); a service route refuses such a command. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) defines `prompts`, `prompt` and `prompt-answer` with closed schemas for a prompt, its form profile and its states (SPEC §13.22), and presence gains `prompts: { open, seq }`. The auth callout now mints serve rows into every agent credential of a ledger row, and `owner` caller rows into those of an interactive row, from the row's kind. An agent needs a connection minted by an auth service on this release before it can serve. SPEC §13.2 also now counts seven authorization-mode tokens, not six.
+
+### Patch Changes
+
+- 20a6ea6: Keep auth service manager and lifecycle HTTP handlers in a dedicated internal module without changing their request or response contracts.
+- 6f3c77d: Software updates leave Managers owned by another home running without requiring that home's continuity or credentials.
+  
+  The update names the proven Manager coordinates and leaves its loaded version running until it is restarted from its own home. For a Manager registered in the calling home, only missing credentials become nonblocking. Other failures remain refusals. Connector sets stay until the authenticated update collector can prove they are unused.
+- Updated dependencies [186fc68]
+- Updated dependencies [ded2be1]
+- Updated dependencies [dbf310b]
+- Updated dependencies [211142b]
+- Updated dependencies [ad38504]
+- Updated dependencies [6f3c77d]
+- Updated dependencies [eead187]
+- Updated dependencies [c1cf22c]
+- Updated dependencies [6c2c27f]
+- Updated dependencies [7bf5e73]
+- Updated dependencies [70842a1]
+- Updated dependencies [d97f549]
+- Updated dependencies [3705c35]
+  - @cotal-ai/workspace@0.167.0
+  - @cotal-ai/core@0.167.0
+  - @cotal-ai/lang@0.167.0
+
+## 0.166.3
+
+### Patch Changes
+
+- 5b96741: Name commands in backticks in the selection notes, the sign-in hints, the update refusals and the Manager restart line, so a wrapped line keeps each command whole. `cotal mcp --help` now shows examples.
+- Updated dependencies [5b96741]
+- Updated dependencies [c1734e0]
+- Updated dependencies [3eeb06f]
+- Updated dependencies [ec9b5cb]
+- Updated dependencies [de1995a]
+  - @cotal-ai/workspace@0.166.3
+  - @cotal-ai/core@0.166.3
+  - @cotal-ai/lang@0.166.3
+
+## 0.166.2
+
+### Patch Changes
+
+- f85c802: Release an unissued native connection request only after a matching terminal name refusal, so a conflicting name does not trap later requests. Preserve unknown recovery state and explain legacy name conflicts without displaying server text. Opt in to terminal refusals without changing older clients' behavior, and distinguish hosted name refusal from local automatic numbering.
+- Updated dependencies [e7f9ee0]
+  - @cotal-ai/workspace@0.166.2
+  - @cotal-ai/core@0.166.2
+  - @cotal-ai/lang@0.166.2
+
+## 0.166.1
+
+### Patch Changes
+
+- Updated dependencies [04338d1]
+- Updated dependencies [1eed7a4]
+- Updated dependencies [eaaafc4]
+- Updated dependencies [eaffa0a]
+- Updated dependencies [ef7e5c4]
+- Updated dependencies [d4eee72]
+- Updated dependencies [2708bfd]
+- Updated dependencies [3fb9ae2]
+  - @cotal-ai/workspace@0.166.1
+  - @cotal-ai/core@0.166.1
+  - @cotal-ai/lang@0.166.1
+
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- cb88e19: Keep auth implementation helpers private and remove an unused managed-actor revoke wrapper without changing the published package exports.
+- cc7a9af: Remove an unused auth smoke probe that still expected Mesh manifests to deploy through spawn --file, keeping the maintained user-mode teardown suite as coverage.
+- Updated dependencies [3bebc51]
+- Updated dependencies [126e7e5]
+- Updated dependencies [af1cfe4]
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [2947faa]
+- Updated dependencies [a1093f9]
+- Updated dependencies [3d2ef16]
+- Updated dependencies [2e6753b]
+- Updated dependencies [3b09cff]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/workspace@0.166.0
+  - @cotal-ai/core@0.166.0
+  - @cotal-ai/lang@0.166.0
+
+## 0.165.4
+
+### Patch Changes
+
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [5413861]
+- Updated dependencies [d5ecb99]
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/lang@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- Updated dependencies [3b68b85]
+  - @cotal-ai/lang@0.165.3
+  - @cotal-ai/core@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- Updated dependencies [f419ba9]
+- Updated dependencies [54b892f]
+- Updated dependencies [9edbf60]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/lang@0.165.2
+  - @cotal-ai/workspace@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/lang@0.165.1
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+
+### Patch Changes
+
+- 155234c: Pin `@nats-io/nkeys` to 2.0.3. Its 2.1.0 release no longer exposes the module the credential signer imports, so every fresh install and every update crashed at start with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [2896d81]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/lang@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

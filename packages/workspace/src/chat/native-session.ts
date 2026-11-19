@@ -33,7 +33,7 @@ import {
   type PresenceView,
 } from "@cotal-ai/core";
 import type { RefusalCode } from "../output.js";
-import { spaceStreamsAbsent, spaceStreamsExpected } from "../space-streams.js";
+import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "../space-streams.js";
 import { mentionsName } from "./compose.js";
 import { ParticipantEngine } from "./engine.js";
 import type {
@@ -399,7 +399,10 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   leave(channel: string): Promise<Result<{ left: boolean }>> {
-    return this.call(() => this.inputs.endpoint.leaveChannel(channel));
+    const message = localStackRoot(this.inputs.identity.space) !== undefined
+      ? undefined
+      : "this space's host runs an older delivery service, so this durable leave was not applied and the channel stays joined; the host must update the delivery service";
+    return this.call(() => this.inputs.endpoint.leaveChannel(channel, message));
   }
 
   // ---- reads -------------------------------------------------------------------------------------

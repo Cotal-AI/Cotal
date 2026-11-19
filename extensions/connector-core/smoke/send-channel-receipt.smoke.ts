@@ -58,7 +58,7 @@ function stubAgent(opts: {
   } as unknown as MeshAgentType;
 }
 
-type Receipt = { known: boolean; hints: string[] };
+type Receipt = { known: boolean; hints: string[]; unchecked?: string };
 const proto = MeshAgent.prototype as unknown as {
   describeSendChannel: (this: MeshAgentType, c: string) => Promise<Receipt>;
 };
@@ -73,6 +73,7 @@ const proto = MeshAgent.prototype as unknown as {
     !invented.known && invented.hints.includes("lane.ci"),
     invented,
   );
+  check("a new name under a list read that succeeded carries no unchecked error", !("unchecked" in invented), invented);
 }
 
 {
@@ -80,9 +81,10 @@ const proto = MeshAgent.prototype as unknown as {
   const fromRegistry = await proto.describeSendChannel.call(agent, "ops");
   const invented = await proto.describeSendChannel.call(agent, "zzz-typo-probe-4471");
   check("a registry entry still counts as existing when listChannels throws", fromRegistry.known, fromRegistry);
+  // #7401: a failed read is not evidence of absence, so the name is not called new; the read's error rides along.
   check(
-    "an unknown name with no list still reports new (create is not refused)",
-    !invented.known && invented.hints.length === 0,
+    "an unknown name under a failed list read is neither known nor new and carries the read's error",
+    !invented.known && invented.hints.length === 0 && invented.unchecked === "no stream",
     invented,
   );
 }
@@ -161,6 +163,34 @@ const proto = MeshAgent.prototype as unknown as {
     "cotal_send on a new channel that does not replay says a later joiner won't see the post",
     unreplayed.text.includes("doesn't replay history, so agents who join later won't see this post") && !unreplayed.text.includes("Others see it once they join"),
     unreplayed.text,
+  );
+
+  // #7401: right after a space restart the list read failed while the post went out, and an existing
+  // channel was reported as new. The line now says the check failed and why, and keeps the close match.
+  const ep = (agent as unknown as { ep: { listChannels: () => Promise<{ channel: string }[]> } }).ep;
+  const listed = ep.listChannels;
+  ep.listChannels = async () => {
+    throw new Error("reconnecting - try again shortly");
+  };
+  const unread = await send.run(agent, cfg, { text: "hi", channel: "lane.cj" });
+  const unreadMentioned = await send.run(agent, cfg, { text: "hi", channel: "lane.cj", mentions: ["bob"] });
+  const unreadJoined = await send.run(agent, cfg, { text: "hi", channel: "lane.ci" });
+  ep.listChannels = listed;
+  check("cotal_send still succeeds when the channel list read fails", !unread.isError, unread.text);
+  check(
+    "cotal_send under a failed list read does not call the name new and gives the read's error",
+    unread.text === "Posted to #lane.cj. Whether #lane.cj already existed could not be checked: reconnecting - try again shortly. Did you mean #lane.ci?",
+    unread.text,
+  );
+  check(
+    "cotal_send with a mention under a failed list read names the mention and does not call the name new",
+    unreadMentioned.text === "Posted to #lane.cj and mentioned @bob. Whether #lane.cj already existed could not be checked: reconnecting - try again shortly. Did you mean #lane.ci?",
+    unreadMentioned.text,
+  );
+  check(
+    "cotal_send to a joined name under a failed list read still reports it as existing",
+    unreadJoined.text === "Posted to #lane.ci. Agents on it see it; mention one to make it act.",
+    unreadJoined.text,
   );
 
   const knownInfo = await Promise.resolve(info.run(agent, cfg, { channel: "lane.ci" }));
@@ -369,7 +399,7 @@ const proto = MeshAgent.prototype as unknown as {
 {
   const userAuth = { owner: "u_x", actor: "alice", sentinelCreds: "creds", bearerCmd: ["true"] };
   const base = { space: "demo", name: "alice", servers: "nats://127.0.0.1:4222", kind: "agent", tls: false } as const;
-  const run = async (cfg: AgentConfig, joined: string[]) => {
+  const run = async (cfg: AgentConfig, joined: string[], channel?: string) => {
     const sent: (string | undefined)[] = [];
     const agent = stubAgent({ joined, listed: joined.map((channel) => ({ channel })) });
     (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
@@ -378,7 +408,7 @@ const proto = MeshAgent.prototype as unknown as {
     };
     (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async () => ({ known: true, hints: [] });
     const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
-    const result = await send.run(agent, cfg, { text: "hi" });
+    const result = await send.run(agent, cfg, channel === undefined ? { text: "hi" } : { text: "hi", channel });
     const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
     return { result, sent, described };
   };
@@ -422,6 +452,28 @@ const proto = MeshAgent.prototype as unknown as {
   const open = { ...base, subscribe: ["announce", "lobby"], allowSubscribe: ["announce", "lobby"], allowPublish: [] } as AgentConfig;
   const unchanged = await run(open, ["announce", "lobby"]);
   check("an open mesh, which enforces no post ACL, keeps the first channel read", !unchanged.result.isError && unchanged.sent[0] === "announce", unchanged);
+
+  // A named channel outside the post ACL is refused in plain words before the mesh, as cotal_join
+  // refuses one outside the read ACL. Live repro (#7374): a read-only `cotal mcp` connection got the
+  // broker's raw "Permissions Violation for Publish to cotal.<space>.chat.<principal>.lab".
+  const readOnlyNamed = await run(readOnly, ["announce"], "announce");
+  check(
+    "a named channel outside the post ACL is refused before sending, naming the channel and the ACL",
+    readOnlyNamed.result.isError === true && readOnlyNamed.sent.length === 0
+      && readOnlyNamed.result.text === "Can't post to #announce: it's outside your post ACL (allowPublish: none). Nothing was sent.",
+    readOnlyNamed.result.text,
+  );
+  const outside = await run(authed, ["announce", "team.rocket"], "ops");
+  check(
+    "the refusal lists the post ACL when it names channels",
+    outside.result.isError === true && outside.sent.length === 0
+      && outside.result.text === "Can't post to #ops: it's outside your post ACL (allowPublish: #team.rocket, #team.rocket.>). Nothing was sent.",
+    outside.result.text,
+  );
+  const inside = await run(authed, ["announce", "team.rocket"], "team.rocket.ci");
+  check("control: a channel a pattern in the post ACL covers is sent", !inside.result.isError && inside.sent[0] === "team.rocket.ci", inside);
+  const openNamed = await run(open, ["announce", "lobby"], "announce");
+  check("an open mesh, which enforces no post ACL, sends to a named channel outside it", !openNamed.result.isError && openNamed.sent[0] === "announce", openNamed);
 }
 
 // A pattern as the channel is refused before any read or publish, and the refusal names the two ways

@@ -140,7 +140,7 @@ check("status reports the selection as not started at the recorded broker", stat
 check("status names no default broker address", noDefault(status), shown(status));
 
 const components = run(["status", "--components"]);
-check("status --components refuses the target and probes no default broker", /target\s+refused · not-started/.test(components.stdout) && noDefault(components), shown(components));
+check("status --components reports the target absent and probes no default broker", components.status === 1 && /target\s+absent · not-started/.test(components.stdout) && components.stdout.includes(RECORDED) && components.stdout.includes("cotal space create") && noDefault(components), shown(components));
 
 // ── with a space selected, this folder's stopped stack does not take its place ───────────────────
 // A folder's space captures the commands run there only while it runs. This root's stack is stopped,
@@ -631,6 +631,16 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const moved = run(["ps", "--json"], legacyAuth);
   check("a legacy root whose recorded folder no longer exists is told to move back there, not to start one here",
     refusedWith(moved, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${gone}, not for this folder`, `move this folder back to ${gone}, then run the command again there`), shown(moved));
+  // Naming the space gives the read's refusal too, not a missing seed under the gone folder (#7315).
+  // From a folder that holds none of its records the move cannot be seen, so the refusal says the
+  // registered folder no longer exists and names moving it back or forgetting the space (#7318).
+  for (const command of [["send", "--space", "lg01", "-c", "general", "hi"], ["history", "--space", "lg01", "general"]]) {
+    const here = run([...command, "--json"], legacyAuth), elsewhere = run([...command, "--json"], holder);
+    check(`${command[0]} --space lg01 in that moved folder names the move and the way back, not a missing seed`,
+      refusedWith(here, "TARGET_UNAVAILABLE", `${lastRan}, and "lg01" is registered for ${gone}, not for this folder`, `move this folder back to ${gone}, then run the command again there`), shown(here));
+    check(`${command[0]} --space lg01 from another folder says the registered folder no longer exists and names space forget`,
+      refusedWith(elsewhere, "TARGET_UNAVAILABLE", `mesh "lg01" is registered for ${gone}, which no longer exists`, `if that folder was moved or renamed, move it back to ${gone} and run the command again; otherwise forget the space with \`cotal space forget lg01\``), shown(elsewhere));
+  }
   run(["use", "sel07"], legacyAuth);
   const movedSelected = run(["ps", "--json"], legacyAuth);
   const movedEntry = run([], legacyAuth), movedStatusText = run(["status"], legacyAuth), movedStatusSelected = run(["status", "--json"], legacyAuth);

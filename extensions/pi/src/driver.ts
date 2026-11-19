@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { boundedValue, oneLine } from "@cotal-ai/core";
 import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
-import { formatInjection } from "@cotal-ai/connector-core";
+import { fmtChannel, fmtFrom, formatInjection } from "@cotal-ai/connector-core";
 import { InboxTurn } from "./inbox-turn.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
@@ -11,8 +12,11 @@ const DEFAULT_START_TIMEOUT_MS = 5_000;
 // only exit was a turn nothing in the process could start).
 const CONTINUATION_ATTEMPT_LIMIT = 2;
 const CONTINUATION_BACKOFF_MS = 50;
+// The most characters of Pi's error a held reason repeats, so a provider's long error body does not
+// fill the presence line.
+const ERROR_EXCERPT_LIMIT = 300;
 
-export type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
+type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
 
 export interface CotalBatchDetails {
   version: 1;
@@ -81,6 +85,8 @@ export class PiDriver {
   private nudges: string[] = [];
   private presence = Promise.resolve();
   private activeSignal?: AbortSignal;
+  /** Pi is running a turn: set at its agent start, cleared at its agent end. */
+  private running = false;
   private pendingContinuation = false;
   private overflowRetry = false;
   private continuationAttempts = 0;
@@ -113,6 +119,7 @@ export class PiDriver {
 
   onSessionStart(context: PiContextLike): void {
     this.context = context;
+    this.running = false;
     if (this._state === "shuttingDown") {
       context.shutdown();
       return;
@@ -134,10 +141,10 @@ export class PiDriver {
 
   onMentionWake(item: InboxItem): void {
     if (this._state === "shuttingDown") return;
-    const name = item.fromName.trim() ? item.fromName : item.fromId;
-    const who = item.fromRole ? `${name}/${item.fromRole}` : name;
+    // The sender and channel go through the shared frame helpers: a peer writes its own name and
+    // role, and a line break in either must not start a second line in the connector's voice.
     this.nudges.push(
-      `Cotal: you were @mentioned on #${item.channel} by ${who} while focused. ` +
+      `Cotal: you were @mentioned on #${fmtChannel(item.channel)} by ${fmtFrom(item)} while focused. ` +
         "The body is held; read it with cotal_inbox and reply with cotal_send if warranted.",
     );
     if (this.nudges.length > BATCH_LIMIT) this.nudges.splice(0, this.nudges.length - BATCH_LIMIT);
@@ -151,6 +158,7 @@ export class PiDriver {
       return;
     }
     this.activeSignal = context.signal;
+    this.running = true;
     this.overflowRetry = false;
     if (this.pendingContinuation) {
       this.pendingContinuation = false;
@@ -217,14 +225,20 @@ export class PiDriver {
 
   onToolStart(name: string): void {
     if (this._state === "shuttingDown") return;
-    // A transport without after_provider_response confirms nothing before agent end, but Pi runs a
-    // tool only from a clean answer to the request that carried these batches. Their run turns are
-    // seen, and cotal_yield is itself a tool, so it must find them surfaced.
+    // A transport without after_provider_response confirms nothing in onProviderResponse, but Pi runs a
+    // tool only from a clean answer to the request that carried these batches. That answer accepts
+    // them as a 2xx would, so they are confirmed here and the next batch can steer in before the run
+    // ends; left unconfirmed, every later message waited for the whole run. Confirming surfaces their
+    // run turns, and cotal_yield is itself a tool, so it must find them surfaced.
     for (const id of this.requestBatchIds) {
-      const turnIds = this.batches.find((candidate) => candidate.id === id)?.turnIds;
-      if (turnIds) this.mesh.commitSurfacedTurns(turnIds);
+      const batch = this.batches.find((candidate) => candidate.id === id);
+      if (batch && !batch.confirmed) this.confirm(batch);
     }
     this.enqueuePresence("working", `running ${name || "tool"}`);
+    if (this._state !== "held") {
+      this._state = "streaming";
+      this.pump();
+    }
   }
 
   onToolEnd(): void {
@@ -234,10 +248,11 @@ export class PiDriver {
 
   onAgentEnd(messages: readonly unknown[], context: PiContextLike): void {
     if (this._state === "shuttingDown") return;
+    this.running = false;
     const lastAssistant = [...messages]
       .reverse()
       .find((message) => message && typeof message === "object" && (message as { role?: unknown }).role === "assistant") as
-      | { stopReason?: string; usage?: { output?: number } }
+      | { stopReason?: string; errorMessage?: unknown; usage?: { output?: number } }
       | undefined;
     const aborted = this.activeSignal?.aborted === true;
     this.activeSignal = undefined;
@@ -263,7 +278,14 @@ export class PiDriver {
         this.hold("Pi turn was aborted; Cotal delivery is retained until a proven clean continuation completes");
         return;
       }
-      const reasonLabel = `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}`;
+      // Pi's own error names the cause, such as a missing model provider, so the held reason carries
+      // it: without it the presence line said only "ended with error" and pointed at a retry that
+      // could not help.
+      const error =
+        typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
+      const reasonLabel =
+        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` +
+        (error ? ` (${oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT))})` : "");
       if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {
         this.continuationAttempts++;
         this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);
@@ -391,7 +413,10 @@ export class PiDriver {
         },
         { triggerTurn: true, deliverAs: "steer" },
       );
-      if (!batch.started) {
+      // Only a dispatch that must start a turn is watched. A steer into a running turn starts at Pi's
+      // next turn boundary, after whatever tool is running, and holding it at the deadline blocked
+      // delivery for the rest of the run; one Pi never takes is caught when the run ends (finalizeEnd).
+      if (!batch.started && !this.running) {
         batch.watchdog = setTimeout(() => {
           if (!batch.started) this.hold(`Pi did not start dispatched Cotal batch ${batch.id}`);
         }, this.startTimeoutMs);

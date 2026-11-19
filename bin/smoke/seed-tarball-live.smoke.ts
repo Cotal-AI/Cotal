@@ -18,9 +18,11 @@
  * Run: pnpm smoke:seed-tarball:live
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
+import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
 
 const REPO = join(import.meta.dirname, "..", "..");
 let pass = 0;
@@ -76,11 +78,11 @@ try {
     header.writeUInt16LE(machine, 18);
     writeFileSync(helper, header);
   }
-  // workspace's prepack refuses without its Windows and macOS identity bindings, which only the native
-  // builder jobs produce and a Linux install never loads, so it packs without that check.
+  // workspace and seat require foreign-platform bindings for publication. This host-only smoke
+  // loads neither those bindings nor the simulated non-host seat headers, so skip their release checks.
   for (const d of dirs) {
     const root = d === "packages/seat" ? seatClone : join(REPO, d);
-    const skipPrepack = d === "packages/workspace" ? ["--config.ignore-scripts=true"] : [];
+    const skipPrepack = ["packages/workspace", "packages/seat"].includes(d) ? ["--config.ignore-scripts=true"] : [];
     execFileSync("pnpm", ["-C", root, "pack", ...skipPrepack, "--pack-destination", tgz], { stdio: ["ignore", "ignore", "inherit"] });
   }
   const tarballs = readdirSync(tgz).filter((f) => f.endsWith(".tgz"));
@@ -177,16 +179,28 @@ try {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
   // A read no longer seeds, so seed explicitly; the listing after it is a read.
-  const seed = spawnSync("node", [invokedBin, "ext", "seed"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const home = join(base, "home");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(join(prefix, ".cotal"));
+  const npmrc = join(home, ".npmrc");
+  writeFileSync(npmrc, "omit=optional\n");
+  const seedEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, npm_config_userconfig: npmrc };
+  const seed = spawnSync("node", [invokedBin, "ext", "seed"], { cwd: prefix, encoding: "utf8", env: seedEnv });
   check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
-  const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
+  const list = spawnSync("node", [invokedBin, "ext", "list"], { cwd: prefix, encoding: "utf8", env: seedEnv });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
   check("seeded service-preset:web (the dashboard) from the bundled payload", out.includes("service-preset:web"), list.stderr);
 
-  const manifest = JSON.parse(readFileSync(join(cfg, "cotal", "extensions", "extensions.json"), "utf8")) as {
+  const installKey = createHash("sha256").update(packageBin).digest("hex");
+  const selectionPath = join(cfg, "cotal", "installs", installKey, "sets", umbrellaVersion, "selection.json");
+  const connectorRoot = existsSync(selectionPath)
+    ? (JSON.parse(readFileSync(selectionPath, "utf8")) as { root: string }).root : join(cfg, "cotal");
+  const extensionPrefix = join(connectorRoot, "extensions");
+  const manifest = JSON.parse(readFileSync(join(extensionPrefix, "extensions.json"), "utf8")) as {
     extensions: { pkg: string; spec: string; source?: string }[];
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
@@ -202,7 +216,7 @@ try {
   // PACKAGED — a build that emits only declarations for it passes install + import + materialize but
   // fails at LAUNCH with MODULE_NOT_FOUND. Assert those buildLaunch targets exist in the installed
   // payload (a self-contained esbuild bundle each), so a dropped shim can never ship again.
-  const extRoot = join(cfg, "cotal", "extensions", "node_modules");
+  const extRoot = join(extensionPrefix, "node_modules");
   const launchShims: Record<string, string> = {
     "@cotal-ai/connector-opencode": "dist/serve.js",
     "@cotal-ai/connector-codex": "dist/host.js",
@@ -241,10 +255,19 @@ try {
 
   // `cotal update` keeps a seeded built-in only when its store and installed copies are byte-equal to
   // the shipped payload, which for a restored file is the shared copy. A tampered copy is reinstalled.
-  const updateEnv = { ...process.env, HOME: join(base, "home"), XDG_CONFIG_HOME: cfg };
+  const lock = JSON.parse(readFileSync(join(extensionPrefix, "package-lock.json"), "utf8")) as {
+    packages: Record<string, { optional?: boolean; os?: string[]; cpu?: string[]; libc?: string[] }>;
+  };
+  const native = Object.entries(lock.packages).find(([key, entry]) =>
+    key.includes("/@1jehuang/jcode-") && entry.optional && !platformExcludesHost(entry));
+  if (!native) throw new Error("the SDK lock records no native package for this host");
+  const nativeManifest = join(extensionPrefix, native[0], "package.json");
+  check("first seed includes the host native dependency despite omit=optional", existsSync(nativeManifest));
+  const updateEnv = seedEnv;
   mkdirSync(updateEnv.HOME, { recursive: true });
   const update = () => {
     const run = spawnSync("node", [invokedBin, "update"], { cwd: prefix, encoding: "utf8", env: updateEnv });
+    check("plain update exits successfully", run.status === 0, run.stderr);
     return `${run.stdout ?? ""}${run.stderr ?? ""}`;
   };
   const reconciled = (out: string) => out.split("\n").find((line) => line.includes("connectors reconciled")) ?? "";
@@ -254,6 +277,16 @@ try {
     Object.keys(seededPkgs).every((name) => new RegExp(`verified [^;]*\\b${name}\\b`).test(kept)) && !kept.includes("refreshed"),
     kept,
   );
+  // Real npm creates the reported existing installation while leaving its lock intact.
+  const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
+    cwd: extensionPrefix, env: updateEnv, encoding: "utf8",
+  });
+  check("real npm with omit=optional creates the missing-native state", omitted.status === 0 && !existsSync(nativeManifest), omitted.stderr);
+  const optionalRepair = update();
+  check("plain update repairs an omitted host native dependency", existsSync(nativeManifest), optionalRepair);
+  const repeated = update();
+  check("repeat plain update does not reinstall any built-in", !/reinstalling every built-in|Reconciling built-in/.test(repeated), repeated);
+  check("update leaves the operator's omit configuration unchanged", readFileSync(npmrc, "utf8") === "omit=optional\n");
   const tamperedRel = placements.claude?.[0] ?? "";
   writeFileSync(installedAt("claude", tamperedRel), Buffer.concat([sharedCopy(tamperedRel), Buffer.from([0])]));
   const repairOut = update();

@@ -11,11 +11,22 @@ Manager `inspect` keeps its successful response as the live managed-agent row. A
 not read durable lifecycle state, so a temporary records-store failure cannot break inspection of
 an agent the manager currently holds.
 
-For static and open callers, the connector's named `inspect` calls, including the post-spawn
-model audit, resolve the seat through live presence first. Managed connectors publish their
-holding manager in `card.meta["ai.cotal.manager.instance"]`. The caller addresses that instance,
-using only its existing credential. A class-only credential receives `permission-denied` on
-the instance rail. No caller retries the class queue to obtain a different answer.
+The connector's named `inspect` calls, including the post-spawn model audit, resolve the seat
+through live presence first. On user-auth spaces, that lookup is scoped to the caller's owner.
+Managed connectors publish their holding manager in `card.meta["ai.cotal.manager.instance"]`.
+Static and open callers address that instance using only their existing credential. User-auth
+callers request a manager-call bearer for that instance. A class-only credential receives
+`permission-denied` on the instance rail, and a refused manager-call exchange remains
+`permission-denied`. No caller retries the class queue to obtain a different answer.
+Managed static seats with `spawn`, `run` or `admin` also receive instance-only `describe` and
+`inspect` grants for their holding manager. This permits same-manager named inspection,
+model-pin audits and named despawn without reads on sibling managers or instance writes.
+These additional reads are included only when the spawner's issued ceiling permits both; a bounded
+spawner without them can still launch a helper within its existing grant, without the extra reads.
+Explicit persona endpoint requests are still checked against that ceiling before admission.
+Helpers spawned by a workflow receive no additional instance reads beyond their recorded ceiling.
+Renewal preserves each seat's original issued scope. Existing seats need to be respawned to receive
+the new grants. Role-only seats receive neither row.
 An unanswered owner produces `TARGET_UNAVAILABLE` naming the instance. An absent live name is
 `not-found`. A seat that reports no manager refuses owner resolution. Presence is a routing hint,
 not a grant, and an inspect response for a different lifecycle is rejected.
@@ -34,8 +45,8 @@ expiry alone remains recoverable.
 An explicit class-only caller file cannot make a named read and is refused without substituting an operator credential.
 `inspect` is the manager's only read keyed by a running seat name. Persona, workflow, goal and
 durable-slot reads keep their own manager-local scopes. An explicit instance still selects only
-that manager, which never relays or returns another manager's live row. Generic user-auth
-invocation retains its existing credential path.
+that manager, which never relays or returns another manager's live row. Other user-auth
+invocations retain their existing credential path.
 
 On a live miss, a static manager point-reads its durable slot row. A name with no slot, or a slot
 whose phase is `retired`, remains `not-found`. A nonterminal slot returns

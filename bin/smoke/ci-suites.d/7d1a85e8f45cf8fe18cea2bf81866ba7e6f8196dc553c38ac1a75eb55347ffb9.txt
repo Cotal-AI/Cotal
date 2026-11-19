@@ -1,0 +1,3 @@
+# An authenticated seat whose DM durable is gone names the durable and the restart or respawn
+# route on reconnect and in its status; an open seat recreates the durable (#7007).
+smoke:reconnect-missing-inbox:auth

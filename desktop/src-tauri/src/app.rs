@@ -341,7 +341,7 @@ pub fn run() {
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
-            app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
+            app.manage(native_presence::load(app.handle())?);
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;

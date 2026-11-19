@@ -9,9 +9,45 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 Upgrade an existing installation without recreating its space identity or losing its trust material.
 Use the [upgrade history](UPGRADING.md) for the migration instructions that apply to your source and target releases.
+When `cotal up` starts its own local broker for a stopped space, it converts an older File-backed derived membership feed to Memory before starting services and reports the conversion; durable channel membership and message history are kept.
 A computer that has never had `~/.config/cotal` needs one manual `npm install -g cotal-ai@latest` to receive the missing-config updater fix.
 
+If the registry lists a new release before its archives are available, `cotal update --self`
+shows its progress and waits up to ten minutes. If the archives are still unavailable, it keeps
+the installed version and exits successfully. Invalid release metadata, failed integrity checks
+and other installation errors still refuse the update.
+
+On an installed POSIX CLI, reconciling the installed release can keep a standalone Manager
+and its seats running. The command reads the inventory it can authenticate before selecting a separate
+connector and seed prefix for this installation and release. The earlier prefix stays in place
+for the processes that already loaded it. This does not restore files a prior manual npm install
+already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
+Later releases inherit the selected prefix, including when its publication was interrupted.
+A recorded extension npm child must finish before its source prefix can be copied.
+After a successful update selects the complete new prefix, unused earlier release sets are removed on a best-effort basis.
+A successful update authenticates every recorded local Manager and the daemon before collecting sets, and keeps each release they still use.
+An unreadable inventory or a holder without a known release keeps all sets. Removal failure does not fail the update.
+Each newly created set records its launched seats in private holder files. A seat keeps its set after its Manager exits until its recorded child identity is proved gone or its Manager observes its exit. A holder without a child identity, an unreadable holder, or a set created before holder support keeps the set. No process-list search is used to infer a seat's release.
+To remove an older unmarked set manually, first stop all local Managers, the daemon and their surviving seats, then delete only that release directory under the installation's `cotal/installs/<installation-key>/sets/` directory in your configuration home. Do not delete the selected release or remove holder files to force collection while seats may still be running.
+The original shared seed and extension folders remain for legacy processes.
+The first installed reconciliation also selects a separate prefix. A Manager started from another
+copy keeps launching with its original connector generation until it is restarted.
+
 ## Execution generations
+
+After bare npm replacement, read commands use the validated previous retained connector inventory until reconciliation selects the running release's own set. Version reports pending reconciliation, and stale installed runtimes keep their version-skew remedy. These reads do not copy a set, publish selection records or recover a pending promotion in the previous set. Reconciliation still creates a separate current-release copy before changing connectors.
+
+Automatic connector reconciliation launches seed children through the same logical installed entry as their parent. A retained package's physical entry does not select a second connector prefix. Other subprocesses keep their existing generation behavior.
+
+`pnpm smoke:retained-reads:live <A-pack> <B-pack> <C-pack> <new-private-root>` checks an install of A, a self-update to B and bare npm replacement with C. The three normal guarded closure packs must share a source revision. It verifies read-only inventory visibility, pending reconciliation, stale runtime refusal and a separate C selection after explicit reconciliation. Append `pending-promotion` to interrupt B's extension publication and check that C's reads leave that pending state untouched, without reconciling it.
+
+`pnpm smoke:seed-child:live <source-pack> <target-pack> <new-private-root>` exercises a real self-update and the other home's first plain `up`. It requires two normal guarded closure packs from one source revision and verifies the retained bootstrap, one logical target selection and all seven connector versions.
+
+Homes sharing one CLI installation keep separate built-in connector inventories.
+After another home updates the CLI, the next command that needs built-ins reconciles this home.
+Version and help remain read-only. A home-only version mismatch names `cotal update`, without `--self`.
+Automatic reconciliation leaves a canonical graph used by an older local Manager unchanged and prints that its connectors stay at their version until that Manager is restarted. The ordinary command continues. If the Manager cannot confirm its generation, automatic reconciliation also keeps the graph and continues. Explicit `cotal ext seed` and `cotal update` retain their reconciliation refusals. A validated separate connector selection can reconcile while the older Manager keeps its original graph.
+An active update holds reconciliation until its transaction finishes. Source checkouts do not seed installed homes.
 
 The `cotal` entry reads a versioned execution descriptor from its sibling retained-generation store.
 The descriptor name is bound to the logical package root. Its package name, original installed
@@ -21,6 +57,8 @@ reinstalling a cached pnpm package does not reactivate an earlier selection.
 Up to four validated artifact bindings support a later bootstrap transition.
 A missing or differently bound descriptor runs the installed tree in place and writes nothing.
 An invalid matching descriptor refuses with reinstall guidance rather than selecting another generation.
+The daemon's idle replacement poll reads execution metadata without scanning retained package contents.
+Starting a command, verifying a replacement and admitting a hosted Manager still verify the complete retained inventory.
 A running command reports the release of its loaded implementation, even if the canonical
 package manifest changes while it runs. Embedded CLI API callers report their entry package's
 version and provenance. A Node wrapper that imports the bootstrap calls its
@@ -29,16 +67,44 @@ does not start a command.
 
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
-It runs installed read-only checks and the target's declared pre-install checks first.
-Linux also reads the install-wide process census. macOS reads the daemon's hosted Managers,
-the selected target and registered spaces without invoking the Linux-only census.
-A refused check leaves the installed package and connector state unchanged.
+The verified target's declared read-only admission decides Manager, discovery, auth and continuity policy.
+The installed transaction checks archive integrity, entry confinement, its install binding and the native
+daemon's authenticated process lifetime. An unreadable identity or a target refusal leaves the installed
+package and connector state unchanged. Offline auth or unknown Manager work defers activation without
+pretending the work count is zero. The software update can finish while loaded processes keep their code.
+The target identifies any agents that need stop consent before an owned daemon restart.
 The initial admission verifies the daemon lifetime from those checks. Rollback after a daemon
 restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
-A successful manual update waits for the target daemon generation, not its updater's loaded version.
+The updater pins recorded local Managers on Linux, macOS and Windows and continues with a mesh-naming notice if no local instance can be identified and the exchange refuses because several Managers are live.
+From 0.167.0, an update names and leaves untouched a Manager from an unregistered home, or one this home has no credentials to read, keeping its loaded version until it is restarted from its own home; on 0.166.3 or earlier, wait for or stop the other home's Manager from its own home, then run the same update.
+A successful manual update waits for an authorized target daemon generation, not its updater's loaded version.
+Deferred activation names what still needs a restart and leaves that daemon and its Managers running.
+When no daemon is running, activation is not deferred. The update starts the recorded service, or reports that it is disabled or belongs to another installation.
+A Manager outside the machine daemon keeps the version it loaded. If the update cannot read one, it prints the reason and continues.
+Releases before 0.167.1 still use their own checks on the first hop. Downloading a newer target cannot repair those installed checks, including the missing-config
+refusal in 0.159.1 through 0.160.7 and the Manager-selection refusal before 0.163.1.
+For an npm installation, install once with `npm install -g cotal-ai@latest`, then run `cotal update`.
+For a shell installation, rerun its installer as described under [Reconcile the installation](#reconcile-the-installation).
+If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
 An unwritable installation refuses before staging and names the owning install command.
+If this first check refuses, `cotal update --self` exits 2 and reports that the installation
+cannot update itself from this account and no changes were made. The original reason and owning
+command remain in the refusal. A failure after update work begins can still have an unknown outcome.
+When the daemon's automatic update on Linux meets this refusal, it records the same sentence once,
+does not count a failed attempt and schedules no retry. After the installation changes, a successful
+`cotal update` records a new result and automatic updates resume.
+Update attempts, successful publications and daemon startup retire abandoned staging and completed
+transactions under the update lock. All execution generations remain, including earlier generations
+that loaded processes may still use. Another account's store is untouched; a cleanup warning does not fail the update.
+Normal command startup does not collect old update data.
+When the installation supplies connector-version sets, the same locked cleanup keeps its current
+and previous sets and every recorded live or unknown version. An unknown holder without a version
+keeps all sets. The caller classifies the existing process-lifetime records; cleanup does not infer
+that a running Manager has changed versions.
+An older transaction without a completion marker stays with a warning until a later successful
+publication explicitly supersedes its validated history for the same installation.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
 
 Publication changes only the canonical bootstrap. A protected descriptor in the retained store
@@ -51,12 +117,15 @@ After a staged update, npm's listing can be behind; `cotal --version` is the ver
 Native ownership checks retain the bootstrap's validated logical installation identity when they
 run in a worker, so a restarted retained daemon still matches its recorded native launch source.
 A standalone Manager can keep its
-loaded generation without stopping seats. New launches still enforce extension generation
-compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
+loaded generation without stopping seats, including when the machine daemon is running.
+Plain `cotal update` retains that generation while reconciling the installed connectors.
+New launches still enforce extension generation
+compatibility. On Linux, an already-current installed package closure reports the same retained
+standalone Manager generation without asking you to stop it.
+Restarting the machine daemon still requires its existing hosted-seat admission
 and consent checks.
 
-Current and previous execution generations are retained. Older generations remain when their
-holders cannot be proved absent. The update that first installs this support still runs the
+All execution generations are retained. The update that first installs this support still runs the
 older updater. The desktop app's bundled runtime updates through its signed platform installer
 and refuses staged execution retention. Windows keeps its existing in-place update route and
 does not use retained publication.
@@ -129,6 +198,9 @@ The service checks its hosted agent count before setup checks for other programs
 installation. Its hosted launch fence stays held until shutdown, so another hosted agent cannot
 start between that check and the stop. Independently launched processes are only observed,
 not fenced against later launches.
+Setup matches each service reply to its request. If preparation times out, a late preparation
+reply cannot acknowledge recovery. Malformed or unknown replies refuse the connection, and
+an abort without its own reply remains unconfirmed.
 
 Setup disables the owned scheduled task during replacement. A service that was running is
 started from the new files and checked for readiness. An installed, stopped service stays
@@ -185,6 +257,8 @@ curl -fsSL https://get.cotal.ai | sh -s -- --no-setup --no-modify-path
 
 Then run `cotal version` and `cotal status` using the installer's launcher at `~/.local/bin/cotal`.
 
+On Linux 0.160.x, an unattended update interrupted by the service restart can restore the previous release and its connectors. After two failed attempts at the same release, `cotal daemon status` reports that it is waiting for a newer version or a manual update. Run `npm install -g cotal-ai@latest`, then `cotal update --self` using that installation's launcher. The current updater reconciles the connectors and waits for the daemon. Check `cotal daemon status` for the current version and automatic updates on. Do not uninstall the daemon or remove its configuration and credentials.
+
 From the prepared project folder, run the target version's command:
 
 ```bash
@@ -192,6 +266,9 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
+installation records. It creates no Claude directories or lock files, including in a read-only
+configuration directory. Unreadable or damaged installation records still refuse the update.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check
@@ -201,6 +278,11 @@ On Linux, a supervisor in another user's installation or an isolated container d
 custody. A supervisor that resolves to this installation still counts, including one launched
 through sudo. If attribution remains uncertain, update refuses with the process ID, numeric user
 ID and stop command before contacting an unselected remote Manager.
+From 0.167.1, an update run inside another account's controller project leaves that project's
+records and processes untouched and reports that continuity was not checked. It does not borrow
+the account's credentials or reconcile its configuration. Explicit space, server, credential and
+Manager selections keep their normal checks. Run `cotal update` as the normal account afterwards
+to reconcile that account's connectors and extensions.
 On 0.164.6 and older, an unrelated container or another user's Manager can instead produce
 `a manager for this mesh runs on this machine; reading its custody`, followed by
 `running manager continuity check` and a refused manager-caller exchange. That old updater
@@ -279,7 +361,7 @@ and macOS, when the recorded owned user service is stopped before a manual `cota
 the updater starts the unchanged owned unit or LaunchAgent only when it is enabled and waits for the
 daemon to answer. On all three platforms, if the recorded stopped service belongs to another
 installation, such as the desktop app's bundled runtime, the updater leaves it stopped, does not wait
-for the new CLI version on that socket, and reports `the background service belongs to another Cotal installation (<path>). This update left it stopped.` On Linux, the updater starts
+for the new CLI version on that socket, and reports `the background service belongs to another Cotal installation (<path>). This update left it stopped.` A current updater prints this fact once across its reconcile child and parent. A reconcile child started by an older updater keeps the fact unless that parent explicitly says it will report after the child. On Linux, the updater starts
 a stopped unit only when `systemctl --user show` reports `UnitFileState=enabled`; any other state is
 left stopped and reported as `service is <state>; not started`. On macOS, the updater reads
 `launchctl print-disabled gui/<uid>`, requiring every entry in the `disabled services = { ... }` block
@@ -291,14 +373,25 @@ covers service startup and the target daemon's authenticated status, and the par
 the daemon to answer at the target version before completing the update rather than accepting a zero
 exit code from the reconciliation child alone. Protection starts with the first release that carries
 each recovery step, and the transition into that release is guarded by the candidate-to-next upgrade
-matrix cells. A target daemon that hangs during startup without exiting is bounded only by the live
-readiness observer; startup hangs after observer death are tracked in
-[#6881](https://github.com/Cotal-AI/Cotal/issues/6881), and desktop application bundle updates are
-tracked in [#6880](https://github.com/Cotal-AI/Cotal/issues/6880).
+matrix cells. Newly installed Linux daemon units use `Type=notify` and `TimeoutStartSec=60`.
+The daemon sends readiness only after its local control listener is ready. If startup hangs,
+systemd terminates it and restarts the unit even when the updater's readiness observer has died.
+Existing units retain their installed policy until reinstalled. This does not prove that a mesh
+connection or hosted Manager is ready. On macOS, launchd has no startup readiness timeout, and
+Windows Task Scheduler's `ExecutionTimeLimit` bounds the whole process lifetime rather than startup.
+On those platforms a non-exiting startup hang remains unbounded after the live observer dies.
+No bootstrap timer substitutes for that missing native bound. Desktop application bundle updates
+are tracked in [#6880](https://github.com/Cotal-AI/Cotal/issues/6880).
 Published Windows updater records without a start token are accepted only when the active lock's
 process ID and nonce match, and the retained process predates both the recovery record and lock
 file. New Windows updater records carry the native process creation token. Unreadable evidence
 keeps the existing guarded recovery path.
+
+A daemon carrying the dead-updater recovery releases only the preserving holds whose authenticated updater process has ended. A live updater, an unreadable process lifetime or another owner's hold keeps the Manager fenced. The daemon reports each released hold, and the same `cotal update --self` can then continue without an abort or repair command.
+
+Pre-install checks can observe a seatless preserving Manager for up to five seconds while its daemon releases a dead updater's hold. The check requires complete fenced-zero evidence and keeps the daemon and Manager process lifetimes and instance pinned. It reads the existing update-closure owner record and refuses a live foreign or unknown owner. It never releases a hold, restarts a service or changes the record. A refusal reports the recorded closure age, observed seat count or unknown, and `cotal update --self` as the retry command.
+
+This protection does not change an already installed older daemon. The 0.165.1 updater checks its own Manager admission before invoking the target's pre-install hook, so installing a target with this fix cannot clear that earlier refusal. A service whose recorded program is missing needs its old daemon stopped before retrying the update. A stopped service belonging to another installation stays stopped. Preserve its sign-in and hosting records.
 
 On macOS, the daemon bootstraps a separate one-shot launchd job in the signed-in user's GUI
 domain before installation. The job runs the same guarded updater and is not kept alive after
@@ -343,10 +436,17 @@ PIDs. The daemon remains in its service. Restart decisions stay with the existin
 The custody inspector accepts group-writable owned paths only for the caller's primary group
 when bounded local account records show no other member or account using that group. Unknown
 or external account sources are refused. This inspector does not examine extended ACLs.
-This preserves updater availability during a service stop, but does not add startup verification
-or rollback guarantees. If migration is refused, the package has already been replaced and
+From 0.167.1, the scoped Linux updater restarts the recorded service after reconciliation,
+waits for the target daemon and restores the previous generation if activation fails.
+If migration is refused, the package has already been replaced and
 reconciliation has not started. The parent may retry or restore its previous package. Keep the
 reported failure and inspect the installed version and daemon state before retrying.
+
+From 0.167.1 on Linux, `cotal update --self` can retain an ambiguous global update-child marker
+when its owner is dead. Repair holds the global update lock, prepares empty hosted admission,
+stops only the owned service and requires the account's other application processes to exit.
+A live writer or unreadable process evidence leaves the marker unchanged. The enabled owned
+service is started again after the attempt. Close the process named by a refusal and retry.
 
 ## Update a standalone stack
 

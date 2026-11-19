@@ -13,7 +13,7 @@ const empty = document.getElementById("empty");
 const meta = document.getElementById("meta");
 const panes = new Map(); // name -> { el, term, fit, session, status }
 
-// The console token, taken once from this page's own URL and kept only in memory. Deliberately not
+// The console token, taken from the launch URL or this tab's history state. Deliberately not
 // stored in a cookie: cookies are host-scoped and not port-scoped, so a cookie set here would be
 // sent to every other HTTP service on this host, and two managers on one host would clobber each
 // other's. The manager serves the static shell openly and requires this on every route that carries
@@ -24,7 +24,18 @@ const panes = new Map(); // name -> { el, term, fit, session, status }
 const TOKEN =
   new URLSearchParams(location.hash.replace(/^#/, "")).get("t") ??
   new URLSearchParams(location.search).get("t") ??
+  history.state?.cotalConsoleToken ??
   "";
+if (TOKEN) {
+  const address = new URL(location.href);
+  address.searchParams.delete("t");
+  const fragment = new URLSearchParams(address.hash.slice(1));
+  if (fragment.has("t")) {
+    fragment.delete("t");
+    address.hash = fragment.toString();
+  }
+  history.replaceState({ cotalConsoleToken: TOKEN }, "", address);
+}
 const withToken = (path) => `${path}${path.includes("?") ? "&" : "?"}t=${encodeURIComponent(TOKEN)}`;
 
 function layout() {

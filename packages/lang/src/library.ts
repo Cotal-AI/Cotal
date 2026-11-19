@@ -245,13 +245,19 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
       const f = asCallable(a[0], "filter");
       const out: unknown[] = [];
       const len = xs.length;
-      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) out.push(xs[i]);
+      for (let i = 0; i < len; i += 1) {
+        const item = xs[i];
+        if (await f(frame, [item, i, xs])) out.push(item);
+      }
       return born(out, frame.depth);
     },
     find: async (frame, xs, a) => {
       const f = asCallable(a[0], "find");
       const len = xs.length;
-      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      for (let i = 0; i < len; i += 1) {
+        const item = xs[i];
+        if (await f(frame, [item, i, xs])) return item;
+      }
       return undefined;
     },
     findIndex: async (frame, xs, a) => {
@@ -262,7 +268,10 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
     },
     findLast: async (frame, xs, a) => {
       const f = asCallable(a[0], "findLast");
-      for (let i = xs.length - 1; i >= 0; i -= 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      for (let i = xs.length - 1; i >= 0; i -= 1) {
+        const item = xs[i];
+        if (await f(frame, [item, i, xs])) return item;
+      }
       return undefined;
     },
     findLastIndex: async (frame, xs, a) => {
@@ -488,11 +497,16 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
         `len counts the elements of an array or the units of a string, and ${kindOf(v)} has no length in this language: the only length a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value. For a record's size, use \`len(keys(r))\`.`,
       );
     }, { any: [0] })],
+    // The free array walks spell the methods (§5.2), so each captures the length BEFORE the first
+    // call, as the method does and as JavaScript does: an element the callback appends is not visited
+    // (measured before the fix: a `push` inside the callback grew all five walks, and a callback that
+    // appended every round failed the run on the L4013 step bound).
     [
       "map",
       higher("map", async (frame, list, f) => {
         const out: unknown[] = [];
-        for (let i = 0; i < list.length; i += 1) out.push(await f(frame, [list[i], i]));
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) out.push(await f(frame, [list[i], i]));
         return born(out, frame.depth);
       }),
     ],
@@ -500,28 +514,38 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       "filter",
       higher("filter", async (frame, list, f) => {
         const out: unknown[] = [];
-        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) out.push(list[i]);
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) {
+          const item = list[i];
+          if (await f(frame, [item, i])) out.push(item);
+        }
         return born(out, frame.depth);
       }),
     ],
     [
       "find",
       higher("find", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return list[i];
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) {
+          const item = list[i];
+          if (await f(frame, [item, i])) return item;
+        }
         return null;
       }),
     ],
     [
       "some",
       higher("some", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return true;
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) if (await f(frame, [list[i], i])) return true;
         return false;
       }),
     ],
     [
       "every",
       higher("every", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) if (!(await f(frame, [list[i], i]))) return false;
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) if (!(await f(frame, [list[i], i]))) return false;
         return true;
       }),
     ],

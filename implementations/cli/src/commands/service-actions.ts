@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { serviceWebSessionPath, readLocalRecordSource, webBoundUrl } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { lstatSync, readlinkSync } from "node:fs";
 import type { ParsedArgs } from "@cotal-ai/core";
@@ -18,7 +20,7 @@ import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { followServiceJournal, readServiceJournal } from "../lib/service-journal.js";
 import { followServiceLog } from "./service-log-follow.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { serviceConfirmCommand, yesRequired } from "../lib/confirmation-required.js";
 import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, recordedStore, storeRefusedWrite } from "../lib/broker-store-health.js";
 import { brokerStopBlocked } from "../lib/broker-service.js";
 import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -208,7 +210,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   if (mode === "uninstall") {
     if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "native service removal currently needs the supported Linux user manager; no unit or private store was touched", { target });
-    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`cotal svc uninstall ${name} --yes\`, or inspect it with --dry-run` });
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("native uninstall", presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand("uninstall", name, space, values)}\`, or inspect it with --dry-run` });
     if (!values.yes) {
       const answer = await prompts.confirm({ message: `Disable and remove the exact owned unit for ${oneLine(name)} instance ${selected!.name}? The saved definition remains.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -285,7 +287,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       writeResult(presentation, { command: commandName, target, result: { kind: "service-native-operation-preview", operation: mode, dryRun: true, instance: row, native, changed: false }, completeness: "partial", partial: { message: "This exact-unit status read reserves no native state or process identity. A real action rechecks its receipt, source and native invocation before submission." } }, (): Report => ({ sections: [{ title: "Native service operation preview", blocks: [{ kind: "fields", rows: [["Action", mode], ["Definition", name], ["Instance", selected!.name], ["Unit", row.supervisorRecord.unit ?? "not recorded"], ["Unit state", native.activeState ?? native.state], ["Autostart", native.unitFileState ?? "not checked"], ["Process", row.observedProcess]] }, { kind: "lines", lines: ["No native request, process signal or private-store seed ran. This observation does not authorize a later action without fresh checks."] }] }] }));
       return;
     }
-    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
+    if ((mode === "stop" || mode === "restart") && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(`${mode} requires --yes outside an interactive terminal`, { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
     if ((mode === "stop" || mode === "restart") && !values.yes) {
       const answer = await prompts.confirm({ message: `${mode === "stop" ? "Stop" : "Restart"} the exact owned unit ${supervisor.unit} for ${oneLine(name)} instance ${selected!.name}?`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled();
@@ -313,7 +315,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (values["new-instance"] && !adapter.declaration.capabilities.multiInstance || values.foreground && !adapter.declaration.capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
     if (selected && !controlsRecordedAdapter(selected.record.value, adapter)) throw new CommandFailure("refused", "CONFLICT", "the selected instance pins a different adapter declaration or package version; it was not stopped or adopted", { target });
   }
-  const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options) : undefined);
+  const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
   if (values["dry-run"]) {
     const row = selected ? instanceProjection(selected) : null;
@@ -335,7 +337,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`cotal svc ${mode} ${name} --yes\`, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values)}\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }
@@ -392,14 +394,45 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     finally { release?.(); }
   }
   const result = instanceProjection(started.instance);
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp }, (row) => {
+  const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
+  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; use \`cotal service logs web --space ${space}\` for the private session record and open its single-use launchUrl locally.` });
+  if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && !args.values["no-open"]) {
+    try {
+      const value = started.instance.record.value;
+      const path = serviceWebSessionPath({ space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! });
+      const bytes = readLocalRecordSource(path, 16384, true);
+      const session = JSON.parse(bytes!.toString("utf8"));
+      if (session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
+      if (observeServiceProcess(value) !== "running" || !["127.0.0.1", "::1"].includes(session.host)) throw new Error("browser launch requires a live local listener");
+      if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
+      else {
+      const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error("browser handoff refused");
+      const { launchUrl } = await response.json() as { launchUrl: string };
+      const url = new URL(launchUrl);
+      if (url.origin !== new URL(session.launchUrl).origin || url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || !url.searchParams.get("k")) throw new Error("invalid launch URL");
+      const executable = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+      const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
+      await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+      child.unref();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ")) noBrowser();
+      else throw new CommandFailure("partial", "OPERATION_PARTIAL", "the dashboard is running, but its browser session could not be opened", { target: { space, name, instanceId: result.instanceId }, remedy: `use \`cotal service logs web --space ${space}\` for the private session record, or install a browser opener and retry \`cotal service start web\`; --no-open keeps access manual` });
+    }
+  }
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !(mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && !args.values["no-open"]), warnings: browserWarnings }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;
-    // One instance of a definition needs no instance or space on the line that reads it.
+    // One instance of a definition needs no instance or space on the line that reads it. A space named
+    // with --space stays on the stop line and the manager's lines, since a bare one from this folder can
+    // resolve to another (#7346, #7642).
     const only = serviceInstances(space, name).length === 1;
-    const logs = commandName === "manager" ? "cotal manager logs" : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
-    return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: commandName === "manager" ? "cotal manager stop" : `cotal service stop ${row.definition}`, description: "Stop it" }] }] }] };
+    const named = args.values.space ? ` --space ${oneLine(row.space)}` : "";
+    const logs = commandName === "manager" ? `cotal manager logs${named}` : only && !args.values.space ? `cotal service logs ${row.definition}` : `cotal service logs ${row.definition} --space ${oneLine(row.space)} --instance ${row.instanceId}`;
+    const stop = commandName === "manager" ? `cotal manager stop${named}` : `cotal service stop ${row.definition}${named}`;
+    return { sections: [...view.sections, { title: "Next", blocks: [{ kind: "commands", items: [{ command: logs, description: "Read the service's own startup output, including how to reach it when it reports that" }, { command: stop, description: "Stop it" }] }] }] };
   });
   if (values.foreground && started.child && started.exit) {
     let signal: "SIGINT" | "SIGTERM" | undefined;
@@ -430,7 +463,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       if (signal && !started.exit.observed()) { process.exitCode = signal === "SIGINT" ? 130 : 143; return; }
       const exit = started.exit.result(), current = serviceInstanceStore(space).read(started.instance.name);
       // A retained native stop keeps its record: only that stop's own receipt settles it.
-      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", exit, updatedAt: new Date().toISOString() });
+      if (current && current.record.value.process?.pid === started.instance.record.value.process?.pid && current.record.value.process?.token === started.instance.record.value.process?.token && !retainedStopRequest(current.record.value)) serviceInstanceStore(space).commit(current.name, current, { ...current.record.value, state: "stopped", readiness: "not-checked", adapterReadiness: undefined, exit, updatedAt: new Date().toISOString() });
       process.exitCode = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : exit.code === 0 ? 0 : 5;
     } catch (error) {
       if (isCommandFailure(error)) process.stderr.write(`${renderReport(commandFailureReport(error), presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);

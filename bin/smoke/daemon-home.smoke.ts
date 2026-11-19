@@ -195,7 +195,7 @@ const fileState = (p: string) => { const st = lstatSync(p); return { ino: st.ino
 
 // ---------- a loopback fixture for the space's service authority (connect-check reads one GET) ----------
 const ACCOUNT = `A${"B".repeat(55)}`;
-const hits: Array<{ method: string }> = [];
+const hits: Array<{ method: string; url: string }> = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
   if (req.url === "/api/auth/token") {
@@ -204,7 +204,7 @@ const authority = createHttpServer(async (req: IncomingMessage, res: ServerRespo
     res.end(JSON.stringify({ token }));
     return;
   }
-  hits.push({ method: req.method ?? "" });
+  hits.push({ method: req.method ?? "", url: req.url ?? "" });
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ v: 1, kind: "service-endpoint-authority-info", space: "ready", accountPublicKey: ACCOUNT }));
 });
@@ -236,14 +236,14 @@ try {
     const setupHelp = await cli(["setup", "--help"]);
     check("G0 setup permits account-only setup and describes its scoped space flags", setupHelp.status === 0 && setupHelp.out.includes("[--space <s>]") && setupHelp.out.includes("--no-manager and --wait require --space") && !setupHelp.out.includes("the resolved mesh"), setupHelp.out);
     const missingProvider = await cli(["setup", "--json"], 30_000, { ...childEnv, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` });
-    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
+    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use `cotal login --idp <url>`.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
     for (const flags of [["--no-manager"], ["--wait", "0"]]) {
       const scoped = await cli(["setup", ...flags, "--json"]);
       check(`G0 setup ${flags[0]} still requires an explicit space`, scoped.status === 1 && scoped.doc.error?.code === "USAGE_INVALID" && scoped.doc.error.message === "--no-manager and --wait require --space <s>", scoped.doc);
     }
-    check("G0 setup provider options do not claim to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth base URL>") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
+    check("G0 setup provider options describe URLs and discovery names without claiming to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth URL or name>") && setupHelp.out.includes("issuer-authorized discovery hostname") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
     const loginHelp = await cli(["login", "--help"]);
-    check("G0 login usage permits Cloud or another provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login [--cloud | --idp <auth base URL>]"), loginHelp.out);
+    check("G0 login usage permits Cloud or another provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login [--cloud | --idp <auth URL or name>]"), loginHelp.out);
     const statusHelp = await cli(["status", "--help"]);
     check("G0 local status keeps its optional space selector", statusHelp.status === 0 && statusHelp.out.includes("cotal daemon status [--space <s>]"), statusHelp.out);
     for (const mode of ["spaces", "start", "desktop"]) {
@@ -260,8 +260,16 @@ try {
       const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
       check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
     }
-    const invalid = await cli(["login", "--daemon-home", managed, "--idp", "http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "--json"]);
-    check("G2 a rejected provider URL is not recorded as a target or echoed", invalid.status === 1 && invalid.doc.command === "daemon login" && invalid.doc.target === null && !(invalid.out + invalid.err).includes("PRIVATE_MARKER"), { status: invalid.status, command: invalid.doc.command, target: invalid.doc.target });
+    for (const mode of ["login", "setup"]) {
+      for (const idp of ["http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "http://127.0.0.1/api/auth?PRIVATE_MARKER=1", "http://127.0.0.1/api/auth#PRIVATE_MARKER", "http://provider.example/api/auth", "https://"]) {
+        const invalid = await cli([mode, "--daemon-home", managed, "--idp", idp, "--json"]);
+        check(`G2 ${mode} rejects a provider URL without recording or echoing it`, invalid.status === 1 && invalid.doc.outcome === "refused" && invalid.doc.error?.code === "USAGE_INVALID" && invalid.doc.command === `daemon ${mode}` && invalid.doc.target === null && !(invalid.out + invalid.err).includes("PRIVATE_MARKER"), { status: invalid.status, command: invalid.doc.command, target: invalid.doc.target });
+      }
+    }
+    for (const [input, idp] of [["http://127.0.0.1:9/api/auth/", "http://127.0.0.1:9/api/auth"], ["https://cotal.cloud", "https://cotal.cloud/api/auth"], ["https://cloud.cotal.ai/", "https://cloud.cotal.ai/api/auth"]]) {
+      const valid = await cli(["login", "--daemon-home", managed, "--idp", input!, "--json", "--no-browser"]);
+      check("G2 a valid provider retains its normalized target before a missing-daemon refusal", valid.status === 2 && valid.doc.outcome === "refused" && valid.doc.command === "daemon login" && valid.doc.target?.idp === idp, valid.doc);
+    }
     check("G2 failure-context reads create no runtime entries or daemon lock", runtimeEntries().length === 0 && !existsSync(lockFile(managed)));
   });
 
@@ -553,7 +561,10 @@ try {
     check("H2 exactly one identity under D/daemon and still exactly one under $COTAL_HOME/daemon", identities(managed).length === 1 && identities(home).length === 1, { managed: identities(managed), home: identities(home) });
     check("H2 the legacy identity and session are byte-identical (no migration, no rewrite)", identities(home).length === 1 && readFileSync(join(home, "daemon", identities(home)[0]!), "utf8") === legacyIdentity && readFileSync(join(home, "idp-sessions.json"), "utf8") === legacySession);
     check("H2 D/meshes is never created and $COTAL_HOME/meshes is unchanged", !existsSync(join(managed, "meshes")) && JSON.stringify(readdirSync(join(home, "meshes"), { recursive: true }).map(String).sort()) === JSON.stringify(meshesBefore));
-    check("H2 the authority saw GETs only (0 POST)", hits.length >= 1 && hits.every((h) => h.method === "GET"), hits);
+    // A daemon whose home holds a sign-in also sends its account computer heartbeat (PUT
+    // /api/cli/machines/<id>) here on its own schedule; that request is not connect-check's.
+    const authorityHits = hits.filter((h) => !h.url.startsWith("/api/cli/machines/"));
+    check("H2 the authority saw GETs only (0 POST)", authorityHits.length >= 1 && authorityHits.every((h) => h.method === "GET"), hits);
   });
 
   await cell("H3 home validation refuses before any bind or lock", async () => {

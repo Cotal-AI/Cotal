@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+for (const key of Object.keys(process.env)) if (key.startsWith('COTAL_')) delete process.env[key];
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const originalEnv = { ...process.env }, originalCwd = process.cwd();

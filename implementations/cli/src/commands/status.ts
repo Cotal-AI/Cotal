@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, statSync } from "node:fs";
 import { drainAndClose } from "@cotal-ai/core";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +30,7 @@ import {
 } from "@cotal-ai/core";
 import {
   stoppedLoopbackListener,
+  stackRunsUnderOtherHome,
   accountInventory,
   authDir,
   isCommandFailure,
@@ -69,14 +70,15 @@ import {
   localProcessPath,
   localProcessVisible,
   MANAGER_PIDFILE,
+  NATS_PIDFILE,
   oneLine,
+  spaceKey,
   PREFERENCE_KEYS,
-  parsePid,
   plainFlag,
   preflightTarget,
   presentationOf,
   principalFromBearer,
-  probeLiveness,
+  verifyIdentityPin,
   probeWebReadiness,
   readCurrent,
   readMeshRegistry,
@@ -85,6 +87,7 @@ import {
   readPreparedSpaces,
   stackJournalPath,
   readRenewalRecord,
+  recordOperationSpace,
   renderWorkspaceError,
   resolveMeshTarget,
   serverFlag,
@@ -118,7 +121,8 @@ import {
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
-import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
+import { managerHasDeliveryMarker, managerLogPath } from "../lib/manager-proc.js";
+import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
@@ -133,7 +137,7 @@ import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
-import { cliControl, onInstance } from "../lib/control.js";
+import { cliControl, onInstance, onRerun } from "../lib/control.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -176,11 +180,11 @@ export const statusFlags = [
   spaceFlag,
   serverFlag,
   { name: "on", type: "string", value: "<manager-instance>", description: "named agent: inspect one manager instance" },
-  { name: "creds", type: "string", value: "<file>", description: "named agent: use an explicit connection credential" },
+  { name: "creds", type: "string", value: "<file>", description: "explicit credential file (unsupported for status)" },
   { name: "all", type: "boolean", description: "check every recorded mesh, not only the selected one, and report every row in full" },
   { name: "wide", type: "boolean", description: "report every row in full: each known agent application, each extension, and the spaces under their broker addresses" },
   { name: "verbose", short: "v", type: "boolean", description: "include installation paths, local records and detailed diagnostics" },
-  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, or the optional dashboard not installed; 1 absent; 2 present but not serving; 3 probe refused)" },
+  { name: "components", type: "boolean", description: "probe manager, delivery, web, and registered broker component health (exit: 0 serving, an intentionally omitted manager, or the optional dashboard not installed or not started; 1 absent; 2 present but not serving; 3 probe refused)" },
   jsonFlag,
   plainFlag,
 ] as const;
@@ -424,13 +428,22 @@ function displayStatusBroker(server: string, space: string, gaps: Gaps): string 
 
 /** Named-agent and infrastructure inputs choose different reads. */
 export function validateStatusArguments(args: ParsedArgs): void {
+  presentationOf(args.values as FlagValues<typeof statusFlags>);
   if (args.positionals.length > 1 || args.positionals.length && !args.positionals[0]?.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
-  if (args.positionals.length && (args.values.all || args.values.components))
-    throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all or --components");
-  if (typeof args.values.on === "string") onInstance(args.values.on, "cotal status");
-  if (!args.positionals.length && (args.values.on !== undefined || args.values.creds !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--on and --creds select a named agent read, not infrastructure status");
+  if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
+    throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all, --components, --wide or --verbose");
+  if (typeof args.values.on === "string") onInstance(args.values.on, onRerun("cotal status", args.values, args.positionals));
+  if (!args.positionals.length && args.values.on !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--on selects a named agent read, not infrastructure status");
+  if (!args.positionals.length && args.values.creds !== undefined) {
+    const space = typeof args.values.space === "string" && args.values.space.trim() ? args.values.space : undefined;
+    if (space !== undefined) recordOperationSpace(space);
+    throw new CommandFailure("refused", "UNSUPPORTED", "status does not accept --creds: infrastructure status reads local and registered meshes, and named agent status mints its own control caller", {
+      ...(space !== undefined ? { target: { space } } : {}),
+      remedy: "run `cotal status` or `cotal status <agent>` without --creds",
+    });
+  }
 }
 
 /** `cotal status` — detailed, read-only diagnostics for the local machine + selected mesh. */
@@ -473,6 +486,18 @@ export async function status(args: ParsedArgs): Promise<void> {
   const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
   const responder = await readResponderAxis(selected, preflight);
   const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
+  if (selected.ok) {
+    try {
+      const renewal = readRenewalRecord(selected.target.root, selected.target.space);
+      if (renewal?.adoption?.ok === false) {
+        gaps.add("RENEWAL_ADOPTION_REFUSED", "the recorded renewal adoption was refused; a bound delivery responder does not clear that finding", { root: selected.target.root, space: selected.target.space });
+        hints.push("start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding");
+      }
+    } catch (error) {
+      gaps.add("RENEWAL_RECORD_UNREADABLE", (error as Error).message, { root: selected.target.root, space: selected.target.space });
+      if (isCommandFailure(error) && error.remedy) hints.push(error.remedy);
+    }
+  }
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
   const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance);
@@ -524,7 +549,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     },
     (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
   );
-  if (values.components) await printComponentHealth(cwd, values);
+  if (values.components) await printComponentHealth(selected);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -828,7 +853,12 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
       // A daemon killed before it could release shard 0 leaves its ready row, which names this
       // folder's credential, until the bucket TTL removes it. When this folder's delivery pidfile
       // names a process that is gone, that row is the dead daemon's, the same rule `up` waits on.
-      return { state: state === "bound" && holder !== undefined && processRecord(DELIVERY_PIDFILE, { root: target.root, space: target.space }).kind === "dead" ? "stale" : state, leased };
+      const deadLocal = processRecord(DELIVERY_PIDFILE, { root: target.root, space: target.space }).kind === "dead";
+      const journal = readStackJournal(target.root)?.journal;
+      const member = journal?.space === target.space ? journal.members.find((row) => row.role === "delivery") : undefined;
+      const instance = member?.instanceId && serviceInstances(target.space, STACK_DEFINITION.delivery).find((row) => row.name === member.instanceId);
+      const deadInstance = instance && ["gone", "foreign-pid", "previous-boot"].includes(instanceProjection(instance).observedProcess);
+      return { state: state === "bound" && holder !== undefined && (deadLocal || deadInstance) ? "stale" : state, leased };
     } finally {
       await ep.stop().catch(() => {});
     }
@@ -923,6 +953,11 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
       processes.push({ name: component.name, state: "unreadable", pid: null, detail: `pidfile unreadable · ${(e as Error).message}` });
       continue;
     }
+    if (state.liveness === "unknown") {
+      const path = localProcessPath(component.pidFile, context);
+      gaps.add("PIDFILE_UNATTRIBUTABLE", `the ${component.name} pidfile ${path} cannot establish process state: ${state.note ?? "pid liveness unknown"}`, { root, space, process: component.name });
+      hints.push(`inspect ${path} and its process before restoring or removing that pidfile; no stopped state was inferred`);
+    }
     if (component.name === "nats") nats = state;
     // #2073: a live manager pid used to print green `running` on the pidfile alone, which is how
     // a manager whose service rail had died read as healthy for hours. One probe of the service
@@ -947,6 +982,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     // rest of the report still stands.
     if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
       unusable = true;
+      stackJournal = "unreadable";
       gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
       if (error.remedy) hints.push(error.remedy);
     }
@@ -954,7 +990,14 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
-  if (brokerIndex !== -1) processes[brokerIndex] = brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
+  if (brokerIndex !== -1) processes[brokerIndex] = unusable
+    ? { name: "nats", state: "unreadable", pid: null, detail: "stack journal unreadable; no broker stopped state was inferred" }
+    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
+  const managerIndex = !unusable && !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
+    ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
+    : -1;
+  if (managerIndex !== -1 && legacyManagerStopped(root, space))
+    processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
   // why and the way out their refusal names. A refusal of another kind is left to them.
@@ -970,7 +1013,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // A legacy root keeps no journal, so its space registered for another folder says the same.
   let legacyElsewhere = false;
   if (!controllerStack && !elsewhere && !copiedStack) try { legacyElsewhere = recordsElsewhereError(root) !== undefined; } catch { legacyElsewhere = false; }
-  const storedState = !controllerStack && !elsewhere && !copiedStack && !legacyElsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
+  const storedState = !unusable && !controllerStack && !elsewhere && !copiedStack && !legacyElsewhere && nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats"));
   // While a maintenance journal holds the store, clean store refuses, so it is not offered.
   let maintained = false;
   try { maintained = readMaintenanceJournal(root) !== undefined; } catch { maintained = true; }
@@ -1070,6 +1113,8 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
+  if (stackRunsUnderOtherHome(journal.root, journal) && journal.recovery?.home !== homeCotalDir())
+    return { ...row, state: "unknown", pid: null, detail: `stack member records belong to ${journal.recovery?.home ?? "another Cotal home"}` };
   try {
     const instances = serviceInstances(journal.space, STACK_DEFINITION.broker);
     if (instances.length === 0) {
@@ -1150,6 +1195,21 @@ function localManagerInstanceId(root: string, space: string): string | undefined
   } catch {
     return undefined;
   }
+}
+
+/** Whether the legacy stack whose broker pidfile is in `root` started a manager that has since
+ *  exited and removed its pidfile (as SIGTERM does), rather than running with `--no-manager`. */
+function legacyManagerStopped(root: string, space: string): boolean {
+  const id = localManagerInstanceId(root, space);
+  if (id === undefined) return false;
+  let brokerMtime: bigint;
+  try { brokerMtime = statSync(join(root, ".cotal", NATS_PIDFILE), { bigint: true }).mtimeNs; }
+  catch { return false; }
+  for (const path of [managerLogPath(space, root), join(root, ".cotal", `manager-execution.${spaceKey(space)}.${id}.json`)]) {
+    try { if (statSync(path, { bigint: true }).mtimeNs >= brokerMtime) return true; }
+    catch { /* absent or unreadable candidate */ }
+  }
+  return false;
 }
 
 /** User-mode manager status goes through the same control call `cotal spawn` uses. `instanceId`
@@ -1271,7 +1331,7 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
     if (preflight && m.space === chosen?.space && m.server === chosen.server) {
       if (preflight.ok) return "reachable";
       if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
-      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" ? "unreachable" : "reachable";
+      return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported" || preflight.kind === "non-nats-listener" ? "unreachable" : "reachable";
     }
     return brokerCheck(m.server, m.tlsRequired);
   };
@@ -1487,6 +1547,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
     }
+    if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
+      const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
+      hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
+    }
     return { ...base, connection: preflight.kind, ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
   }
   // The mesh-level statement of the same axis (#1576). The folder section says what this machine's
@@ -1616,7 +1680,7 @@ function personaCell(p: PersonaCatalog, dim = false): Cell {
 
 function processCell(p: ProcessRow): Cell {
   const detail = p.detail ? ` · ${p.detail}` : "";
-  if (p.state === "unreadable") return cell(p.detail ?? "pidfile unreadable", "failed");
+  if (p.state === "unreadable" || p.state === "unknown") return cell(p.detail ?? "process state unknown", "failed");
   if (p.state === "not-serving") return cell(`not serving (pid ${p.pid})${detail}`, "failed");
   if (p.state === "running") return cell(`running (pid ${p.pid})${detail}`, /NOT BOUND|unreadable/.test(detail) ? "failed" : "ok");
   return cell(p.pid ? `${p.detail ?? "stopped"} (${p.pid})` : (p.detail ?? "down"), "hint");
@@ -1895,6 +1959,9 @@ function connectionCell(s: Extract<SelectedResult, { resolved: true }>): Cell {
     "broker-stopped": `broker process ${s.brokerPid} is stopped`,
     "tls-trust": "TLS could not be verified",
     "tls-unsupported": "listener does not offer required TLS",
+    "auth-unsupported": "listener does not enforce Cotal authentication",
+    "jetstream-unsupported": "listener does not offer JetStream",
+    "non-nats-listener": "non-NATS listener holds the broker address",
     "stale-auth": "credentials need renewal",
     "auth-required": "authentication required",
     "open-wants-auth": "authentication required",
@@ -2034,6 +2101,8 @@ function selectedOverview(r: StatusResult): Section | undefined {
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
     blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] }, ...stackLines(r.folder));
+  } else if (r.folder.root === s.root && r.folder.stackJournal === "unreadable") {
+    blocks.push({ kind: "lines", lines: [cell("Stack journal unreadable · no stack membership or stopped state was inferred; see Owned services and the journal warning", "failed")] });
   } else if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
     blocks.push({ kind: "lines", lines: [cell("Legacy local process records", "label")] });
     blocks.push({
@@ -2041,7 +2110,7 @@ function selectedOverview(r: StatusResult): Section | undefined {
       columns: [{ key: "name", label: "Service" }, { key: "state", label: "State" }],
       rows: r.folder.processes.map((item) => ({
         name: item.name === "nats" ? "Broker" : item.name === "manager" ? "Manager" : item.name === "delivery" ? "Delivery" : item.name === "web" ? "Web" : item.name,
-        state: item.state === "running" || item.state === "not-serving" || item.state === "unreadable" ? processCell(item) : stateCell(item.pid === null ? "not started" : item.detail ?? "stopped", "hint"),
+        state: item.state !== "stopped" ? processCell(item) : stateCell(item.pid === null && item.detail !== "stopped" ? "not started" : item.detail ?? "stopped", "hint"),
       })),
     });
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
@@ -2090,7 +2159,7 @@ function nextActions(r: StatusResult): Section {
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
-  const noApplication = !r.machine.connectors?.length;
+  const noApplication = !setUpApplications(r.machine).length;
   if (!r.selected.resolved && !r.meshes.items.length && !r.meshes.unreadable.length) {
     items.push({ command: `${cmd} login`, description: "Sign in to Cotal Cloud" });
   }
@@ -2113,7 +2182,7 @@ function nextActions(r: StatusResult): Section {
   // own records. One whose last operation a member keeps unsettled is named the way out that
   // `up` and `down` name instead. A stack started with --no-manager leaves its manager out by choice,
   // so a manager record an earlier up left is not a stopped member, and the restart keeps the flag.
-  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && row.observedProcess === "gone" && !(r.folder.noManager && row.definition === STACK_DEFINITION.manager)) === true;
+  const memberGone = r.services?.instances?.some((row) => row.definition.startsWith("stack-") && ["gone", "foreign-pid", "previous-boot"].includes(row.observedProcess) && !(r.folder.noManager && row.definition === STACK_DEFINITION.manager)) === true;
   // A connection to a `--server` address other than the recorded one does not say whether the stack
   // answers; the hint `readSelected` adds names that address. A user-auth space is probed on its own path.
   const dialed = r.selected.resolved ? r.selected : undefined;
@@ -2128,7 +2197,7 @@ function nextActions(r: StatusResult): Section {
   // refresh restarts no manager, and an open or user-auth broker needs its mode flag again.
   const local = r.selected.resolved && r.selected.mode === "auth" && !r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space
     && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
-  const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && row.pid !== null).map((row) => row.name) : [];
+  const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (block && blocked) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${blocked.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
@@ -2165,6 +2234,10 @@ function nextActions(r: StatusResult): Section {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
+  } else if (local && r.selected.resolved && r.selected.connection === "unreachable" && (r.folder.processes ?? []).every((row) => row.state === "stopped")) {
+    // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
+    // bare `up` that starts it again on its recorded address and store comes first.
+    items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
@@ -2287,13 +2360,14 @@ function section(name: string): void {
  * knows about a component; a component-owned control answer says it is actually serving.  Do not
  * flatten those questions — the manager incident was exactly a live lease holder that had not
  * reached its service rail. */
-type ComponentVerdict = "serving" | "not-installed" | "absent" | "not-serving" | "refused";
+type ComponentVerdict = "serving" | "not-installed" | "not-started" | "absent" | "not-serving" | "refused";
 type ComponentHealth = { name: string; verdict: ComponentVerdict; facts: string[] };
 
 const COMPONENT_EXIT: Record<ComponentVerdict, number> = {
   serving: 0,
   // An optional component that was never installed is not a failed one.
   "not-installed": 0,
+  "not-started": 0,
   absent: 1,
   "not-serving": 2,
   refused: 3,
@@ -2324,18 +2398,15 @@ function componentExit(components: readonly ComponentHealth[]): number {
 }
 
 function processRecord(template: string, context: LocalProcessContext): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
-  let raw: string | undefined;
   try {
-    raw = readPidfile(localProcessPath(template, context));
+    const path = localProcessPath(template, context);
+    const state = pidfileState(path);
+    if (state.pid === undefined) return state.liveness === "dead" ? { kind: "absent" } : { kind: "unattributable", raw: readPidfile(path) ?? "" };
+    return { kind: state.liveness === "alive" ? "live" : state.liveness === "dead" ? "dead" : "unknown", pid: state.pid };
   } catch (e) {
     // An ambiguous record or any failed read refuses this component's row, never the whole pass.
     return { kind: "unreadable", error: (e as Error).message };
   }
-  if (!raw) return { kind: "absent" };
-  const pid = parsePid(raw);
-  if (pid === undefined) return { kind: "unattributable", raw };
-  const liveness = probeLiveness(pid);
-  return liveness === "alive" ? { kind: "live", pid } : liveness === "dead" ? { kind: "dead", pid } : { kind: "unknown", pid };
 }
 
 function pidFacts(record: ReturnType<typeof processRecord>): string[] {
@@ -2518,7 +2589,7 @@ async function managerServiceHealth(
   }
 }
 
-async function managerHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
+async function managerHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential, broker: ComponentHealth): Promise<ComponentHealth> {
   const record = processRecord(MANAGER_PIDFILE, context);
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
@@ -2606,9 +2677,22 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
     // lease still identifies an extant component; any other failed probe remains a refusal.
     const noService = managerNoService(e);
     facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
+    if (broker.verdict === "absent" && processVerdict(record) === "absent") return { name: "manager", verdict: "absent", facts };
     if (!noService) return { name: "manager", verdict: "refused", facts };
     const liveRecord = record.kind === "live";
     const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
+    if (!liveRecord && !hasLease) {
+      try {
+        const journal = readStackJournal(context.root)?.journal;
+        const pin = verifyIdentityPin(localProcessPath(MANAGER_OMITTED, context));
+        const brokerRecord = processRecord(NATS_PIDFILE, context);
+        const omitted = journal?.space === context.space ? stackStartedWithoutManager(journal)
+          : pin.kind === "match" && brokerRecord.kind === "live" && pin.record.pid === brokerRecord.pid;
+        if (omitted) return { name: "manager", verdict: "not-started", facts: [...facts, "started with --no-manager"] };
+      } catch (error) {
+        return { name: "manager", verdict: "refused", facts: [...facts, `startup intent unreadable: ${(error as Error).message}`] };
+      }
+    }
     return { name: "manager", verdict: liveRecord || (record.kind !== "dead" && hasLease) ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
@@ -2639,11 +2723,12 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   }
   if (renewal?.adoption === undefined) facts.push("renewal adoption not reported");
   else facts.push(renewal.adoption.ok ? "renewal adoption accepted" : `renewal adoption refused${renewal.adoption.error ? `: ${renewal.adoption.error}` : ""}`);
+  const renewalRefused = renewal?.adoption?.ok === false;
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
     if (record.kind === "unattributable") facts.push("unattributable pidfile");
     if (record.kind === "unknown") facts.push("pid liveness unestablishable");
-    return { name: "delivery", verdict: stopped, facts };
+    return { name: "delivery", verdict: renewalRefused ? "refused" : stopped, facts };
   }
 
   let close: (() => Promise<void>) | undefined;
@@ -2669,7 +2754,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const state = deliveryResponderFromLease(lease, await expectedDeliveryHolder(target));
     if (!lease) {
       facts.push("ready lease absent", `responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-      return { name: "delivery", verdict: "not-serving", facts };
+      return { name: "delivery", verdict: renewalRefused ? "refused" : "not-serving", facts };
     }
     facts.push(`lease holder ${lease.holder}`);
     if (state === "stale") {
@@ -2677,11 +2762,11 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
       // operator cannot derive from the other facts on the line.
       facts.push("ready, but held by a DIFFERENT daemon than this workspace launched (a dead holder's record expires on its own)");
       facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-      return { name: "delivery", verdict: "not-serving", facts };
+      return { name: "delivery", verdict: renewalRefused ? "refused" : "not-serving", facts };
     }
     facts.push(state === "bound" ? "ready" : "starting (lease not ready)");
     if (state !== "bound") facts.push(`responder not bound - ${RESPONDER_UNBOUND_CONSEQUENCE}`);
-    return { name: "delivery", verdict: state === "bound" ? "serving" : "not-serving", facts };
+    return { name: "delivery", verdict: renewalRefused ? "refused" : state === "bound" ? "serving" : "not-serving", facts };
   } catch (e) {
     // A live recorded daemon with no delivery lease bucket cannot be serving this build's delivery
     // control surface.  A denied/timed-out read is different: it is a refusal and must never read
@@ -2689,7 +2774,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
     const noLeaseSurface = deliveryLeaseAbsent(e);
     const msg = e instanceof Error ? e.message : String(e);
     facts.push(noLeaseSurface ? "ready lease absent" : `lease probe refused: ${msg}`);
-    return { name: "delivery", verdict: noLeaseSurface ? "not-serving" : "refused", facts };
+    return { name: "delivery", verdict: renewalRefused || !noLeaseSurface ? "refused" : "not-serving", facts };
   } finally {
     await close?.();
   }
@@ -2702,10 +2787,17 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   if (record.kind === "absent") {
+    try {
+      const unsettled = serviceInstances(context.space, "web").map(instanceProjection).find((row) => row.recordedState !== "stopped" && ["gone", "foreign-pid", "previous-boot"].includes(row.observedProcess));
+      if (unsettled) return { name: "web", verdict: "absent", facts: [`service instance ${unsettled.instanceId}`, `recorded ${unsettled.recordedState}`, unsettled.observedProcess] };
+    } catch (e) {
+      return { name: "web", verdict: "refused", facts: [`service instance records unreadable: ${(e as Error).message}`] };
+    }
     // An installation that cannot be read keeps the absent verdict rather than a clean zero.
     let installed: boolean | undefined;
     try { installed = webInstalled(); } catch { installed = undefined; }
     if (installed === false) return { name: "web", verdict: "not-installed", facts: ["optional"] };
+    if (installed === true) return { name: "web", verdict: "not-started", facts: ["optional"] };
   }
   if (stopped) {
     if (record.kind === "dead") facts.push("stale pidfile");
@@ -2750,6 +2842,25 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
   if (address === undefined)
     return { name: "broker", verdict: "refused", facts: ["registered address unavailable", "invalid broker address"] };
   try {
+    const context = { root: target.root, space: target.space };
+    const journal = readStackJournal(target.root)?.journal;
+    if (journal?.space === target.space && journal.server === target.server) {
+      const member = journal.members.find((row) => row.role === "broker");
+      const instance = serviceInstances(target.space, STACK_DEFINITION.broker).find((row) => row.name === member?.instanceId);
+      const observed = instance && instanceProjection(instance).observedProcess;
+      if (!instance || observed && ["gone", "foreign-pid", "previous-boot"].includes(observed))
+        return { name: "broker", verdict: "absent", facts: [`registered ${address}`, observed ?? "no local instance"] };
+      if (observed !== "running") return { name: "broker", verdict: "refused", facts: [`registered ${address}`, `local process ${observed}`] };
+    } else if (target.origin === "up" && target.mode !== "user" && (target.recordedServer === undefined || target.recordedServer === target.server)) {
+      const record = processRecord(NATS_PIDFILE, context);
+      const verdict = processVerdict(record);
+      if (verdict) return { name: "broker", verdict, facts: [`registered ${address}`, ...pidFacts(record), ...(record.kind === "dead" ? ["stale pidfile"] : [])] };
+    }
+    if (target.mode !== "user") {
+      const preflight = await preflightTarget(target);
+      if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false }).message] };
+      return { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] };
+    }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
     return reachable
       ? { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] }
@@ -2759,35 +2870,40 @@ async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
   }
 }
 
-async function printComponentHealth(cwd: string, values: FlagValues<typeof statusFlags>): Promise<void> {
+async function printComponentHealth(selected: Selected): Promise<void> {
   section("Component Health");
-  let target: MeshTarget;
-  try {
-    target = resolveMeshTarget(cwd, { server: values.server, space: values.space });
-  } catch (e) {
+  if (!selected.ok) {
+    const e = selected.error;
+    if (isMeshRegistryError(e)) {
+      printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
+      process.exitCode = COMPONENT_EXIT.refused;
+      return;
+    }
     if (isWorkspaceTargetError(e)) {
-      printComponent({ name: "target", verdict: "refused", facts: [e.code, renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")] });
+      const verdict = e.code === "not-started" ? "absent" : "refused";
+      printComponent({ name: "target", verdict, facts: [e.code, renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")] });
+      process.exitCode = COMPONENT_EXIT[verdict];
+      return;
+    }
+    if (e instanceof UnregisteredRoot) {
+      printComponent({ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] });
       process.exitCode = COMPONENT_EXIT.refused;
       return;
     }
     throw e;
   }
-  // The report's own rule: an unregistered project root is given no broker to probe.
-  if (target.source === "local-space") {
-    printComponent({ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${target.root}`] });
-    process.exitCode = COMPONENT_EXIT.refused;
-    return;
-  }
+  const target = selected.target;
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
   // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
   // static shape is just the target's own auth material), shared by the manager and delivery
   // probes so the two rows cannot disagree about whose credential they probed with.
   const credential = await componentCredential(target);
+  const broker = await brokerHealth(target);
   const components = await Promise.all([
-    managerHealth(target, context, credential),
+    managerHealth(target, context, credential, broker),
     deliveryHealth(target, context, credential),
     webHealth(context),
-    brokerHealth(target),
+    broker,
   ]);
   for (const component of components) printComponent(component);
   process.exitCode = componentExit(components);

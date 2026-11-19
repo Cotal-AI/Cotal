@@ -42,6 +42,18 @@ import WebSocket from "ws";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { codexCondition } from "./agui-map.js";
 
+/** Non-secret launch attribution variables a seat's shell needs for `cotal stop --self` and
+ *  seat-attributed CLI control commands (#7594). */
+export const SEAT_ATTRIBUTION_ENV: ReadonlySet<string> = new Set([
+  "COTAL_SPACE",
+  "COTAL_MANAGER_INSTANCE",
+  "COTAL_NAME",
+  "COTAL_ID",
+  "COTAL_LIFECYCLE_UID",
+  "COTAL_ACCEPTED_TOKEN",
+  "COTAL_HOME",
+]);
+
 /** A thread item as the notifications carry it — only the fields the host reads. */
 export interface ThreadItem {
   type?: string;
@@ -152,7 +164,7 @@ interface RpcMessage {
   error?: { code?: number; message?: string };
 }
 
-export interface DriverOpts {
+interface DriverOpts {
   /** The agent's working directory (the thread's cwd). */
   cwd: string;
   /** Per-agent CODEX_HOME (isolation boundary: operator MCP servers / hooks / config never load). */
@@ -292,6 +304,8 @@ export class AppServerDriver extends EventEmitter {
     return undefined;
   }
 
+  lastOutput = "";
+
   /** Spawn `codex app-server`, initialize, and start the thread. Resolves with the thread id.
    *  Re-callable: the host restarts a crashed app-server in place (same mesh lifecycle). */
   async start(): Promise<string> {
@@ -318,12 +332,12 @@ export class AppServerDriver extends EventEmitter {
       tokenFile,
     ];
     for (const [k, v] of this.opts.configOverrides) args.push("-c", `${k}=${v}`);
-    // The child inherits the host's (already allow-listed) env, minus COTAL_* — the codex
-    // process and anything it spawns have no business reading the mesh identity — plus the
-    // per-agent CODEX_HOME that keeps the operator's config/hooks/MCP servers out (see host.ts).
+    // The child inherits the host's (already allow-listed) env, keeping only the non-secret seat
+    // attribution variables CLI control commands read (`cotal stop --self`), plus the per-agent
+    // CODEX_HOME that keeps the operator's config/hooks/MCP servers out (see host.ts).
     const env: Record<string, string> = { CODEX_HOME: this.opts.codexHome };
     for (const [k, v] of Object.entries(process.env))
-      if (v !== undefined && !k.startsWith("COTAL_") && k !== "CODEX_HOME") env[k] = v;
+      if (v !== undefined && (!k.startsWith("COTAL_") || SEAT_ATTRIBUTION_ENV.has(k)) && k !== "CODEX_HOME") env[k] = v;
     for (const [k, v] of Object.entries(this.opts.extraEnv ?? {})) env[k] = v;
     const child = spawn(this.opts.bin ?? "codex", args, {
       cwd: this.opts.cwd,
@@ -339,6 +353,7 @@ export class AppServerDriver extends EventEmitter {
     let sawBanner = false;
     const onBanner: ((url: string) => void)[] = [];
     const scan = (d: string): void => {
+      this.lastOutput = (this.lastOutput + d).slice(-4000);
       if (!sawBanner) {
         banner += d;
         const m = /listening on:\s*(ws:\/\/\S+)/.exec(banner);
@@ -813,6 +828,14 @@ export class AppServerDriver extends EventEmitter {
         if (item) this.emit(method === "item/started" ? "itemStarted" : "itemCompleted", item, params.turnId as string | undefined);
         return;
       }
+      case "item/agentMessage/delta":
+      case "item/reasoning/summaryTextDelta":
+      case "item/reasoning/textDelta":
+      case "item/commandExecution/outputDelta":
+      case "item/fileChange/outputDelta":
+        if (params.threadId === this.threadId && typeof params.delta === "string" && params.delta.length > 0)
+          this.emit("work");
+        return;
       case "mcpServer/startupStatus/updated": {
         const name = typeof params.name === "string" ? params.name : undefined;
         if (!name) return;
@@ -875,7 +898,7 @@ export class AppServerDriver extends EventEmitter {
         return;
       }
       default:
-        return; // deltas, token usage, hook/thread status — not load-bearing for the host
+        return; // token usage and hook/thread status are not work progress
     }
   }
 }

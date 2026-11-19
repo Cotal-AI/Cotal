@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { mkSecretDir } from "@cotal-ai/core";
 import { lockExclusiveNb } from "@cotal-ai/seat";
-import { EndpointRefusal, assertSocketPathFits, checkDir, type DaemonPaths } from "../daemon/endpoint.js";
+import { EndpointRefusal, assertSocketPathFits, checkDir, daemonPaths, type DaemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon, type RunningDaemon, type ServeOptions } from "../daemon/server.js";
 import { EmptyLifetimeRefusal, isStoppingLifetime, queryDaemon, type ClientCounters } from "../daemon/client.js";
 import { processBirth } from "../daemon/lifetime.js";
@@ -90,6 +90,26 @@ const stop = (p: ChildProcess) => new Promise<void>((resolve, reject) => {
 });
 
 try {
+  if (process.platform === "linux") {
+    const runtime = `/run/user/${process.geteuid!()}`;
+    try {
+      checkDir(runtime);
+      const home = privateDir("nonlogin-home");
+      const explicit = daemonPaths({ XDG_RUNTIME_DIR: runtime }, home);
+      const nonlogin = daemonPaths({}, home);
+      check("non-login Linux session resolves the same secure standard runtime", nonlogin.socket === explicit.socket);
+      // A distinct daemon home avoids any installed default service.
+      const { daemonPathsFor } = await import("../daemon/endpoint.js");
+      const paths = daemonPathsFor(home, {});
+      const daemon = await ownedServe({ paths, version: "0.0.0-nonlogin" });
+      const result = await queryDaemon({ paths: daemonPathsFor(home, {}) });
+      check("non-login Linux runtime reaches a live daemon", result.ok && result.result.state === "ready", result);
+      await daemon.close();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      notRun.push("non-login Linux runtime: standard runtime absent");
+    }
+  }
   if (unix) {
     // ---- T1: defaults on both ends ----
     {

@@ -44,12 +44,14 @@ jobs:
       expected: ${{ steps.plan.outputs.expected }}
       version_pr: ${{ steps.plan.outputs.version_pr }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
           cache: pnpm
+      - name: Check published installer selection
+        run: node --test desktop/test/setup-published-installer.test.mjs
       - name: Plan required proof cells
         id: plan
         shell: pwsh
@@ -74,7 +76,7 @@ jobs:
           "version_pr=$($versionPr.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "matrix=$(@{ include = $include } | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
           "expected=$($expected | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - run: pnpm install --frozen-lockfile
       - name: Stamp disposable proof version
         run: pnpm exec node desktop/test/setup-candidate-version.mjs
@@ -95,7 +97,7 @@ jobs:
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime
       - run: pnpm --dir desktop exec tauri build --bundles nsis
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: setup-candidate
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -110,7 +112,7 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Invalid-helper fixture preparation failed'}
           pnpm --dir desktop exec tauri build --bundles nsis --config src-tauri/invalid-helper.json
           if($LASTEXITCODE -ne 0){throw 'Invalid-helper control build failed'}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.plan.outputs.version_pr != 'true'
         with:
           name: setup-invalid-helper
@@ -156,7 +158,7 @@ jobs:
           if ($bundledVersion -cne $nextVersion) {
             throw "Synthetic next setup bundle carries desktop-runtime.json version $bundledVersion instead of $nextVersion"
           }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: setup-synthetic-next
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -171,9 +173,9 @@ jobs:
       max-parallel: 6
       matrix: ${{ fromJson(needs.build.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
           cache: pnpm
@@ -193,16 +195,16 @@ jobs:
       - name: Build workspace packages for fixture suites
         if: matrix.cell == 'occupied' || matrix.cell == 'occupied-ui' || matrix.cell == 'absent'
         run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: setup-candidate
           path: candidate
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: matrix.cell == 'installed-candidate-to-next' || matrix.cell == 'app-installed' || matrix.cell == 'app-update-mode'
         with:
           name: setup-synthetic-next
           path: next-candidate
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: matrix.cell == 'cannot-start'
         with:
           name: setup-invalid-helper
@@ -211,7 +213,7 @@ jobs:
         if: matrix.cell == 'foreign'
         shell: pwsh
         run: |
-          npm install --prefix "$env:RUNNER_TEMP/cli-service" cotal-ai@0.164.7
+          npm install --before=2026-11-16T19:38:00.000Z --prefix "$env:RUNNER_TEMP/cli-service" cotal-ai@0.164.7
           if($LASTEXITCODE -ne 0){throw 'Published CLI fixture install failed'}
       - name: Verify published installers and fixture broker
         shell: pwsh
@@ -226,8 +228,15 @@ jobs:
             if(!$pkg -or $pkg.name -cne 'cotal-ai' -or $pkg.version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
               throw 'Could not resolve last published cotal-ai version from npm registry'
             }
-            "COTAL_SETUP_LATEST_VERSION=$($pkg.version)" >> $env:GITHUB_ENV
-            $versions+=,$pkg.version
+            $selectedJson = node desktop/test/setup-published-installer.mjs
+            if($LASTEXITCODE -ne 0){throw 'Could not select a published Windows installer'}
+            $selected = $selectedJson | ConvertFrom-Json
+            Write-Host "Selected published Windows installer $($selected.version)"
+            if($selected.version -cne $pkg.version) {
+              Write-Host "Registry latest $($pkg.version) has no installer yet; using published Windows installer $($selected.version)"
+            }
+            "COTAL_SETUP_LATEST_VERSION=$($selected.version)" >> $env:GITHUB_ENV
+            $versions+=,$selected.version
           } elseif($cell -eq 'app-installed-0.164.9') {
             $versions+=,'0.164.9'
           } elseif($cell -eq 'early') {
@@ -237,8 +246,12 @@ jobs:
           }
           foreach($version in $versions) {
             $name="Cotal_${version}_x64-setup.exe"
-            $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} "https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v$version"
-            $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+            if($cell -eq 'app-installed-latest') {
+              $asset=@($selected)
+            } else {
+              $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} "https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v$version"
+              $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+            }
             if($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw "Published asset digest unavailable for $version"}
             $expected=$Matches[1]
             $path=Join-Path $env:RUNNER_TEMP $name
@@ -279,7 +292,7 @@ jobs:
           $env:COTAL_TEST_REAL_SERVICE='1'
           node bin/smoke/daemon-install-real.smoke.mjs
           if($LASTEXITCODE -ne 0){throw 'real installed service lifecycle failed'}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: setup-proof-${{ matrix.cell }}-${{ matrix.repeat }}
@@ -291,7 +304,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Exercise unchanged UI driver against published fresh setup
         shell: pwsh
         env:
@@ -314,7 +327,7 @@ jobs:
           $code=$LASTEXITCODE
           @{exitCode=$code} | ConvertTo-Json | Set-Content "$output/result.json"
           if($code -ne 0){throw 'Stock published UI control did not complete'}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: setup-proof-stock-ui-control
@@ -326,12 +339,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: setup-proof-*
           path: proof-artifacts
       - name: Require every planned job and cell to complete with success
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           BUILD_RESULT: ${{ needs.build.result }}
           NATIVE_RESULT: ${{ needs.native.result }}

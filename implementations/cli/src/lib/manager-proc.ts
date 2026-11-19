@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -151,16 +151,38 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
  *  A supervisor whose environment cannot be read or names no space counts, and a process table that
  *  cannot be listed proves nothing. */
 export function supervisorMayServe(space: string, installedEntry?: string): boolean {
-  const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
-  if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
+  let lines: string[];
+  if (process.platform === "linux") {
+    lines = readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+      try {
+        const command = readFileSync(`/proc/${name}/cmdline`, "utf8").replaceAll("\0", " ");
+        if (!commandIsCotalSupervisor(command)) return [];
+        return [`${name} ${supervisorProcessUid(Number(name))} ${command}`];
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ESRCH") return [];
+        throw error;
+      }
+    });
+  } else {
+    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+    if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
+    lines = ps.stdout.split("\n");
+  }
   const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
-  return ps.stdout.split("\n").some((line) => {
+  return lines.some((line) => {
     const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
     if (!row || !commandIsCotalSupervisor(row[3]!)) return false;
     const pid = Number(row[1]), uid = Number(row[2]), command = row[3]!;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
     if (named !== undefined && named !== space) return false;
-    const scope = supervisorInstallScope(pid, uid, command, entry);
+    let argv: string | string[] = command;
+    if (process.platform === "linux") {
+      // ps flattens argv, so a path containing spaces must come from the kernel's boundaries.
+      try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); }
+      catch { argv = []; }
+    }
+    const scope = supervisorInstallScope(pid, uid, argv, entry);
     if (scope === "foreign") return false;
     const selected = named ?? environmentSpace(pid);
     if (selected !== undefined && selected !== space) return false;
@@ -181,9 +203,9 @@ function thisCliEntry(): string | undefined {
 
 /** Attribute a supervisor using its absolute entry, numeric owner and mount namespace.
  * A different namespace alone cannot exclude a bind-mounted installation. */
-export function supervisorInstallScope(pid: number, uid: number, command: string, entry: string | undefined): "local" | "foreign" | "unknown" {
+export function supervisorInstallScope(pid: number, uid: number, command: string | readonly string[], entry: string | undefined): "local" | "foreign" | "unknown" {
   let other = false;
-  for (const word of command.trim().split(/\s+/)) {
+  for (const word of typeof command === "string" ? command.trim().split(/\s+/) : command) {
     if (!isAbsolute(word)) continue;
     let resolved: string;
     try {

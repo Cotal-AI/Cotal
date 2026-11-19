@@ -9,12 +9,15 @@ import {
   CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
   bindExtensionPeers,
+  connectorConfigDir,
   connectorMetadataStale,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
+  logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
   type InstalledExtension,
@@ -54,6 +57,7 @@ import {
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
 import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
+import { assertAutomaticSeedManagers } from "./manager-guard.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -106,7 +110,7 @@ export class SeedChildFailure extends Error {
 
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
 export async function reconcileSeededConnectors(): Promise<void> {
-  await reconcile("auto");
+  await reconcile("auto", true);
 }
 
 /** Whether the seed journal, authority and installed built-in payloads need no package repair. */
@@ -147,7 +151,7 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
@@ -163,10 +167,11 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode);
+  return reconcileUnderClosure(mode, automatic);
 }
 
-async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
+async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<ReconcileResult> {
+  inheritConnectorConfig();
   const generation = seedGeneration();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a
@@ -184,14 +189,18 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
         if (child.kind === "ambiguous")
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
+        if (child.kind === "stale") {
+          await reconcile("repair", automatic);
+          return NOOP;
+        }
         if (migration && cursor) {
-          console.error(
+          if (!automatic) console.error(
             c.dim(
               `resuming ${cursor.failed ? "a failed" : "an interrupted"} connector upgrade (seed store ${migration.from} -> ${generation}; ` +
                 `package "${cursor.package}", phase ${cursor.phase}) …`,
             ),
           );
-          await reconcile("repair");
+          await reconcile("repair", automatic);
           return NOOP;
         }
         if (cursor?.failed) throw failedSeed(cursor);
@@ -219,6 +228,17 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
   const releaseClosure = claimUpdateClosureAccess();
   try {
   assertReleasedSeedWriter(generation, "reconcile");
+  if ((mode === "auto" || automatic) && readStamp()?.generation !== undefined && readStamp()?.generation !== generation) {
+    // Validate the selected prefix before treating a Manager observation failure as a hold.
+    connectorConfigDir();
+    try { await assertAutomaticSeedManagers(generation); }
+    catch (error) {
+      if (!automatic) throw error;
+      const detail = (error instanceof Error ? error.message : String(error)).split(/[\r\n;]/, 1)[0]!.trim();
+      console.error(`${detail || "A local Manager could not be identified"}; its connectors stay at their existing version until the Manager is restarted`);
+      return NOOP;
+    }
+  }
   const lock = acquireReconcileLock();
   try {
     // Claim the mutation lock INSIDE the reconcile lock's finally: if it throws (an operator `cotal
@@ -334,13 +354,17 @@ function officialExtensionsCurrent(generation: string): boolean {
 
 async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
-  // installer) is mutating it — reclaiming the lock does not stop that process. An ambiguous marker
-  // (pending with a dead parent, or corrupt) is fail-loud: we cannot prove no installer is running.
+  // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
+  // pending marker or corrupt record stays fail-loud.
   const child = seedChildStatus();
   if (child.kind === "live")
     throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
   if (child.kind === "ambiguous")
     throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it and retry`);
+  if (child.kind === "stale") {
+    clearChildMarker();
+    console.error(c.dim("cleared an interrupted connector seed child marker: parent and installer are gone"));
+  }
 
   // REFUSE TO WRITE A GENERATION OLDER THAN THE STORE'S. An older binary run against a store stamped
   // newer misses the fast path (its generation is not the stamp), refreshes NOTHING (the refresh below
@@ -757,6 +781,10 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
   // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
   const [bin, ...argv] = selfArgv();
+  // A seed child must mutate the same installed selection as its parent, not one
+  // keyed by the immutable retained entry that the bootstrap loaded.
+  const logical = logicalExecutionEntry();
+  if (logical) argv[argv.length - 1] = logical;
   const started = Date.now();
   console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
   writeCursor({ nonce, package: name, phase: "copy" });

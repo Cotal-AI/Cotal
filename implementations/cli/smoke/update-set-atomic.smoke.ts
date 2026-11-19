@@ -1,27 +1,32 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { emitSentinel, skipSuite } from '@cotal-ai/smoke-kit';
 
 // Real CLI/natives/npm path. Only the second requested package install is refused by a transparent
 // package-manager fixture, so the failure happens after the first connector's ordinary transaction.
 if (process.platform === 'win32') {
-  console.log('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
+  skipSuite('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
 } else {
 const root = mkdtempSync(join(tmpdir(), 'update-set-'));
 try {
 const home = join(root, 'home'), config = join(root, 'config'), tools = join(root, 'tools');
-for (const dir of [home, config, tools]) mkdirSync(dir, { mode: 0o700 });
+for (const dir of [home, config, tools, join(root, '.cotal')]) mkdirSync(dir, { mode: 0o700 });
 const bin = resolve('bin/dist/cotal.js');
 const generation = (JSON.parse(readFileSync(resolve('bin/package.json'), 'utf8')) as { version: string }).version;
-const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
   COTAL_ALLOW_CHECKOUT_SEED: '1', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_NO_UPDATE_CHECK: '1' };
 const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 120000 });
 const seed = run(['ext', 'seed']);
 assert.equal(seed.status, 0, seed.stderr);
-const prefix = join(config, 'cotal/extensions');
+const key = createHash('sha256').update(bin).digest('hex');
+const selectionPath = join(config, 'cotal/installs', key, 'sets', generation, 'selection.json');
+const selected = existsSync(selectionPath) ? (JSON.parse(readFileSync(selectionPath, 'utf8')) as { root: string }).root : join(config, 'cotal');
+assert.equal(dirname(selected), existsSync(selectionPath) ? dirname(selectionPath) : config);
+const prefix = join(selected, 'extensions');
 for (const pkg of ['connector-claude-code', 'connector-opencode']) writeFileSync(join(prefix, 'node_modules/@cotal-ai', pkg, 'damage.txt'), 'previous damaged bytes\n');
 const digest = (directory: string): string => {
   const hash = createHash('sha256');
@@ -34,6 +39,19 @@ const digest = (directory: string): string => {
   };
   walk(directory); return hash.digest('hex');
 };
+// Local downloads can disappear after add because extensions are installed as copies.
+const missing = ['hello-ext', '@fixture/missing-ext'];
+for (const pkg of [...missing, 'kept-ext']) {
+  const source = join(root, pkg.replace('/', '-'));
+  mkdirSync(source);
+  writeFileSync(join(source, 'package.json'), JSON.stringify({ name: pkg, version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
+  writeFileSync(join(source, 'index.js'), `import { registry } from '@cotal-ai/core'; registry.register({ kind: 'command', name: '${pkg.split('/').pop()}', summary: 'fixture', async run() {} });\n`);
+  const added = run(['ext', 'add', source]);
+  assert.equal(added.status, 0, added.stderr);
+  rmSync(source, { recursive: true });
+}
+for (const pkg of missing) rmSync(join(prefix, 'node_modules', pkg), { recursive: true });
+const keptBefore = digest(join(prefix, 'node_modules/kept-ext'));
 const before = digest(prefix);
 const npm = spawnSync('which', ['npm'], { encoding: 'utf8' }).stdout.trim();
 assert(npm);
@@ -50,7 +68,30 @@ assert.equal(repaired.status, 0, repaired.stderr);
 assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes('undefined'));
 for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readdirSync(join(prefix, 'node_modules/@cotal-ai', pkg)).includes('damage.txt'));
 console.log('whole-set successful update repairs every selected package');
+for (const pkg of missing) {
+  assert.match(repaired.stderr, new RegExp(`${pkg} is in the extensions manifest but not installed`));
+  assert(!existsSync(join(prefix, 'node_modules', pkg)), 'update must not resurrect a missing third-party extension');
+  const manifest = JSON.parse(readFileSync(join(prefix, 'extensions.json'), 'utf8')) as { extensions: { pkg: string }[] };
+  assert(manifest.extensions.some(entry => entry.pkg === pkg), 'missing extension remains available for explicit repair or removal');
+  const lock = JSON.parse(readFileSync(join(prefix, 'package-lock.json'), 'utf8')) as { packages: Record<string, { dependencies?: Record<string, string> }> };
+  assert.equal(lock.packages['']?.dependencies?.[pkg], undefined);
+  assert.equal(lock.packages[`node_modules/${pkg}`], undefined);
+}
+assert.equal(digest(join(prefix, 'node_modules/kept-ext')), keptBefore, 'an installed local copy survives even when its source is gone');
+for (let attempt = 0; attempt < 2; attempt++) {
+  const repeated = run(['update', '--self']);
+  assert.equal(repeated.status, 0, repeated.stderr);
+}
+for (const pkg of missing) {
+  const removed = run(['ext', 'remove', pkg]);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes(`"${pkg}"`));
+}
+const repairSeed = run(['ext', 'seed', '--repair']);
+assert.equal(repairSeed.status, 0, repairSeed.stderr);
+console.log('deleted local extensions do not block update retries, removal or seed repair');
 const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
 assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], `file:../seed/store/${generation}/claude`);
+emitSentinel({ passed: 3, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }

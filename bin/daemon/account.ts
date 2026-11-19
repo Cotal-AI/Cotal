@@ -30,6 +30,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
   let work: Promise<void> | undefined;
   const abort = new AbortController();
   const tick = async () => {
+    void sample();
     const accounts = signedInMachineAccounts(home);
     reconciler.retainAccounts(accounts.map(account => account.ownerKey));
     if (!accounts.length) { state = { mode: "signed-out", hostSupport: "unknown", spaces: [] }; for (const context of contexts.values()) context.abort.abort(); contexts.clear(); return; }
@@ -52,7 +53,6 @@ export function createAccountComputer(home: string, version: string, reconciler:
     const call = (method: "PUT" | "GET") => requestAccountMachine({ dir: home, idpUrl: account.idpUrl, machineId, method, signal: AbortSignal.any([abort.signal, context.abort.signal]),
       ...(method === "GET" ? { etag: context.etag } : { metadata: { name, platform: process.platform as "linux" | "darwin" | "win32", daemonVersion: version, managers: hosted, ...(vitals && !vitalsError ? { vitals } : {}) } }) });
     if (Date.now() - context.lastHeartbeat >= 60_000 || hostedKey !== (context.sentManagers ?? "[]")) {
-      void sample();
       context.abort.signal.throwIfAborted();
       const sentName = name;
       const result = await call("PUT");
@@ -167,7 +167,9 @@ export function createAccountComputer(home: string, version: string, reconciler:
     signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); notify(); run(); },
     status: (): AccountComputerStatus => {
       const ordered = [...contexts.values()].sort((a, b) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? ""));
-      return { ...(ordered[0]?.state ?? state), accounts: [...contexts.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
+      const computers = new Map<string | undefined, typeof ordered[number]>();
+      for (const context of ordered) if (!computers.has(context.state.machineId)) computers.set(context.state.machineId, context);
+      return { ...(ordered[0]?.state ?? state), accounts: [...computers.values()].map(context => ({ ...context.state, spaces: reconciler.view().filter(row => context.snapshot?.spaces.some(space => space.slug === row.space) || !row.desired) })), spaces: reconciler.view() };
     },
     async close() { stopped = true; if (timer) clearTimeout(timer); abort.abort(); await work; await Promise.all([...tasks]); await reconciler.settled(); },
   };

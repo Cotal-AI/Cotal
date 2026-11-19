@@ -285,6 +285,30 @@ for (const status of ["blocked", "handoff"] as const) {
   check("the turn re-surfaces on the next frame instead", a.peekPendingTurns()?.goalIds[0] === "g4");
 }
 
+// ── 4b) a refused dispatch hands its turns back ────────────────────────────────────────────────
+// Jcode acknowledges a send before it refuses it as busy. The acknowledgement committed the surface,
+// so the seat yielded `done` at its next boundary for a turn the model never saw (#5918).
+{
+  console.log("4b — unsurfacing a refused dispatch offers its turns again and arms no done");
+  const { a, state, poll } = rig();
+  state.pending = [row("g4b", "work the refusal dropped")];
+  await poll();
+  a.commitSurfacedTurns(["g4b"]);
+  a.unsurfaceTurns(["g4b"]);
+  check("the handed-back turn wakes the seat and is offered on the next frame",
+    a.pendingWake() === 1 && a.peekPendingTurns()?.goalIds[0] === "g4b", a.pendingWake());
+  await a.setStatus("working");
+  await a.setStatus("idle");
+  await tick();
+  check("the boundary yields nothing for the handed-back turn", state.yields.length === 0, JSON.stringify(state.yields));
+  a.commitSurfacedTurns(["g4b"]);
+  await a.setStatus("working");
+  await a.setStatus("idle");
+  await tick();
+  check("once a later dispatch surfaces it, its boundary yields done",
+    state.yields.length === 1 && state.yields[0]?.goalId === "g4b" && state.yields[0]?.status === "done", JSON.stringify(state.yields));
+}
+
 // ── 5) explicit yields: selection, handoff validation, refusal handling ───────────────────────
 {
   console.log("5 — yieldTurn selects the oldest surfaced turn, validates handoffs, and survives a refusal");
@@ -731,7 +755,7 @@ const sentinelCreds = process.env.PROBE_SENTINEL_CREDS!;
 
 const pDir = mkdtempSync(join(tmpdir(), "mgr-del-"));
 process.env.COTAL_HOME = join(pDir, "home");
-mkdirSync(process.env.COTAL_HOME, { recursive: true });
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const ws = join(pDir, "ws");
 mkdirSync(join(ws, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(ws, ".cotal", "agents", delegatedActor + ".md"), ["---", "name: " + delegatedActor, "role: worker", "---", ""].join(String.fromCharCode(10)));
@@ -790,7 +814,7 @@ CotalEndpoint.prototype.stop = async function () {};
 const stubPostLeaseBoot = (m: unknown) => {
   const internal = m as Record<string, unknown>;
   internal.registerManagerService = async () => {
-    internal.staticReconcileStopping = true;
+    (internal.staticLifecycle as { staticReconcileStopping: boolean }).staticReconcileStopping = true;
   };
 };
 
@@ -848,7 +872,7 @@ const mgr = new Manager({
 
 stubPostLeaseBoot(mgr);
 await mgr.start();
-(mgr as unknown as { staticReconcileStopping: boolean }).staticReconcileStopping = false;
+(mgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
 if ((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer) {
   clearInterval((mgr as unknown as { credRenewTimer?: ReturnType<typeof setInterval> }).credRenewTimer);
 }
@@ -926,7 +950,7 @@ const localMgr = new Manager({
 });
 stubPostLeaseBoot(localMgr);
 await localMgr.start();
-(localMgr as unknown as { staticReconcileStopping: boolean }).staticReconcileStopping = false;
+(localMgr as unknown as { staticLifecycle: { staticReconcileStopping: boolean } }).staticLifecycle.staticReconcileStopping = false;
 if ((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer) {
   clearInterval((localMgr as unknown as { leaseTimer?: ReturnType<typeof setInterval> }).leaseTimer);
 }
@@ -1231,7 +1255,7 @@ const spawnArgs = JSON.parse(process.env.PROBE_DELEGATED_ARGS!) as string[];
 
 const cDir = mkdtempSync(join(tmpdir(), "cli-handoff-"));
 process.env.COTAL_HOME = join(cDir, "home");
-mkdirSync(process.env.COTAL_HOME, { recursive: true });
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const cWs = join(cDir, "ws");
 mkdirSync(join(cWs, ".cotal", "agents"), { recursive: true });
 const bearerOk = join(cDir, "bearer-ok.mjs");
@@ -1540,7 +1564,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 62;
+const EXPECTED_CELLS = 65;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

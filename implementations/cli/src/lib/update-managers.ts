@@ -1,18 +1,21 @@
-import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { endianness } from "node:os";
 import { assertLifecycleToken } from "@cotal-ai/core";
 import {
   assertRecordIdentity, brokerAddressKey, commandIsCotalSupervisor, identityRecord,
   MANAGER_PIDFILE, readMeshRegistry, readProcessCommand, recordedLocalProcessPaths,
   readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
+  localProcessPathCandidates, verifyIdentityPin, homeCotalDir,
 } from "@cotal-ai/workspace";
+import { goneStackRoot } from "./stack-journal.js";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 
-export interface UpdateManager {
+export interface OwnUpdateManager {
+  readonly ownership?: "own";
   readonly pid: number;
   readonly root: string;
   readonly space: string;
@@ -20,6 +23,18 @@ export interface UpdateManager {
   readonly instanceId: string;
   readonly process?: ProcessIdentityRecord;
 }
+
+export interface ForeignUpdateManager {
+  readonly ownership: "foreign";
+  readonly pid: number;
+  readonly root: string;
+  readonly space: string;
+  readonly server?: undefined;
+  readonly instanceId?: undefined;
+  readonly process: ProcessIdentityRecord;
+}
+
+export type UpdateManager = OwnUpdateManager | ForeignUpdateManager;
 
 function blocked(detail: string): never {
   throw new Error(`local Manager continuity cannot be established: ${detail}; inspect the named local process and restore its identity record before retrying; no Manager instance was guessed`);
@@ -85,12 +100,74 @@ function unprovenManagerEntry(pid: number, uid: number, pin: ProcessIdentityReco
   throw new Error(`local Manager continuity cannot be established: Manager pid ${pid}, user ${uid}, verb supervise has no proven CLI entry for this installation; started ${managerStarted("token" in pin ? pin.token : undefined)}; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; a missing path does not prove another installation because it may have been a symlink into this one; no Manager instance was guessed`);
 }
 
+/** Local records pin a Manager before an exchange, including hosts without a process-table census. */
+export function recordedUpdateManagers(
+  flags: { space?: unknown; server?: unknown; on?: unknown } = {},
+  installedEntry: string = entryScript(),
+): OwnUpdateManager[] {
+  const registry = readMeshRegistry();
+  if (registry.unusable.length) throw registry.unusable[0];
+  const result = new Map<string, OwnUpdateManager>();
+  const ownEntry = realpathSync(installedEntry);
+  const ownUid = process.getuid?.() ?? 0;
+  const add = (root: string, space: string, server: string, process: ProcessIdentityRecord) => {
+    if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(server)) return;
+    if (assertRecordIdentity(process).kind !== "match") blocked(`Manager pid ${process.pid} changed before its record read`);
+    const command = readProcessCommand(process.pid);
+    if (command.kind === "gone") return;
+    // A Manager that loaded another installation keeps its files when this one is replaced, so it
+    // is no custody of this update. The process census applies the same rule.
+    if (command.kind === "command" && supervisorInstallScope(process.pid, ownUid, command.command, ownEntry) === "foreign") return;
+    const instanceId = readUpdateManagerIdentity(root, space);
+    if (typeof flags.on === "string" && flags.on !== instanceId) return;
+    const key = JSON.stringify([brokerAddressKey(server) ?? server, space, instanceId]);
+    const previous = result.get(key);
+    if (previous && (previous.pid !== process.pid || previous.root !== root)) blocked(`conflicting live records for Manager ${instanceId}`);
+    result.set(key, { pid: process.pid, root, space, server, instanceId, process });
+  };
+  for (const entry of registry.entries) {
+    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+      console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+      continue;
+    }
+    if (typeof flags.space === "string" && flags.space !== entry.space || typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(entry.server)) continue;
+    const paths = new Map(recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root).map(row => [row.path, row]));
+    for (const path of localProcessPathCandidates(MANAGER_PIDFILE, { root: entry.root, space: entry.space })) {
+      if (!paths.has(path)) paths.set(path, { path, ...(basename(path) === "manager.pid" && registry.entries.filter(row => row.root === entry.root).length > 1 ? {} : { space: entry.space }) });
+    }
+    for (const row of paths.values()) {
+      if (row.unread) blocked(`${row.path}: ${row.unread}`);
+      if (row.space && row.space !== entry.space) continue;
+      const record = readProcessRecord(row.path, commandIsCotalSupervisor);
+      if (record.state === "unknown" || record.state === "unattributable") blocked(`unresolved process record ${row.path}`);
+      if (record.state !== "alive") continue;
+      if (!row.space) blocked(`Manager record ${row.path} has no proven space`);
+      const pin = verifyIdentityPin(row.path);
+      if (pin.kind !== "match" || pin.record.pid !== record.pid) blocked(`Manager record ${row.path} has no matching process creation identity`);
+      add(entry.root, entry.space, entry.server, pin.record);
+    }
+    for (const row of serviceInstances(entry.space)) {
+      const instance = row.record.value;
+      const definition = serviceDefinitionStore(entry.space).read(instance.definition)?.record.value;
+      if (definition?.launch.type !== "adapter" || definition.launch.adapter !== "manager-service") continue;
+      const state = observeServiceProcess(instance);
+      if (["unreadable", "unresolved-launch", "members-running"].includes(state)) blocked(`unresolved Manager service ${instance.instanceId}`);
+      if (state !== "running" || !instance.process) continue;
+      const root = definition.root ?? definition.launch.options.root;
+      if (typeof root !== "string") blocked(`Manager service ${instance.instanceId} has no root`);
+      const server = definition.launch.options.server;
+      add(root, entry.space, typeof server === "string" ? server : entry.server, instance.process);
+    }
+  }
+  return [...result.values()];
+}
+
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
 export function localUpdateManagers(
   flags: { space?: unknown; server?: unknown; on?: unknown } = {},
   installedEntry: string = entryScript(),
 ): UpdateManager[] {
-  if (process.platform !== "linux") throw new Error("install-wide Manager process census is supported only on Linux");
+  if (process.platform !== "linux") return recordedUpdateManagers(flags, installedEntry);
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
   const entries = registry.entries;
@@ -99,6 +176,10 @@ export function localUpdateManagers(
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(server));
   const known = new Map<number, { root: string; space: string; server: string }>();
   for (const entry of entries) {
+    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+      console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+      continue;
+    }
     if (!matches(entry.space, entry.server)) continue;
     for (const path of recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root)) {
       if (path.space && typeof flags.space === "string" && path.space !== flags.space) continue;
@@ -200,19 +281,52 @@ export function localUpdateManagers(
     const recorded = known.get(pid);
     const hostedHome = argv.includes("__machine-manager") ? option(argv, "session-directory") : undefined;
     const hostedSpace = option(argv, "space");
-    const root = hostedHome && hostedSpace ? join(hostedHome, "daemon", spaceSegment(hostedSpace), "manager") : option(argv, "root") ?? recorded?.root ?? cwd;
+    const launchedRoot = hostedHome && hostedSpace ? join(hostedHome, "daemon", spaceSegment(hostedSpace), "manager") : option(argv, "root") ?? recorded?.root ?? cwd;
+    const root = launchedRoot && (isAbsolute(launchedRoot) ? launchedRoot : cwd ? resolve(cwd, launchedRoot) : undefined);
     const space = option(argv, "space") ?? env.COTAL_SPACE ?? recorded?.space;
     if (space && typeof flags.space === "string" && flags.space !== space) continue;
-    if (!root || !space) blocked(`Manager pid ${pid} has no proven root or space`);
+    if (!root || !space || !isAbsolute(root)) blocked(`Manager pid ${pid} has no proven absolute root or space`);
+    if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
+    if (!("token" in pin) || assertRecordIdentity(pin).kind !== "match") blocked(`Manager pid ${pid} changed or has no process creation identity`);
+    // Compare every registered root, not just the selected space. Never read another home's
+    // identity or infer its broker from an unrelated entry with the same space name.
+    let canonicalRoot: string;
+    try { canonicalRoot = realpathSync(root); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") blocked(`cannot resolve Manager root ${root}`);
+      canonicalRoot = resolve(root);
+    }
+    const ownedRoot = entries.some(entry => {
+      try {
+        const registered = realpathSync(entry.root);
+        const nested = relative(registered, canonicalRoot);
+        return nested === "" || nested !== ".." && !nested.startsWith(`..${sep}`) && !isAbsolute(nested);
+      }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") blocked(`cannot resolve registered root ${entry.root}`);
+        return resolve(entry.root) === canonicalRoot;
+      }
+    });
+    let ownHostedHome = false;
+    if (hostedHome) {
+      try { ownHostedHome = realpathSync(hostedHome) === realpathSync(homeCotalDir()); }
+      catch { blocked(`cannot resolve machine Manager session directory ${hostedHome}`); }
+    }
+    if (!ownedRoot && !recorded && !ownHostedHome) {
+      result.set(JSON.stringify([pid, pin.token]), { ownership: "foreign", pid, root: canonicalRoot, space, process: pin });
+      continue;
+    }
+    if (!existsSync(root) || goneStackRoot(space) !== undefined) continue;
     const entry = entries.find(value => value.space === space);
     const server = option(argv, "server") ?? env.COTAL_SERVER ?? recorded?.server ?? entry?.server;
     if (!server) blocked(`Manager pid ${pid}, root ${root}, space ${space} has no broker address`);
     if (!matches(space, server)) continue;
+    if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
     if (!("token" in pin) || assertRecordIdentity(pin).kind !== "match") blocked(`Manager pid ${pid} changed or has no process creation identity`);
     const instanceId = readUpdateManagerIdentity(root, space);
     if (typeof flags.on === "string" && instanceId !== flags.on) continue;
     const candidate = { pid, root, space, server, instanceId, process: pin };
-    result.set(JSON.stringify([brokerAddressKey(server) ?? server, space, instanceId]), candidate);
+    result.set(JSON.stringify([pid, pin.token]), candidate);
   }
   return [...result.values()];
 }

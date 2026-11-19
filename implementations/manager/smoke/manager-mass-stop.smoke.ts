@@ -24,7 +24,6 @@
  *
  * Run: pnpm smoke:manager-mass-stop (needs nats-server on PATH)
  */
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,9 +85,9 @@ try {
   // Whether each inventory found its lifecycle's ACL row narrowed to no reads when it reached the daemon.
   const fencedAtInventory: boolean[] = [];
   let aclKv: KV | undefined;
-  const d = daemon.ep as unknown as { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> };
-  const handle = d.handleDeliveryAdmin.bind(d);
-  d.handleDeliveryAdmin = async (req) => {
+  const d = daemon.ep as unknown as { deliveryPlane: { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> } };
+  const handle = d.deliveryPlane.handleDeliveryAdmin.bind(d.deliveryPlane);
+  d.deliveryPlane.handleDeliveryAdmin = async (req) => {
     if (req.op === "lifecycleMemberships" && aclKv)
       fencedAtInventory.push((await readAcl(aclKv, String(req.args?.principal), String(req.args?.lifecycleUid)))?.record.allowSubscribe.length === 0);
     const reply = await handle(req);
@@ -159,11 +158,11 @@ try {
 
   // A chat session's terminal and a static reconcile's terminal take the same slots. The terminal is
   // stubbed for two lifecycles that exist only here, so these count when each one enters it.
-  const m = manager as unknown as {
+  const m = (manager as unknown as { staticLifecycle: {
     driveStaticRetirement: (a: { lifecycleUid: string }, ...rest: unknown[]) => Promise<void>;
     chatTerminal(s: { alias: string; actor: string; lifecycleUid: string }): Promise<void>;
     attemptStaticReconcile(key: string, item: object, row: object): Promise<{ succeeded: boolean }>;
-  };
+  } }).staticLifecycle;
   const chatUid = mintLifecycleUid(), reconcileUid = mintLifecycleUid();
   const otherEntered = new Map<string, number>();
   const drive = m.driveStaticRetirement.bind(m);
@@ -227,7 +226,9 @@ try {
   if (seatPoll) clearInterval(seatPoll);
   await manager?.stop({ withAgents: true }).catch(() => {});
   await Promise.all([...seats.values()].map((s) => s.agent.stop().catch(() => {})));
-  try { execFileSync("pkill", ["-f", `sleep 99999.${token}`]); } catch { /* none left */ }
+  for (const { pid } of seats.values()) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* the owned seat already exited */ }
+  }
   await observer?.close().catch(() => {});
   await daemon?.stop().catch(() => {});
   await broker.stop();

@@ -7,6 +7,11 @@ A passing cell requires the target CLI and every recorded extension, status exit
 recovery record, a preserved ready service when present, and no required repair step. Missing
 artifacts, skipped required cells and unsupported states are not passes.
 
+Source bootstrap installs before 0.165.0 use npm's `before=2026-11-16T19:38:00.000Z`
+cutoff to reconstruct dependencies from before the incompatible nkeys release. It applies only
+while installing and preparing that old source. Target metadata and upgrade commands have no cutoff.
+Each recorded command includes `npmBefore` so the boundary can be checked in its transcript report.
+
 Each cell summary shows the update command's recorded `elapsedMs`, not the whole cell's duration.
 Scheduler cells say they are not direct update calls. A cell that fails before updating says no
 update call was recorded. Only Windows manual update commands, including a chain's second hop, have a temporary 300000 ms
@@ -44,7 +49,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 40 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -61,6 +66,13 @@ product coordinates:
 | Linux manual updater to a synthetic next version with a stopped desktop-owned user service beside the npm CLI, staying stopped and naming the desktop service owner | 1 |
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
+| POSIX target-owned updater stopped at its real snapshot, then killed, followed by an unassisted self-update to the synthetic next version | 2 |
+
+The killed-updater cells use the installed target's public updater and native service. They hold the
+snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.
+The public `ps` command must recover and the hosted Manager must answer without a repair command.
+A subsequent ordinary `update --self` must reach the synthetic next version on its own. Windows
+killed-updater coverage is not claimed.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
@@ -95,6 +107,12 @@ the in-place route at the second synthetic version. All
 complete 24-package closures stay readable through a paired registry. The source entry and package
 hashes, archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
+
+The synthetic packer logs the start and elapsed time of each phase: verifying A, native guards,
+the stamped build, packing, output verification and the final unchanged-A check. A failed phase
+is named before the error is rethrown. Archive inspection hashes every member in one traversal
+per archive, without a `tar` subprocess per file. Both synthetic versions still build separately.
+Archive hashes, the complete 24-package closure, member hashes and native guards remain required.
 
 Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
@@ -164,7 +182,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all 37 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 42 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the
@@ -194,9 +212,12 @@ extra failures and listed cells that turn green fail the summary. A green listed
 the entry. Raw reports stay failed. The census reports expected refusals separately from genuine
 upgrade passes, with separate summary acceptance and full upgrade acceptance.
 
-The standalone consent entry names [#6802](https://github.com/Cotal-AI/Cotal/issues/6802). The container
+The original 40 required cells have no active known refusal on current releases. The two killed-updater cells require their own evidence. The standalone consent entry
+for [#6802](https://github.com/Cotal-AI/Cotal/issues/6802) is retired now that the staged updater
+preserves a running standalone Manager's loaded execution generation across the update. The container
 entry names [#6785](https://github.com/Cotal-AI/Cotal/issues/6785) and applies only to source 0.164.6;
-source 0.164.7 must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747).
+source 0.164.7 and later must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747)
+and is capped at `fixedIn: "0.164.8"`.
 Entries with no released fix use `fixedIn: null`. Set the cutoff only when a release carries the fix,
 then remove stale entries when their listed source turns green. A packed target fix does not change
 which installed source executes the first update attempt.
@@ -213,6 +234,10 @@ node scripts/automatic-update-platform-baseline.mjs --list linux
 node scripts/automatic-update-platform-baseline.mjs --source <source-version> --layout npm --state configured --method self --expected-target <version> --output ./upgrade-evidence
 node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence
 ```
+
+You can also pass a symlink to the matrix driver in these commands. Leave
+`--preserve-symlinks-main` off when the symlink is outside `scripts/`, so Node can resolve the
+driver's imports from the script directory.
 
 `--expected-target` freezes public latest at both resolutions. Omit it only for an explicitly
 runtime-latest diagnostic. A same-version result is not a version-changing upgrade. Optional shell

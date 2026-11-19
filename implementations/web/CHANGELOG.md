@@ -1,5 +1,71 @@
 # @cotal-ai/web
 
+## 0.169.0
+
+### Patch Changes
+
+- 64ef30d: The web dashboard page now changes a saved dashboard's credential or posting options with `cotal service start` while the service is stopped. It used to tell you to run `cotal service add web` again, which is refused once the definition exists, so the dashboard stayed read-only.
+- 2a71cc3: Release `web.pid` when a dashboard service fails before publishing its session record, reclaim PID custody slots whose recorded process exited and had its PID reused by a process with a different start token, and remove retired service instance logs, launch scratch files, sidecar receipts, and empty per-space service folders during stack restarts, instance removal, and `space forget`.
+
+## 0.168.0
+
+### Patch Changes
+
+- bd5b41b: The dashboard and manager console restrict browser scripts to their own assets and omit referrers.
+  
+  Both surfaces send Content-Security-Policy and X-Content-Type-Options headers. Dashboard launch links retain their single-use exchange. The manager console removes its launch token from the address bar after its page scripts load.
+- 9d5a50b: `cotal service add web --preset web` now refuses `--posting-creds` without `--no-read-only`, or `--no-read-only` without `--posting-creds`, and saves nothing. Before, it saved the definition and every start was refused. A start of a saved dashboard definition with either problem, or with a wildcard `--host`, now names the one condition that failed and the `cotal service remove` and `cotal service add` that change it. A wildcard host no longer prints the usage of `service start`. A preset refusal while `service add` builds a definition no longer prints the command's usage after a remedy that already says the whole fix.
+
+## 0.167.0
+
+No changes in this release.
+
+## 0.166.3
+
+No changes in this release.
+
+## 0.166.2
+
+No changes in this release.
+
+## 0.166.1
+
+### Patch Changes
+
+- 04338d1: Enable dashboard service posting with an explicitly supplied separate credential while keeping read-only mode the default.
+- eaffa0a: Open an authenticated local dashboard browser session with `cotal service start web`, reusing a running dashboard and preserving manual access with `--no-open`.
+
+## 0.166.0
+
+### Patch Changes
+
+- 9b75f60: Keep unused dashboard and Linear implementation helpers private without changing the public package APIs.
+
+## 0.165.4
+
+### Patch Changes
+
+- 3853c66: The dashboard session cookie is now `SameSite=Lax`, so a link to the dashboard on another site, such as a homepage tile, opens it in the browser profile that exchanged the launch link. With `SameSite=Strict` that navigation answered 401 `unauthenticated`. Another site's fetches and POSTs are still refused with 403 `cross-origin`, and the browser does not attach the cookie to them.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+No changes in this release.
+
+## 0.165.0
+
+### Patch Changes
+
+- 503c3eb: Stop unfinished legacy dashboard delete uploads after ten seconds without changing the channel.
+  The body deadline returns HTTP 408 and closes the connection even when the caller keeps sending small chunks. The existing 8 KiB limit and read-only service refusal are unchanged.
+
 ## 0.164.18
 
 No changes in this release.

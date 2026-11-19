@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
@@ -14,7 +15,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 40);
+  assert.equal(plan.matrix.include.length, 45);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -38,7 +39,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 40);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 45);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
@@ -88,7 +89,7 @@ test('durable events preserve immutable heads without privileged PR execution or
   assert.equal(workflow.jobs['release-cells'].strategy['fail-fast'], false);
 });
 function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', sourceVersion = '0.164.6', targetVersion = '0.164.7', phase = 'candidate', corrupt = false } = {}) {
-  const root = mkdtempSync('/var/tmp/upgrade-matrix/census-guard-');
+  const root = mkdtempSync(join(tmpdir(), 'census-guard-'));
   const base = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: targetVersion, profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion });
   base.phase = phase;
   for (const cell of base.cells) cell.phase = phase;
@@ -262,7 +263,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
   if (data.cell.followOnAction === 'self') {
     data.report.calls.push({ label: 'candidate follow-on self update under test', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], ...followUpdate });
   } else if (data.cell.followOnAction === 'npm') {
-    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update --self\` to reconcile this installation.\n`, stderr: '' };
+    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update\` to reconcile this home's extensions.\n`, stderr: '' };
     const reconciledVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n`, stderr: '' };
     const bareRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${b} and this cotal is ${c} - run \`cotal update --self\` to reconcile this installation` }] } }), stderr: '' };
     const reconciledRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null }] } }), stderr: '' };
@@ -557,11 +558,14 @@ test('actual census binds rolling source and rejects raw source, harness or dige
   for (const change of [d => { d.report.source = '0.164.6'; }, d => { d.report.sourceRequested = 'latest'; }, d => { d.report.candidate.source = 'b'.repeat(40); }, d => { d.report.harnessSha256 = '0'.repeat(64); }, d => { delete d.report.cleanupSafety; }]) assert.notEqual(fixture(change, { sourceVersion: '0.164.7', targetVersion: '0.164.8' }).exit, 0);
   assert.notEqual(fixture(() => {}, { corrupt: true }).exit, 0);
 });
-function standaloneEvidence(data) {
-  const entry = knownRefusals.find(entry => entry.id === 'linux-npm-standalone-stop-consent');
-  const stdout = entry.stdout.replaceAll('{{space}}', 'upgrade-proof').replaceAll('{{manager}}', 'sdz0a0f5fxj1ct3pzd181eaqvdozem1').replaceAll('{{pid}}', '2699');
-  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr: entry.stderr };
-  Object.assign(data.report, { result: 'failed', state: 'agent', agentHost: 'standalone', managerHost: { mode: 'standalone', space: 'upgrade-proof' }, update });
+function containerRefusalEvidence(data) {
+  const entry = knownRefusals.find(entry => entry.id === 'linux-npm-container-manager');
+  const space = 'update-participant-a-1794633286189';
+  const owner = 'u_wdhhojionrz2rav4mearesx4ou';
+  const stdout = entry.stdout.replaceAll('{{space}}', space);
+  const stderr = entry.stderr.replaceAll('{{owner}}', owner);
+  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr };
+  Object.assign(data.report, { result: 'failed', state: 'configured', participant: { remote: true, localManagerStarted: false, space, owner }, update });
   data.report.extensionsBefore = Array.from({ length: 8 }, (_, i) => ({ pkg: `@cotal-ai/extension-${i}`, version: data.cell.sourceVersion }));
   data.report.extensionsAfter = structuredClone(data.report.extensionsBefore);
   data.report.assertions = [...entry.failedAssertions.map(name => ({ name, passed: false, observed: name === 'upgrade exits successfully' ? update : name === 'CLI version is target' ? data.cell.sourceVersion : undefined })), ...entry.requiredAssertions.map(name => ({ name, passed: true }))];
@@ -569,20 +573,37 @@ function standaloneEvidence(data) {
 test('actual summary accepts only exact safe listed red and keeps full upgrade acceptance false', () => {
   for (const phase of ['candidate', 'published']) {
     const result = fixture(data => {
-      standaloneEvidence(data);
+      containerRefusalEvidence(data);
       if (phase === 'published') { data.report.tier = 'published'; data.report.environment.registryOverridden = false; delete data.report.candidate; }
-    }, { scenario: 'standalone-stop-consent', phase });
+    }, { scenario: 'container-manager', phase });
     assert.equal(result.exit, 0, result.stderr);
     const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
     assert.equal(census.acceptance, true);
     assert.equal(census.upgradeAcceptance, false);
     assert.equal(census.passed.length, 0);
-    assert.equal(census.knownRefusals[0].issue, 'https://github.com/Cotal-AI/Cotal/issues/6802');
+    assert.equal(census.knownRefusals[0].issue, 'https://github.com/Cotal-AI/Cotal/issues/6785');
+  }
+});
+test('actual summary accepts standalone-stop-consent as a genuine pass with no known refusal', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(data => {
+      data.report.state = 'agent';
+      data.report.agentHost = 'standalone';
+      data.report.calls = [{ argv: ['update', '--self', '--stop-agents'], exit: 0 }];
+      data.report.assertions.push({ name: 'owned local stack cleanup succeeds', passed: true });
+      if (phase === 'published') { data.report.tier = 'published'; data.report.environment.registryOverridden = false; delete data.report.candidate; }
+    }, { scenario: 'standalone-stop-consent', sourceVersion: '0.164.16', targetVersion: '0.164.17', phase });
+    assert.equal(result.exit, 0, result.stderr);
+    const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
+    assert.equal(census.acceptance, true);
+    assert.equal(census.upgradeAcceptance, true);
+    assert.deepEqual(census.passed, ['linux-npm-standalone-stop-consent']);
+    assert.equal(census.knownRefusals.length, 0);
   }
 });
 test('actual summary refuses listed green, changed refusal, extra failure and missing cleanup', () => {
   for (const mutate of [d => { d.report.result = 'passed'; }, d => { d.report.update.stdout += 'changed\n'; }, d => { d.report.assertions.push({ name: 'extra failure', passed: false }); }, d => { d.report.cleanupSafety.passed = false; }, d => { d.report.candidate.source = 'b'.repeat(40); }]) {
-    const result = fixture(d => { standaloneEvidence(d); mutate(d); }, { scenario: 'standalone-stop-consent' });
+    const result = fixture(d => { containerRefusalEvidence(d); mutate(d); }, { scenario: 'container-manager' });
     assert.notEqual(result.exit, 0);
   }
   const unknown = fixture(d => { d.report.result = 'failed'; });

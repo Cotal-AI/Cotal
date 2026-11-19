@@ -1,4 +1,5 @@
 /** The desktop shell's bounded stdio adapter. It holds no login session or broker credentials. */
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { defaultComputerName } from "./computer-name.js";
 import { computerName } from "./name-validation.js";
@@ -20,7 +21,7 @@ export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
-  | { [K in "about" | "status" | "status-watch" | "install"]: { readonly op: K } }["about" | "status" | "status-watch" | "install"]
+  | { [K in "about" | "status" | "status-watch" | "install" | "log"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log"]
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
@@ -33,7 +34,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "status-watch", "install", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -54,7 +55,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -87,7 +88,7 @@ export async function readDesktopRequest(input: Readable): Promise<DesktopReques
   } finally { clearTimeout(timer); }
 }
 
-export interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "peerPid"> {
+interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "peerPid"> {
   readonly version: string;
   /** Resolve only for a valid request that needs the daemon, inside the framed error boundary. */
   readonly resolveTarget: () => { readonly paths: QueryOptions["paths"]; readonly home?: string };
@@ -172,6 +173,30 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     if (req.op === "status" || req.op === "status-watch" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     target = opts.resolveTarget();
     const { paths, home } = target;
+    if (req.op === "log") {
+      let fd: number | undefined;
+      let bytes = Buffer.alloc(0), truncated = false;
+      try {
+        try { fd = openSync(nativeDaemonLog(paths.state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (fd !== undefined) {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
+          const start = Math.max(0, stat.size - 8192);
+          truncated = start > 0;
+          bytes = Buffer.alloc(Math.min(8192, stat.size));
+          let length = 0;
+          while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
+          bytes = bytes.subarray(0, length);
+        }
+      } finally { if (fd !== undefined) closeSync(fd); }
+      const text = bytes.toString("utf8")
+        .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+        .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+        .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
+      emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
+      return;
+    }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();

@@ -184,7 +184,7 @@ try {
   c("a turn is accepted against the live seat", (a1 as { ok?: boolean }).ok === true, a1);
 
   const pendingOf = (mgr: Manager): { seatDiedAt?: number } | undefined =>
-    (mgr as unknown as { pendingTurns: Map<string, { seatDiedAt?: number }> }).pendingTurns.get(`${runner.owner}.${runner.actor}.${runner.uid}.${g1}`);
+    (mgr as unknown as { turnRelay: { pendingTurns: Map<string, { seatDiedAt?: number }> } }).turnRelay.pendingTurns.get(`${runner.owner}.${runner.actor}.${runner.uid}.${g1}`);
 
   if (typeof firstPid === "number") {
     try { process.kill(firstPid, "SIGKILL"); } catch (e) { c("SIGKILL the live pid", false, e); }
@@ -299,7 +299,11 @@ try {
   // store-identity challenge. Unbind it first so start sees an absent rail, which
   // is not a named store, and the cell can still grade the user-mode accept
   // refusal. Later cells do not need the daemon.
-  await waitFor(() => (manager as unknown as { retiring: Map<string, unknown> }).retiring.size === 0,
+  await waitFor(() => (manager as unknown as {
+    retirement: {
+      retiring: Map<string, unknown>;
+    };
+  }).retirement.retiring.size === 0,
     "fixture retirements completed before delivery teardown");
   await delivery?.stop().catch(() => {});
   delivery = undefined;

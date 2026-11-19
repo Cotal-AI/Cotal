@@ -1,5 +1,77 @@
 # @cotal-ai/pi
 
+## 0.169.0
+
+### Minor Changes
+
+- a59864f: A connector's local control endpoint no longer trusts whoever holds its name, and sessions launched before this release must be restarted. A hook used to send the endpoint key in its first frame and print whatever came back, so another local user who took the socket or pipe name after the connector's server exited received the key and could answer the hook. Each connection now runs the control exchange: the client and the server each prove with HMAC-SHA256 over fresh nonces that they hold the key, the reply carries a MAC, the hook's delivery receipt carries a MAC over that reply, and neither side sends the key. Every line is bounded in bytes before it is parsed, every reply included. The lifecycle hooks, the Manager's cooperative stop and session calls, and the Hermes Python hooks all move to it. The Hermes bridge adapter now presents a token derived from the key (HMAC-SHA256 over `cotal-hermes-bridge/1`) in place of the key. A client waits at most 1 second for the server's proof, and a server drops a connection that proves nothing within 5 seconds.
+  
+  The exchange has a version, `CONTROL_PROTOCOL_VERSION` (1), that travels with the key: `LaunchSpec.control` is now `{ path, token, version }`. The key moves to new carrier names: the launch material carries `controlKey` and `controlVersion`, and a hand-driven session sets `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION=1`. A hook or connector from an earlier release finds no key in a new launch, so one that requires a control endpoint refuses to start, and this release refuses the old `controlToken` and `COTAL_CONTROL_TOKEN`. An earlier Hermes launcher mints its own key and keeps running its own sidecar and gateway. A key without a version, a version a build does not speak, and a peer of another version are all refused, with no fallback. A hand-set key with whitespace around it and a version set without a key are refused, by the TypeScript and Python readers alike. A Claude Code session that reloads its plugin after the upgrade re-reads launch material written before it, which has no version, so it refuses until the session is restarted. `materialEnv` takes `control` (the endpoint) in place of `controlToken`, and `controlEndpoint` takes the launch's artifact list as its third argument.
+  
+  Off Windows each launch's control socket now sits in a directory of its own, `cotal-ctl-<id>` under the temp directory, named from the key. Minting the endpoint creates it with mode 0700 and refuses one that already exists, the server checks its owner and mode before it binds and never creates it, every client checks it before it connects, and the launcher removes it with the launch's other artifacts. A directory that is missing or fails the check counts as no endpoint, so a hand-driven `COTAL_CONTROL_SOCKET` must point into a private directory that exists. A Hermes stop now waits for the gateway to exit in every mode before it removes that directory, and keeps the directory when it cannot prove the exit. Hermes standalone mode keeps its own `cotal-hermes-*` directory instead, which nothing removes. The Hermes bridge socket moves beside the control socket, and a Hermes adapter whose bridge directory is not private reports a permanent error instead of a connected platform that drops its replies. `@cotal-ai/core` exports the exchange (`clientExchange`, `serverExchange`, `controlCall`, `checkControlSocketDir`, `assertControlSocketDir`, `assertControlEndpoint`), and `clientExchange` and `controlCall` require `maxReplyBytes` as a finite, non-negative whole number; `tokenMatches`, `AUTH_DEADLINE_MS`, `MAX_FRAME_BYTES` and `HANDOFF_RECEIPT` are no longer exported by `@cotal-ai/connector-core`.
+
+### Patch Changes
+
+- a103e1e: Quote the missing-application spawn retry command and verify retained setup seeds, absent stopped targets, unverified Pi sender labels and private Jcode startup diagnostics.
+
+## 0.168.0
+
+No changes in this release.
+
+## 0.167.0
+
+### Patch Changes
+
+- acc1003: A pi seat's mention wake now names the sender and channel with the same label as the other connectors' frames, so it is always one line. Control characters, line separators and brackets in a peer's name, role or channel label are shown as spaces.
+
+## 0.166.3
+
+No changes in this release.
+
+## 0.166.2
+
+No changes in this release.
+
+## 0.166.1
+
+### Patch Changes
+
+- bf3d2f0: A pi turn that fails now shows pi's own error in the agent's presence line, for example `Pi turn ended with error (Unknown provider: unknown) after 2 automatic continuation attempts`. Before this, the line said only that the turn ended with an error. When pi had no model provider set up, the user was told to start a new turn or replace the seat, and neither step helps. The error is put on one line and cut to 300 characters.
+- 9541212: A Pi seat now receives messages that arrive during a long run at its next turn boundary instead of only when the run ends. On transports without a provider response hook, such as the Codex subscription, Pi running a tool from an answer now confirms the batch that request carried. A steer sent while a tool runs no longer trips the dispatch watchdog's hold, which used to block every later message for the rest of the run.
+
+## 0.166.0
+
+### Patch Changes
+
+- c23de83: Keep internal connector helpers and types module-private while preserving the published package exports.
+
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Patch Changes
+
+- a97aade: Report harness work timestamps across the Claude Code, Codex, Hermes, OpenCode and pi connectors.
+  
+  Relay work events into the existing presence `activeAt` field so roster and operator surfaces can date the last reported work separately from heartbeats. No new wire field or progress verdict is added. Boundary-only hosts report less frequently than streaming hosts, and work age cannot distinguish a slow provider from a hung one.
+- 18d2cda: A channel post that mentions an agent who may not read the channel no longer drops that mention silently. On an authenticated mesh the delivery daemon sends the post's sender a mention notice that names those agents, so the sender can reach them another way. The connectors show it as `[mention notice from the delivery daemon]`, and Hermes runs it in its own `notice:mention` chat.
+
 ## 0.164.18
 
 No changes in this release.

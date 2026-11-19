@@ -71,24 +71,24 @@
     },
     {
       "name": "N6 restart an inline seat without checking its snapshot",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "    const changed = this.inlineSnapshotChange(a);\n",
+      "file": "implementations/manager/src/session-recovery.ts",
+      "find": "    const changed = this.deps.inlineSnapshotChange(a);\n",
       "replace": "    const changed = undefined as string | undefined;\n",
       "expectRed": "a changed snapshot retires a supervised inline seat instead of restarting it",
       "cell": "a changed snapshot retires a supervised inline seat instead of restarting it"
     },
     {
       "name": "N7 keep the snapshot when the live slot frees",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "      if (a.launch.source.kind !== \"inline\" || this.deps.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
       "replace": "      if (a.launch.source.kind !== \"inline\") target.snapshotSettled = true;\n",
       "expectRed": "an open-mesh inline seat's snapshot goes when its seat exits",
       "cell": "an open-mesh inline seat's snapshot goes when its seat exits"
     },
     {
       "name": "N8 keep the snapshot at the static retirement terminal",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.workspaceRoot, a.lifecycleUid));\n",
+      "file": "implementations/manager/src/managed-static-lifecycle.ts",
+      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.deps.workspaceRoot(), a.lifecycleUid));\n",
       "replace": "",
       "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid",
       "cell": "the static retirement terminal removes a snapshot by its lifecycle uid"
@@ -175,9 +175,9 @@
     },
     {
       "name": "N18 settle a freed seat's snapshot when its removal failed",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
-      "replace": "      if (a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid) || true) target.snapshotSettled = true;\n",
+      "file": "implementations/manager/src/names-capacity.ts",
+      "find": "      if (a.launch.source.kind !== \"inline\" || this.deps.dropInlineSnapshot(a.name, a.lifecycleUid)) target.snapshotSettled = true;\n",
+      "replace": "      if (a.launch.source.kind !== \"inline\" || this.deps.dropInlineSnapshot(a.name, a.lifecycleUid) || true) target.snapshotSettled = true;\n",
       "expectRed": "a retirement that cannot remove the snapshot keeps the name held and says why",
       "cell": "a retirement that cannot remove the snapshot keeps the name held and says why"
     },

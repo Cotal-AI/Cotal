@@ -36,8 +36,9 @@ export interface InboxItem {
   text: string;
   replyTo?: string;
   contextId?: string;
-  /** Set on a delivery daemon's notice about one of this session's own role requests. */
-  notice?: "anycast";
+  /** Set on a delivery daemon's notice about one of this session's own role requests (`anycast`)
+   *  or about a channel post whose mention it could not deliver (`mention`). */
+  notice?: "anycast" | "mention";
 }
 
 /** An exact-key drain: the items found plus the receive keys that were not present. */

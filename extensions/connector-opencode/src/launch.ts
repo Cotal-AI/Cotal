@@ -131,12 +131,12 @@ function isLiveOpencodeServe(pid: number): boolean {
 
 /** The foreground TUI's argv, built from the server it attaches to. Its env carries the server's
  *  basic-auth credentials, so the argv never needs the secret. */
-export type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
+type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
 
 /** Extra env for the server, built from inputs the caller writes into the agent's home. It runs only
  *  once no seat of this name is running, so a refused launch never rewrites files a running seat's
  *  server still reads. */
-export type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
+type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
 
 export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<void> {
   const port = process.env.COTAL_OPENCODE_PORT?.trim() || String(await freePort());
@@ -199,7 +199,14 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
   // plugin and the viewer below can each act on it without probing anything themselves.
-  const versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8" }).trim();
+  let versionRaw: string;
+  try {
+    versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch (error) {
+    const stderr = String((error as { stderr?: string | Buffer }).stderr ?? "").trim();
+    process.stderr.write(`[cotal-connector] OpenCode version probe failed${stderr ? `: ${stderr.split(/\r?\n/).slice(-2).join(" | ")}` : ""}\n`);
+    process.exit(1);
+  }
   const line = opencodeLine(versionRaw, BIN);
 
   mkdirSync(agentHome, { recursive: true });
@@ -254,11 +261,15 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // The plugin's last line before the handshake. A host shows only the launcher's final row as the
   // cause of a failed launch (the Manager's `last output`), so the exit line below repeats it.
   let connectorLine: string | undefined;
+  let lastOutput = "";
   const scanner = (): ((d: Buffer) => void) => {
     const decoder = new StringDecoder("utf8");
     let partial = "";
     return (d) => {
-      if (!attached) bootOutput(d);
+      if (!attached) {
+        lastOutput = (lastOutput + d.toString()).slice(-4000);
+        bootOutput(d);
+      }
       if (sessionId) return;
       const lines = (partial + decoder.write(d)).split("\n");
       partial = lines.pop() ?? "";
@@ -283,8 +294,9 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   serve.on("close", (code, signal) => {
     if (!attached) {
       if (!bootFailed && !stopping) bootOutput(
-        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). ` +
-          (connectorLine ? `Last connector message: ${connectorLine}\n` : "Check the retained boot log for setup errors, then launch again.\n"),
+        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}); boot log: ${bootLog}. ` +
+          (connectorLine ? `Last connector message: ${connectorLine}. ` : "") +
+          (lastOutput.trim() ? `Last output: ${lastOutput.trim().split(/\r?\n/).slice(-2).join(" | ")}\n` : "\n"),
       );
       process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
     }

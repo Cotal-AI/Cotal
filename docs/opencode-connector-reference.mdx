@@ -149,8 +149,8 @@ something other than a model list, or takes longer than 6 seconds reports the ca
 with the reason.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
-the absolute path the manager resolved at boot. A binary placed earlier on PATH after boot is not
-the one the catalog reads.
+the absolute path the manager resolved when OpenCode became available. A binary placed earlier on
+PATH after that does not replace the one the catalog reads.
 
 Pick one at spawn, or set `model:` / `variant:` in the agent file (the flags win over the file):
 
@@ -249,9 +249,6 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
-- **On 2.x, `cotal models` lists no OpenCode catalog.** The 2.x catalog is served by a running
-  opencode server, not the CLI, so the connector reports `supported: false` with that reason. Pass
-  `--model provider/model` directly instead.
 
 ### Server state
 

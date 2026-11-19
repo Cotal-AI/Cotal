@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** The server's name in Desktop's config. Not `cotal`: that name is the Claude Code plugin's server. */
-export const DESKTOP_SERVER = "cotal-desktop";
+const DESKTOP_SERVER = "cotal-desktop";
 
 /** The name setup used before the Desktop server had one of its own. */
 const LEGACY_DESKTOP_SERVER = "cotal";

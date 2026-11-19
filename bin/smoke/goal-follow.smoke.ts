@@ -107,6 +107,7 @@ console.log("B. an ordinary silent wait still reports a DEADLINE (the change is 
 {
   const r = await submitAndFollowGoal(silentConn as never, "s", "manager", CALLER, 300, acceptance as never);
   ok("a subscribed-but-silent follow still times out", r.reply.error?.code === "deadline-exceeded", r.reply.error);
+  ok("the observation timeout keeps the accepted goal claim", (r.reply.data as { goalId?: string } | undefined)?.goalId === GOAL, r.reply);
   ok("...and still says the timeout is about the WAIT, not the work", (r.reply.error?.message ?? "").includes("timeout on the WAIT"), r.reply.error?.message);
 }
 

@@ -13,9 +13,11 @@
  *
  * Run: pnpm smoke:protected-paths
  */
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { strict as nodeAssert } from "node:assert";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync as nodeStat, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandFailure } from "../src/output.js";
@@ -437,6 +439,52 @@ if (process.getuid?.() !== 0) {
     try { chmodSync(dir, 0o700); } catch { /* already restored */ }
     if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior;
     rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// The system reader uses Python only when getfacl is absent. Exercise the real Python xattr
+// read on this entry, with PATH-local readers for unavailable/ACL and getfacl precedence cases.
+if (process.platform === "linux" && process.getuid?.() !== 0) {
+  const uid = process.getuid!();
+  const gid = process.getgid!();
+  const systemAccounts: AccountDatabase = {
+    nameServices: () => readFileSync("/etc/nsswitch.conf", "utf8"),
+    user: (id) => spawnSync("getent", ["passwd", String(id)], { encoding: "utf8" }).stdout,
+    group: (id) => spawnSync("getent", ["group", String(id)], { encoding: "utf8" }).stdout,
+    users: () => spawnSync("getent", ["passwd"], { encoding: "utf8" }).stdout,
+  };
+  const python = spawnSync("python3", ["-I", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" });
+  if (privateGroupGap(systemAccounts, uid, gid) === undefined && python.status === 0) {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-acl-reader-")));
+    const tools = join(base, "tools");
+    const entry = join(base, "entry");
+    mkdirSync(tools); mkdirSync(entry); chmodSync(entry, 0o775);
+    const prior = process.env.PATH;
+    const getent = spawnSync("/bin/sh", ["-c", "command -v getent"], { encoding: "utf8" }).stdout.trim();
+    symlinkSync(getent, join(tools, "getent"));
+    const executable = (name: string, body: string) => writeFileSync(join(tools, name), `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+    const check = () => assertProtectedEntry("the path", entry, nodeStat(entry));
+    try {
+      process.env.PATH = tools;
+      symlinkSync(python.stdout.trim(), join(tools, "python3"));
+      assert.doesNotThrow(check, "Python accepts a real clean group-writable entry without getfacl");
+      unlinkSync(join(tools, "python3"));
+      for (const attribute of ["system.posix_acl_access", "system.posix_acl_default"]) {
+        executable("python3", `exec '${python.stdout.trim()}' -I -c 'import os,sys; os.listxattr=lambda *a,**k: ["${attribute}"]; exec(sys.argv[1])' "$3" "$4"`);
+        refused(check, /has an extended ACL/, `chmod g-w ${entry}`, `${attribute} refuses through the Python reader`);
+      }
+      executable("python3", "exit 1");
+      refused(check, /python3 ACL read failed/, `chmod g-w ${entry}, or install acl`, "a failed Python read refuses");
+      executable("getfacl", "exit 0");
+      assert.doesNotThrow(check, "installed getfacl takes precedence over a failing Python reader");
+      executable("getfacl", "exit 1");
+      refused(check, /getfacl failed/, `chmod g-w ${entry}, or install acl`, "a failing installed getfacl does not fall back");
+      unlinkSync(join(tools, "getfacl")); unlinkSync(join(tools, "python3"));
+      refused(check, /python3 is not installed/, `chmod g-w ${entry}, or install acl`, "neither reader installed refuses");
+    } finally {
+      if (prior === undefined) delete process.env.PATH; else process.env.PATH = prior;
+      rmSync(base, { recursive: true, force: true });
+    }
   }
 }
 

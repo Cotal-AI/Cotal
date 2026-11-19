@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -16,6 +17,30 @@ const root = mkdtempSync(join(tmpdir(), "hosted-types-"));
 const compiler = require.resolve("typescript/bin/tsc");
 const typeRoots = dirname(dirname(require.resolve("@types/node/package.json")));
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+const privateDeclarations = [
+  ["agui-map", "ClaudeMapperOptions"],
+  ["agui-source", "ClaudeTranscriptSourceOpts"],
+  ["app-host", "AppHost", "AppHostOptions"],
+  ["approval-notice", "APPROVAL_ID"],
+  ["desktop-config", "DESKTOP_SERVER"],
+  ["hooks", "ChannelNotify", "ClaudeHandleDeps"],
+  ["user-mcp", "claudeDeclaredServerNames"],
+  ["wake-feed", "WakeFeed"],
+  ["once-exit", "ClaudeHost"],
+];
+const declarationFiles = [...privateDeclarations.map(([file]) => file!), "index"]
+  .map(file => join(packageRoot, "dist", `${file}.d.ts`));
+const declarations = ts.createProgram(declarationFiles, { noEmit: true });
+const checker = declarations.getTypeChecker();
+for (const [file, ...names] of privateDeclarations) {
+  const source = declarations.getSourceFile(join(packageRoot, "dist", `${file}.d.ts`))!;
+  const exports = checker.getExportsOfModule(checker.getSymbolAtLocation(source)!);
+  for (const name of names) assert.ok(!exports.some(item => item.name === name), `${file}: ${name} stays private`);
+}
+const entry = declarations.getSourceFile(join(packageRoot, "dist/index.d.ts"))!;
+assert.ok(checker.getExportsOfModule(checker.getSymbolAtLocation(entry)!).some(item => item.name === "userServerState"),
+  "userServerState remains part of the public package entry");
+
 const consumer = `import { PassThrough } from "node:stream";
 import { serveClaudeSession, type ClaudeSession, type ClaudeSessionOptions } from "@cotal-ai/connector-claude-code/mcp";
 const options: ClaudeSessionOptions = { env: {}, input: new PassThrough(), output: new PassThrough(), onShutdown: (code: number) => void code };

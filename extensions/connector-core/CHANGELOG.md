@@ -1,5 +1,129 @@
 # @cotal-ai/connector-core
 
+## 0.169.0
+
+### Minor Changes
+
+- a59864f: A connector's local control endpoint no longer trusts whoever holds its name, and sessions launched before this release must be restarted. A hook used to send the endpoint key in its first frame and print whatever came back, so another local user who took the socket or pipe name after the connector's server exited received the key and could answer the hook. Each connection now runs the control exchange: the client and the server each prove with HMAC-SHA256 over fresh nonces that they hold the key, the reply carries a MAC, the hook's delivery receipt carries a MAC over that reply, and neither side sends the key. Every line is bounded in bytes before it is parsed, every reply included. The lifecycle hooks, the Manager's cooperative stop and session calls, and the Hermes Python hooks all move to it. The Hermes bridge adapter now presents a token derived from the key (HMAC-SHA256 over `cotal-hermes-bridge/1`) in place of the key. A client waits at most 1 second for the server's proof, and a server drops a connection that proves nothing within 5 seconds.
+  
+  The exchange has a version, `CONTROL_PROTOCOL_VERSION` (1), that travels with the key: `LaunchSpec.control` is now `{ path, token, version }`. The key moves to new carrier names: the launch material carries `controlKey` and `controlVersion`, and a hand-driven session sets `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION=1`. A hook or connector from an earlier release finds no key in a new launch, so one that requires a control endpoint refuses to start, and this release refuses the old `controlToken` and `COTAL_CONTROL_TOKEN`. An earlier Hermes launcher mints its own key and keeps running its own sidecar and gateway. A key without a version, a version a build does not speak, and a peer of another version are all refused, with no fallback. A hand-set key with whitespace around it and a version set without a key are refused, by the TypeScript and Python readers alike. A Claude Code session that reloads its plugin after the upgrade re-reads launch material written before it, which has no version, so it refuses until the session is restarted. `materialEnv` takes `control` (the endpoint) in place of `controlToken`, and `controlEndpoint` takes the launch's artifact list as its third argument.
+  
+  Off Windows each launch's control socket now sits in a directory of its own, `cotal-ctl-<id>` under the temp directory, named from the key. Minting the endpoint creates it with mode 0700 and refuses one that already exists, the server checks its owner and mode before it binds and never creates it, every client checks it before it connects, and the launcher removes it with the launch's other artifacts. A directory that is missing or fails the check counts as no endpoint, so a hand-driven `COTAL_CONTROL_SOCKET` must point into a private directory that exists. A Hermes stop now waits for the gateway to exit in every mode before it removes that directory, and keeps the directory when it cannot prove the exit. Hermes standalone mode keeps its own `cotal-hermes-*` directory instead, which nothing removes. The Hermes bridge socket moves beside the control socket, and a Hermes adapter whose bridge directory is not private reports a permanent error instead of a connected platform that drops its replies. `@cotal-ai/core` exports the exchange (`clientExchange`, `serverExchange`, `controlCall`, `checkControlSocketDir`, `assertControlSocketDir`, `assertControlEndpoint`), and `clientExchange` and `controlCall` require `maxReplyBytes` as a finite, non-negative whole number; `tokenMatches`, `AUTH_DEADLINE_MS`, `MAX_FRAME_BYTES` and `HANDOFF_RECEIPT` are no longer exported by `@cotal-ai/connector-core`.
+- c4ca691: Stopping a principal-route serve no longer waits forever for a handler that never settles, and `CotalEndpoint.servePrincipal` now serves only the `agent` endpoint.
+  
+  `PrincipalServe.stop()` and `CotalEndpoint.stop()` abort the new `signal` in every principal handler's context, so a handler can end early, and wait for each handler in flight only until its request's `deadlineMs` has passed since the request arrived. The caller has stopped waiting by then, and a reply that comes later is dropped. A principal-route `deadlineMs` is now at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and `callPrincipal` throws `bad-request` before publishing, so stop waits at most 30 s.
+  
+  Breaking: `servePrincipal` now takes `{ handlers }` and serves the `agent` endpoint with `AGENT_CLUSTER`; it refuses an `endpoint` or `cluster` field. `servePrincipalRoute` and `EpPrincipalServeHandle`, the general serve for any cluster under any endpoint name, are no longer exported from the package root.
+  
+  Each serve of the `agent` endpoint takes a fresh `prompts.seq` from `nextPromptsSeq()` when it starts and shows `{ open: 0, seq }` with it, so one `(runtime.id, seq)` never names two states. A prompt desk's counter therefore starts one higher than before.
+  
+  A call no longer ends `internal` when something other than the broker's no-responders status reaches its no-responders sentinel. Any client that may make a JetStream API request can name that sentinel as its reply subject, so the caller now drops such a message and keeps waiting for the real reply, on the principal route and on service calls.
+  
+  A principal-route request with `replyExpected: false` is now refused before its handler runs. Every command on that route is request/reply, and such a request used to run the handler and send nothing.
+  
+  A principal-route reply the broker refuses to publish is now reported on the endpoint's `error` event. A principal-route call whose reply read the broker refused now throws `permission-denied` even when the flush it waits on never settles, where it used to throw `deadline-exceeded`. A principal serve retires the subscription handle of a replaced connection once that handle's handlers finish. `spec/cotal.schema.json` now gives the presence `prompts.open` and `prompts.seq` as non-negative integers.
+
+### Patch Changes
+
+- ec01e0a: A seat whose event frame reached the broker but whose acknowledgement was lost now settles that frame on its next start instead of stopping its event plane for good, and a halted event plane is retried at a wait that doubles up to five minutes instead of once a second. The retry proves the frame is the channel's newest one with a duplicate-window probe that can never store anything, or, once that window has closed, by reading the newest frame when the seat may read its own event channel; without either proof it halts as before.
+- 2c48ce6: Make the event retry smoke test confirm that the broker has forgotten a frozen message id before checking recovery after duplicate-window expiry.
+- 1fa14fd: Recover pending event frames from ended sessions before a new session publishes on the same event channel.
+- e09252c: Keep connector manager calls and their bearer cache in a dedicated internal component while preserving credentials, routing and error handling.
+- c28b783: Route named `manager.inspect` calls from user-auth seats to the peer's holding manager through live presence and a manager-call bearer for that instance, so `cotal_invoke` `manager` `inspect` no longer fails across two user-mode managers.
+
+## 0.168.0
+
+### Minor Changes
+
+- 296ea4d: A connector can now hold its agent's harness prompts, such as "Allow this command?", and let an authorized session see and answer them over the control surface, with the answer going to the agent's own process.
+  
+  `@cotal-ai/connector-core` adds the prompt desk: `openPromptDesk(ep, { warn })` serves the agent's `agent` endpoint (`prompts`, `prompt` and `prompt-answer`) on the principal route and keeps the presence field `prompts: { open, seq }`. It knows no harness. An adapter opens a prompt per native dialog with an offer bound and a settle bound, runs its own rules in `check`, hands the one accepted answer to its harness in `deliver`, reports what the harness was then seen to do with `settle`, and frees what it holds in `end`, which comes once per prompt. The desk runs the state table with one order rule, checks every answer in a fixed order, makes a retried answer safe, bounds an answer's reply at 10 s, holds at most 32 prompts open and remembers 32 closed ones, measures every summary against 4096 bytes when a prompt opens, and serves only on a connection whose `max_payload` is at least 524288 bytes, checked again on every reconnect. A hook that resolves, rejects or returns a value it should not never escapes as an unhandled rejection, a logger that throws stops no close, the timers measure from the prompt's own times, and a closed prompt lets go of its hooks. No connector opens a desk yet; the Claude adapter follows. SPEC §13.22 now specifies the desk's answer checks, its bounds and what moves a prompt.
+
+### Patch Changes
+
+- d443ef1: Keep connector inbox handling in a dedicated internal component while preserving MeshAgent's delivery and recall methods.
+
+## 0.167.0
+
+### Patch Changes
+
+- ded2be1: Message frames, preview rows, wake hints and the note naming withheld senders now mark a sender's name and role as `(unverified name)`, or `(unverified role)` when the name is blank and the frame shows the sender's id. The sender writes both itself; the `sender_id` beside them is the identity the broker checked. A long sender label is cut before the marker, and a preview row caps its channel or role label, so the marker stays whole in the 40-character notes and in each preview row. The Claude channel tag's `from` attribute carries the same marked label. A peer label now turns a double quote into a space, as it does a bracket, and the console's recipient completion uses the peer's id when the shown label differs from its name.
+- ad38504: Protect the installation update lock from project creation and keep the home-record, presence-render, and turn-intake checks current under permissive file modes.
+- 41d7ae9: Keep channel backlog received after a reconnect from starting new agent turns.
+  
+  Newly received durable channel copies more than five minutes old by their sender timestamp are marked historical and kept pull-only, including mentions. Recent copies and live subscription traffic keep their normal wake behavior across short reconnects. DMs and role requests keep their normal delivery behavior, and messages already buffered in the same process retain their classification.
+- afa5f97: `cotal_send` no longer calls an existing channel new when the channel list could not be read, for example while the connection comes back after a space restart. The post still goes out, and the result says whether the channel already existed could not be checked, with the read's error.
+- 7bf5e73: An agent can post again as soon as its space is back after a long outage. The endpoint retried a lost connection with a backoff that grows to a minute, and a send made while it waited failed after 10 seconds with a stale "connection refused". A call that needs the connection now starts the next attempt at once. Idle endpoints keep the spread-out retries.
+
+## 0.166.3
+
+### Patch Changes
+
+- ec9b5cb: A durable leave refused by an older hosted delivery service now asks the space's host to update instead of telling the participant to restart a local daemon.
+- f4c46bb: Refuse a `cotal_send` to a channel outside the post ACL in plain words.
+  
+  On a mesh that enforces ACLs, such a post used to fail with the broker's raw `Permissions Violation for Publish to "cotal.<space>.chat.<principal>.<channel>"`. It is now refused before it reaches the broker, as `cotal_join` refuses a channel outside the read ACL: `Can't post to #lab: it's outside your post ACL (allowPublish: none). Nothing was sent.` An open mesh enforces no post ACL and is unchanged.
+
+## 0.166.2
+
+### Patch Changes
+
+- f85c802: Release an unissued native connection request only after a matching terminal name refusal, so a conflicting name does not trap later requests. Preserve unknown recovery state and explain legacy name conflicts without displaying server text. Opt in to terminal refusals without changing older clients' behavior, and distinguish hosted name refusal from local automatic numbering.
+
+## 0.166.1
+
+### Patch Changes
+
+- ef7e5c4: Keep the accepted goal in a pending spawn result and reuse it when the same caller retries while its seat is still starting.
+
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- 6faefbd: Remove unused internal connector exports while preserving the published package API.
+
+## 0.165.4
+
+### Patch Changes
+
+- e61f1d5: Preserve event startup settings when Jcode clears its launch environment so sessions can join spaces that require events.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+### Patch Changes
+
+- 9c47f34: Setting a channel quiet now makes its ambient that is already waiting pull-only, and muting it makes everything already waiting from it pull-only, mentions included. Leaving a channel with `cotal_leave` makes its waiting ambient pull-only too. Before, those posts still entered the next turn, so an agent that quieted or left a busy channel got its whole backlog injected anyway. A message a host is already handing to the agent keeps its lane, and everything lowered stays readable with `cotal_inbox`.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+
+### Patch Changes
+
+- afd22be: A Jcode seat no longer reports `done` for a manager turn its model never received.
+  
+  Jcode acknowledges a message before it checks whether the API connection is still processing an earlier one, and then refuses the busy send with `Already processing a message`. The acknowledgement marked the send's manager turns as delivered, so a refused turn was never offered again. It settled as `done` at the seat's next turn boundary, or waited out its deadline when no boundary came. When the refusal answers the connector's latest send, those turns now go back to waiting and are sent again once the running native turn ends. `MeshAgent.unsurfaceTurns()` hands run turns back this way; a once task's confirmed handoff is unchanged.
+- 18d2cda: A channel post that mentions an agent who may not read the channel no longer drops that mention silently. On an authenticated mesh the delivery daemon sends the post's sender a mention notice that names those agents, so the sender can reach them another way. The connectors show it as `[mention notice from the delivery daemon]`, and Hermes runs it in its own `notice:mention` chat.
+- 100ea17: An authenticated seat whose DM durable is gone after a broker outage or restore now says so. `cotal_reconnect` and the `connectionIssue` in `cotal_connection_status` name the missing durable and the recovery: restart the session, or respawn it if a manager launched it. Before, reconnect reported a bare "consumer not found" and offered retries that could never bring the durable back, and status gave no reason. The endpoint now fails that rebind with `dm-durable-missing`. Open-mesh seats still recreate their durable on reconnect.
+
 ## 0.164.18
 
 No changes in this release.

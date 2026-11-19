@@ -117,7 +117,7 @@ export interface ClaudeEntry {
   sessionId?: string;
   timestamp?: string;
   isSidechain?: boolean;
-  origin?: { kind?: string };
+  origin?: { kind?: string; name?: string; asUser?: boolean };
   /**
    * Present on every submitted prompt and absent on tool results. **Not the run-opening gate** —
    * it is `"system"` on task-notifications and caveats too. Read ONLY where `origin` is absent,
@@ -230,6 +230,9 @@ const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
  */
 const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | "sdk" | "auto-continuation" | null => {
   const kind = entry.origin?.kind;
+  // Native wake and inline prompts use the plugin's own attribution, not a human's.
+  // Match the same origin as native-wake.js so their bodies stay off the event channel.
+  if (kind === "plugin" && entry.origin?.name === "cotal" && !entry.origin.asUser) return "channel";
   if (kind === undefined) {
     // ABSENT origin. Not an error — absence is a known shape — and not a blanket refusal either,
     // because a headless prompt has no `origin` and IS a turn.
@@ -267,7 +270,7 @@ export interface ClaudeBlock {
   is_error?: boolean;
 }
 
-export interface ClaudeMapperOptions {
+interface ClaudeMapperOptions {
   /** The native session id — `threadId` for every event. §3 forbids anything else claiming it. */
   threadId: string;
   /** Mints a `runId`. Connector-minted by §3.1, so every `RUN_STARTED` carries `runIdSource`. */

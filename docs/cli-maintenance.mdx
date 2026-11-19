@@ -326,8 +326,9 @@ and its flags and the manager preset's options (`--runtime`, `--roster`, `--name
 options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
 service show manager` reads it. A start that names another `--runtime` or other option for a
-stopped manager saves it again with that option, and says so. A running one refuses
-`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
+stopped manager saves it again with that option, and says so. With `--dry-run` it makes the same
+checks and saves nothing. A running one refuses `LIFECYCLE_BLOCKED` and names `cotal manager stop`
+first.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
@@ -346,7 +347,11 @@ any process is stopped. Missing signing authority refuses the check rather than 
 The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
-stack's manager, and `cotal manager start` reports it running and starts no second one. Two saved
+stack's manager, and `cotal manager start` reports it running and starts no second one.
+`cotal manager restart` does not restart a stack's manager by itself: it refuses `LIFECYCLE_BLOCKED`
+and names `cotal manager stop --yes`, then `cotal up`, which starts the manager again and reuses the
+running broker. When the stack's manager is stopped, `cotal manager start` refuses the same way and
+names `cotal up`. Two saved
 manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
 command. A manager that `cotal up` or `cotal supervise` started without a saved service is reported
 by `start` and `status` with its PID, and starts nothing beside it. `logs` reads the log `cotal up`
@@ -362,7 +367,12 @@ been started and names `cotal up` or `cotal manager start`. `cotal service logs 
 the same file when no `stack-manager` is saved. A
 manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
 and the other verbs refuse it while it runs, because no saved service owns it; it stops with its
-stack through `cotal down`, or where `cotal supervise` runs it.
+stack through `cotal down`, or where `cotal supervise` runs it. With no saved `stack-manager`,
+`cotal service stop stack-manager --yes` and `cotal service restart stack-manager --yes` identify
+that running manager and refuse `UNSUPPORTED` with the same stop advice. The refusal explains that
+stopping the manager stops every hosted workflow run it drives, and `cotal down` also stops the
+broker and agents. Revoke a run before the stop if it must not resume when the stack starts again
+([workflow operations](workflow-operations.mdx#revocation)).
 
 `--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
 stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.

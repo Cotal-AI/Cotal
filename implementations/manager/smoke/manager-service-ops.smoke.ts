@@ -614,7 +614,7 @@ try {
     const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
       parserRefusal.includes('"model" must not be empty')
-      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && rE.reply.ok === false && refusal.includes(`invalid persona definition ${emodelPath}: "model" must not be empty`)
       && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
       { parserRefusal, reply: rE.reply });
   }
@@ -697,7 +697,11 @@ try {
       rStatic.reply.ok === true && existsSync(staticPath) && loadAgentFile(staticPath).owner === undefined, rStatic.reply);
     const rStaticAgain = await A.call("define-persona", { name: "epstatic", persona: "Again." });
     check("so the same caller's redefine refuses as operator-owned",
-      rStaticAgain.reply.ok === false && String(rStaticAgain.reply.error?.message ?? "").includes("operator-owned"), rStaticAgain.reply);
+      rStaticAgain.reply.ok === false && rStaticAgain.reply.error?.code === "permission-denied" &&
+        rStaticAgain.reply.error.outcome === "not-executed" &&
+        rStaticAgain.reply.error.details?.some((detail) => detail.kind === "ai.cotal.persona-ownership-refused" && detail.operatorOwned === true) === true &&
+        String(rStaticAgain.reply.error.message).includes("operator-owned"), rStaticAgain.reply);
+    check("the refused redefine preserves the saved persona", loadAgentFile(staticPath).persona === "Static body.");
     const rStaticShow = await A.call("show-persona", { name: "epstatic" });
     check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
 

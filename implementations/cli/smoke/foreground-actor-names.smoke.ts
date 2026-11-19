@@ -18,7 +18,7 @@ if (process.argv[2] === "agent-bearer") {
 if (process.argv[2] === "worker") {
   await import("../src/index.js");
   const { runCli } = await import("../src/command.js");
-  const { registry, eventChannel, AGENT_LIFECYCLE_HELD, agentLifecycleHeld, EpEnvelopeError } = await import("@cotal-ai/core");
+  const { registry, eventChannel, AGENT_LIFECYCLE_HELD, agentLifecycleHeld, EpEnvelopeError, writeLaunchArtifact } = await import("@cotal-ai/core");
   type Connector = import("@cotal-ai/core").Connector;
   const { cotalAuthProvider } = await import("@cotal-ai/auth");
   // With no FOREGROUND_NAMES_URL the real provider runs. This fixture has no sign-in, so it refuses
@@ -62,17 +62,25 @@ if (process.argv[2] === "worker") {
   }
   const connector: Connector = {
     kind: "connector", name: "foreground-names-fixture", requires: [], eventChannel,
-    buildLaunch: (options) => ({
-      command: process.execPath,
-      args: ["-e", "console.log('FIXTURE_BEARER '+process.env.COTAL_BEARER_CMD);console.log('FIXTURE_CREDS '+process.env.FIXTURE_CREDS_PATH);console.log('FIXTURE_READY '+process.env.COTAL_NAME+' '+process.env.COTAL_ACTOR+' '+process.env.COTAL_BEARER_ACTOR);process.stdin.on('data',()=>process.exit(0));process.stdin.resume();"],
-      env: {
-        COTAL_NAME: options.name,
-        COTAL_ACTOR: options.userAuth?.actor ?? "",
-        COTAL_BEARER_ACTOR: options.userAuth?.bearerCmd[options.userAuth.bearerCmd.indexOf("--actor") + 1] ?? "",
-        COTAL_BEARER_CMD: JSON.stringify(options.userAuth?.bearerCmd ?? []),
-        FIXTURE_CREDS_PATH: options.creds ?? "",
-      },
-    }),
+    buildLaunch: (options) => {
+      const artifacts: string[] = [];
+      const artifact = process.env.FIXTURE_SIGNAL_FILES === "1"
+        ? writeLaunchArtifact(artifacts, "cotal-foreground-signal-", "launch.json", "{}") : "";
+      return {
+        command: process.execPath,
+        args: ["-e", "console.log('FIXTURE_PID '+process.pid);console.log('FIXTURE_BEARER '+process.env.COTAL_BEARER_CMD);console.log('FIXTURE_CREDS '+process.env.FIXTURE_CREDS_PATH);console.log('FIXTURE_ARTIFACT '+process.env.FIXTURE_ARTIFACT);process.on('SIGTERM',()=>{if(process.env.FIXTURE_IGNORE_SIGNALS!=='1')process.exit(0)});process.on('SIGHUP',()=>{if(process.env.FIXTURE_IGNORE_SIGNALS!=='1')process.exit(0)});process.stdin.on('data',()=>process.exit(0));process.stdin.resume();console.log('FIXTURE_READY '+process.env.COTAL_NAME+' '+process.env.COTAL_ACTOR+' '+process.env.COTAL_BEARER_ACTOR);"],
+        env: {
+          COTAL_NAME: options.name,
+          COTAL_ACTOR: options.userAuth?.actor ?? "",
+          COTAL_BEARER_ACTOR: options.userAuth?.bearerCmd[options.userAuth.bearerCmd.indexOf("--actor") + 1] ?? "",
+          COTAL_BEARER_CMD: JSON.stringify(options.userAuth?.bearerCmd ?? []),
+          FIXTURE_CREDS_PATH: options.creds ?? "",
+          FIXTURE_ARTIFACT: artifact,
+          FIXTURE_IGNORE_SIGNALS: process.env.FIXTURE_IGNORE_SIGNALS ?? "",
+        },
+        artifacts,
+      };
+    },
   };
   registry.register(connector);
   // Direct foreground execution. A bare spawn is a managed attachment, which needs terminals.
@@ -362,8 +370,43 @@ try {
   assert(digest(standing) === standingBefore && await row(standing) === readFileSync(standing, "utf8"), "the standing worker.creds survives the second spawn's retirement");
   await stop(spawnA);
   assert(!existsSync(credsA) && await row(credsA) === undefined && digest(standing) === standingBefore && await row(standing) !== undefined, `the first spawn's exit retires its own creds and leaves the standing worker.creds: ${spawnA.output}`);
+  // #7633: SIGTERM and SIGHUP to foreground `cotal spawn` stop the child harness, retire provisioned
+  // static/user credentials, and exit with the signal's status (143 / 129).
+  let signalChecks = 0;
+  const signalCheck = (cond: unknown, msg: string) => { assert(cond, msg); signalChecks++; };
+  const pidOf = (worker: Worker) => Number(/^FIXTURE_PID (\d+)$/m.exec(worker.output)?.[1] ?? "0");
+  const pidAlive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+  if (process.platform !== "win32") {
+    for (const [sig, expectedCode, ignoreSignals] of [["SIGTERM", 143, false], ["SIGHUP", 129, false], ["SIGTERM", 143, true]] as const) {
+      const sigWorker = launch(["--name", "worker", "--space", staticSpace], { FIXTURE_SIGNAL_FILES: "1", FIXTURE_IGNORE_SIGNALS: ignoreSignals ? "1" : "0" }, process.argv[1], staticRoot);
+      signalCheck(await sigWorker.ready, `${sig} static foreground spawn reaches a real child: ${sigWorker.output}`);
+      const sigCreds = credsOf(sigWorker);
+      const childPid = pidOf(sigWorker);
+      const artifact = /^FIXTURE_ARTIFACT (.+)$/m.exec(sigWorker.output)?.[1];
+      signalCheck(childPid > 0 && pidAlive(childPid) && existsSync(sigCreds) && !!artifact && existsSync(artifact), `${sig} child, creds and launch artifact exist before signal (ignore=${ignoreSignals})`);
+      sigWorker.child.kill(sig);
+      const sigExit = await sigWorker.closed;
+      signalCheck(sigExit === expectedCode, `${sig} to foreground spawn exits ${expectedCode}, got ${sigExit}: ${sigWorker.output}`);
+      signalCheck(!pidAlive(childPid), `${sig} to foreground spawn stops the child harness process ${childPid}`);
+      signalCheck(sigWorker.output.includes("↩ retired creds for worker (agent exited)") && !existsSync(sigCreds) && await row(sigCreds) === undefined, `${sig} to foreground spawn retires static creds and secret-store row: ${sigWorker.output}`);
+      signalCheck(!existsSync(dirname(artifact!)), `${sig} removes the launch artifact directory before exiting (ignore=${ignoreSignals})`);
+    }
+    writePersona("sig_user");
+    const releasedBefore = released.length;
+    const userSigWorker = launch(["--name", "sig_user"]);
+    signalCheck(await userSigWorker.ready, `SIGTERM user-mode foreground spawn reaches a real child: ${userSigWorker.output}`);
+    const userChildPid = pidOf(userSigWorker);
+    const userSecretPaths = agentSecretFilePaths(root, space, "sig_user");
+    signalCheck(userChildPid > 0 && existsSync(userSecretPaths.actorToken), "user-mode foreground child and actor token exist before SIGTERM");
+    userSigWorker.child.kill("SIGTERM");
+    const userSigExit = await userSigWorker.closed;
+    signalCheck(userSigExit === 143 && !pidAlive(userChildPid), `SIGTERM to user-mode foreground spawn exits 143 and stops child (exit=${userSigExit})`);
+    signalCheck(released.length === releasedBefore && !existsSync(userSecretPaths.actorToken) && !existsSync(userSecretPaths.sentinelCreds), `SIGTERM to remote user-mode foreground spawn shreds local material without claiming to revoke its remote grant: ${userSigWorker.output}`);
+  }
   console.log("FOREGROUND ACTOR NAMING: all real-process collision controls passed");
-  emitSentinel({ passed: 51 + relinkChecks, failed: 0 });
+  emitSentinel({ passed: 51 + relinkChecks + signalChecks, failed: 0 });
   passed = true;
 } finally {
   for (const worker of workers) await stop(worker);

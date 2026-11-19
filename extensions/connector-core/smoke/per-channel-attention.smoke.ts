@@ -4,6 +4,8 @@
  *   - muted: channel ambient AND @-mentions are ack-dropped at ingest (not buffered, no wake); a DM still arrives;
  *   - quiet: channel ambient is buffered pull-only and never automatic; a quiet @-mention stays automatic;
  *   - precedence: quiet BUFFERS even under global focus (override wins); normal/muted still drop under focus;
+ *   - buffered items: quiet makes buffered ambient pull-only, muted makes every buffered item pull-only, and a
+ *     leave makes the left channel's buffered ambient pull-only; an item in flight keeps its lane and nothing is raised;
  *   - boot seed: config.quiet/muted seed the map; reset on restart (a runtime setChannelMode is gone in a fresh agent);
  *   - presence mirror: setChannelMode/setAttention publish channelModes/attention to peers.
  * Run: pnpm smoke:channel-attention
@@ -54,9 +56,9 @@ const cfg: AgentConfig = {
   name: "Otto",
   role: "generalist",
   servers,
-  subscribe: ["normal-ch", "quiet-ch", "muted-ch"],
-  allowSubscribe: ["normal-ch", "quiet-ch", "muted-ch"],
-  allowPublish: ["normal-ch", "quiet-ch", "muted-ch"],
+  subscribe: ["normal-ch", "quiet-ch", "muted-ch", "leave-ch", "fam.>", "fam.a"],
+  allowSubscribe: ["normal-ch", "quiet-ch", "muted-ch", "leave-ch", "fam.>"],
+  allowPublish: ["normal-ch", "quiet-ch", "muted-ch", "leave-ch", "fam.>"],
   quiet: ["quiet-ch"], // operator file default
   muted: ["muted-ch"], // operator file default
   kind: "agent",
@@ -213,25 +215,62 @@ try {
   check("recall SKIPS quiet channel (already buffered live, no duplicate)", !rtexts.includes("recall-quiet"));
   await agent.setAttention("open");
 
-  // ============ receive-time snapshot: mode toggles never reclassify buffered items ============
+  // ============ buffered items: quiet and muted lower them to pull-only, nothing is raised ============
   reset();
   await pub.multicast("pre-mute", { channel: "normal-ch" });
   await sleep(350);
   check("normal ambient buffered before mute", agent.inboxCount() === 1);
   await agent.setChannelMode("normal-ch", "muted");
-  check("muting does NOT purge already-buffered items (prospective)", agent.inboxCount() === 1);
+  check("muting keeps an already-buffered item readable, pull-only", agent.inboxCount() === 1 && agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only")[0]?.text === "pre-mute");
   await agent.setChannelMode("normal-ch", "normal");
 
   reset();
   await pub.multicast("normal-before-quiet", { channel: "normal-ch" });
   await sleep(350);
   await agent.setChannelMode("normal-ch", "quiet");
-  check("normal→quiet does not suppress an already-automatic item", agent.peekInbox("automatic")[0]?.text === "normal-before-quiet" && agent.pendingWake() === 1);
+  check("normal→quiet makes an already-automatic item pull-only", agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only")[0]?.text === "normal-before-quiet" && agent.pendingWake() === 0);
   agent.drainInbox();
   await pub.multicast("quiet-before-normal", { channel: "normal-ch" });
   await sleep(350);
   await agent.setChannelMode("normal-ch", "normal");
   check("quiet→normal does not release an old pull-only item", agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only")[0]?.text === "quiet-before-normal" && agent.pendingWake() === 0);
+
+  reset();
+  await pub.multicast("mention-before-quiet", { channel: "normal-ch", mentions: ["otto"] });
+  await pub.multicast("ambient-before-quiet", { channel: "normal-ch" });
+  await sleep(350);
+  await agent.setChannelMode("normal-ch", "quiet");
+  check("normal→quiet keeps an already-buffered @-mention automatic", agent.peekInbox("automatic").map((i) => i.text).join() === "mention-before-quiet");
+  await agent.setChannelMode("normal-ch", "muted");
+  check("muting makes an already-buffered @-mention pull-only too", agent.peekInbox("automatic").length === 0 && agent.peekInbox("pull-only").length === 2);
+  await agent.setChannelMode("normal-ch", "normal");
+
+  reset();
+  await pub.multicast("held-before-quiet", { channel: "normal-ch" });
+  await sleep(350);
+  const held = agent.peekInbox("automatic")[0];
+  check("an item can be held for a hand-over", held !== undefined && agent.holdInFlight([held.recvKey]));
+  await agent.setChannelMode("normal-ch", "quiet");
+  check("an item a host is handing over keeps its lane when the channel goes quiet", agent.peekInbox("automatic")[0]?.text === "held-before-quiet");
+  if (held) agent.releaseInFlight([held.recvKey]);
+  await agent.setChannelMode("normal-ch", "normal");
+
+  // ============ leave: the left channel's buffered ambient becomes pull-only ============
+  reset();
+  await pub.multicast("leave-ambient", { channel: "leave-ch" });
+  await pub.multicast("leave-mention", { channel: "leave-ch", mentions: ["otto"] });
+  await pub.multicast("fam-a-ambient", { channel: "fam.a" });
+  await pub.multicast("fam-b-ambient", { channel: "fam.b" });
+  await sleep(350);
+  const autoTexts = () => agent.peekInbox("automatic").map((i) => i.text);
+  const pullTexts = () => agent.peekInbox("pull-only").map((i) => i.text);
+  check("posts on the channels to leave start automatic", ["leave-ambient", "leave-mention", "fam-a-ambient", "fam-b-ambient"].every((t) => autoTexts().includes(t)), autoTexts());
+  check("leave succeeds", (await agent.leaveChannel("leave-ch")).left);
+  check("leaving makes buffered ambient from the channel pull-only", !autoTexts().includes("leave-ambient") && pullTexts().includes("leave-ambient"), { auto: autoTexts(), pull: pullTexts() });
+  check("leaving keeps a buffered @-mention from it automatic", autoTexts().includes("leave-mention"), autoTexts());
+  check("family leave succeeds", (await agent.leaveChannel("fam.>")).left);
+  check("leaving a family lowers a channel this session no longer reads", pullTexts().includes("fam-b-ambient"), pullTexts());
+  check("leaving a family keeps a channel still joined on its own", autoTexts().includes("fam-a-ambient"), autoTexts());
 
   // ============ focus recall follows receive-time channel mode across toggles ============
   reset();

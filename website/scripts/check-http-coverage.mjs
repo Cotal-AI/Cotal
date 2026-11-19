@@ -47,7 +47,9 @@ const methods = node => {
 };
 const auth = trees.get('implementations/auth/src/service.ts');
 const functions = new Map();
-visit(auth, node => { if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node); });
+for (const file of ['implementations/auth/src/service.ts', 'implementations/auth/src/service-manager-routes.ts', 'implementations/auth/src/service-exchange-routes.ts']) {
+  visit(trees.get(file), node => { if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node); });
+}
 const tables = {};
 visit(auth, node => {
   if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !['ROUTES', 'routes'].includes(node.name.text)) return;

@@ -131,7 +131,7 @@ try {
       ],
       {
         cwd: desktopRoot,
-        env: { ...process.env, COTAL_HOME: desktopHome, SystemRoot: fakeSysRoot, COTAL_SCHTASKS_LOG: schtasksLog, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: desktopHome, SystemRoot: fakeSysRoot, COTAL_SCHTASKS_LOG: schtasksLog, COTAL_DAEMON_NATIVE_SERVICE: "1" },
         encoding: "utf8",
       },
     );

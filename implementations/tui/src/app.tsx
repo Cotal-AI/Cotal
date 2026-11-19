@@ -11,7 +11,8 @@ import { useToast } from "../vendor/opencode/packages/tui/src/ui/toast"
 import type { Catalog, Entry } from "./catalog.js"
 import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
-import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
+import type { Attached, Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
+import { endedText, TerminalPane } from "./pane.js"
 import { safe } from "./safe.js"
 import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems, tuiName, type Unread, unreadBySender } from "./screen.js"
 import type { SpawnRequest, SpawnState } from "./spawn.js"
@@ -52,6 +53,10 @@ type Queue = { cards: ReadonlyMap<string, Card>; answered: ReadonlySet<string>; 
 type Stop = { phase: "idle" } | { phase: "confirm"; name: string } | { phase: "stopping"; name: string; force: boolean } | { phase: "done"; text: string; tone: "success" | "error" }
 type Answer = "graceful" | "force" | "cancel"
 
+/** The attach pane over the middle column: opening while the manager grants the session, then open
+ *  on it, with the size its terminal was laid out at. The session says itself when it has ended. */
+type Pane = { phase: "opening"; name: string } | { phase: "open"; name: string; attached: Attached; size?: readonly [number, number] }
+
 /** A spawn the notice line follows. `from` is the conversation that was open when it began; the new
  *  agent's conversation opens only if it still is. */
 type Spawning = { state: Accessor<SpawnState>; from: string }
@@ -87,6 +92,12 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   const [recent, setRecent] = createSignal<readonly string[]>([])
   const [composer, setComposer] = createSignal<ComposerState>({ drafts: {}, sending: {} })
   const [focus, setFocus] = createSignal<Focus>("box")
+  const [pane, setPane] = createSignal<Pane>()
+  const closePane = () => {
+    const p = pane()
+    setPane(undefined)
+    if (p?.phase === "open") void p.attached.close()
+  }
   // The space a switch opens, and the one it leaves until that one's chat session has closed.
   const [switching, setSwitching] = createSignal<{ to?: string; from?: string }>({})
   // The composer imports the chat library, a few hundred milliseconds of loading, so it loads once a
@@ -274,6 +285,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const old = session()
     const was = conn().space
     setSwitching({ to: space, from: old && was })
+    closePane()
     setSession(undefined)
     setOpen({ kind: "channel", channel: DEFAULT_CHANNEL })
     setSeen({})
@@ -290,6 +302,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   void switchTo()
   onCleanup(() => {
     switches++
+    closePane()
     void session()?.close()
   })
 
@@ -385,6 +398,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   // Quitting closes the chat session first, as `cotal chat` does, and prints how it closed.
   const quit = async () => {
     dialog.clear()
+    closePane()
     switches++
     const s = session()
     const space = conn().space
@@ -516,6 +530,35 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     ))
   }
 
+  // Attach is pinned to the run the overview shows, as a stop is.
+  const askAttach = async () => {
+    const r = selection()
+    if (r?.kind !== "peer" || r.presence.card.kind !== "agent") return toast.show({ variant: "info", message: "Select an agent to attach to it" })
+    const m = managed()
+    const row = m.phase === "rows" ? m.byId.get(r.presence.card.id) : undefined
+    const s = session()
+    if (!row || !s) return toast.show({ variant: "info", message: `No manager on this space reports running ${tuiName(r.presence.card.name, r.presence.card.id)}` })
+    const opening: Pane = { phase: "opening", name: row.name }
+    setPane(opening)
+    const a = await s.attach(row, (line) => toast.show({ variant: "warning", message: line, duration: 10_000 }))
+    if (pane() !== opening) return a.ok ? void a.attached.close() : undefined
+    if (!a.ok) {
+      setPane(undefined)
+      return toast.show({ variant: "error", message: `attach: ${a.error}` })
+    }
+    setPane({ phase: "open", name: row.name, attached: a.attached })
+  }
+  const attached = createMemo(() => {
+    const p = pane()
+    return p?.phase === "open" ? p.attached : undefined
+  })
+  // While the pane is up every key goes to the agent, ctrl+c and ctrl+p included. The pane keeps esc
+  // esc for itself; until it is on screen, esc stops the attach.
+  createEffect(() => {
+    if (pane()) onCleanup(keymap.mode.push("attached"))
+  })
+  Keymap.createLayer(() => ({ mode: "attached", commands: pane()?.phase === "opening" ? [{ id: "cotal.attach.cancel", bind: "escape", title: "Stop attaching", group: "Agents", run: closePane }] : [] }))
+
   // Letter keys belong to the tree and the inspector. In the box they are text; `tab` there is bound
   // by the composer.
   const commands: Command[] = [
@@ -534,6 +577,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     { id: "cotal.quit-anywhere", bind: "ctrl+c", title: "Quit", group: "System", global: true, run: requestQuit },
     { id: "cotal.stop", bind: "shift+d", keys: "D", title: "Stop the selected agent", group: "Agents", palette: true, run: askStop },
     { id: "cotal.spawn", bind: "shift+s", keys: "S", title: "Spawn agent", group: "Agents", palette: true, run: () => void askSpawn() },
+    { id: "cotal.attach", bind: "a", keys: "a", title: "Attach to the selected agent's terminal", group: "Agents", palette: true, run: () => void askAttach() },
+    { id: "cotal.detach", keys: "esc esc", title: "Leave the agent's terminal; one esc goes to the agent", group: "Agents" },
     { id: "cotal.reply.quote", keys: "↑ ↓ click", title: "Quote a message to reply to; ↑ ↓ on an empty box", group: "Reply" },
     { id: "cotal.reply.drop", keys: "esc", title: "Drop the quote and keep the text", group: "Reply" },
     // Last, so the palette at 80x24 still opens on the commands above.
@@ -543,7 +588,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   ]
   const toLayer = (c: Command) => ({ ...c, run: (_input?: string, event?: KeyEvent) => c.run?.(event) })
   Keymap.createLayer(() => ({ commands: commands.filter((c) => !c.global && c.bind).map(toLayer) }))
-  Keymap.createLayer(() => ({ mode: "global", commands: commands.filter((c) => c.global).map(toLayer) }))
+  Keymap.createLayer(() => ({ mode: "global", commands: pane() ? [] : commands.filter((c) => c.global).map(toLayer) }))
 
   const statusFg = (p: Presence) =>
     ({ working: theme.text.feedback.success.base, waiting: theme.text.feedback.warning.base, idle: theme.text.muted, offline: theme.text.faint })[p.status]
@@ -824,28 +869,53 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   /** The inspector as one line, for a screen too narrow for it, such as `1 needs you · 3 unread · 2 mentions`. */
   const summary = () => groups().flatMap((g) => g.summary).filter(Boolean).join(" · ")
 
+  const middleWidth = () => dims().width - layout().tree - (inspectorWidth() ?? 0) - 4
+  const paneHeader = (): Line => {
+    const p = pane()!
+    if (p.phase === "opening") return { text: `attaching to ${p.name}…`, fg: theme.text.muted }
+    const ended = p.attached.ended()
+    if (ended !== undefined) return { text: `${p.name} · session ended: ${endedText(ended)} · esc closes`, fg: theme.text.feedback.warning.base }
+    return { text: `${p.name} · ${p.size ? `${p.size[0]}x${p.size[1]}` : "…"} · keys go to ${p.name}`, fg: theme.text.feedback.success.base }
+  }
+  const sized = (cols: number, rows: number) => setPane((p) => (p?.phase === "open" ? { ...p, size: [cols, rows] } : p))
+  const PaneView = () => (
+    <>
+      <text wrapMode="none" fg={paneHeader().fg} attributes={TextAttributes.BOLD} flexShrink={0}>
+        {fit(paneHeader().text, middleWidth())}
+      </text>
+      <Show when={attached()} keyed>
+        {(a) => <TerminalPane attached={a} onSize={sized} leave={closePane} />}
+      </Show>
+      <Show when={!attached()}>
+        <box flexGrow={1} />
+      </Show>
+    </>
+  )
+
   const Middle = () => (
     <box flexGrow={1} flexDirection="column" paddingLeft={2} paddingRight={2} paddingTop={1} minWidth={0} minHeight={0}>
-      <Show
-        when={notice()}
-        fallback={<Show when={mesh()}>{(m) => <Conversation mesh={m()} />}</Show>}
-      >
-        {(n) => (
-          <>
-            <text wrapMode="none" fg={theme.text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
-              {n().title}
-            </text>
-            <box height={1} flexShrink={0} />
-            <For each={n().lines}>
-              {(line) => (
-                <text fg={line.fg} flexShrink={0}>
-                  {line.text}
-                </text>
-              )}
-            </For>
-            <box flexGrow={1} />
-          </>
-        )}
+      <Show when={!pane()} fallback={<PaneView />}>
+        <Show
+          when={notice()}
+          fallback={<Show when={mesh()}>{(m) => <Conversation mesh={m()} />}</Show>}
+        >
+          {(n) => (
+            <>
+              <text wrapMode="none" fg={theme.text.base} attributes={TextAttributes.BOLD} flexShrink={0}>
+                {n().title}
+              </text>
+              <box height={1} flexShrink={0} />
+              <For each={n().lines}>
+                {(line) => (
+                  <text fg={line.fg} flexShrink={0}>
+                    {line.text}
+                  </text>
+                )}
+              </For>
+              <box flexGrow={1} />
+            </>
+          )}
+        </Show>
       </Show>
       <Show when={layout().kind === "two" && summary()}>
         {(line) => (
@@ -854,7 +924,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           </text>
         )}
       </Show>
-      <Show when={box()}>
+      <Show when={!pane() && box()}>
         {(b) => {
           const Composer = b().Composer
           return (
@@ -1032,14 +1102,25 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
   }
   const noticeLines = () => [stopLine(), ...spawns().map((x) => spawnLine(x.state()))].filter((l): l is Line => l !== undefined)
 
+  // While the pane is up the footer says how to leave it, and the app's own keys are the agent's.
+  const paneHint = (): Line | undefined => {
+    const p = pane()
+    if (!p) return undefined
+    if (p.phase === "opening") return { text: `attaching to ${p.name} · esc back`, fg: theme.text.muted }
+    if (p.attached.ended() !== undefined) return { text: `${p.name} session ended · esc back`, fg: theme.text.feedback.warning.base }
+    return { text: `${p.name} attached · esc esc back`, fg: theme.text.feedback.success.base }
+  }
   const StatusBar = () => (
     <box flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1} backgroundColor={theme.background.raised.high}>
       <text wrapMode="none" fg={indicator()?.fg ?? theme.text.faint} flexShrink={1}>
         {indicator()?.text ?? ""}
+        <span style={{ fg: paneHint()?.fg ?? theme.text.faint }}>{paneHint() ? `${indicator() ? " · " : ""}${paneHint()!.text}` : ""}</span>
       </text>
-      <text wrapMode="none" fg={theme.text.faint} flexShrink={0}>
-        ? help · ctrl+p commands
-      </text>
+      <Show when={!pane()}>
+        <text wrapMode="none" fg={theme.text.faint} flexShrink={0}>
+          ? help · ctrl+p commands
+        </text>
+      </Show>
     </box>
   )
 

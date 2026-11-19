@@ -21,7 +21,7 @@ export function readUpdatePending(current: string): UpdatePending {
     const extensions = loadExtensionsManifest().extensions
       .filter(entry => entry.pkg.startsWith("@cotal-ai/") && entry.version !== current)
       .map(entry => ({ package: entry.pkg, version: entry.version }));
-    return extensions.length ? { kind: "version-mismatch", extensions, instruction: `Reconciliation pending: ${repair}` } : { kind: "none" };
+    return extensions.length ? { kind: "version-mismatch", extensions, instruction: "Reconciliation pending: Run `cotal update` to reconcile this home's extensions." } : { kind: "none" };
   } catch (error) {
     return { kind: "unreadable", source: "manifest", error: error instanceof Error ? error.message : String(error), instruction: repair };
   }

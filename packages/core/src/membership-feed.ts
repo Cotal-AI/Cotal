@@ -561,6 +561,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     const serversSeen = new Set<string>(); // distinct responders across the whole sweep
     let gotReply = false, exhausted = false, seenSelf = false;
     const dropsBefore = connBDrops;
+    const downBefore = connBDown;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
@@ -599,7 +600,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
     // A sweep that ran while conn B itself was down (its own reconnect) is still incomplete, but it
     // missed nothing: conn B's return emits a CONNECT event, which polls again.
-    if (gotReply && exhausted && !seenSelf && !connBDown && connBDrops === dropsBefore)
+    if (gotReply && exhausted && !seenSelf && !downBefore && !connBDown && connBDrops === dropsBefore)
       log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until

@@ -111,6 +111,8 @@ See [Define a team](define-a-team.mdx) for continuity and [Session lifecycle](pi
 
 If a turn exhausts its continuation attempts, presence reports that delivery needs intervention.
 Start a new turn in the session or replace the seat.
+The presence line includes the error Pi reported.
+`Unknown provider: unknown` means Pi has no model provider set up on that computer, so set one up in Pi before you start a new turn.
 After an abort or dispatch watchdog, a managed restart ends any possibly active provider call before redelivery.
 The [delivery reference](pi-connector-reference.mdx#delivery-confirmation) explains when messages are acknowledged.
 

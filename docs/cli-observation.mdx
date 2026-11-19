@@ -81,15 +81,17 @@ cotal service stop web --space main --yes
 
 ### Dashboard authority
 
-This route requires a registered static-auth target, a protected credential file and explicit
-read-only intent. The file is the space's `web.creds` unless `--creds` names another one. `--host` chooses a concrete bind/browser address, default
+This route requires a registered static-auth target and a protected observer credential file.
+Read-only is the default. The file is the space's `web.creds` unless `--creds` names another one. `--host` chooses a concrete bind/browser address, default
 `127.0.0.1`; wildcard binds refuse. `--port` is 1 to 65535, default 7799. Broker coordinates and
 required TLS come from the registered target. Broker TLS does not encrypt the dashboard's HTTP
-listener. The file supplies the only connection authority.
+listener. The file supplies the observer connection authority.
 No cached human login, managed-seat identity, operator signer or channel-purger credential is
 substituted. User-auth/open targets refuse, because no supported caller handoff is connected for them.
-The page marks this service read-only and hides channel delete; the server also refuses it before
+The service hides channel delete and refuses it before
 reading a delete body or opening a mutation connection. The broker still enforces the file's scope.
+Posting requires `--no-read-only` and a separate protected `--posting-creds` file.
+See [Authorize posting](web-dashboard.mdx#authorize-posting) for a channel-scoped setup.
 
 
 ### Private launch record
@@ -100,8 +102,11 @@ a private process-initialization phase. This is not a fresh authenticated endpoi
 Logs print only the session file's reference, never its bootstrap URL or readiness credential. A
 background `service start` ends with the `service logs` command for the new instance, which is where
 that reference appears. An endpoint error or warning in that log names only the error's class, its
-name and code, never its message. Open the private file locally and use its single-use launch link in the
-intended browser. There is no automatic browser action. The existing cookie and origin gates remain in use. Confirmed close
+name and code, never its message. Background `cotal service start web` reads the matching private record
+and opens a fresh single-use link in the default browser. Repeating the command reuses the process
+and preserves existing browser sessions. The local launch capability is separate from readiness authority
+and is never printed. Use `--no-open` to retain the manual private-file route, including for remote listeners.
+Foreground starts remain manual. The existing cookie and origin gates remain in use. Confirmed close
 removes only this child's unchanged session/PID records; uncertainty retains custody.
 
 Foreground service start uses the shared terminal lifetime. OS installation and full native caller

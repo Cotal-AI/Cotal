@@ -6,7 +6,7 @@
  *   - Product-written lifecycle/slot state via public spawn path (no hand-staged records)
  *   - Dynamic memberships written by the real stock delivery daemon (Plane 3) via public joinChannel
  *   - Genuine offline presence without reaping or alias theft
- *   - Manager restart while authorized child is live/offline: real runtime adoption with SAME child PID/start
+ *   - In-process PTY retains the live/offline child without publishing an adoptable custody reference
  *   - Stock delivery stoppage: lease absence observed, inventory incomplete, alias held, residue retained
  *   - Stock Delivery restart (Gen 2) + Manager restart (Gen 2): startup reconciliation purges retained rows (0 residue)
  *   - Foreign principal and successor rows preserved throughout
@@ -18,6 +18,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
@@ -41,7 +42,6 @@ import {
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { processStartToken } from "@cotal-ai/seat";
-import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 
 const REPO = resolve(import.meta.dirname, "../../../");
 const TSX = join(REPO, "node_modules", ".bin", "tsx");
@@ -101,9 +101,9 @@ const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 
 // Strictly isolated private directory trees (mode 0700)
-const root = mkdtempSync("/tmp/s-r-");
-const home = mkdtempSync("/tmp/s-h-");
-const xdg = mkdtempSync("/tmp/s-x-");
+const root = mkdtempSync(join(tmpdir(), "s-r-"));
+const home = mkdtempSync(join(tmpdir(), "s-h-"));
+const xdg = mkdtempSync(join(tmpdir(), "s-x-"));
 const stateHome = join(xdg, "state");
 const cacheHome = join(xdg, "cache");
 const seatRoot = join(root, "seats");
@@ -112,7 +112,7 @@ mkdirSync(stateHome, { recursive: true, mode: 0o700 });
 mkdirSync(cacheHome, { recursive: true, mode: 0o700 });
 mkdirSync(seatRoot, { recursive: true, mode: 0o700 });
 mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
-const brokerStore = mkdtempSync("/tmp/s-b-");
+const brokerStore = mkdtempSync(join(tmpdir(), "s-b-"));
 const conf = join(root, `${SMOKE_BROKER_TOKEN}server.conf`);
 
 // Scrub ambient COTAL_* and routing from process.env before configuring fixture
@@ -163,6 +163,7 @@ const childScriptPath = join(root, "child-script.mjs");
 const childReadyFile = join(root, "child-ready");
 const childDynamicFile = join(root, "child-dynamic");
 const childOfflineFile = join(root, "child-offline");
+const childOnlineFile = join(root, "child-online");
 const childDisconnectFile = join(root, "child-disconnect");
 const childErrorFile = join(root, "child-error.log");
 const childPidFile = join(root, "child-pid");
@@ -185,7 +186,7 @@ try {
     consume: false,
     registerPresence: true,
     watchPresence: false,
-    card: { name: process.env.COTAL_NAME, owner: process.env.COTAL_OWNER || "local", actor: process.env.COTAL_ID || process.env.COTAL_ACTOR || process.env.COTAL_NAME, kind: "agent" },
+    card: { name: process.env.COTAL_NAME, owner: process.env.COTAL_OWNER || "local", actor: process.env.COTAL_ID || process.env.COTAL_ACTOR || process.env.COTAL_NAME, kind: "agent", meta: { "ai.cotal.manager.instance": process.env.COTAL_MANAGER_INSTANCE } },
   });
 
   ep.on("error", () => {});
@@ -213,6 +214,15 @@ try {
       fs.writeFileSync("${childDisconnectFile}", "disconnected");
     } catch (e) {
       fs.writeFileSync("${childErrorFile}", "sigusr2: " + (e?.stack || e?.message));
+    }
+  });
+
+  process.on("SIGCONT", async () => {
+    try {
+      await ep.setStatus("idle");
+      fs.writeFileSync("${childOnlineFile}", "online");
+    } catch (e) {
+      fs.writeFileSync("${childErrorFile}", "sigcont: " + (e?.stack || e?.message));
     }
   });
 
@@ -409,18 +419,21 @@ try {
   check("OFFLINE: durable memberships retained while offline", await memberRow("general", workerUid!) && await memberRow("dynamic", workerUid!));
 
   // A hard-pinned spawn of the offline agent's alias cannot steal it: its process still runs, so the
-  // spawn launches nothing and says so. The adoption cells below prove it is the same child.
+  // manager refuses the collision before launch. Verify the original child is unchanged below.
   const stealCli = runCli(["spawn", "worker", "--name", "worker", "--space", space, "--server", servers, "--agent", "scripted-sdk", "--detach", "--no-events"]);
-  check("OFFLINE: hard-pinned spawn cannot steal alias of offline agent (it says the agent already runs)",
-    stealCli.code === 0 && /worker is already running/.test(stealCli.err + stealCli.out), { out: stealCli.out, err: stealCli.err });
+  check("OFFLINE: hard-pinned spawn refuses the occupied alias with CONFLICT already-exists",
+    stealCli.code === 2 && /Code:\s+CONFLICT/.test(stealCli.err) && /Native code:\s+already-exists/.test(stealCli.err),
+    { code: stealCli.code, out: stealCli.out, err: stealCli.err });
 
-  console.log("D2) runtime adoption on live/offline child -> verify same child PID/start and footprint");
-  const runtime = new CustodialPtyRuntime(seatRoot);
-  const adoptedHandle = runtime.adopt(slotData.runtime);
-  check("ADOPT: runtime adopt returns live proxy with SAME child PID", adoptedHandle.pid === childPid, { expected: childPid, got: adoptedHandle.pid });
-  check("ADOPT: adopted child process still alive in kernel", typeof childPid === "number" && isProcessAlive(childPid));
-  check("ADOPT: child start identity unchanged after adoption", typeof childPid === "number" && processStartToken(childPid) === initialChildStart);
-  adoptedHandle.release?.();
+  console.log("D2) in-process PTY retains the child without durable custody");
+  check("PTY: product-written slot has no adoptable runtime reference", slotData.runtime === undefined);
+  check("PTY: stock launch created no custodian records", readdirSync(seatRoot).length === 0);
+  check("PTY: original child process still alive in kernel", typeof childPid === "number" && isProcessAlive(childPid));
+  check("PTY: child start identity unchanged after refused spawn", typeof childPid === "number" && processStartToken(childPid) === initialChildStart);
+
+  // Public name-based stop resolves live presence, so return the fixture online after the offline checks.
+  if (childPid) process.kill(childPid, "SIGCONT");
+  check("ONLINE: child restored presence before public stop", await until(() => existsSync(childOnlineFile), 5_000));
 
   console.log("E) stop Stock Delivery Daemon (Gen 1) -> verify lease absence & incomplete inventory hold");
   deliveryGen1.proc.kill("SIGTERM");

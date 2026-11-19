@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { hardenPrivate } from "@cotal-ai/core";
 import { activeModelRoute, type RuntimeIdentity } from "./route-identity.js";
 
-export type JcodeConnectorFailureCode =
+type JcodeConnectorFailureCode =
+  | "project_mcp_config"
   | "model_prefix_rejected"
   | "model_refused"
   | "model_mismatch"
@@ -17,12 +18,25 @@ export type JcodeConnectorFailureCode =
   | "provider_payment_required"
   | "provider_forbidden"
   | "provider_rate_limited"
+  | "provider_client_error"
   | "provider_request_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
 export class JcodeConnectorError extends Error {
   constructor(readonly code: JcodeConnectorFailureCode, message: string, options?: ErrorOptions) {
     super(message, options);
+  }
+}
+
+/** Project MCP files Jcode would load from the working directory over the private cotal entry. */
+export const PROJECT_MCP_FILES = [".jcode/mcp.json", ".mcp.json", ".claude/mcp.json"] as const;
+
+/** The working directory holds project MCP configuration. The message names only which of the
+ * fixed {@link PROJECT_MCP_FILES} exist, never the directory or the file contents, and stays short
+ * enough that a launch failure's 160-character last-output line carries it whole. */
+export class JcodeProjectMcpConfig extends JcodeConnectorError {
+  constructor(found: readonly (typeof PROJECT_MCP_FILES)[number][]) {
+    super("project_mcp_config", `the working directory has ${found.join(", ")}; start the agent in another directory`);
   }
 }
 
@@ -102,6 +116,17 @@ export class JcodeCursorStateUnreadable extends Error {
 }
 
 let diagnosticLogFd: number | undefined;
+let diagnosticLogPath: string | undefined;
+
+/** The private connector log containing startup diagnostics for this seat. */
+export function jcodeDiagnosticLogPath(): string | undefined {
+  return diagnosticLogPath;
+}
+
+/** Retain startup details privately without publishing provider or child bytes. */
+export function retainJcodeStartupError(error: unknown): void {
+  if (diagnosticLogFd !== undefined) writeSync(diagnosticLogFd, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+}
 
 /** Start the per-seat connector diagnostic log before any private Jcode process is launched. */
 export function installJcodeDiagnosticLog(home: string): string {
@@ -123,6 +148,7 @@ export function installJcodeDiagnosticLog(home: string): string {
     0o600,
   );
   hardenPrivate(path, "file");
+  diagnosticLogPath = path;
   return path;
 }
 
@@ -228,7 +254,7 @@ function acceptedEffortLadder(error: unknown): string[] {
 
 /** Compose a bounded effort-refusal diagnostic. `invalid_request` is intentionally fixed: Jcode
  * rejected this API operation, while provider-supplied codes and text are untrusted. */
-export interface JcodeEffortIdentity {
+interface JcodeEffortIdentity {
   model: string;
   provider: string;
   apiMethod?: string;
@@ -290,6 +316,12 @@ export function classifyReadinessFailure(error: unknown): JcodeConnectorError | 
     /^  status: 429 Too Many Requests\r?$/m.test(error.message)
   ) {
     return new JcodeConnectorError("provider_rate_limited", "Jcode provider rate-limited the readiness request");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 4[0-9]{2}(?: [^\r\n]*)?\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_client_error", "Jcode provider refused the readiness request with HTTP 4xx");
   }
   return undefined;
 }

@@ -13,10 +13,10 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, mintLifecycleUid } from "@cotal-ai/core";
+import { CotalEndpoint, eventPrincipalLocation, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -86,19 +86,18 @@ const spoofAgent = constructWithEvents(
 // Jcode reads COTAL_EVENTS, then deletes every COTAL_ variable, then builds the session.
 // The card must follow the decision it already made, not the scrubbed process environment.
 function constructArmedAfterScrub(config: AgentConfig): MeshAgent {
-  const had = Object.prototype.hasOwnProperty.call(process.env, "COTAL_EVENTS");
-  const before = process.env.COTAL_EVENTS;
-  delete process.env.COTAL_EVENTS;
+  const saved = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_")));
+  for (const key of Object.keys(saved)) delete process.env[key];
   try {
-    const a = new MeshAgent(config, undefined, { eventsArmed: true });
+    const a = new MeshAgent(config, undefined, { eventsArmed: true, eventsWorkspaceRoot: dir });
     a.on("error", () => {});
     return a;
   } finally {
-    if (had) process.env.COTAL_EVENTS = before;
-    else delete process.env.COTAL_EVENTS;
+    Object.assign(process.env, saved);
   }
 }
 const scrubbedAgent = constructArmedAfterScrub({ ...cfg, name: "Scrubbed", id: "scrubbed_agent", meta: undefined });
+const requiredAgent = constructArmedAfterScrub({ ...cfg, name: "Required", id: "required_agent", meta: undefined, eventsRequired: true });
 
 // A separate endpoint, so every assertion below reads the card as it arrived OVER THE WIRE.
 const peer = new CotalEndpoint({
@@ -118,9 +117,16 @@ try {
   await agent.waitUntilConnected(10_000);
   check("agent connected", agent.connected === true);
 
-  for (const extra of [armedAgent, unarmedAgent, spoofAgent, scrubbedAgent]) {
+  for (const extra of [armedAgent, unarmedAgent, spoofAgent, scrubbedAgent, requiredAgent]) {
     extra.start();
     await extra.waitUntilConnected(10_000);
+  }
+
+  check("a required-events session binds after all COTAL_ variables are scrubbed", requiredAgent.connected);
+  for (const extra of [scrubbedAgent, requiredAgent]) {
+    const principal = `${extra.ep.principal.owner}.${extra.ep.principal.actor}`;
+    const location = eventPrincipalLocation({ workspaceRoot: dir, space, principal });
+    check(`startup checks the supplied event state root for ${extra === requiredAgent ? "required" : "optional"} events`, existsSync(location.principalDir));
   }
 
   let seen: Record<string, unknown> | undefined;
@@ -166,6 +172,7 @@ try {
   await unarmedAgent.stop?.();
   await spoofAgent.stop?.();
   await scrubbedAgent.stop?.();
+  await requiredAgent.stop?.();
   await peer.stop?.();
   await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });

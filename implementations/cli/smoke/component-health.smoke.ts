@@ -16,13 +16,16 @@
  *
  * The dashboard cells are the exception. The shipped `web` service preset serves only a static-auth
  * target with a protected credential file, so those cells run on their own static-auth stack in a
- * second sandbox root and stop it before the open-mesh cells continue.
+ * second sandbox root and stop it before the open-mesh cells continue. They also check that the
+ * preset refuses a posting setup with one of its two flags, that a start names the remove and add
+ * that change a saved definition it refuses, and that a --read-only start of a posting definition
+ * is refused before it saves.
  *
  * Run: pnpm smoke:component-health
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -50,7 +53,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { MANAGER_PIDFILE, WEB_PIDFILE, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -71,6 +74,7 @@ const store = join(root, "jetstream");
 // managed `.cotal` directories and COTAL_HOME, where an explicit credential export is refused.
 const WEB_SPACE = "component-health-web";
 const webRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-web-root-`));
+const controllerRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-controller-root-`));
 const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 // `cotal up` and `cotal service start` below leave the stack and the dashboard in `webRoot` but
 // outside the runner's process group, and a killed run never reaches `finally`, so the watchdog that
@@ -78,6 +82,7 @@ const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 const sandboxes = new Map([
   [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome })],
   [webRoot, recordSmokeSandbox({ root: webRoot, cotalHome: home, xdgConfigHome })],
+  [controllerRoot, recordSmokeSandbox({ root: controllerRoot, cotalHome: home, xdgConfigHome })],
 ]);
 
 let pass = 0;
@@ -333,6 +338,8 @@ let webStack = false;
 let webService = false;
 let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
+let controllerStack = false;
+const replacements: ChildProcess[] = [];
 try {
   broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
   teardownOnSignal(broker);
@@ -444,7 +451,11 @@ try {
   const webRefusedText = `${webRefused.stdout}${webRefused.stderr}`;
   check("a live pidfile with no recorded bound address is a probe refusal (3), never a healthy default-port guess",
     webRefused.status === 3 && /web\s+refused/.test(webRefusedText) && webRefusedText.includes("no bound address recorded"), webRefusedText);
-  try { foreignWeb.kill("SIGTERM"); } catch { /* fixture is already gone */ }
+  await stop(foreignWeb);
+  const deadWeb = cli("status", "--components", "--space", SPACE, "--server", server);
+  const deadWebText = `${deadWeb.stdout}${deadWeb.stderr}`;
+  check("a dead dashboard with a stale pidfile remains absent (1), not optional not-started",
+    deadWeb.status === 1 && /web\s+absent.*stale pidfile/.test(deadWebText), deadWebText);
   rmSync(join(root, ".cotal", "web.pid"), { force: true });
 
   // The shipped dashboard, installed and started as an owned service as an operator does, so these
@@ -453,9 +464,14 @@ try {
   // it runs on its own stack in `webRoot`, which these cells stop before the open-mesh cells below.
   const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
   check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
-  const webUp = cliIn(webRoot, ["up", "--detach", "--no-manager", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
   webStack = webUp.status === 0;
   check("the dashboard's static-auth stack starts", webStack, `${webUp.stdout}${webUp.stderr}`);
+  const notStarted = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  const notStartedText = `${notStarted.stdout}${notStarted.stderr}`;
+  check("a healthy default stack exits 0 with the installed dashboard not-started",
+    notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
+      ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
   const creds = join(credsDir, "dashboard.creds");
   // The admin profile is the one the dashboard connected with before it became a service.
   const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
@@ -464,11 +480,31 @@ try {
   const added = cliIn(webRoot, ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--read-only", "--port", String(webPort)]);
   webService = added.status === 0;
   check("service add saves the web preset for this stack", webService, `${added.stdout}${added.stderr}`);
+  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
+  // #7632: A dashboard start that fails before publishing its session record (e.g., port already bound)
+  // releases web.pid, and a stale web.pid whose PID was reused by a live process with another start
+  // token is cleared on the next start without signaling that process.
+  const portBlocker = await new Promise<import("node:net").Server>((resolveServer, rejectServer) => {
+    const srv = import("node:net").then(({ createServer }) => {
+      const s = createServer();
+      s.once("error", rejectServer);
+      s.listen(webPort, "127.0.0.1", () => resolveServer(s));
+    });
+    void srv;
+  });
+  try {
+    const failedStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+    check("a failed dashboard start releases web.pid and its identity pin",
+      failedStart.status !== 0 && !existsSync(webPid) && !existsSync(`${webPid}.identity`), `${failedStart.stdout}${failedStart.stderr}`);
+  } finally {
+    await new Promise<void>((resolveClose) => portBlocker.close(() => resolveClose()));
+  }
+  writeFileSync(webPid, `${process.pid}\n`, { mode: 0o600 });
+  writeFileSync(`${webPid}.identity`, `${process.pid} stale-start-token\n`, { mode: 0o600 });
   const webStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 120_000);
   const instance = webStart.status === 0 ? (JSON.parse(webStart.stdout) as { result?: { instanceId?: string; pid?: number } }).result : undefined;
-  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
   const web = existsSync(webPid) ? Number(readFileSync(webPid, "utf8").trim()) || undefined : undefined;
-  check("the dashboard starts as a service whose process holds web.pid",
+  check("the dashboard starts as a service whose process holds web.pid after clearing a reused-PID slot",
     webStart.status === 0 && web !== undefined && instance?.pid === web, `${webStart.stdout}${webStart.stderr}`);
   const anonymousMeta = await fetch(`http://127.0.0.1:${webPort}/api/meta`);
   check("the dashboard refuses an anonymous /api/meta", anonymousMeta.status === 401, anonymousMeta.status);
@@ -491,16 +527,115 @@ try {
   check("a stale web.session beside a service-held web.pid is not read",
     /web\s+serving/.test(staleLegacyText) && staleLegacyText.includes(`port ${webPort}`), staleLegacyText);
 
+  process.kill(web!, "SIGTERM");
+  for (let i = 0; i < 100 && existsSync(webPid); i++) await sleep(50);
+  const exitedWeb = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  check("an owned dashboard that removes its pidfile without a confirmed stop is absent (1)",
+    exitedWeb.status === 1 && /web\s+absent.*service instance/.test(exitedWeb.stdout) && !existsSync(webPid), `${exitedWeb.stdout}${exitedWeb.stderr}`);
+
   // The service's own stop and removal, then the stack's, checked here so a passing run leaves
   // nothing behind. `finally` repeats them only when a failure skipped them.
   const webStop = cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
   check("service stop stops the dashboard and its close releases web.pid", webStop.status === 0 && !existsSync(webPid), `${webStop.stdout}${webStop.stderr}`);
+  const stoppedWeb = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  check("an intentionally stopped optional dashboard returns to not-started with exit 0",
+    stoppedWeb.status === 0 && /web\s+not-started · optional/.test(`${stoppedWeb.stdout}${stoppedWeb.stderr}`), `${stoppedWeb.stdout}${stoppedWeb.stderr}`);
+  for (const route of ["child-signal", "service-stop"] as const) {
+    const foreground = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "service", "start", "web", "--space", WEB_SPACE, "--foreground"], { cwd: webRoot, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    foreground.stdout!.on("data", (chunk) => { output += chunk; });
+    foreground.stderr!.on("data", (chunk) => { output += chunk; });
+    const finished = new Promise<number | null>((resolve, reject) => {
+      foreground.once("error", reject);
+      foreground.once("close", resolve);
+    });
+    const timer = setTimeout(() => foreground.kill("SIGKILL"), 120_000);
+    try {
+      const deadline = Date.now() + 90_000;
+      while (!output.includes("Readiness observation: adapter-process-running") && !/Readiness observation:\s+adapter-process-running/.test(output) && Date.now() < deadline && foreground.exitCode === null) await sleep(100);
+      check(`foreground dashboard reaches adapter readiness before ${route}`, /Readiness observation:\s+adapter-process-running/.test(output), output);
+      const pid = Number(/PID:\s+(\d+)/.exec(output)?.[1]);
+      check(`foreground dashboard reports its child for ${route}`, Number.isSafeInteger(pid) && pid > 0, output);
+      if (route === "child-signal") process.kill(pid, "SIGINT");
+      else {
+        const stopped = cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
+        check("external service stop confirms the foreground dashboard exit", stopped.status === 0, `${stopped.stdout}${stopped.stderr}`);
+      }
+      const code = await finished;
+      check(`foreground ${route} exits cleanly without a schema refusal`, code === 0 && !output.includes("SCHEMA_INVALID"), { code, output });
+      const status = cliIn(webRoot, ["service", "status", "web", "--space", WEB_SPACE, "--json"]);
+      const row = JSON.parse(status.stdout).result;
+      check(`foreground ${route} records stopped readiness and observed exit`, row.recordedState === "stopped" && row.readinessObservation === "not-checked" && row.exit?.code === 0, status.stdout);
+    } finally {
+      clearTimeout(timer);
+      if (foreground.exitCode === null && foreground.signalCode === null) { foreground.kill("SIGTERM"); await finished; }
+    }
+  }
   const webRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   webService = webRemove.status !== 0;
   check("service remove forgets the stopped dashboard", webRemove.status === 0, `${webRemove.stdout}${webRemove.stderr}`);
+
+  // The dashboard posts only with --no-read-only and a separate --posting-creds file, so saving one of
+  // the two flags alone is refused and saves nothing. A wildcard host is refused when it starts, and the
+  // refusal names the remove and add that change a saved definition.
+  const webDefinition = ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--port", String(webPort)];
+  const envelope = (run: { stdout: string }) => { try { return JSON.parse(run.stdout) as { error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
+  for (const [given, needs] of [[["--posting-creds", creds], "--no-read-only"], [["--no-read-only"], "--posting-creds <file>"]] as const) {
+    const lone = cliIn(webRoot, [...webDefinition, ...given, "--json"]);
+    const shown = cliIn(webRoot, ["service", "show", "web", "--space", WEB_SPACE]);
+    const error = envelope(lone)?.error;
+    check(`service add web with ${given[0]} alone refuses USAGE_INVALID naming ${needs}, and saves nothing`,
+      lone.status === 1 && error?.code === "USAGE_INVALID" && error.message?.startsWith(`${given[0]} requires ${needs}:`) === true && error.remedy === "cotal service add web --preset web --no-read-only --posting-creds <file>" && shown.status !== 0,
+      { add: `${lone.stdout}${lone.stderr}`, show: `${shown.stdout}${shown.stderr}` });
+  }
+  const wildcard = cliIn(webRoot, [...webDefinition, "--read-only", "--host", "0.0.0.0"]);
+  webService = wildcard.status === 0;
+  const wildStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+  const wildError = envelope(wildStart)?.error;
+  check("a saved wildcard --host is refused at start CONFLICT, exit 2, naming the remove and add that change it",
+    wildcard.status === 0 && wildStart.status === 2 && wildError?.code === "CONFLICT" && wildError.message?.includes("--host is a wildcard") === true &&
+      wildError.remedy === `remove it with \`cotal service remove web --space ${WEB_SPACE} --yes\`, then run \`cotal service add web --preset web --space ${WEB_SPACE} --host <address>\``,
+    { add: `${wildcard.stdout}${wildcard.stderr}`, start: `${wildStart.stdout}${wildStart.stderr}` });
+  const wildRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = wildRemove.status !== 0;
+  check("...and the refused definition is removed as the remedy says", wildRemove.status === 0, `${wildRemove.stdout}${wildRemove.stderr}`);
+  // A definition file is checked against the adapter's schema only, so it can still save the pair apart.
+  const pairFile = join(credsDir, "web-read-only-posting.json");
+  writeFileSync(pairFile, JSON.stringify({ schemaVersion: 1, space: WEB_SPACE, launch: { type: "adapter", adapter: WEB_SERVICE_ADAPTER, options: { root: webRoot, creds, "read-only": true, "posting-creds": creds, port: webPort } }, readiness: { type: "adapter", timeoutMs: 40000 } }), { mode: 0o600 });
+  const pairAdd = cliIn(webRoot, ["service", "add", "web", "--file", pairFile, "--space", WEB_SPACE]);
+  webService = pairAdd.status === 0;
+  const pairStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+  const pairError = envelope(pairStart)?.error;
+  check("a saved read-only definition with --posting-creds is refused at start CONFLICT, naming that condition and the re-add with --no-read-only",
+    pairAdd.status === 0 && pairStart.status === 2 && pairError?.code === "CONFLICT" && pairError.message?.includes("has --posting-creds but is read-only") === true &&
+      pairError.remedy?.endsWith(`then run \`cotal service add web --preset web --space ${WEB_SPACE} --no-read-only --posting-creds <file>\``) === true,
+    { add: `${pairAdd.stdout}${pairAdd.stderr}`, start: `${pairStart.stdout}${pairStart.stderr}` });
+  const pairRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = pairRemove.status !== 0;
+  // A start's options are saved over a stopped definition's, so --read-only on a posting dashboard
+  // would keep its --posting-creds. That start is refused before it saves anything (#7589).
+  const posting = cliIn(webRoot, [...webDefinition, "--no-read-only", "--posting-creds", creds]);
+  webService = posting.status === 0;
+  const revision = () => envelope(cliIn(webRoot, ["service", "show", "web", "--space", WEB_SPACE, "--json"])) as { result?: { revision?: unknown } } | undefined;
+  const before = revision()?.result?.revision;
+  const offStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--read-only", "--json"], 60_000);
+  const offError = envelope(offStart)?.error;
+  const after = revision()?.result?.revision;
+  check("a --read-only start of a stopped posting definition is refused CONFLICT, saves nothing, and names the remove and read-only add",
+    posting.status === 0 && offStart.status === 2 && offError?.code === "CONFLICT" && offError.message?.startsWith("--read-only would keep the saved web definition's --posting-creds") === true &&
+      before !== undefined && after === before &&
+      offError.remedy === `remove it with \`cotal service remove web --space ${WEB_SPACE} --yes\`, then run \`cotal service add web --preset web --space ${WEB_SPACE} --read-only\``,
+    { add: `${posting.stdout}${posting.stderr}`, start: `${offStart.stdout}${offStart.stderr}`, before, after });
+  const postingRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
+  webService = postingRemove.status !== 0;
   const webDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = webDown.status !== 0;
   check("cotal down stops the dashboard's static-auth stack", webDown.status === 0, `${webDown.stdout}${webDown.stderr}`);
+  const clearForStopped = cliIn(webRoot, ["use", "--clear"]);
+  check("clear the unrelated open-space selection before checking the stopped local stack", clearForStopped.status === 0, `${clearForStopped.stdout}${clearForStopped.stderr}`);
+  const stoppedLegacy = cliIn(webRoot, ["status", "--components"]);
+  check("a cleanly stopped legacy stack is absent and exits 1",
+    stoppedLegacy.status === 1 && /(?:target|manager)\s+absent/.test(stoppedLegacy.stdout), `${stoppedLegacy.stdout}${stoppedLegacy.stderr}`);
 
   // The delivery daemon owns its ready lease and records its last adoption proof in its renewal
   // record. Put a holder in the pre-ready state, then flip the record to a refused adoption: neither
@@ -513,8 +648,8 @@ try {
   });
   const deliveryNotReady = cli("status", "--components", "--space", SPACE, "--server", server);
   const deliveryNotReadyText = `${deliveryNotReady.stdout}${deliveryNotReady.stderr}`;
-  check("delivery ready lease and renewal adoption report independently from its own surfaces",
-    deliveryNotReady.status === 2 && /delivery\s+not-serving/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
+  check("a recorded renewal refusal wins the verdict while independent delivery readiness stays visible",
+    deliveryNotReady.status === 3 && /delivery\s+refused/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
   await stop(delivery);
   delivery = undefined;
   rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
@@ -524,11 +659,11 @@ try {
   servingManager = await serveManagerWithForeignRefusal();
   const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
   const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
-  // No dashboard can run on this open mesh, because the `web` preset refuses an open target, so the
-  // web row is `absent` and sets exit 1. Every other component must still be serving.
+  // No dashboard was started on this open mesh. Its installed extension is optional, so it must
+  // not fail an otherwise serving stack.
   check("benign foreign-owned reconciliation stays serving with exact failure facts",
-    benignRefusal.status === 1 &&
-      /web\s+absent/.test(benignRefusalText) &&
+    benignRefusal.status === 0 &&
+      /web\s+not-started · optional/.test(benignRefusalText) &&
       /delivery\s+serving/.test(benignRefusalText) &&
       /broker\s+serving/.test(benignRefusalText) &&
       /manager\s+serving/.test(benignRefusalText) &&
@@ -538,8 +673,99 @@ try {
       benignRefusalText.includes("serve reachable"),
     benignRefusalText);
 
+  // Real launcher lifecycles, including the two selection outcomes of a clean down.
+  const controllerSpace = "component-health-controller";
+  const prepare = cliIn(controllerRoot, ["space", "create", controllerSpace]);
+  check("prepare the controller health stack", prepare.status === 0, `${prepare.stdout}${prepare.stderr}`);
+  const controllerUp = cliIn(controllerRoot, ["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  controllerStack = controllerUp.status === 0;
+  check("start the controller without a manager", controllerStack, `${controllerUp.stdout}${controllerUp.stderr}`);
+  const omittedController = cliIn(controllerRoot, ["status", "--components", "--space", controllerSpace]);
+  check("an intentionally omitted controller manager is not-started and exits 0",
+    omittedController.status === 0 && /manager\s+not-started.*--no-manager/.test(omittedController.stdout), `${omittedController.stdout}${omittedController.stderr}`);
+  const selectController = cliIn(controllerRoot, ["use", controllerSpace]);
+  check("select the controller stack", selectController.status === 0, `${selectController.stdout}${selectController.stderr}`);
+  const controllerDown = cliIn(controllerRoot, ["down", "--yes"], 120_000);
+  controllerStack = controllerDown.status !== 0;
+  check("stop the controller stack cleanly", !controllerStack, `${controllerDown.stdout}${controllerDown.stderr}`);
+  const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
+  check("a cleanly stopped controller target is absent (1), not refused",
+    stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
+  const selectedStopped = cliIn(webRoot, ["status", "--components"]);
+  const selectedHealth = selectedStopped.stdout.split("Component Health")[1] ?? "";
+  check("component health preserves the header's stopped selection instead of probing the folder's space",
+    selectedStopped.status === 1 && selectedStopped.stdout.includes(`Mesh: ${controllerSpace}`) && selectedHealth.includes(`"${controllerSpace}" is stopped`) && !selectedHealth.includes(WEB_SPACE), `${selectedStopped.stdout}${selectedStopped.stderr}`);
+
+  const legacyUp = cliIn(webRoot, ["up", "--no-manager", "--space", WEB_SPACE], 120_000);
+  webStack = legacyUp.status === 0;
+  check("restart a legacy stack without its manager", webStack, `${legacyUp.stdout}${legacyUp.stderr}`);
+  const omittedLegacy = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  check("an intentionally omitted legacy manager is not-started and exits 0",
+    omittedLegacy.status === 0 && /manager\s+not-started.*--no-manager/.test(omittedLegacy.stdout), `${omittedLegacy.stdout}${omittedLegacy.stderr}`);
+  const fullLegacy = cliIn(webRoot, ["up", "--space", WEB_SPACE], 120_000);
+  check("bare up adds the legacy manager", fullLegacy.status === 0, `${fullLegacy.stdout}${fullLegacy.stderr}`);
+
+  const reusePid = async (cwd: string, space: string, template: string, definition?: string) => {
+    const path = canonicalLocalProcessPath(template, { root: cwd, space });
+    const old = Number(readFileSync(path, "utf8"));
+    const token = readFileSync(`${path}.identity`, "utf8").trim().split(/\s+/)[1];
+    process.kill(old, "SIGKILL");
+    await sleep(100);
+    const replacement = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    replacements.push(replacement);
+    assert.ok(replacement.pid);
+    writeFileSync(path, `${replacement.pid}\n`);
+    writeFileSync(`${path}.identity`, `${replacement.pid} ${token}\n`);
+    if (definition) {
+      // Simulate PID reuse in both durable records, retaining the dead daemon's creation token.
+      const directory = join(home, "services", spaceKey(space), "instances");
+      const saved = readdirSync(directory).filter((name) => name.endsWith(".json")).map((name) => join(directory, name))
+        .find((path) => { const value = JSON.parse(readFileSync(path, "utf8")).value; return value?.definition === definition && value.process?.pid === old; })!;
+      const record = JSON.parse(readFileSync(saved, "utf8"));
+      record.value.process.pid = replacement.pid;
+      if (record.value.adapterReadiness) record.value.adapterReadiness.process.pid = replacement.pid;
+      writeFileSync(saved, `${JSON.stringify(record)}\n`);
+    }
+  };
+  await reusePid(webRoot, WEB_SPACE, DELIVERY_PIDFILE);
+  const reusedDelivery = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  check("a reused legacy delivery PID is absent even while its ready lease survives",
+    reusedDelivery.status === 1 && /delivery\s+absent.*stale pidfile/.test(reusedDelivery.stdout) && !/Delivery responder:\s+● bound/.test(reusedDelivery.stdout), `${reusedDelivery.stdout}${reusedDelivery.stderr}`);
+  await reusePid(webRoot, WEB_SPACE, MANAGER_PIDFILE);
+  await reusePid(webRoot, WEB_SPACE, "nats.pid");
+  const reusedPids = replacements.map((child) => ({ pid: child.pid!, token: defaultStartToken(child.pid!) }));
+  const reusedLegacy = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  check("all reused legacy PIDs read absent, never running or serving",
+    reusedLegacy.status === 1 && ["manager", "delivery", "broker"].every((name) => new RegExp(`${name}\\s+absent`).test(reusedLegacy.stdout)) && !/\b(?:Manager|Delivery|Broker)\s+running/.test(reusedLegacy.stdout), `${reusedLegacy.stdout}${reusedLegacy.stderr}`);
+  const legacyDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = legacyDown.status !== 0;
+  await sleep(100); // Allow ChildProcess exit notifications from the synchronous CLI run to arrive.
+  check("down clears each reused legacy PID and pin while the unrelated processes are still running",
+    legacyDown.status === 0 && replacements.every((child) => child.exitCode === null && child.signalCode === null) &&
+    reusedPids.every(({ pid, token }) => token !== undefined && defaultStartToken(pid) === token) &&
+    [MANAGER_PIDFILE, DELIVERY_PIDFILE, "nats.pid"].every((template) => {
+      const path = canonicalLocalProcessPath(template, { root: webRoot, space: WEB_SPACE });
+      return !existsSync(path) && !existsSync(`${path}.identity`);
+    }), `${legacyDown.stdout}${legacyDown.stderr}`);
+  check("down reports stale cleanup, not a stop of an unrelated process",
+    reusedPids.every(({ pid }) => legacyDown.stderr.includes(`pid ${pid} was reused by another process`) && !legacyDown.stdout.includes(`(pid ${pid})`)), `${legacyDown.stdout}${legacyDown.stderr}`);
+  for (const child of replacements) await stop(child);
+  const repeatedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = repeatedDown.status !== 0;
+  check("down is still successful after the replacement processes exit", !webStack, `${repeatedDown.stdout}${repeatedDown.stderr}`);
+  const restartController = cliIn(controllerRoot, ["up"], 120_000);
+  controllerStack = restartController.status === 0;
+  check("restart the controller with all components", controllerStack, `${restartController.stdout}${restartController.stderr}`);
+  await reusePid(controllerRoot, controllerSpace, DELIVERY_PIDFILE, "stack-delivery");
+  await reusePid(controllerRoot, controllerSpace, MANAGER_PIDFILE, "stack-manager");
+  const reusedController = cliIn(controllerRoot, ["status", "--components", "--space", controllerSpace]);
+  check("foreign controller PIDs cannot serve from stale leases and retain the up recovery action",
+    reusedController.status === 1 && /manager\s+absent/.test(reusedController.stdout) && /delivery\s+absent/.test(reusedController.stdout) && reusedController.stdout.includes("foreign pid") && reusedController.stdout.includes(`up --root ${controllerRoot}`) && !/Delivery responder:\s+● bound/.test(reusedController.stdout), `${reusedController.stdout}${reusedController.stderr}`);
+
   console.log(`\nCOMPONENT HEALTH SMOKE OK ✅ (${pass} checks)`);
 } finally {
+  if (controllerStack) cliIn(controllerRoot, ["down", "--yes"], 120_000);
+  for (const child of replacements) await stop(child);
   await servingManager?.close();
   await stop(delivery);
   if (webService) {
@@ -553,4 +779,5 @@ try {
   rmSync(root, { recursive: true, force: true });
   rmSync(webRoot, { recursive: true, force: true });
   rmSync(credsDir, { recursive: true, force: true });
+  rmSync(controllerRoot, { recursive: true, force: true });
 }

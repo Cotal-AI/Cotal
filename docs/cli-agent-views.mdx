@@ -30,7 +30,10 @@ uses: `result.requested.runtime` names it, and `result.runtimeCheck` gives the `
 on, whether it is `available` there, and the `error` when it is not. A runtime this machine cannot
 run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks its own.
 `--runtime auto` is refused as the launch refuses it. A direct preview resolves the local persona,
-harness precedence and physical working directory. An unknown effective harness is refused with
+harness precedence and physical working directory. It checks the effective name from `--name` or
+persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
+user-auth space. An invalid effective name is refused with `USAGE_INVALID` (exit 1).
+An unknown effective harness is refused with
 `DEPENDENCY_UNAVAILABLE` (exit 2), whether it came from a flag, the persona or a preference.
 Harness names are case-sensitive. Binary, login, model-policy and live authority checks are labeled
 not performed. Both previews say where the persona came from: `--file`, the command line, a
@@ -116,7 +119,9 @@ deployed with `cotal team deploy <file>`, not `spawn`.
 
 `--foreground` runs the native application directly. It does not support a structured receipt,
 manager pin or manager control credential. Native exit or terminal loss may end that process;
-no detachable-view or reboot-survival claim applies. Protected internal handoff/enrollment
+no detachable-view or reboot-survival claim applies. The command exits with the application's
+exit code. When a signal ends the application, it exits with 128 plus the signal number, as a
+shell does, so SIGTERM gives 143 and SIGKILL gives 137. Protected internal handoff/enrollment
 children keep their existing direct execution and native authorization checks.
 
 If the agent joins but attachment fails, the result is partial with its original identity and
@@ -136,7 +141,9 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
-It takes no `--all` or `--components`.
+Its Next names the agent it read, with the `--space` and `--server` you gave and the manager's
+`--on`, so the `attach` and `stop` it suggests run as printed.
+It takes no `--all`, `--components`, `--wide` or `--verbose`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status` and
 `cotal endpoint describe manager`.

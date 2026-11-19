@@ -194,7 +194,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   reset();
   const got3 = await attempt(["resume", "run-0"], { file: "p.cotal.js" });
   c("hosted `resume --file` is refused, and the sentence hands back a command with the run id in it",
-    got3 instanceof Exited && got3.code === 1 && ERR.some((l) => l.includes("cotal run resume run-0 --local --file <program>")), ERR);
+    usageRefusal(got3, "--file is not taken") && isCommandFailure(got3)
+      && got3.remedy?.includes("omit --file") === true && got3.remedy.includes("cotal run resume run-0 --local --file <program>"), got3);
+  for (const verb of ["check", "migrate"]) for (const [flag, value] of [["adopt", "h1"], ["release", "h1"], ["discard-approvals", true]] as const) {
+    const got = await attempt([verb, "run-0", "p.cotal.js"], { [flag]: value });
+    c(`${verb} --${flag} is a usage refusal before a connection`, usageRefusal(got, `--${flag} decides what a commit does`), got);
+  }
   reset();
   const got4 = await attempt(["answer", "run-0", "/checkpoint:approve#0"], { by: "dana" });
   c("hosted `answer --by` is refused: the manager records the caller", usageRefusal(got4, "--by is only for the local path"), got4);
@@ -340,6 +345,29 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
   c("a simulation's log line is printed, and --json carries it in result.log",
     logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([{ scope: "", values: ["hello", 42] }]), written.join("").slice(0, 400));
+  writeFileSync(program, `
+const items = [1, 2];
+const selected = items.filter((item, index, array) => { array[index] = item + 10; return true; });
+const first = items.find((item, index, array) => { array[index] = 99; return true; });
+const last = items.findLast((item, index, array) => { array[index] = 77; return true; });
+log({ items, selected, first, last });
+const xs = [1, 2];
+const filtered = await filter(xs, async (item, index) => { await 0; xs[index] = item + 10; return true; });
+const found = await find(xs, async (item, index) => { await 0; xs[index] = 99; return index === 1; });
+log({ xs, filtered, found });
+log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => true) === undefined, await find([], () => true));
+`);
+  written.length = 0;
+  process.stdout.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try { logged = await simulate({}, { json: true }); }
+  finally { process.stdout.write = origWrite; }
+  try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
+  c("simulate retains predicate input values for filter, find and findLast, including awaited free builtins",
+    logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([
+      { scope: "", values: [{ items: [99, 77], selected: [1, 2], first: 11, last: 12 }] },
+      { scope: "", values: [{ xs: [99, 99], filtered: [1, 2], found: 12 }] },
+      { scope: "", values: [[], true, true, null] },
+    ]), { logged, output: written.join("") });
   writeFileSync(program, 'throw "boom";\n');
   const thrown = await simulate({});
   c("a program that throws fails naming what it threw, not an unscripted effect",
@@ -680,8 +708,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
 {
   const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
   const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
-  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1`", blocked);
-  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --on mgr-1`");
+  for (const amend of [false, true]) {
+    const missing = managerRefusal("run-answer", "beta", { runId: "run-missing", amend }, { code: "not-found", message: "run run-missing: no run is recorded under that id" }, "mgr-1");
+    c(`a missing run on ${amend ? "amend" : "answer"} lists the same space and manager`, missing.remedy === "list the recorded runs with `cotal run --space beta --on mgr-1`", missing);
+    const step = managerRefusal("run-answer", "beta", { runId: "run-1", endpoint: "other", amend }, { code: "not-found", message: "no step is recorded under that key" }, "mgr-1");
+    c(`a missing step on ${amend ? "amend" : "answer"} reads the run on the same target`, step.remedy === `read the run's ${amend ? "answers" : "open requests"} with \`cotal run show run-1 --space beta --on mgr-1 --endpoint other\``, step);
+  }
+  c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1 --space s`", blocked);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
 }
 

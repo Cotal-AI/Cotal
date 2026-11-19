@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { darwinProcessBinding, type DarwinProcessBinding } from "./darwin-process.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
 import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 import { probeLiveness, type LivenessProbe } from "./liveness.js";
@@ -206,6 +206,37 @@ export function readProcessCommand(pid: number): ProcessCommand {
   if (r.status === 0 && out !== "") return { kind: "command", command: out };
   if (r.status === 1) return { kind: "gone" }; // ps exits 1 when no process matches
   return { kind: "unreadable", why: `ps exited ${String(r.status)}${out ? `: ${out}` : ""}` };
+}
+
+/**
+ * The live processes of this account, other than this one, whose command line contains `token`.
+ * Only the pids are returned. Linux reads `/proc`, and other POSIX hosts list `ps -U <uid>`. A
+ * command line of this account that cannot be read, or a host with no source, is `unreadable`, so a
+ * caller never takes "could not look" for "none runs".
+ */
+export function processesNaming(token: string): { kind: "pids"; pids: number[] } | { kind: "unreadable"; why: string } {
+  if (process.platform === "win32" || !process.getuid) return { kind: "unreadable", why: "no process-argv source on win32" };
+  const uid = process.getuid();
+  const pids: number[] = [];
+  if (process.platform === "linux") {
+    for (const entry of readdirSync("/proc")) {
+      const pid = parsePid(entry);
+      if (pid === undefined || pid === process.pid) continue;
+      try { if (statSync(`/proc/${pid}`).uid !== uid) continue; } catch { continue; }
+      const command = readProcessCommand(pid);
+      if (command.kind === "unreadable") return { kind: "unreadable", why: command.why };
+      if (command.kind === "command" && command.command.includes(token)) pids.push(pid);
+    }
+    return { kind: "pids", pids };
+  }
+  const r = spawnSync("ps", ["-U", String(uid), "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error || r.status !== 0) return { kind: "unreadable", why: r.error ? `ps: ${r.error.message}` : `ps exited ${String(r.status)}` };
+  for (const line of (r.stdout ?? "").split("\n")) {
+    const match = /^\s*(\d+)\s(.*)$/.exec(line);
+    const pid = match ? parsePid(match[1]!) : undefined;
+    if (pid !== undefined && pid !== process.pid && match![2]!.includes(token)) pids.push(pid);
+  }
+  return { kind: "pids", pids };
 }
 
 /**
@@ -748,10 +779,13 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
  *  stop: the preserved record keeps its pin so the next attempt re-adjudicates. It holds the lock
  *  {@link writePidPair} holds and removes only while the pidfile still reads `recorded` (trimmed), the
  *  record the caller adjudicated. A publish that committed a successor meanwhile is left whole, never
- *  stripped to a pidfile with no pin (#1238). With no pidfile, a stray pin is removed. */
-export function removePidPair(pidfilePath: string, recorded: string): void {
+ *  stripped to a pidfile with no pin (#1238). When given a creation pin, also compare that pin under
+ *  the lock: a successor can publish the same numeric PID with a different start. The `gone` and
+ *  `stale` guards recheck liveness instead (`stale` also accepts a mismatched pin). Returns false
+ *  when the guard fails. With no pidfile, a stray pin is removed. */
+export function removePidPair(pidfilePath: string, recorded: string, expected?: ProcessIdentityRecord | "gone" | "stale"): boolean {
   const pinPath = identityPinPath(pidfilePath);
-  if (!existsSync(pidfilePath) && !existsSync(pinPath)) return; // nothing recorded: take no lock, create no directory
+  if (!existsSync(pidfilePath) && !existsSync(pinPath)) return true; // nothing recorded: take no lock, create no directory
   const held = lockPidRecord(pidfilePath);
   try {
     let now: string | undefined;
@@ -760,7 +794,16 @@ export function removePidPair(pidfilePath: string, recorded: string): void {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
-    if (now !== undefined && now !== recorded) return; // a successor's record: not this removal's
+    if (now !== undefined && now !== recorded) return false;
+    if (now !== undefined && expected) {
+      if (typeof expected === "string") {
+        const current = verifyIdentityPin(pidfilePath).kind;
+        if (current !== "gone" && !(expected === "stale" && current === "mismatch")) return false;
+      } else {
+        const current = currentPinLine(pidfilePath);
+        if (current?.pid !== expected.pid || current.token !== expected.token) return false;
+      }
+    }
     try {
       rmSync(pinPath, { force: true });
     } catch (e) {
@@ -774,6 +817,7 @@ export function removePidPair(pidfilePath: string, recorded: string): void {
       );
     }
     rmSync(pidfilePath, { force: true });
+    return true;
   } finally {
     held.release();
   }

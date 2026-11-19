@@ -54,11 +54,19 @@ const owner = `u_${"a".repeat(26)}`;
 type Target = { id: string; name: string; lifecycleUid: string };
 type Hold = { opId: string; owner: string; actor: string; target: Target; startedAt: number; lastError?: string };
 type Internals = {
-  ep: CotalEndpoint; userMode: boolean; managerInstanceId: string; managerServeIdentity: ReturnType<typeof newIdentity>;
-  serviceServe: { grant: { epoch: number } }; servers: string;
-  retiring: Map<string, Hold>; confirmedRetiredPredecessors: Map<string, unknown>;
+  ep: CotalEndpoint;
+  userMode: boolean;
+  managerInstanceId: string;
+  managerServeIdentity: ReturnType<typeof newIdentity>;
+  serviceServe: { grant: { epoch: number } };
+  servers: string;
   provisionUserAgent(name: string, opts: { lifecycleUid: string }): Promise<unknown>;
-  deprovisioningFlight: Map<string, Promise<void>>; lifecycleInFlight: number;
+  lifecycleInFlight: number;
+  retirement: {
+    retiring: Map<string, Hold>;
+    confirmedRetiredPredecessors: Map<string, unknown>;
+    deprovisioningFlight: Map<string, Promise<void>>;
+  };
 };
 const expired = "the responder answered at a stale epoch";
 const denied = "the serve issuance gate belongs to another principal; retirement was a full no-op";
@@ -137,10 +145,10 @@ try {
   };
   const drain = async () => {
     const end = Date.now() + 40_000;
-    while ((internal.lifecycleInFlight > 0 || internal.deprovisioningFlight.size > 0) && Date.now() < end)
+    while ((internal.lifecycleInFlight > 0 || internal.retirement.deprovisioningFlight.size > 0) && Date.now() < end)
       await new Promise((r) => setTimeout(r, 10));
     assert.equal(internal.lifecycleInFlight, 0, "detached rollback drained");
-    assert.equal(internal.deprovisioningFlight.size, 0, "no teardown remains running");
+    assert.equal(internal.retirement.deprovisioningFlight.size, 0, "no teardown remains running");
   };
   const start = () => manager.startAgent({ name: "worker", agent: "retirement-copy", events: false }, `${owner}.cli`);
   const hold = (target: Target): Hold => ({ opId: managedRetirementOpId(target.lifecycleUid), owner, actor: target.name, target, startedAt: Date.now() });
@@ -148,15 +156,15 @@ try {
 
   await cell("held stale-epoch retirement keeps the despawn copy and public same-name spawn re-drives it", async () => {
     const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
-    const held = hold(target); internal.retiring.set("worker", held);
+    const held = hold(target); internal.retirement.retiring.set("worker", held);
     const reply = await start(); await drain();
     assert.equal(reply.ok, false); assert.match(reply.error!, /reserved pending retirement/);
     assert.match(diagnostic(), /^despawn worker: the despawn stopped "worker"/);
     assert.match(diagnostic(), /The name stays held.*same-name spawn re-drives/);
     assert.equal(diagnostic(), `despawn worker: ${held.lastError}`);
-    assert.equal(internal.retiring.get("worker"), held);
+    assert.equal(internal.retirement.retiring.get("worker"), held);
     assert.equal(invoked.at(-1)?.uid, target.lifecycleUid);
-    internal.retiring.delete("worker");
+    internal.retirement.retiring.delete("worker");
   });
   for (const mode of ["expired", "denied", "dial-refused", "ok"] as const) {
     await cell(`orphan rollback ${mode} names its lifecycle without a despawn or hold claim`, async () => {
@@ -169,7 +177,7 @@ try {
       assert.equal(allocated.length, before + 1, "public spawn reached allocation rather than the hold gate");
       const target = allocated.at(-1)!;
       assert.deepEqual(prepared.at(-1), target, "orphan rollback reaches full teardown");
-      assert.equal(internal.retiring.has("worker"), false);
+      assert.equal(internal.retirement.retiring.has("worker"), false);
       const line = diagnostic();
       assert.ok(line?.startsWith(`retire worker: lifecycle ${target.lifecycleUid}`), line);
       assert.doesNotMatch(line, /despawn|name stays held|same-name spawn/i);
@@ -185,27 +193,27 @@ try {
   await cell("confirmed held retirement clears only its hold and preserves success copy", async () => {
     answer = "ok"; internal.servers = servers;
     const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
-    internal.retiring.set("worker", hold(target));
+    internal.retirement.retiring.set("worker", hold(target));
     const reply = await start(); await drain();
     assert.equal(reply.ok, false); assert.match(reply.error!, /reserved pending retirement/);
-    assert.equal(internal.retiring.has("worker"), false);
+    assert.equal(internal.retirement.retiring.has("worker"), false);
     assert.equal(diagnostic(), "despawn worker: the agent's retirement completed; the name is free for reuse");
-    assert.deepEqual(internal.confirmedRetiredPredecessors.get("worker"), { principal: target.id, lifecycleUid: target.lifecycleUid });
+    assert.deepEqual(internal.retirement.confirmedRetiredPredecessors.get("worker"), { principal: target.id, lifecycleUid: target.lifecycleUid });
   });
   for (const mode of ["denied", "dial-refused"] as const) {
     await cell(`held ${mode} preserves the despawn prefix and last error`, async () => {
       answer = "denied";
       internal.servers = mode === "dial-refused" ? `nats://127.0.0.1:${await freePort()}` : servers;
       const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
-      const held = hold(target); internal.retiring.set("worker", held);
+      const held = hold(target); internal.retirement.retiring.set("worker", held);
       try {
         const reply = await start(); await drain();
         assert.equal(reply.ok, false); assert.match(reply.error!, /reserved pending retirement/);
         assert.equal(diagnostic(), `despawn worker: ${held.lastError}`);
         if (mode === "denied") assert.equal(held.lastError, denied);
         else assert.match(held.lastError!, /The name stays held.*same-name spawn re-drives/);
-        assert.equal(internal.retiring.get("worker"), held);
-      } finally { internal.retiring.delete("worker"); }
+        assert.equal(internal.retirement.retiring.get("worker"), held);
+      } finally { internal.retirement.retiring.delete("worker"); }
     });
   }
   for (const change of ["new", "replaced", "cleared"] as const) {
@@ -214,10 +222,10 @@ try {
       const target = { id: `${owner}.worker`, name: "worker", lifecycleUid: mintLifecycleUid() };
       const prior = { ...hold(target), lastError: "prior diagnostic" };
       const successor = { ...hold({ ...target, lifecycleUid: mintLifecycleUid() }), lastError: "successor diagnostic" };
-      if (change !== "new") internal.retiring.set("worker", prior);
+      if (change !== "new") internal.retirement.retiring.set("worker", prior);
       beforeAnswer = () => {
-        if (change === "cleared") internal.retiring.delete("worker");
-        else internal.retiring.set("worker", successor);
+        if (change === "cleared") internal.retirement.retiring.delete("worker");
+        else internal.retirement.retiring.set("worker", successor);
       };
       try {
         await start(); await drain();
@@ -227,8 +235,8 @@ try {
         assert.match(diagnostic(), /No hold reserves the name for this lifecycle/);
         assert.equal(prior.lastError, "prior diagnostic");
         assert.equal(successor.lastError, "successor diagnostic");
-        assert.equal(internal.retiring.get("worker"), change === "cleared" ? undefined : successor);
-      } finally { beforeAnswer = undefined; internal.retiring.delete("worker"); }
+        assert.equal(internal.retirement.retiring.get("worker"), change === "cleared" ? undefined : successor);
+      } finally { beforeAnswer = undefined; internal.retirement.retiring.delete("worker"); }
     });
   }
   console.log(`retirement-copy: ${passed} passed, ${failed} failed; retained fixture ${root}`);

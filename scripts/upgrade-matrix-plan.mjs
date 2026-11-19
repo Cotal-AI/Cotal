@@ -4,8 +4,7 @@
  * CLI: --event event.json --context context.json (context includes eventName).
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMainEntry } from "./main-entry.mjs";
 
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const platforms = ["linux", "darwin", "win32"];
@@ -153,6 +152,12 @@ export function boundedCells(plan) {
   {
     const targetVersion = syntheticNextVersion(plan.targetVersion);
     const followOnVersion = syntheticFollowOnVersion(plan.targetVersion);
+    for (const platform of ["linux", "darwin"]) add(platform, "npm", "candidate-next-two-homes", null, {
+      sourceVersion: plan.targetVersion, sourceKind: "packed-candidate-A", targetVersion,
+      targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000",
+      requiredAssertions: ["status-healthy", "no-recovery", "no-manual-intervention", "two-home-up", "two-home-launch", "old-manager-preserved", "home-only-remedy", "owned-stack-cleanup"],
+    });
     const chainAssertions = ["exact-source-refusal", "intermediate-whole-machine", "next-hop-success"];
     for (const cell of cells.filter(cell => ['daemon-self', 'agent-stop-consent'].includes(cell.scenario) && cell.sourceVersion === '0.164.10')) {
       cell.chain = true;
@@ -221,6 +226,22 @@ export function boundedCells(plan) {
   add("win32", "installer", "daemon-self", "Windows installer self-update excluded: no public shell installer route");
   add("win32", "npm", "daemon-scheduler", "Windows scheduler upgrade excluded until product readiness is established");
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
+  for (const platform of ["linux", "darwin"]) add(platform, "npm", "candidate-next-dead-updater", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000", deadUpdater: true,
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
+      "dead-updater-release", "live-owner-held", "next-update-alone"],
+  });
+  add("linux", "npm", "candidate-next-other-home-auth", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000", otherHomeAuth: true,
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
+      "other-home-auth-required", "other-home-manager-preserved", "other-home-loaded-graph-preserved", "other-home-update-notice", "other-home-cleanup"],
+  });
   return cells;
 }
 /** Convenience wrapper for workflow callers. */
@@ -279,7 +300,7 @@ export function verifyResults(expected, results, { knownRefusals = [] } = {}) {
   return { acceptance, upgradeAcceptance: acceptance && acceptedRefusals.length === 0, requiredCount, passed, knownRefusals: acceptedRefusals, excluded, failures };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainEntry(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
     requireValue(args.length === 2 || args.length === 4, "usage: --event file [--context file]");

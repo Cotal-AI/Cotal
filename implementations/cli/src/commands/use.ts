@@ -7,6 +7,12 @@ export const useFlags = [
   jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
+export function validateUseArguments(args: ParsedArgs): void {
+  presentationOf(args.values);
+  if (args.positionals[0] !== undefined && !args.positionals[0].trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "space name cannot be empty", { remedy: "name a space with `cotal use <space>`, or omit the name to show the selection" });
+}
+
 interface Selection {
   readonly kind: "selection";
   /** The selected space after the command, or null when none is selected. */
@@ -34,6 +40,7 @@ interface Selection {
  * `cotal use` reports the selection, and `--clear` removes it.
  */
 export async function use(args: ParsedArgs): Promise<void> {
+  validateUseArguments(args);
   const values = args.values as FlagValues<typeof useFlags>;
   const presentation = presentationOf(values);
   if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal use [<space> | --clear]");
@@ -103,7 +110,7 @@ function selectionView(s: Selection): Report {
   // `use` reads no broker, so it says when this folder's space is the target rather than whether it is.
   if (s.folder && s.folder !== s.current) lines.push({ text: readCurrentSelection()?.source === "adopted"
     ? `  commands here target this folder's space "${s.folder}" while it runs; use --space ${s.current} to reach the adopted selection`
-    : `  commands here target "${s.current}"; reach this folder's space with --space ${s.folder} or cotal use --clear`, tone: "hint" });
+    : `  commands here target "${s.current}"; reach this folder's space with --space ${s.folder} or \`cotal use --clear\``, tone: "hint" });
   if (readCurrentSelection()?.source === "adopted") lines.push({ text: "  Cotal adopted this selection automatically; another folder's running space takes precedence", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "lines", lines }] }] };
 }

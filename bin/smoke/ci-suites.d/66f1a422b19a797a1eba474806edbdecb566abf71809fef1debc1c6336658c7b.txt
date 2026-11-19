@@ -1,0 +1,3 @@
+# A cotal_inbox result read under a narrow channel grant does not reach a reader of the
+# seat's event channel or event payload rail, on a JWT-auth broker (#1426).
+smoke:agui-egress-acl:auth

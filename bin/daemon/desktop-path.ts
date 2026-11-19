@@ -14,7 +14,7 @@ const run = (command: string, args: string[], remedy: string, timeoutRemedy = re
   });
 });
 
-export interface DiscoveredApplicationPath {
+interface DiscoveredApplicationPath {
   readonly path: string;
   readonly omittedRelativeEntries: readonly string[];
 }
@@ -36,7 +36,7 @@ export async function windowsApplicationPath(): Promise<string> {
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!root || !win32.isAbsolute(root)) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; no application PATH was guessed");
   const script = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; $p = @([Environment]::GetEnvironmentVariable('Path','Machine'), [Environment]::GetEnvironmentVariable('Path','User')) | Where-Object { $_ }; [Console]::Write([Environment]::ExpandEnvironmentVariables(($p -join ';')))";
-  const value = await run(join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], "choose Try again, or run cotal daemon install in a terminal for diagnostics", "wait a moment and choose Try again");
+  const value = await run(join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], "choose Try again, or run `cotal daemon install` in a terminal for diagnostics", "wait a moment and choose Try again");
   return pinnedPath(`${value};${dirname(process.execPath)}`, win32);
 }
 

@@ -9,8 +9,7 @@
  *   2. `:status <seat>` finds a seat on EITHER manager, repeatedly: the inspect is located and
  *      pinned to the hosting manager like stop/attach, never a class-queue guess. The locate step
  *      is also proven on its own, deterministically: `:status` on a seat no manager hosts is
- *      refused by the locate with a sentence naming both reachable managers, where a class-queue
- *      inspect would answer with one manager's own not-found error.
+ *      refused once both managers' seat lists miss it, before either receives a named inspect.
  *   3. `D` then `f` force-kills the seat on manager 2 (targeted, so pinned to its host).
  *   4. `:spawn <persona> <name>` submits the spawn action under the REQUESTED name (not the
  *      persona's), shows the accepted name, and the new seat joins the roster.
@@ -30,7 +29,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams, type Connector, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams, type Connector, type EpCommandDef, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ConsoleSession, clean, repoRoot, wait } from "./_console-pty.js";
@@ -64,7 +63,7 @@ const CHILD = [
   "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,",
   "creds:process.env.COTAL_CREDS_PATH?fs.readFileSync(process.env.COTAL_CREDS_PATH,'utf8'):undefined,",
   "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,",
-  "watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',role:'worker'}});",
+  "watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',role:'worker',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();await ep.multicast('hello from '+process.env.COTAL_NAME,{channel:'general'});",
   // One seat reports WORKING so the :status row has a real mesh status to qualify. `working` is
   // the only status the console rewords, and a hand-built row cannot prove a real seat reaches it.
@@ -103,6 +102,20 @@ recordMesh({ space, server: servers, root: root1, mode: "auth", ts: new Date().t
 
 const m1 = new Manager({ space, servers, runtime: "pty", workspaceRoot: root1 });
 const m2 = new Manager({ space, servers, runtime: "pty", workspaceRoot: root2 });
+// Observe the real handlers without replacing their result or bypassing the serve boundary.
+const inspected = [new Map<string, number>(), new Map<string, number>()];
+for (const [index, manager] of [m1, m2].entries()) {
+  const observed = manager as ManagerLike & { managerServiceDefs(): EpCommandDef[] };
+  const definitions = observed.managerServiceDefs.bind(observed);
+  observed.managerServiceDefs = () => definitions().map(def => def.command !== "inspect" ? def : {
+    ...def,
+    handler: ctx => {
+      const name = String(ctx.request.args?.name ?? "");
+      inspected[index]!.set(name, (inspected[index]!.get(name) ?? 0) + 1);
+      return def.handler(ctx);
+    },
+  });
+}
 let session: ConsoleSession | undefined;
 let watcher: CotalEndpoint | undefined;
 let poster: CotalEndpoint | undefined;
@@ -179,8 +192,11 @@ try {
   m = s.mark();
   await s.command("status nobody");
   const t0 = Date.now();
-  const located = await s.waitFor(/status: no managed agent "nobody" on any of the 2 reachable manager instance\(s\)/, 90_000, m);
-  check(":status on a seat no manager hosts is refused by the locate step, naming both reachable managers", located, { after: `${Math.round((Date.now() - t0) / 1000)}s`, notice: clean(s.out.slice(m)).match(/status: [^│\n]*/g)?.slice(-2), tail: clean(s.out.slice(m)).slice(-200) });
+  // A presence miss asks each manager for its live seats, so the refusal names both of them.
+  const located = await s.waitFor(/status: no managed agent "nobody" on any of the 2 reachable manager instance\(s\) in this space/, 90_000, m);
+  const asks = inspected.map(rows => rows.get("nobody") ?? 0);
+  const observedBoth = inspected[0]!.has("w1") && inspected[1]!.has("w2");
+  check(":status on an absent live name refuses before either Manager is asked to inspect it", located && observedBoth && asks.every(count => count === 0), { asks, observedBoth, after: `${Math.round((Date.now() - t0) / 1000)}s`, notice: clean(s.out.slice(m)).match(/status: [^│\n]*/g)?.slice(-2), tail: clean(s.out.slice(m)).slice(-200) });
 
   console.log("3. D f force-kills the seat on manager 2 (targeted, pinned to its host)");
   // Every step used to be a fixed settle with nothing checked, so one late frame left the roster

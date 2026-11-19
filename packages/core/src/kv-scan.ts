@@ -376,7 +376,8 @@ const DIRECT_BATCH = 1024;
  * native five-second timeout. The callback is the client's supported cleanup-owning read path.
  *
  * A credential that may not publish the Direct Get request fails with the broker's
- * `PermissionViolationError` as soon as the broker reports it.
+ * `PermissionViolationError` as soon as the broker reports it. A read whose connection closes
+ * before its page is answered fails at the close: the close cancels the page's native timeout.
  */
 export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
@@ -433,8 +434,9 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
       }
       return [...latest.values()];
     })();
-    read.catch(() => { /* the race reports this read's failure; after a denial, its stopped iterator is not a second one */ });
-    return await Promise.race([read, watch.denied.catch((err: Error) => { page?.stop(err); throw err; })]);
+    read.catch(() => { /* the race reports this read's failure; after a denial or a close, its stopped iterator is not a second one */ });
+    const end = (err: Error): never => { page?.stop(err); throw err; };
+    return await Promise.race([read, watch.denied.catch(end), watch.closed.catch(end)]);
   } finally {
     watch.release();
   }

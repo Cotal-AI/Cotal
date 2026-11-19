@@ -17,6 +17,7 @@ import {
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
 import { recordCredentialExport } from "../lib/credential-exports.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
@@ -126,7 +127,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   let held: ReturnType<typeof acquireLock> | undefined;
   let target: { space?: string; name: string; profile: string; path?: string; identity?: string; lifecycleUid?: string } = { name, profile };
   try {
-    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target);
+    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target, !values.provision);
     const { root, space } = resolvedTarget;
     target = { ...target, space };
     recordOperationSpace(space);
@@ -251,8 +252,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
     }
     // The record lets doctor auth find this file again; it holds no credential.
     if (values.out !== undefined) {
-      try { recordCredentialExport(space, { label: name, profile, path: out, root, identity: identity.id }); }
-      catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written to ${out}, but its export record was not, so doctor auth does not list it`, { target, remedy: `mint it again with the same --identity ${out} --out ${out} to record it` }); }
+      try { recordCredentialExport(space, { label: name, profile, path: out, root, identity: identity.id, provisioned: values.provision === true }); }
+      catch {
+        const quoted = shellWord(out);
+        throw new CommandFailure("partial", "OPERATION_PARTIAL", `the credential was written to ${out}, but its export record was not, so doctor auth does not list it`, { target, remedy: `mint it again with the same --identity ${quoted} --out ${quoted}${values.provision ? " --provision" : ""} to record it` });
+      }
       changed.push({ kind: "credential-export-record", path: out, acknowledged: true });
     }
     const claims = credsClaims(creds);

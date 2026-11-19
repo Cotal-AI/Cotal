@@ -1,0 +1,2 @@
+# Linux retained Node and package custody across a real published-package self-update; npm access required.
+smoke:migration-execution:live

@@ -121,7 +121,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 {
   const fresh = cotal([]);
   local("bare cotal prints the entry screen and writes nothing", fresh);
-  check("a fresh machine is pointed to setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  cotal setup  /m.test(fresh.stdout), shown(fresh));
+  check("a fresh machine is pointed to sign-in and setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  cotal login  [^\n]*\n  cotal setup  /m.test(fresh.stdout), shown(fresh));
   check("the entry screen names common commands and where the rest are", /^Everyday\n  cotal ps  /m.test(fresh.stdout) && /^More\n  cotal help  /m.test(fresh.stdout), shown(fresh));
   const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
   local("bare cotal with a selected space writes nothing", ghost);
@@ -247,6 +247,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
     both.status === 0 && !both.stderr.includes("'NO_COLOR' env is ignored") && both.stderr.includes("Warning: probe-warning"), shown(both));
+  // Node 22.10 and 22.11 emit ExperimentalWarning on `import ... with { type: "json" }`, so shipped
+  // workspace and CLI dist files must read JSON assets via fs rather than JSON module attributes (#7637).
+  writeFileSync(
+    join(probeDir, "json-hook.mjs"),
+    'import { register } from "node:module";\nregister("data:text/javascript," + encodeURIComponent(\'export async function load(url, ctx, next) { if (ctx.importAttributes?.type === "json") process.emitWarning("Importing JSON modules is an experimental feature and might change at any time", "ExperimentalWarning"); return next(url, ctx); }\'));\n',
+  );
+  const jsonCheck = cotal(["--version"], undefined, { ...noSeed, NODE_OPTIONS: `--import=${join(probeDir, "json-hook.mjs")}` });
+  check("--version loads no experimental JSON module imports (clean stderr on Node 22.10)",
+    jsonCheck.status === 0 && jsonCheck.stderr === "", shown(jsonCheck));
 }
 
 // ── Maglev off from the entry (#5498) ─────────────────────────────────────────────────────────────
@@ -439,6 +448,34 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
     writeFileSync(join(home, "..", ".cotal", "agents", "x.md"), "---\nname: x\n---\nhi\n");
   };
+  for (const [sub, words, flags] of [
+    ["list", ["x"], []],
+    ["show", ["x", "y"], []],
+    ["edit", ["x", "y"], []],
+    ["new", ["x", "y"], ["--prompt", "Instructions", "--subscribe", "", "--force"]],
+    ["rm", ["x", "y"], ["--force"]],
+  ] as const) {
+    let file = "";
+    const r = cotal(["personas", sub, ...words, ...flags], (home) => {
+      persona(home);
+      file = join(home, "..", ".cotal", "agents", "x.md");
+    }, noSeed);
+    check(`personas ${sub} refuses surplus names before changing the catalog`,
+      r.status === 1 && r.stderr.includes("usage: cotal personas") &&
+        existsSync(file) && readFileSync(file, "utf8") === "---\nname: x\n---\nhi\n" &&
+        readdirSync(join(file, "..")).join() === "x.md", shown(r));
+  }
+  let createdFile = "";
+  const created = cotal(["personas", "new", "valid", "--prompt", "Instructions", "--subscribe", ""], (home) => {
+    createdFile = join(home, "..", ".cotal", "agents", "valid.md");
+  }, noSeed);
+  check("control: personas new still creates one named persona", created.status === 0 && existsSync(createdFile), shown(created));
+  let removedFile = "";
+  const removed = cotal(["personas", "rm", "x", "--force"], (home) => {
+    persona(home);
+    removedFile = join(home, "..", ".cotal", "agents", "x.md");
+  }, noSeed);
+  check("control: personas rm still removes one named persona", removed.status === 0 && !existsSync(removedFile), shown(removed));
   const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
   const edited = cotal(["personas", "edit", "x"], persona, editor);
   check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
@@ -494,6 +531,15 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("persona edit saves the seeded default persona", editedDefault.status === 0 && editedDefault.stdout.includes("Persona saved"), shown(editedDefault));
   const unchanged = cotal(["persona", "edit", "default"], seeded, editor);
   check("persona edit of a draft left as it was says the persona is unchanged and saves nothing", unchanged.status === 0 && unchanged.stdout.includes("default is unchanged, so nothing was saved") && !unchanged.stdout.includes("Persona saved"), shown(unchanged));
+  const unchangedJson = cotal(["persona", "edit", "default", "--json"], seeded, editor);
+  const unchangedEnvelope = (() => { try { return JSON.parse(unchangedJson.stdout) as { outcome?: string; result?: { kind?: string; name?: string } }; } catch { return {}; } })();
+  check("persona edit --json emits a structured persona-unchanged receipt on stdout", unchangedJson.status === 0 && unchangedEnvelope.outcome === "no-op" && unchangedEnvelope.result?.kind === "persona-unchanged" && unchangedEnvelope.result.name === "default" && unchangedJson.stderr === "", shown(unchangedJson));
+  const noisyEditor = `sh -c 'printf "editor-banner\\n"; printf "more\\n" >> "$1"' sh`;
+  const savedJson = cotal(["persona", "edit", "default", "--json"], seeded, { ...noSeed, VISUAL: noisyEditor, EDITOR: noisyEditor });
+  const savedEnvelope = (() => { try { return JSON.parse(savedJson.stdout) as { outcome?: string; result?: { kind?: string; action?: string; name?: string } }; } catch { return {}; } })();
+  check("persona edit --json routes editor stdout to stderr and emits the saved JSON receipt on stdout", savedJson.status === 0 && savedEnvelope.outcome === "ok" && savedEnvelope.result?.kind === "persona-written" && savedEnvelope.result.action === "saved" && savedJson.stderr.includes("editor-banner"), shown(savedJson));
+  const noInputJson = cotal(["persona", "edit", "default", "--json", "--no-input"], seeded, editor);
+  check("persona edit --json --no-input still refuses to open an editor", noInputJson.status === 1 && /--no-input forbids one/.test(noInputJson.stdout), shown(noInputJson));
   // A catalog file saved as UTF-16 is named by its encoding, with the step to save it as UTF-8.
   const utf16 = (home: string) => {
     seeded(home);
@@ -682,6 +728,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const r = cotal([...argv, `v${E}`, "--prompt", "body", "--subscribe", ""], persona, noSeed);
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
+  }
+  // `personas new` refuses a role `spawn --role` would refuse, as `persona create` does, and writes
+  // nothing: no new persona, and a persona it would replace with --force stays as it was.
+  for (const [name, role] of [["broken", "bad.role"], ["x", "bad role"], ["x", "bad#role"]] as const) {
+    let agents = "";
+    const r = cotal(["personas", "new", name, "--prompt", "body", "--subscribe", "", "--role", role, ...(name === "x" ? ["--force"] : [])], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check(`personas new ${name} --role ${JSON.stringify(role)} is refused naming the NATS-safe token rule, and nothing is written`,
+      r.status === 1 && r.stderr.includes(`--role: invalid role "${role}": must be a single NATS-safe token ([A-Za-z0-9_-])`) && !r.stdout.includes("spawn it") &&
+        readdirSync(agents).join() === "x.md" && readFileSync(join(agents, "x.md"), "utf8") === "---\nname: x\n---\nhi\n", { ...shown(r), files: readdirSync(agents) });
+  }
+  {
+    let file = "";
+    const r = cotal(["personas", "new", "x", "--prompt", "body", "--subscribe", "", "--role", "re-view_er1", "--force"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, noSeed);
+    check("control: personas new --force with a valid role saves it and suggests the launch with that role",
+      r.status === 0 && r.stdout.includes("spawn it:  `cotal spawn x --role re-view_er1`") && readFileSync(file, "utf8").includes("role: re-view_er1"), shown(r));
   }
   // A channel refusal quotes the value with its control characters escaped.
   for (const flag of ["--subscribe", "--allow-subscribe", "--allow-publish"]) {
@@ -977,7 +1038,7 @@ for (const { alias, cmd } of aliases) {
   refused("an alias's unknown flag writes no seed store", cotal(["sp", "--bogus"]), /Unknown option '--bogus'/);
   refused("an undeclared subcommand writes no seed store", cotal(["ext", "bogus"]), /cotal ext has no subcommand "bogus"/);
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
-  const control = cotal(["sync"]);
+  const control = cotal(["config", "unset", "color", "--user"]);
   check("control: a valid command that is not a read seeds the same sandbox shape", control.status === 0 && control.wrote.length > 0, shown(control));
   // `manager start` replaces `supervise`, which seeds on first run, so it seeds too; the group's
   // other verbs keep the native-maintenance rule and seed nothing.

@@ -16,11 +16,16 @@ function renderedStores(root: string, resolveFrom?: string): string[] {
   return stores;
 }
 
-/** The store `root`'s last broker served, when it differs from `storeDir` and still holds JetStream
+/** The stores `root`'s last brokers served that differ from `storeDir` and still hold JetStream
  *  data. `down` drops the record that named a custom or restored store, but each real start writes
  *  its `store_dir` into the broker config it renders, and that file outlives `down`. */
+export function lastServedStores(root: string, storeDir: string): string[] {
+  return [...new Set(renderedStores(root).filter((last) => last !== resolve(storeDir) && existsSync(join(last, "jetstream"))))];
+}
+
+/** The first of {@link lastServedStores}. */
 export function lastServedStore(root: string, storeDir: string): string | undefined {
-  return renderedStores(root).find((last) => last !== resolve(storeDir) && existsSync(join(last, "jetstream")));
+  return lastServedStores(root, storeDir)[0];
 }
 
 /** Whether a broker configuration `root`'s last start rendered names the store `storeDir`. */
@@ -182,16 +187,22 @@ export function assertStoreDirArgument(value: string, root: string): void {
  *  folder it writes first, `jetstream` inside the store once a broker made it, or else the store
  *  itself. A store this account cannot search hides its `jetstream`, so the store is that folder.
  *  nats-server tests that folder when it starts and exits, naming the cause only in its log.
- *  The sentence and the next step, or undefined when the write target is writable and the store root
- *  readable, or neither exists. A folder without read or search access needs those back too, which
+ *  The sentence and the next step, or undefined when the write target and store root are writable,
+ *  the store root readable, or neither exists. A folder without read or search access needs those back too, which
  *  `u+w` leaves out. */
 export function storeWriteProblem(storeDir: string): { path: string; message: string; remedy: string } | undefined {
   const jetstream = join(storeDir, "jetstream");
   let inner: Stats | undefined;
   try { inner = statIfPresent(jetstream); }
   catch (error) { if (!["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
-  const path = inner?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
+  let path = inner?.isDirectory() ? jetstream : statIfPresent(storeDir)?.isDirectory() ? storeDir : undefined;
   if (path === undefined) return undefined;
+  // A remedy for the child alone leaves a read-only store root impossible to clean or reset.
+  try { accessSync(storeDir, constants.W_OK | constants.X_OK); }
+  catch (error) {
+    if (!["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    path = storeDir;
+  }
   try { accessSync(path, constants.W_OK | constants.X_OK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;

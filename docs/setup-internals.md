@@ -125,6 +125,11 @@ is every connector name that the live registry or the installed extension manife
 `setupConnectorSurface` materializes each one through the same loader the rest of the CLI uses.
 `setup.ts` names no connector.
 
+If no connector is installed, setup names `cotal ext add <package>` for the requested official
+harness. Without a selected harness, it names `cotal ext seed --reset` and explains that this
+restores all built-in extensions, including deliberate removals. Ordinary seeding preserves removals.
+A source checkout still needs an installed CLI or an explicit sandboxed seed opt-in.
+
 `setupConnectorCandidates` turns the surface into choices. It reads each hint from the connector's
 own declarations:
 
@@ -360,8 +365,8 @@ refusal on those paths then leaves none of them behind.
 
 ### An npx run offers a global install
 
-For ergonomics only, an npx run with no global `cotal` offers to run `npm i -g cotal-ai`
-(`offerGlobalInstall`), pinned to the running version. The offer is gated on `isNpx()` and a PATH
+For ergonomics only, an `npx` or `pnpm dlx` run with no global `cotal` offers to run `npm i -g cotal-ai`
+(`offerGlobalInstall`), pinned to the running version. The offer is gated on `isNpx()` or `isPnpmDlx()` and a PATH
 scan (`cotalOnPath()`). `displayCmd()` runs the same scan for every user-facing hint, so the scan
 resolves files and never runs them. The `cotal --version` exec probe stays in
 `verifiedCotalExecutables()`. The refusal of an older cotal
@@ -372,7 +377,7 @@ default. A failed install does not fail setup. Setup warns and prints the manual
 appears only in the rich presentation, so `--json` and `--plain` keep stdout for the result.
 
 The same `self-exec.ts` exposes `displayCmd()`. It returns the prefix that setup's next command
-uses, which is `cotal`, `npx cotal-ai`, or `pnpm cotal`, so the command matches how you ran setup.
+uses, which is `cotal`, `npx cotal-ai`, `pnpm dlx cotal-ai`, or `pnpm cotal`, so the command matches how you ran setup.
 
 ## Built-in connectors are seeded extensions
 
@@ -397,6 +402,10 @@ step ([`bin/scripts/copy-seeded-connectors.mjs`](../bin/scripts/copy-seeded-conn
 each one with `npm pack` into `bin/seeded-connectors/<name>/`, which honors each connector's own
 `files`. The `files` field of `cotal-ai` includes that folder.
 
+The copied-install daemon upgrade fixture builder runs this same staging step before copying
+either source mode. After `pnpm build`, `tsx bin/smoke/daemon-generation-live.smoke.ts` needs no
+separate staging command and refreshes any existing generated payload from the current build.
+
 `SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) is the shared list: the connectors plus `web`. The
 prepack asserts that every bundled payload's `name` and `version` match the umbrella package. The
 `fixed` changeset group keeps them in lockstep, so a version-skewed payload can never be published.
@@ -414,12 +423,18 @@ Every connector bundle reads the same `cotal_docs` data (`docs-bundle.bin`, `doc
 directory, `extensions/<pkg>` for a connector and `implementations/web` for `web`. In a published
 install it is `<cotal-ai>/seeded-connectors/<name>`.
 
-The reconcile copies that payload into the durable store, `seed/store/<version>/<name>`, and puts
-the shared files back at every recorded path (`seed/shared.ts`). It refuses a missing or malformed
+The reconcile copies that payload into the durable store, `seed/store/<version>/<name>`. It makes
+its private copy's directories owner-writable, so read-only package installs can seed and repair
+without changing the shipped files. It puts the shared files back at every recorded path
+(`seed/shared.ts`). It refuses a missing or malformed
 manifest, a path outside the payload, and a shared file whose bytes are not the recorded ones. It
 validates the version as one safe path segment, and checks that the destination stays inside the
 store before it writes anything. `cotal update` compares each installed copy of the shared files
 with the shared one.
+
+After reconciliation, garbage collection removes older generations only when no installed extension
+references them. It makes those generations' directories owner-writable before removal, including
+read-only staging trees left by an older failed seed.
 
 `ext add --install-links` reifies the `file:` dependency from that stable path. A volatile source
 would fail to re-reify. `ext add` then junction-links each `@cotal-ai/*` peer to the binary's own
@@ -453,6 +468,9 @@ record:
 - It compares the prefix tree with its lock once. An optional entry can leave this host out through
   its `os`, `cpu`, or `libc` list, under npm's own `checkPlatform` rule with negations and `any`
   included. Such an entry is absent by design, and verify mode does not count it as missing.
+- Extension installs and removals explicitly include optional dependencies, even when npm configuration
+  sets `omit=optional`. Host-compatible native packages are installed, and npm still excludes packages
+  for other platforms. The operator's npm configuration is not rewritten.
 - It reinstalls a built-in only when something differs, so a current install pays no reinstall. An
   operator-managed entry always counts as a difference.
 
@@ -549,5 +567,15 @@ the interrupted connector before it clears the evidence.
 
 A bare environment flag does not authenticate a seed child. Each seed child carries the live lock's
 nonce and the parent PID. It also records a liveness marker, so a repair after a crash refuses to
-race an orphaned installer. `ext seed --reset` quarantines corrupt manifest and authority state, then
+race an orphaned installer. A pending marker belongs to a running reconcile only while the
+process-pinned reconcile lock matches its parent PID and nonce. Once that custody ends, recovery
+waits out a ten-second publication grace from the marker's timestamp, then reads the marker again.
+An already-authenticated child can publish its live PID during that grace. A child whose pending
+marker was cleared or replaced refuses before any mutation. A later child cannot authenticate
+against the dead parent's lock and takes the ordinary extension mutation lock instead.
+The next update, repair, or startup clears a stale pending marker, reports recovery in one line,
+and repairs the interrupted connector. This also recovers markers written by released versions on
+all platforms, without inspecting unrelated processes. A live child still blocks by PID and process
+start token. A corrupt marker still refuses.
+`ext seed --reset` quarantines corrupt manifest and authority state, then
 rebuilds. See [`cotal ext` in the CLI reference](cli-installation.mdx#ext) for the operator-facing flags.

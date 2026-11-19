@@ -388,6 +388,25 @@ setCurrent("keep");
   check("a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down", refused(live, 2, "LIFECYCLE_BLOCKED") && /cotal down/.test(live.env?.error?.remedy ?? "") && findMesh("running") !== undefined, shown(live));
   check("...and on a legacy root, whose down drops the record, the remedy says so", live.env?.error?.remedy === `stop it with \`cotal down\` in ${ownedRoot}, which also drops its record`, live.env?.error);
 
+  // A folder deleted while its broker runs takes the pidfiles and journal the running check reads, so
+  // that broker shows only at its recorded address (#7325). A plain listener stands in for it.
+  const orphanHold = createServer();
+  const orphanServer = `nats://127.0.0.1:${await listenOn(orphanHold, await freePort())}`;
+  const orphanRoot = join(home, "deleted-while-running");
+  recordMesh({ space: "orphan", server: orphanServer, root: orphanRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const orphan = await json(["space", "forget", "orphan"]);
+  check("a space whose folder is gone while its broker address still listens is LIFECYCLE_BLOCKED, and its record stays",
+    refused(orphan, 2, "LIFECYCLE_BLOCKED") && (orphan.env?.error?.message ?? "").includes(`"orphan" started in ${orphanRoot}, which no longer exists, but something still listens at ${orphanServer}`) && findMesh("orphan") !== undefined, shown(orphan));
+  check("...and the remedy names the listener to stop, then forget again",
+    orphan.env?.error?.remedy === `stop the process listening on ${new URL(orphanServer).host}, then run \`cotal space forget orphan\` again`, orphan.env?.error);
+  // A listener at an address another registration names is that space's broker.
+  recordMesh({ space: "sharedgone", server: LIVE, root: join(home, "deleted-shared"), mode: "open", origin: "up", ts: new Date(0).toISOString() });
+  const shared = await json(["space", "forget", "sharedgone"]);
+  check("...but one whose address another registration names is forgotten", shared.status === 0 && findMesh("sharedgone") === undefined, shown(shared));
+  await new Promise<void>((done) => orphanHold.close(() => done()));
+  const freed = await json(["space", "forget", "orphan"]);
+  check("...and once nothing listens there it is forgotten", freed.status === 0 && freed.env?.result.kind === "space-forgotten" && findMesh("orphan") === undefined, shown(freed));
+
   // `cotal up` runs a space as a controller stack: service instances with no pidfile. The stack
   // journal and instance records are written here as a stack leaves them, and nothing is launched. A
   // member pinned to this process runs; one pinned to an exited stand-in is gone.
@@ -441,6 +460,17 @@ setCurrent("keep");
     check("...and it writes nothing: the registration, the selection and the stack journal stay",
       JSON.stringify(registryFiles()) === JSON.stringify(before) && getCurrent() === selected && readFileSync(stackJournalPath(runningRoot), "utf8") === journal, shown(running));
 
+    // A controller stack whose folder was deleted while it ran: its instance records still show the
+    // member running, so forget names the stop for a gone folder (#7325).
+    const deletedRoot = stack("stackdeleted", "open", { broker: member("stackdeleted", "stack-broker", requireProcessIdentity(process.pid), false) }, "started");
+    brokerDefinition("stackdeleted", deletedRoot);
+    rmSync(deletedRoot, { recursive: true, force: true });
+    const deleted = await json(["space", "forget", "stackdeleted"]);
+    check("a controller stack whose folder is gone while a member runs is LIFECYCLE_BLOCKED, naming that member, and its record stays",
+      refused(deleted, 2, "LIFECYCLE_BLOCKED") && (deleted.env?.error?.message ?? "").includes(`"stackdeleted" started in ${deletedRoot}, which no longer exists, but its stack's broker still runs`) && findMesh("stackdeleted") !== undefined, shown(deleted));
+    check("...and the remedy is the gone-folder stop, which drops the record",
+      deleted.env?.error?.remedy === "stop it with `cotal down --space stackdeleted --yes`, which also drops this record", deleted.env?.error);
+
     // The broker crashed: its record requires the exact-exit stop it never got, so its definition stays.
     const goneRoot = stack("stackgone", "open", { broker: member("stackgone", "stack-broker", gonePid, false, { kernelStopRequired: true }) }, "started");
     brokerDefinition("stackgone", goneRoot);
@@ -467,6 +497,27 @@ setCurrent("keep");
     check("...and the stack definitions saved for its root are removed, so another folder can start the name",
       JSON.stringify(settled.env?.result.releasedDefinitions) === JSON.stringify(["stack-broker"]) && serviceDefinitionStore("stackdone").read("stack-broker") === undefined, shown(settled));
     check("...and the stack journal, whose delivery instance forget did not remove, is left as it was", readFileSync(stackJournalPath(doneRoot), "utf8") === doneJournal, shown(settled));
+
+    // A damaged registration must not hide the instances or prepared root that still name its stack.
+    for (const active of [true, false]) {
+      const name = active ? "damagedrunning" : "damagedstopped";
+      const at = stack(name, "auth", { delivery: member(name, "stack-delivery", active ? requireProcessIdentity(process.pid) : gonePid, !active) }, active ? "started" : "stopped");
+      brokerDefinition(name, at);
+      recordPreparedSpace({ space: name, root: at, ts });
+      const file = join(meshesDir(), `${spaceSegment(name)}.json`);
+      const good = readFileSync(file, "utf8");
+      writeFileSync(file, `{"space":"${name}",`);
+      const result = await json(["space", "forget", name]);
+      if (active) {
+        check("a damaged registration with a running stack refuses before either record or definitions are removed",
+          refused(result, 2, "LIFECYCLE_BLOCKED") && existsSync(file) && findPreparedSpace(name)?.root === at && serviceDefinitionStore(name).read("stack-broker") !== undefined, shown(result));
+        writeFileSync(file, good);
+        removePreparedSpace(name);
+      } else {
+        check("forget of a damaged registration releases stopped stack definitions and prepared state in one call",
+          result.status === 0 && !existsSync(file) && findPreparedSpace(name) === undefined && serviceDefinitionStore(name).read("stack-broker") === undefined && result.env?.result.releasedDefinitions.includes("stack-broker"), shown(result));
+      }
+    }
 
     // A prepared space releases the definitions saved for its own root, and only those.
     const prepRoot = realpathSync.native(projectRoot("prepdone")), otherRoot = realpathSync.native(projectRoot("prepother"));
@@ -1007,6 +1058,18 @@ if (process.platform === "linux") {
   const selected = await json(["use", "demo"]);
   check("use promotes the same adopted selection to explicit", selected.status === 0 && readCurrentSelection()?.source === "explicit" && selected.env?.outcome === "ok", shown(selected));
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
+  const besidePrepared = await run(["meshes", "add", "beside-prepared", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
+  const stillPrepared = await json(["use"], fresh);
+  check("meshes add preserves an explicitly selected prepared space and does not announce a new default",
+    besidePrepared.status === 0 && findMesh("beside-prepared")?.server === DEAD && !besidePrepared.stdout.includes("it is now the default mesh") &&
+      stillPrepared.env?.result.current === "demo" && stillPrepared.env.result.preparedState === "prepared" && readCurrentSelection()?.source === "explicit",
+    { add: shown(besidePrepared), selection: stillPrepared.env?.result });
+  const preparedTarget = await json(["who"], fresh);
+  check("after registration, commands still refuse the selected prepared space instead of targeting the new entry",
+    refused(preparedTarget, 2, "TARGET_UNAVAILABLE") && preparedTarget.env?.target?.space === "demo", shown(preparedTarget));
+  const removedBesidePrepared = await run(["meshes", "rm", "beside-prepared"]);
+  check("removing that registration preserves the prepared selection",
+    removedBesidePrepared.status === 0 && getCurrent() === "demo" && readCurrentSelection()?.source === "explicit", shown(removedBesidePrepared));
   // The default report says it under Spaces; the recorded-meshes diagnostics say it again under --verbose.
   const status = await run(["status", "--plain"]);
   check("status says the selected space is prepared, not started", status.status === 0 && /Selected space 'demo' is prepared, not started/.test(status.stdout), shown(status));
@@ -1254,6 +1317,19 @@ if (process.platform === "linux") {
   check("...and use reports it as stopped, not as prepared and not started",
     stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "`cotal down`, completed"
       && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
+  const selectStopped = await json(["use", "demo"], fresh);
+  const besideStopped = await run(["meshes", "add", "beside-stopped", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
+  const stillStopped = await json(["use"], fresh);
+  check("meshes add preserves an explicitly selected stopped space and does not announce a new default",
+    selectStopped.status === 0 && besideStopped.status === 0 && findMesh("beside-stopped")?.server === DEAD && !besideStopped.stdout.includes("it is now the default mesh") &&
+      stillStopped.env?.result.current === "demo" && stillStopped.env.result.preparedState === "stopped" && readCurrentSelection()?.source === "explicit",
+    { add: shown(besideStopped), selection: stillStopped.env?.result });
+  const stoppedTarget = await json(["who"], fresh);
+  check("after registration, commands still refuse the selected stopped space instead of targeting the new entry",
+    refused(stoppedTarget, 2, "TARGET_UNAVAILABLE") && stoppedTarget.env?.target?.space === "demo", shown(stoppedTarget));
+  const removedBesideStopped = await run(["meshes", "rm", "beside-stopped"]);
+  check("removing that registration preserves the stopped selection",
+    removedBesideStopped.status === 0 && getCurrent() === "demo" && readCurrentSelection()?.source === "explicit", shown(removedBesideStopped));
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");
@@ -1570,6 +1646,40 @@ if (process.platform === "linux") {
       w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
   rmSync(stray);
   removePreparedSpace("pready");
+
+  // A damaged registration record refuses every command that reads the registry, so its own forget
+  // must clear it (#7335): the refusal names that forget, and the forget removes the file.
+  mkdirSync(meshesDir(), { recursive: true, mode: 0o700 });
+  const registration = join(meshesDir(), `${spaceSegment("pold")}.json`);
+  writeFileSync(registration, '{"space":"pold",');
+  const blocked = await json(["space"], folder);
+  check("space with a damaged registration record refuses SCHEMA_INVALID, exit 1, naming the forget that removes it",
+    refused(blocked, 1, "SCHEMA_INVALID") && blocked.env?.target?.file === registration &&
+      blocked.env.error?.remedy === "restore the record from backup, or remove it with `cotal space forget pold`", shown(blocked));
+  const forgetRegistration = await json(["space", "forget", "pold"], folder);
+  check("space forget pold removes its damaged registration record, with no broker, root or origin",
+    forgetRegistration.status === 0 && forgetRegistration.env?.result?.kind === "space-forgotten" && forgetRegistration.env.result.server === null &&
+      forgetRegistration.env.result.root === null && forgetRegistration.env.result.origin === null && !existsSync(registration), shown(forgetRegistration));
+  const text = await run(["space", "forget", "pold"], {}, folder);
+  check("  and a second forget finds nothing to forget, exit 2", text.status === 2 && /no space named "pold" is registered here/.test(text.stderr), shown(text));
+  check("space lists again once it is gone", (await json(["space"], folder)).status === 0);
+  for (const legacy of [false, true]) {
+    const name = legacy ? "damagedlegacy" : "damagedprepared";
+    const at = projectRoot(name), elsewhere = projectRoot(`${name}-new`);
+    const prepared = await json(["space", "create", name, "--root", at]);
+    check(`rig: ${name} is prepared`, prepared.status === 0, shown(prepared));
+    const file = join(meshesDir(), `${legacy ? encodeURIComponent(name) : spaceSegment(name)}.json`);
+    writeFileSync(file, `{"space":"${name}",`, { mode: 0o600 });
+    const rm = await run(["meshes", "rm", name, "--force"], {}, folder);
+    check("meshes rm of a damaged registration names its safe forget route and keeps both records",
+      rm.status === 1 && rm.stderr.includes(`cotal space forget ${name}`) && existsSync(file) && findPreparedSpace(name)?.root === at, shown(rm));
+    const forgotten = await json(["space", "forget", name], folder);
+    check("one forget clears both the damaged registration and its prepared record",
+      forgotten.status === 0 && forgotten.env?.result.root === at && !existsSync(file) && findPreparedSpace(name) === undefined, shown(forgotten));
+    const reused = await json(["space", "create", name, "--root", elsewhere]);
+    check("the forgotten name can immediately be prepared in a different folder", reused.status === 0, shown(reused));
+    removePreparedSpace(name);
+  }
 }
 
 finish();

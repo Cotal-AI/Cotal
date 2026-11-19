@@ -10,7 +10,7 @@ import { installFixtureSeat } from './_fixture-seat.mjs';
 const root = mkdtempSync(join(tmpdir(), 'seat-fixture-'));
 for (const [key, name] of Object.entries({ COTAL_HOME: 'home', XDG_CONFIG_HOME: 'config', XDG_RUNTIME_DIR: 'run' })) { process.env[key] = join(root, name); mkdirSync(process.env[key], { mode: 0o700 }); }
 const runtime = resolve('bin');
-const env = { ...process.env, COTAL_SKIP_CONNECTOR_SEED: '1' };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), COTAL_HOME: process.env.COTAL_HOME, COTAL_SKIP_CONNECTOR_SEED: '1' };
 const fixture = await createFixtureSpace({ root, machineHome: process.env.COTAL_HOME, runtime, node: process.execPath, env });
 let daemon, seat, manager;
 try {

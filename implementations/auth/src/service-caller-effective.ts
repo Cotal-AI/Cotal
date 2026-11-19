@@ -16,7 +16,7 @@ import { readRegistryServiceRoot } from "./service-root-reader.js";
 import { parseServiceCallerPayloadRecord, serviceCallerPayloadCheck, SERVICE_CALLER_PAYLOAD_KEY } from "./service-caller-payload.js";
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
-export interface EffectiveEndpointCaller { capabilities: EpCapability[]; expiresAt?: number; evidenceDigest?: string }
+interface EffectiveEndpointCaller { capabilities: EpCapability[]; expiresAt?: number; evidenceDigest?: string }
 export async function effectiveEndpointCaller(registry: LifecycleRegistry, accountPublicKey: string, ledgerDir: string,
   grantee: ServicePrincipal): Promise<EffectiveEndpointCaller> {
   const { space, authKv, jsm } = registryStores(registry);

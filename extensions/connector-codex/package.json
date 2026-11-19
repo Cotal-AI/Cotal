@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-codex",
   "description": "Cotal connector for OpenAI Codex: a host-mode peer driving codex app-server, and a plugin that connects your own Codex conversations to local or signed-in meshes.",
-  "version": "0.164.18",
+  "version": "0.169.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -32,7 +32,7 @@
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@nats-io/transport-node": "^3.4.0",
+    "@nats-io/transport-node": "3.4.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",

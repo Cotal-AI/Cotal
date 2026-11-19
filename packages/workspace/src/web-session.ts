@@ -55,6 +55,8 @@ export async function probeWebReadiness(url: string, readiness: string | undefin
 }
 
 export interface WebSession {
+  /** Private service capability for issuing another single-use browser link. Never logged. */
+  readonly launchNonce?: string;
   /** The single-use link that opens one browser session. */
   readonly launchUrl: string;
   /** Accepted in {@link WEB_READINESS_HEADER} on `/api/meta` only, for the dashboard's whole life,

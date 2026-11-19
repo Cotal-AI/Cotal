@@ -19,9 +19,11 @@ import {
   JcodeConnectorError,
   JcodeModelMismatch,
   JcodeCursorStateUnreadable,
+  JcodeProjectMcpConfig,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
+  PROJECT_MCP_FILES,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
 import {
@@ -154,11 +156,18 @@ const PRESENCE_CONDITION_CODES: ReadonlySet<string> = new Set<PresenceConditionC
  *  relayed: it is what the Harness reported. A code outside the closed set reads `failed`, with
  *  the native code kept as `source`. Without this the seat read `waiting` with the error only in
  *  its private log (#618). */
-export function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
+function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
   if (!(error instanceof HarnessError)) return undefined;
   const source = String(error.code);
   const code = (PRESENCE_CONDITION_CODES.has(source) ? source : "failed") as PresenceConditionCode;
   return { code, source, message: error.message, since };
+}
+
+/** Jcode acknowledges a plain send with `message_accepted` before it checks whether this connection
+ *  is still processing a message, and then refuses the send with this error. The acknowledgement is
+ *  therefore no proof that the model received the text. */
+export function isJcodeBusyRefusal(error: unknown): boolean {
+  return error instanceof HarnessError && error.message.includes("Already processing a message");
 }
 
 function privateAgentHome(space: string, name: string): string {
@@ -201,13 +210,11 @@ function publicConfig(config: AgentConfig): AgentConfig {
 /** Jcode deliberately overlays project `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`
  * over its private home. A same-name project entry could replace the connector's cotal bridge, or
  * add a server the operator never opted to share. The Harness API has no isolation switch for this
- * source set, so refuse the whole launch instead of claiming our private home is sufficient. */
+ * source set, so refuse the whole launch instead of claiming our private home is sufficient. A home
+ * directory counts too: its `.jcode/mcp.json` is Jcode's own global file, read here as a project's. */
 function assertNoProjectMcpConfig(cwd: string): void {
-  const found = [".jcode/mcp.json", ".mcp.json", ".claude/mcp.json"].filter((relative) => existsSync(join(cwd, relative)));
-  if (found.length)
-    throw new Error(
-      `jcode connector: project MCP configuration (${found.join(", ")}) is not supported — Jcode overlays it over the managed cotal MCP bridge. Remove it or use a workspace without project MCP configuration; tool-sharing is not implemented.`,
-    );
+  const found = PROJECT_MCP_FILES.filter((relative) => existsSync(join(cwd, relative)));
+  if (found.length) throw new JcodeProjectMcpConfig(found);
 }
 
 function mcpEntry(): { command: string; args: string[] } {
@@ -384,6 +391,16 @@ async function retireRelay(server: Server | undefined, endpoint: RelayEndpoint):
   if (process.platform !== "win32") rmSync(endpoint.dir, { recursive: true, force: true });
 }
 
+const SEAT_ATTRIBUTION_ENV: ReadonlySet<string> = new Set([
+  "COTAL_SPACE",
+  "COTAL_MANAGER_INSTANCE",
+  "COTAL_NAME",
+  "COTAL_ID",
+  "COTAL_LIFECYCLE_UID",
+  "COTAL_ACCEPTED_TOKEN",
+  "COTAL_HOME",
+]);
+
 function noCotalEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_")) env[key] = value;
@@ -465,13 +482,18 @@ export async function runJcodeHost(): Promise<void> {
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
-  // Jcode itself nor the MCP child can inherit the material pointer or its broker credential.
+  // Jcode itself nor the MCP child can inherit the material pointer or its broker credential; only
+  // the non-secret seat attribution variables (`cotal stop --self`) are carried into Jcode.
   scrubLaunchMaterial();
-  for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+  const seatEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && SEAT_ATTRIBUTION_ENV.has(key)) seatEnv[key] = value;
+    if (key.startsWith("COTAL_")) delete process.env[key];
+  }
 
   // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
   // so the decision read above is what the card reports.
-  const agent = new MeshAgent(config, undefined, { eventsArmed });
+  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
@@ -608,6 +630,10 @@ export async function runJcodeHost(): Promise<void> {
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
   let surfacedIds: string[] = [];
+  /** Plain sends written on the host's connection. Jcode reports a busy refusal as a session error
+   *  with no request id, and that error also ends the run already in flight. A run can attribute
+   *  the refusal to its own send only when no later plain send was written. */
+  let plainSends = 0;
   // A client-only recovery leaves accepted work owned by the same native session.
   // In particular an old run() rejecting on client close must not discard that ledger.
   let nativeTreePreserved = false;
@@ -867,6 +893,7 @@ export async function runJcodeHost(): Promise<void> {
       // seat's version is the operator's choice at spawn time; it must not change under a running
       // agent.
       env: {
+        ...seatEnv,
         JCODE_DISABLE_CLAUDE_MCP: "1",
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
@@ -893,7 +920,7 @@ export async function runJcodeHost(): Promise<void> {
     const runtime = join(socketHome.jcodeHome, "run");
     tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
       cwd,
-      env: { ...noCotalEnv(), JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      env: { ...noCotalEnv(), ...seatEnv, JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
       stdio: "inherit",
     });
     tui.once("exit", (code) => void shutdown(code ?? 0));
@@ -1131,6 +1158,7 @@ export async function runJcodeHost(): Promise<void> {
     relayTurnCondition(null);
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
+    let ownSend = 0;
     try {
       turnClient = client;
       // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
@@ -1163,6 +1191,7 @@ export async function runJcodeHost(): Promise<void> {
         // manager settled meanwhile, or a seat that began stopping, sends nothing.
         if (stopping || !agent.claimTurns(turnIds))
           throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
+        ownSend = ++plainSends;
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
@@ -1238,6 +1267,10 @@ export async function runJcodeHost(): Promise<void> {
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
+      // Jcode acknowledged this send before refusing it, so the acceptance marked its run turns
+      // surfaced although the model never saw them. Offer them again; left surfaced, they would end
+      // on a `done` for work nobody did, or wait out their deadline (#5918).
+      if (isJcodeBusyRefusal(error) && ownSend === plainSends) agent.unsurfaceTurns(turnIds);
       if (!nativeTreePreserved || (!reconnecting && client === turnClient)) {
         agent.releaseInFlight(surfacedIds);
         surfacedIds = [];
@@ -1609,6 +1642,7 @@ export async function runJcodeHost(): Promise<void> {
             `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
               `message(s) as a queued Harness turn instead\n`,
           );
+          plainSends++;
           await current.sendMessage(session, injection);
         } finally {
           current.off("message_accepted", onAccepted);

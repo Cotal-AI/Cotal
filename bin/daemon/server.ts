@@ -34,10 +34,10 @@ import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
-export const MAX_REQUESTS_PER_CONNECTION = 64;
+const MAX_REQUESTS_PER_CONNECTION = 64;
 
 /** Counters a test or `status` can read. Every security decision increments exactly one. */
-export interface ServerCounters {
+interface ServerCounters {
   accepted: number;
   peerRejected: number;
   framesDecoded: number;

@@ -168,8 +168,6 @@ try {
   const tcpPs = runCli(["ps", "--space", space]);
   ok("D: ps still reaches the ep rails over nats://", reachedRails(tcpPs), tcpPs);
 
-  console.log(`\ncontrol transport dial: ${pass} passed, ${fail} failed`);
-  if (fail) process.exitCode = 1;
 } finally {
   await Promise.all(kids.map(async (child) => { if (child.exitCode === null) child.kill("SIGKILL"); await awaitExit(child); }));
   // Removed here, not left to the reaper: release() below drops ownership, so once the finally
@@ -185,3 +183,5 @@ try {
   releaseBrokerStore();
   releaseBroker?.(); // last: ownership is held until this teardown has actually finished
 }
+console.log(`\ncontrol transport dial: ${pass} passed, ${fail} failed`);
+if (fail) process.exitCode = 1;

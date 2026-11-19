@@ -24,6 +24,10 @@ It rejects other major versions.
 
 No OpenCode-side Cotal installation is needed.
 The OpenCode choice in `cotal setup` records your preference, and the connector injects its plugin at launch.
+If `opencode` is missing from PATH, setup saves preparation and points to dependency repair before startup.
+A foreground spawn checks the executable before issuing launch credentials and refuses with
+`DEPENDENCY_UNAVAILABLE` if it is missing. The refusal links to this installation guide and prints the spawn command to retry.
+Install OpenCode on this machine, then run that command again.
 
 ## Launch OpenCode [#spawn-it]
 
@@ -71,6 +75,7 @@ A model visible only in the CLI catalog can still be refused.
 Cold startup waits up to two minutes for the Cotal session, with five more seconds for the manager to receive a boot failure.
 On OpenCode 1.19.5, a model-catalog lookup on a fresh home can leave dependency-install locks that OpenCode recovers after about a minute.
 Each launch keeps its server boot output in `<workspace>/.cotal/opencode/<name>/boot.<token>.log`, including failed launches.
+If OpenCode exits during startup, the launch failure includes its last output lines and names the retained boot log.
 If startup fails, read that log on the execution host, correct any setup error, then launch again.
 
 ## Work in the session [#how-it-binds]

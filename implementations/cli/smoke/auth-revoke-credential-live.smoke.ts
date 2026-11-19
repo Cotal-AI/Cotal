@@ -93,6 +93,10 @@ try {
   const mintKept = cli(root, "auth", "mint", "kept", "--no-expiry", "--out", kept, "--json");
   const key = String(mintLeaked.env?.result?.identity ?? "");
   check("auth mint writes two credentials", mintLeaked.status === 0 && mintKept.status === 0 && /^U[A-Z2-7]{55}$/.test(key), { leaked: shown(mintLeaked), kept: shown(mintKept) });
+  for (const command of ["console", "watch"]) {
+    const observed = cli(root, command, "--creds", kept, "--plain");
+    check(`${command} refuses an agent credential before announcing a feed`, observed.status === 2 && !observed.stdout.includes("watching space") && observed.stderr.includes("agent-profile credential") && observed.stderr.includes("--profile observer") && !observed.stderr.includes("Permissions Violation"), shown(observed));
+  }
   // A label's own standing file, at the path auth mint writes without --out.
   const mintLabel = cli(root, "auth", "mint", "standing", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
   const labelFile = String(mintLabel.env?.result?.output ?? ""), labelKey = String(mintLabel.env?.result?.identity ?? "");

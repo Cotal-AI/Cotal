@@ -3,8 +3,11 @@ import { assertAdmittedSubscribe, chatStream, chatSubject, isConsumerNotFound, s
 import { RunScopeAuthority, RunScopeDenied, WaitReceipts, type WaitReceipt } from "./run-scope-authority.js";
 import { Cancelled } from "@cotal-ai/lang";
 
-export interface RunWaitMessage {
+interface RunWaitMessage {
   readonly sequence: number;
+  /** The subject the broker delivered the message on. Its sender tokens are the publishing
+   *  principal, which the matcher compares with the payload's `from.id`. */
+  readonly subject: string;
   readonly data: Uint8Array;
   readonly receipt: WaitReceipt;
 }
@@ -64,6 +67,7 @@ export function createRunWaitHost(
             throw new RunScopeDenied(entry.run, message.subject, "receive outside wait channel");
           messages.push(Object.freeze({
             sequence: message.seq,
+            subject: message.subject,
             data: message.data.slice(),
             receipt: receipts.issue(requestId, () => message.ack()),
           }));

@@ -29,9 +29,12 @@ import {
   findPreparedSpace,
   getCurrent,
   legacyStackElsewhere,
+  legacyStackOtherHome,
+  stackHomeRemedy,
   localMeshesForRoot,
   preparedSpaceAt,
   retainedLegacyBroker,
+  retainedOpenSpace,
   soleSpaceOf,
   writeResult,
   type Report,
@@ -90,8 +93,9 @@ import {
 import { localProcessSurface } from "../ext-loader.js";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
-import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
+import { parsePid, probeLiveness, readPidfile, verifyIdentityPin } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
+import { interruptedStartBroker } from "../lib/legacy-start.js";
 import { downManifest } from "./down-manifest.js";
 import { directKvValue, refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
@@ -403,8 +407,8 @@ function noOwnedStack(root: string): CommandFailure {
 function legacyRootElsewhere(root: string): { space: string; recordedRoot: string; remedy: string } | undefined {
   try {
     const retained = retainedLegacyBroker(root);
-    if (!retained || retained.open) return undefined;
-    const space = soleSpaceOf(authDir(root));
+    if (!retained) return undefined;
+    const space = retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root));
     if (space === undefined) return undefined;
     const elsewhere = legacyStackElsewhere(root, space);
     return elsewhere && { space, ...elsewhere };
@@ -426,7 +430,7 @@ function recordsElsewhere(root: string, action: "stop" | "preview"): CommandFail
 /** Keep the retained pidfile sweep from crossing an exact recorded broker-sharing boundary or
  *  stopping the broker under a saved service that still runs. This is not a complete live ownership
  *  or agent-impact proof. */
-function guardLegacyBareDown(): { space: string; server: string } {
+function guardLegacyBareDown(): { space: string; server: string; mode?: string } {
   const root = canonicalRoot(cotalRoot());
   const target = { root };
   if (root === canonicalRoot(homedir())) {
@@ -434,15 +438,19 @@ function guardLegacyBareDown(): { space: string; server: string } {
     if (!existsSync(join(root, ".cotal")) || !localMeshesForRoot(root).length && !pidRecordsUnder(root)) throw noOwnedStack(root);
     throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
   }
-  let mesh: NonNullable<ReturnType<typeof findMesh>>;
+  let mesh: { readonly space: string; readonly server: string; readonly mode?: string };
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
     // A root that hosts several spaces refuses before the registration lookup, naming them.
     try { assertSingleSpaceBroker(authDir(root), "bare down"); }
     catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target }); }
     const local = localMeshesForRoot(root), sole = local[0];
-    if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
-    mesh = sole;
+    // A start interrupted before it registered its space left its broker with no registration. The
+    // root's own files name that space and address, and the guards below apply to it unchanged.
+    const interrupted = local.length ? undefined : interruptedStartBroker(root);
+    if (interrupted) mesh = interrupted;
+    else if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
+    else mesh = sole;
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw noOwnedStack(root);
@@ -483,7 +491,7 @@ function guardLegacyBareDown(): { space: string; server: string } {
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
-  return { space: mesh.space, server: mesh.server };
+  return { space: mesh.space, server: mesh.server, mode: mesh.mode };
 }
 
 /** Bare down reads each process record it stops where the record lies, as the stopped-stack census
@@ -537,6 +545,8 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   const gone = goneRootDown(args.values);
   if (gone) return goneRootStackDown(gone.space, gone.root, args.values);
   if (controllerStackRecorded(cotalRoot())) return stackDown(cotalRoot(), args.values);
+  const ownerHome = legacyStackOtherHome(cotalRoot());
+  if (ownerHome !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this folder's running stack belongs to another Cotal home; nothing was stopped", { target: { root: cotalRoot(), home: ownerHome }, remedy: stackHomeRemedy(ownerHome) });
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
   if (bareStop(args.values)) {
@@ -657,7 +667,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
         // The daemon's exit does not prove its release committed: it gives the release two seconds
         // and then exits anyway. The row it leaves is recognised by the next up only through this
         // daemon's credential, so the lease is read while the broker still runs.
-        if (recorded) deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
+        if (guarded.mode !== "open") deliveryLease = await deliveryLeaseAfterStop(context.root, context.space, guarded.server);
       }
       else await stopLocalProcess(component, context);
       if (recorded) stopped.push(component.label);
@@ -1373,6 +1383,10 @@ export function pidfileState(path: string): PidfileState {
   if (raw.startsWith("removing:")) return { liveness: "unknown", note: "extension removal in progress" };
   const pid = parsePid(raw);
   if (!pid) return { liveness: raw ? "unknown" : "dead", note: "bad pidfile" };
+  const pin = verifyIdentityPin(path);
+  if (pin.kind === "mismatch") return { pid, liveness: "dead", note: "foreign pid" };
+  if (pin.kind === "gone" || pin.kind === "no-pid") return { pid, liveness: "dead", note: "stale pidfile" };
+  if (pin.kind !== "match" && pin.kind !== "legacy") return { pid, liveness: "unknown", note: `identity ${pin.kind}` };
   const liveness = probeLiveness(pid);
   if (liveness === "alive") return { pid, liveness };
   return { pid, liveness, note: liveness === "dead" ? "stale pidfile" : "liveness unknown" };

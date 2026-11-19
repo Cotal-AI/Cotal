@@ -7,10 +7,36 @@ pub const APP_ID: &str = "ai.cotal.desktop";
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
     pub login: Option<bool>,
+    pub recovered: bool,
     pub connected: bool,
     pub relocation_declined: bool,
     pub pin_offered: bool,
     pub close_explained: bool,
+}
+
+/// Load startup preferences without discarding an unreadable file.
+pub fn load_preferences(path: &Path) -> Result<(Preferences, Option<String>), String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Preferences::default(), None)),
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Ok(preferences) = serde_json::from_slice(&bytes) { return Ok((preferences, None)); }
+    // Reserve a fresh name so an earlier recovery is never overwritten.
+    for index in 0.. {
+        let backup = path.with_extension(format!("json.invalid.{index}"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+                std::fs::remove_file(path).map_err(|error| error.to_string())?;
+                return Ok((Preferences { recovered: true, ..Preferences::default() }, Some(format!("Desktop preferences could not be read. The original file was kept at {}. Cotal is using defaults. No login setting was changed.", backup.display()))));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    unreachable!()
 }
 
 impl Preferences {
@@ -93,6 +119,40 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_recovers_invalid_preferences_without_overwriting_backups() {
+        let directory = std::env::temp_dir().join(format!("cotal-preferences-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("presence.json");
+        let (preferences, notice) = load_preferences(&path).unwrap();
+        assert!(!preferences.recovered && notice.is_none());
+        for (index, bytes) in [
+            br#"{"relocationDeclined":false,"pinOffered":false,"closeExplained":false}"#.as_slice(),
+            b"{broken".as_slice(),
+            br#"{"login":"yes"}"#.as_slice(),
+            &[0xff],
+        ].into_iter().enumerate() {
+            std::fs::write(&path, bytes).unwrap();
+            let (preferences, notice) = load_preferences(&path).unwrap();
+            assert!(preferences.recovered);
+            assert!(!preferences.connected && preferences.login.is_none());
+            assert!(!preferences.login_enabled());
+            assert!(notice.unwrap().contains("No login setting was changed."));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read(path.with_extension(format!("json.invalid.{index}"))).unwrap(), bytes);
+            let serialized = serde_json::to_vec(&preferences).unwrap();
+            assert!(serde_json::from_slice::<Preferences>(&serialized).unwrap().recovered);
+        }
+        std::fs::write(&path, br#"{"login":false,"connected":true}"#).unwrap();
+        let (preferences, notice) = load_preferences(&path).unwrap();
+        assert!(!preferences.recovered && notice.is_none());
+        assert_eq!(preferences.login, Some(false));
+        assert!(path.exists());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(load_preferences(&path).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn tray_counts_only_observed_running_agents() {
         use serde_json::json;

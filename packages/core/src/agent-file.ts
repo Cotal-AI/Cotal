@@ -15,7 +15,7 @@
  *   variant: high              # optional connector-defined model variant
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
  *   agent: jcode           # optional connector/harness pin (flag > file > COTAL_DEFAULT_AGENT > default)
- *   theme: dark            # any unmodelled key is kept verbatim in AgentDef.meta, so a
+ *   theme: dark            # unmodelled, non-reserved scalar keys are kept in AgentDef.meta, so a
  *                          #   connector can read its own launcher hints without core knowing them
  *   ---
  *   <the Markdown body is the persona — an appended system prompt>
@@ -99,8 +99,8 @@ export interface AgentDef {
    *  file (legacy / operator-written) is admin-only, and a caller can never claim ownership of an
    *  existing file. Set once at creation (owner = creator), preserved on every later redefine. */
   owner?: string;
-  /** Frontmatter keys not modelled above, kept verbatim so a connector can read its own launcher
-   *  hints without core knowing about each one. */
+  /** Non-reserved scalar frontmatter keys not modelled above, kept verbatim so a connector can
+   *  read its own launcher hints without core knowing about each one. */
   meta?: Record<string, string>;
   /** Markdown body — the agent's persona / appended system prompt. */
   persona?: string;
@@ -173,18 +173,20 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
+  const yamlType = (v: unknown): string => v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "mapping" : typeof v;
   const str = (k: string): string | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    if (typeof v === "object") throw new Error(`agent file ${path}: "${k}" must be a scalar`);
-    return String(v);
+    if (v === undefined) return undefined;
+    if (typeof v !== "string") throw new Error(`agent file ${path}: "${k}" must be a string; got ${yamlType(v)}`);
+    return v;
   };
   const list = (k: string): string[] | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    return (Array.isArray(v) ? v : [v]).map((x) => {
-      if (x === null || typeof x === "object") throw new Error(`agent file ${path}: "${k}" list items must be scalars`);
-      return String(x);
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) throw new Error(`agent file ${path}: "${k}" must be an array of strings; got ${yamlType(v)}`);
+    return v.map((x, index) => {
+      if (typeof x !== "string") throw new Error(`agent file ${path}: "${k}" must be an array of strings; item ${index} got ${yamlType(x)}`);
+      return x;
     });
   };
 
@@ -204,6 +206,12 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     if (old in fm)
       throw new Error(
         `agent file ${path}: "${old}" was renamed - use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
+      );
+
+  for (const key of ["cwd", "worktree"])
+    if (key in fm)
+      throw new Error(
+        `agent file ${path}: "${key}" is not supported in frontmatter; the working directory comes from the spawn request (use --cwd)`,
       );
 
   const subscribe = list("subscribe");

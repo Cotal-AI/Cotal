@@ -32,13 +32,19 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 
 - **Wake channel.** Claude Code binds the `server:cotal` channel only to a server its own
   configuration declares, the user config or the project's `.mcp.json`; the `--mcp-config` entry
-  alone does not count. `cotal setup` and `cotal update` register the plugin's server as the
-  user-scope entry `cotal`, the same command and arguments as the plugin's own server, so a plain
-  session runs one process and a managed launch's same-named entry replaces it. A carried seat's
-  private home declares it itself. A managed launch whose user config and project `.mcp.json`
-  declare no `cotal` server is refused with a message naming `cotal setup`, because a seat whose
-  channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
+  alone does not count. `cotal setup` and a daemon-hosted Manager install the plugin and register
+  its server as the user-scope entry `cotal`. `cotal update` only refreshes an existing installation.
+  The entry uses the plugin's own command and arguments, so a plain session runs one process and
+  a managed launch's same-named entry replaces it. A carried seat's private home declares it itself.
+  A managed launch with no declaration refuses instead of starting a seat that cannot wake. On a
+  daemon-connected computer, use `cotal daemon setup --space <space>` to retry registration.
   `cotal status` reports the entry under `Claude wake channel`.
+
+- `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
+  space, so a prompt that names a Claude command or starts with `-` still arrives as the turn. An
+  empty prompt refuses the launch. A `--resume` id that starts with `-` is refused, because Claude
+  would read it as an option. Values given through `--opt` are passed to Claude as written and are
+  not covered by these rules.
 
 - **Tool permissions.** A managed seat has no human at its terminal, so it launches with
   `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
@@ -137,7 +143,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   a spawn there. A foreground `cotal spawn` keeps the trust dialog in your terminal.
 
 Inbound mesh messages arrive in context as
-`<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
+`<channel source="cotal" from="bob (unverified name)" from_id="local.bob" kind="dm" …>…</channel>`: each meta key a tag
 attribute the agent can read for routing.
 
 The consuming connector holds a crash-safe claim for its broker target, space, principal and
@@ -232,7 +238,9 @@ exits, the next connection on this computer retires what that server held. A plu
 `cotal setup` did not install has no record, and `cotal_connect` names that remedy.
 
 Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
-The plugin binds the real native session and transcript before requesting an identity. Each
+The plugin binds the real native session and transcript before requesting an identity. It does not
+change the connect call's arguments. When that call names no session, the server uses the one native
+session it has bound. Each
 conversation gets a separate actor. A new identity is issued only after a person approves it in the
 authority's signed-in web page. A model's tool arguments, a client flag or a native tool approval
 never approve it. The request first comes back pending with the page's address and its expiry.
@@ -314,6 +322,16 @@ A permanent HTTP request failure stops automatic approval polling but keeps that
 The native host reports a policy refusal separately from a person's denial, then serves its saved
 explanation through the same name and `approval_id` without another provision call.
 
+The native auth provider sends `Cotal-Conversation-Refusals: 1` on creation and recovery POSTs.
+An authority that supports this opt-in can answer a name conflict with HTTP 409 and only
+`v: 1`, the saved `requestId`, `status: "refused"` and `error: "name-taken"`.
+It must durably bind the refusal to the original request and repeat it on replay, even after the
+name becomes available. An issued identity must never become a name refusal. A matching answer
+releases only an unissued local request, so choosing another name can reach normal approval.
+An older unversioned name conflict explains the failure but retains unknown recovery state.
+Server reason text and action URLs are not displayed. Signed-in and hosted connections do not
+number a conflicting name automatically; open and static local meshes do.
+
 An authority can return a terminal agent-limit refusal with HTTP 409, `v: 1`, the saved `requestId`,
 `status: "refused"`, `error: "agent-cap"` and `cap: "agents"`.
 Its `current` and `limit` are safe integers with `current >= limit >= 1`.
@@ -330,7 +348,20 @@ conversations stay connected. When the mesh reports retirement pending or does n
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
 unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
 once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
-retirement. A restarted plugin server recovers the same way. After each connection, the plugin
+retirement. A restarted plugin server recovers the same way. New recovery records retain the original
+registration pins, so retirement still goes to that authority after the registered addresses change.
+After a registration change, an older issued record without those pins first reads discovery at its
+saved exchange address. Reconstruction keeps the saved root and local registration fields while
+replacing the public pins. Retirement uses that registration only when its full trust hash matches
+the saved record. A record without issued material has no saved exchange address and is set aside. If discovery
+is unavailable or the hash differs, or the original authority is
+unavailable or refuses sign-in, the record is set aside without confirming retirement.
+Set-aside records live at `app-identities/unconfirmed-<id>` in the private Cotal home. They retain
+credentials and do not confirm retirement. No credential is sent to the replacement authority.
+If the earlier identity still holds its name, a matching terminal refusal releases only the fresh,
+unissued request. The person can then choose another name and approve a new connection, or retire
+an earlier agent they no longer use before reusing its name. Offline alone does not mean unused.
+A different issuer or audience never authorizes reuse of the old request. After each connection, the plugin
 retires the same mesh's saved identities whose plugin server process no longer exists, such as one
 killed before it could retire them. This runs in the background, so the connection does not wait
 for it. A server process that still exists keeps its identity, and a retirement that does not finish
@@ -440,7 +471,9 @@ delivers, the other only wakes:
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
   sends a receipt back down the control socket from that stdout write's callback, and only on a
   clean write (a runtime whose pipe has gone away fails it), and the connector treats that receipt,
-  not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
+  not its own socket write, as delivery. The receipt is a MAC over the reply it confirms (`Mk` in the
+  [control exchange](authoring-a-connector.mdx#control-exchange)), so a process that forwards the
+  socket without the key cannot confirm a reply it dropped. So a large injection killed mid-flush, or one written to a
   broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
   that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
   reported written the moment the kernel takes it. That residual is why the path errs toward
@@ -505,7 +538,10 @@ with `cotal_channel_mode` or as agent-file defaults (`quiet:` / `muted:`,
 [agent files](agent-files.mdx)). A per-channel override is the final word for that channel.
 Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, or other
 connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
-`@mention` remains automatic and injects normally.
+`@mention` remains automatic and injects normally. Setting a channel quiet also makes its ambient
+already waiting pull-only, and muting it makes everything already waiting from it pull-only,
+mentions included. After `cotal_leave`, ambient already waiting from the channel is pull-only too.
+A message a host is already handing to the agent keeps its lane.
 
 A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
 receivable window (direct messages and role requests first, then channel traffic, replayed history
@@ -586,7 +622,12 @@ sender inside a single bracket pair. A message body, a sender name and role, and
 channel label are all peer-controlled, so each passes through the same neutralization the
 `cotal_inbox` reply uses: no line break a splitter may honour and no bracket survives into a
 rendered attribution. A sender name that is only whitespace is left out, and the frame names that
-sender by id. This matters more for an injected block than for a reply, because the agent
+sender by id. A sender writes its own name and role, so the frame marks them `(unverified name)`, or
+`(unverified role)` when the name is blank and the frame shows the sender's id. A label longer than
+the line it sits on is cut before the marker, never through it. A double quote in a name or role
+becomes a space, like a bracket. The `sender_id` beside them is the identity the broker checked. The
+`from` attribute of a `<channel>` tag carries the same marked label, and `from_id` the checked id.
+This matters more for an injected block than for a reply, because the agent
 did not ask for it and so never had the chance to distrust it.
 
 ## Presence mapping
@@ -617,9 +658,12 @@ roster instead of staying on it as a live peer.
 `model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
 `unknown` to `failed`. The native value remains in `condition.source`.
 
-Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
-socket + per-launch token, constant-time checked), so a local process that finds the path
-still can't drive presence or stop the agent. Claude Code's own
+Hooks are relayed over the connector's **authenticated** local control endpoint. The hook and the
+connector each prove they hold the launch's key without sending it, and the hook prints a reply only
+when its MAC verifies (see [the control exchange](authoring-a-connector.mdx#control-exchange)). A
+local process that finds the path, or takes it after the connector exits, cannot drive presence,
+stop the agent, or answer a hook. Off Windows the socket sits in a directory only the session's user
+can enter, and a hook that finds the directory open to others connects to nothing and warns once. Claude Code's own
 [hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
 plugin registers, with their matchers, are listed in the
 [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
@@ -629,7 +673,9 @@ plugin registers, with their matchers, are listed in the
 A connected native session publishes a structured account of its activity: the messages a person
 typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
 results publish by default on a separately authorized payload rail (below). A turn a peer message
-started opens a run without republishing that message. Reasoning is off by default. Programs can read these events directly. The launcher
+started opens a run without republishing that message. Native wake and inline prompts attributed
+to the Cotal plugin follow the same rule, including when they arrive during an open run.
+Reasoning is off by default. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
@@ -645,12 +691,22 @@ A personal connection makes manager calls only with its own selected grant.
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
 before it re-establishes the plane: at once after a failure, then every second while the plane
-stays down, a fixed wait that neither grows nor is capped, so the plane is back within a second
-of the fault clearing. The re-establish
+stays down, so the plane is back within a second of the fault clearing. A halt is a refusal that a
+retry cannot clear by itself, such as a channel tip another writer moved. After a halt the wait
+starts at one second and doubles with each further halt, up to five minutes. The re-establish
 is a fresh start: it reopens the write-ahead log, settles any frame it left pending, builds the
 mapper from the run the log has open, and reads on from the stored cursor, which is the same
-recovery a connector restart runs. A failed publish or a failed log write is never retried on the
-emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
+recovery a connector restart runs. A pending frame that the broker stored before its
+acknowledgement was lost is settled as published when the broker's two-minute duplicate window
+still holds its id, or when the seat may read its own event channel and that frame is the newest
+one there. Otherwise the plane halts, because nothing proves the frame at the tip is that frame.
+Before a new thread publishes, it also settles pending frames in earlier thread logs under the
+same principal and state root. Their frozen ids and expectations are preserved. A new thread
+does not discard an ended session's pending frame or publish against its stale subject record.
+A local unacknowledged frame lets startup reach that recovery even when no acknowledgement has
+yet been recorded. A state root with no such frame and no acknowledged frontier still refuses
+when the broker retains this principal's events.
+A failed publish or a failed log write is never retried on the emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
 turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
 open is closed with that terminal, a failure as a failure, rather than left open for the next
 prompt to close as a finish. That holds when the next prompt was already written before the plane
@@ -689,8 +745,8 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 supplies the source, then enqueues adopt, flush, and close in that order.
 
 `SessionStart` can also run before the connector process has bound its local control socket. The hook
-the `SessionStart` relay retries only transient pre-connect listener errors, with capped backoff
-inside its existing two-second budget. Later hooks and permanent local faults still fail open
+the `SessionStart` relay retries only transient pre-connect listener errors and a socket directory
+that does not exist yet, with capped backoff inside its existing two-second budget. Later hooks and permanent local faults still fail open
 immediately. Once a socket has connected, a broken exchange is not retried: the connector may
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely

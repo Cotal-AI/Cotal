@@ -31,20 +31,20 @@ import {
   writeSecretFileCreateOnly,
 } from "@cotal-ai/core";
 
-export const CHAT_SESSIONS_DIR = "chat-sessions";
+const CHAT_SESSIONS_DIR = "chat-sessions";
 const CHAT_ROW_VER = 1;
 
 /** Request bounds, enforced at admission and re-asserted by the reader. */
 export const CHAT_LABEL_MAX = 128;
-export const CHAT_LIST_MAX = 64;
+const CHAT_LIST_MAX = 64;
 /** The absolute session cap, never extended. */
 export const CHAT_SESSION_MAX_TTL_MS = 8 * 60 * 60 * 1000;
 
 /** The server-drawn chat actor alias: `chat_` + 26 lowercase base32 characters (130 bits). */
-export const CHAT_ACTOR = /^chat_[a-z2-7]{26}$/;
+const CHAT_ACTOR = /^chat_[a-z2-7]{26}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 
-export type ChatSessionState = "pending" | "active" | "retired";
+type ChatSessionState = "pending" | "active" | "retired";
 /** Outcomes a RETIRED row can record. `failed` is never recorded: a failed retirement leaves the
  *  row non-retired and is reported as pending. */
 export type ChatRetireOutcome = "retired" | "alreadyRetired" | "notStarted";
@@ -79,7 +79,7 @@ export interface ChatSessionRow {
 }
 
 /** The permanent tombstone left by compaction. Never deleted. */
-export interface ChatSessionTombstone {
+interface ChatSessionTombstone {
   owner: string;
   actor: string;
   lifecycleUid: string;
@@ -89,7 +89,7 @@ export interface ChatSessionTombstone {
   expiresAt: number;
 }
 
-export type ChatSessionRecord = { form: "row"; row: ChatSessionRow } | { form: "tombstone"; row: ChatSessionTombstone };
+type ChatSessionRecord = { form: "row"; row: ChatSessionRow } | { form: "tombstone"; row: ChatSessionTombstone };
 
 const ROW_FIELDS = new Set([
   "ver", "owner", "actor", "lifecycleUid", "holderHash", "allowSubscribe", "allowPublish", "scope", "label",
@@ -149,7 +149,7 @@ function sessionsDir(dir: string): string {
 }
 
 /** The row's filename is its principal dot-form; both tokens are grammar-asserted first. */
-export function chatSessionRowFilename(owner: string, actor: string): string {
+function chatSessionRowFilename(owner: string, actor: string): string {
   assertDerivedOwnerToken(owner);
   assertChatActor(actor);
   return `${owner}.${actor}.json`;
@@ -177,9 +177,8 @@ function assertSessionsDirectory(dir: string): string | undefined {
   return path;
 }
 
-/** Validate parsed JSON against the closed contract. Exported for the reader smoke; never a
- *  substitute for {@link readChatSessionRow}, which also binds the file name. */
-export function parseChatSessionRecord(raw: unknown, path: string): ChatSessionRecord {
+/** Validate parsed JSON against the closed contract. The reader also binds the file name. */
+function parseChatSessionRecord(raw: unknown, path: string): ChatSessionRecord {
   if (!isRec(raw)) refuse(path, "is not an object");
   if (raw.ver !== CHAT_ROW_VER) refuse(path, `has unknown version ${String(raw.ver)}`);
   const keys = Object.keys(raw);

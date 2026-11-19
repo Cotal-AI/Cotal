@@ -37,6 +37,7 @@ const seat = async (prompt = "write the summary") => {
   (agent as unknown as { ep: unknown }).ep = {
     principal: { owner: "local", actor: "seat" },
     setStatus: async () => {},
+    noteActivity() {},
     setActivity: async () => {},
     setAttention: async () => {},
     setCondition: async () => {},

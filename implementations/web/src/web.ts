@@ -79,8 +79,10 @@ export const UNAUTHENTICATED = "unauthenticated";
 export const LAUNCH_TOKEN_ALREADY_USED = "launch-token-already-used";
 export const CROSS_ORIGIN = "cross-origin";
 /** The cookie the session rides in. NOT `Secure`: this surface is `http://127.0.0.1`, where a Secure
- *  cookie would simply never be sent. `HttpOnly` keeps it out of page script and `SameSite=Strict`
- *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
+ *  cookie would simply never be sent. `HttpOnly` keeps it out of page script. `SameSite=Lax` keeps it
+ *  off another site's POSTs, frames and subresource requests, and sends it on a top-level GET
+ *  navigation, so a link from a homepage tile opens the dashboard. Every GET route only reads, and a
+ *  request another site's page sends carries an `Origin` the gate refuses. Stated here rather than
  *  discovered in review. */
 const SESSION_COOKIE = "cotal_web_session";
 /** The request path, without the query. This DUPLICATES the handler's own parse, deliberately: the
@@ -152,12 +154,12 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  *  requests to http://127.0.0.1:7799. So no mesh read and no channel delete runs for a caller this
  *  gate has not admitted.
  *
- *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A cross-site request arrives without
- *  the cookie anyway (SameSite=Strict), so checking the session first would report every such
- *  request as `unauthenticated` and the operator would never learn that something cross-origin was
- *  talking to their console. The more specific condition wins.
+ *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A request another site's page sends
+ *  arrives without the cookie anyway (SameSite=Lax), so checking the session first would report every
+ *  such request as `unauthenticated` and the operator would never learn that something cross-origin
+ *  was talking to their console. The more specific condition wins.
  */
-export function makeAuthGate(port: number, host: string = WEB_HOST) {
+export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?: string) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
@@ -189,7 +191,13 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
     launchToken: launchToken!,
     readinessNonce,
     /** `undefined` = let the request through. Otherwise the named condition that refused it. */
-    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | undefined {
+    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | { launchUrl: string } | undefined {
+      if (launchNonce && pathOf(req) === "/api/browser-launch" && req.method === "POST" &&
+          typeof req.headers["x-cotal-browser-launch"] === "string" && secretEquals(req.headers["x-cotal-browser-launch"], launchNonce) &&
+          req.headers.origin === undefined && req.headers["transfer-encoding"] === undefined && Number(req.headers["content-length"] ?? 0) === 0) {
+        launchToken = randomBytes(32).toString("base64url");
+        return { launchUrl: `${webUrl(host, port)}?k=${launchToken}` };
+      }
       const origin = req.headers.origin;
       if (origin !== undefined) {
         // A same-origin fetch from our own page sends no Origin at all for GETs, and sends our own
@@ -304,7 +312,7 @@ const CLIENT_TYPES: Record<string, string> = {
 
 /** One servable file of the client build. `immutable` marks a content-hashed asset, which a
  *  browser may cache forever because a new build gives it a new name. */
-export interface ClientFile { path: string; type: string; immutable: boolean }
+interface ClientFile { path: string; type: string; immutable: boolean }
 
 /** The answer when the client build is missing: the server keeps serving the API and says what to
  *  do instead of serving nothing. It speaks to both readers who can meet it: in a source checkout
@@ -477,6 +485,9 @@ export class BadRequest extends Error {}
  *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
 export class PayloadTooLarge extends Error {}
 
+/** A delete upload that did not finish within its total body deadline. */
+class BodyDeadlineExceeded extends Error {}
+
 /** A post the broker, or the operator's connection to it, refused. Neither the caller's fault nor
  *  this server's, so the frame answers 502 with the broker's own message, escaped by
  *  {@link escapeForOperator}. */
@@ -497,6 +508,7 @@ export class BrokerRefused extends Error {}
  *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
+const DELETE_BODY_DEADLINE_MS = 10_000;
 
 /** The only routes that read a request body. Every other route refuses an announced body. */
 const BODY_ROUTES = new Set(["/api/channel/delete", "/api/send"]);
@@ -747,7 +759,7 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
  *  a slow link, watching a busy agent, cannot take frames as fast as the tap produces them, and
  *  every byte it has not taken waits in this process. Past this the feed is told why and ended, and
  *  the browser's own reconnect opens a fresh one, watches again and reads the gap from history. */
-export const MAX_FEED_BUFFER_BYTES = 1_048_576;
+const MAX_FEED_BUFFER_BYTES = 1_048_576;
 
 /** What a feed write is. A `live` event is traffic the feed may fall behind on, so it is held to the
  *  ceiling. A `snapshot` is the state a feed is opened with (its hello, the roster, the presence view
@@ -757,7 +769,7 @@ export type FeedWrite = "live" | "snapshot";
 
 /** The parts of a feed's response that `writeFeed` uses. `once` is the stream's own, used to learn
  *  when the opening state has drained; a response without it is warmed by the zero-backlog check. */
-export interface FeedResponse {
+interface FeedResponse {
   readonly writableEnded: boolean;
   readonly writableLength: number;
   write(chunk: string): unknown;
@@ -818,7 +830,7 @@ export function writeFeed(
 }
 
 /** The state a feed opens with, in the order a browser needs it. */
-export interface FeedOpening {
+interface FeedOpening {
   /** The feed's id, which every watch request names. */
   feed: string;
   roster: unknown;
@@ -845,7 +857,7 @@ export function writeOpening(send: (event: string, data: unknown, kind: FeedWrit
  *  long as the feed is open, and the id is the caller's, so without a ceiling one browser could
  *  grow that map without bound by asking for ids nobody runs. The dashboard watches the agent whose
  *  session is open, in the panel and the centre, so it never comes near this. */
-export const MAX_WATCHES_PER_FEED = 64;
+const MAX_WATCHES_PER_FEED = 64;
 
 /** Which feeds watch which agent. A feed is counted once per agent however many times it asks.
  *
@@ -1149,7 +1161,7 @@ export const POST_OFF_CREDS = "This dashboard was started with --creds, which ca
 /** Why posting is off on a per-user sign-in mesh. */
 export const POST_OFF_USER = "Posting from the dashboard isn't available on a sign-in mesh yet. Use `cotal send`.";
 /** Why posting is off on a dashboard run as a service: the service holds a read-only credential. */
-export const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use `cotal send`.";
+const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use `cotal send`.";
 
 /** The operator credential's lifetime: 24 days. Core arms a reconnect fence with one `setTimeout`
  *  at the credential's expiry, and Node caps a timer at 2^31-1 ms (about 24.8 days), so a longer
@@ -1381,7 +1393,8 @@ async function connectWithoutSeed(
 
 /** Trusted native service embedding. The supplied connection is explicitly scoped by its
  *  credential file; no account signer, cached operator login or purger mint is substituted. */
-export interface WebServiceLifecycle {
+interface WebServiceLifecycle {
+  readonly posting?: { creds: string; expiresAt: number };
   readonly connection: Omit<Connection, "auth">;
   readonly onSession: (session: WebSession) => void | Promise<void>;
   readonly onReady: () => void | Promise<void>;
@@ -1407,7 +1420,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // `cotal actor revoke` kills the dashboard live (eviction) while a scope edit bites at the next
   // refresh.
   const started = lifecycle
-    ? { conn: lifecycle.connection, user: undefined, pidPath: undefined, purgeCreds: undefined, post: { mode: "off", reason: POST_OFF_SERVICE } as PostCapability, poster: undefined }
+    ? { conn: lifecycle.connection, user: undefined, pidPath: undefined, purgeCreds: undefined, post: (lifecycle.posting ? { mode: "participant" } : { mode: "off", reason: POST_OFF_SERVICE }) as PostCapability, poster: lifecycle.posting ? operatorPoster(lifecycle.connection, { ...lifecycle.posting, lifecycleUid: mintLifecycleUid() }) : undefined }
     : await connectWithoutSeed(args.raw, values, host, port);
   if (!started) return;
   const { conn, user, pidPath, purgeCreds, post, poster } = started;
@@ -1525,15 +1538,13 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.
   const client = clientAssets(join(here, basename(here) === "src" ? "../dist/web" : "web"));
 
-  const gate = makeAuthGate(port, host);
+  const launchNonce = lifecycle ? randomBytes(32).toString("base64url") : undefined;
+  const gate = makeAuthGate(port, host, launchNonce);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
 
-    // THE GATE RUNS BEFORE EVERY ROUTE, including `/feed` and the static files. Placing it inside a
-    // route, or after the first `if`, is how a surface acquires an unauthenticated corner: the next
-    // person to add a route above it inherits no protection and nothing says so.
     const verdict = gate.check(req, query);
     if (verdict !== undefined && "refuse" in verdict) {
       // #2024: a refused request that announced a body is closed rather than drained; the fact is
@@ -1554,10 +1565,15 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       // Redirect so the spent token leaves the address bar and the browser history. This is the one
       // redirect on this surface and it is a SUCCESS, not a refusal.
       res.writeHead(302, {
-        "set-cookie": `${SESSION_COOKIE}=${verdict.exchange}; Path=/; HttpOnly; SameSite=Strict`,
+        "set-cookie": `${SESSION_COOKIE}=${verdict.exchange}; Path=/; HttpOnly; SameSite=Lax`,
         location: path,
       });
       return void res.end();
+    }
+
+    if (verdict !== undefined && "launchUrl" in verdict) {
+      res.setHeader("cache-control", "no-store");
+      return json(res, verdict);
     }
 
     // Only the `BODY_ROUTES` read a request body. Refuse an announced body before dispatch
@@ -1754,12 +1770,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
       if (lifecycle) return json(res, { error: "this service was explicitly configured read-only; no channel-purger authority or alternate transport was acquired", code: "PERMISSION_DENIED" }, 403);
-      const body = await readBody(req).catch((e: unknown) => {
+      const body = await readDeleteBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
         // refusal into `{}` here would answer "channel required", which tells the caller to add a
         // field it already sent and never mentions the size, so the loud refusal has to survive
         // this catch. A malformed body still means "channel required", unchanged.
-        if (e instanceof PayloadTooLarge) throw e;
+        if (e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded) throw e;
         return {} as { channel?: string };
       });
       const channel = typeof body.channel === "string" ? body.channel : "";
@@ -1820,11 +1836,14 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // to a 500, never take down the server. Reply only when nothing has been written yet — a /feed
   // stream (or any partially-sent response) is already committed to its status line.
   const httpServer = createServer((req, res) => {
+    res.setHeader("content-security-policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader("x-content-type-options", "nosniff");
     void handleRequest(req, res).catch((e: unknown) => {
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before
       // this split, a malformed query read in the log exactly like the dashboard breaking.
-      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
+      const status = e instanceof BodyDeadlineExceeded ? 408 : e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
       const caller = status < 500;
       console.error(c[caller ? "yellow" : "red"](lifecycle ? `native dashboard request ${caller ? "refused" : "failed"}; diagnostic body omitted` : `${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
@@ -1848,7 +1867,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       // WHAT THIS DOES NOT REACH. It is the connection this process owns. A reverse proxy that
       // buffers a request before forwarding it owns its own ingress bound, and `connection` is
       // hop-by-hop, so nothing here configures anything upstream of this server.
-      res.writeHead(status, e instanceof PayloadTooLarge
+      res.writeHead(status, e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded
         ? { "content-type": "application/json", connection: "close" }
         : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
@@ -1895,7 +1914,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // token the operator cannot see is a token they cannot revoke by restarting.
   const launchUrl = `${url}?k=${gate.launchToken}`;
   const boundAddress = httpServer.address() as AddressInfo;
-  const browserSession: WebSession = { launchUrl, readiness: gate.readinessNonce, host: boundAddress.address, port: boundAddress.port };
+  const browserSession: WebSession = { launchUrl, readiness: gate.readinessNonce, host: boundAddress.address, port: boundAddress.port, ...(launchNonce ? { launchNonce } : {}) };
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
   // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
@@ -2222,6 +2241,23 @@ function debounce(fn: () => void, ms: number): () => void {
     if (t) clearTimeout(t);
     t = setTimeout(fn, ms);
   };
+}
+
+/** Race the whole delete upload, not the gaps between chunks. On expiry the request frame sends
+ *  408 with Connection: close, ending the socket and its pending body reader after the reply.
+ *  Only the winning body can reach the purge; a late completion has no effect. */
+async function readDeleteBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new BodyDeadlineExceeded(
+      `request body did not finish within ${DELETE_BODY_DEADLINE_MS}ms`,
+    )), DELETE_BODY_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([readBody(req), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {

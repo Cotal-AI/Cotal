@@ -30,7 +30,7 @@ const radius = (n: TopoNode): number => (n.kind === "channel" ? pillWidth(n.labe
 
 /** What makes two models the same layout problem: the same nodes and the same links. Heat, a label
  *  and a status change what is drawn and not where it sits, so none of them is in the key. */
-export function structureKey(model: TopoModel): string {
+function structureKey(model: TopoModel): string {
   const nodes = model.nodes.map((n) => n.id).sort();
   const links = model.links.map((l) => `${l.source}\u0000${l.target}\u0000${l.kind}`).sort();
   return `${nodes.join("\u0001")}\u0002${links.join("\u0001")}`;

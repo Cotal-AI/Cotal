@@ -49,7 +49,7 @@ const config = (await readDocument(join(REPO, "docs/config.mdx"))).markdown;
 const control = (await Promise.all(["control-surface", "control-discovery", "control-lifecycle"].map(guide))).join(" ");
 const deliveryGuide = await guide("delivery-service-reference");
 const pid = read("packages/workspace/src/pid.ts");
-const provision = read("packages/core/src/provision.ts");
+const provision = read("packages/core/src/provision-server-config.ts");
 const up = read("implementations/cli/src/commands/up.ts");
 const deliveryProc = read("implementations/cli/src/lib/delivery-proc.ts");
 const authPaths = read("packages/workspace/src/auth-paths.ts");
@@ -149,8 +149,9 @@ check(
   /stdio: \["ignore", fd, fd\]/.test(deliveryProc),
 );
 check(
-  "claim 3: docs name project logs and empty journalctl for a oneshot wrapper",
-  recoveryGuide.includes("These logs are under the project's `.cotal/`, not `~/.cotal`") &&
+  "claim 3: docs name the controller's service logs, the legacy launcher's project logs and empty journalctl for a oneshot wrapper",
+  recoveryGuide.includes("These logs live in the Cotal home's service-instance store, not the project's `.cotal/`") &&
+    recoveryGuide.includes("Only the retained legacy launcher writes these files under the mesh's project folder") &&
     operationGuideText.includes("`journalctl -u <unit>` can be empty") &&
     deliveryGuide.includes("does not put those lines in that unit's journal"),
 );

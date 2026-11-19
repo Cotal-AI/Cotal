@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
-import { removableServiceInstances, removeStoppedInstanceRecords } from "./service-process.js";
+import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
 
@@ -106,9 +106,10 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
 /** Resolve a preset name given to a service action to the one definition of this space it means.
  *  A saved definition of that exact name always wins and is returned as itself. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
- *  existing, stopped one with other options saves it again. A log read of `manager` or `stack-manager`
- *  with no such definition reaches the manager `up` recorded by PID, or the log it left once it
- *  stopped. Undefined when the name is no preset. */
+ *  existing, stopped one with other options saves it again. With no saved `stack-manager`, stop and
+ *  restart identify the manager `up` recorded by PID so their refusal names its stack stop. A log
+ *  read of `manager` or `stack-manager` reaches that manager, or the log it left once it stopped.
+ *  Undefined when the name is no preset. */
 export function resolvePresetService(space: string, root: string, requested: string, mode: string, values: ParsedArgs["values"]): PresetServiceTarget | undefined {
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const exact = store.read(requested);
@@ -122,11 +123,13 @@ export function resolvePresetService(space: string, root: string, requested: str
     return redefine(space, root, preset!, exact, requested, options, values);
   }
   if (!preset) {
-    // `up`'s retained launcher saves no stack-manager, so for a log read that name means the manager it started.
-    const manager = mode === "logs" && requested === STACK_DEFINITION.manager ? findServicePreset("manager") : undefined;
+    // The retained launcher saves no stack-manager. Logs read its manager, and stop/restart
+    // identify it only to refuse service control with the working stack stop.
+    const manager = requested === STACK_DEFINITION.manager && ["logs", "stop", "restart"].includes(mode) ? findServicePreset("manager") : undefined;
     if (!manager) return undefined;
     const recorded = recordedPresetProcess(space, root, manager);
-    return recorded ? { requested, name: requested, preset: manager.name, saved: null, recorded } : stoppedManagerLog(space, root, requested, manager);
+    if (recorded) return { requested, name: requested, preset: manager.name, saved: null, recorded };
+    return mode === "logs" ? stoppedManagerLog(space, root, requested, manager) : undefined;
   }
   const chosen = presetDefinition(space, root, preset, requested, mode);
   if (chosen) return options.length ? redefine(space, root, preset, chosen, requested, options, values) : { requested, name: chosen.name, preset: preset.name, saved: null };
@@ -146,7 +149,8 @@ export function resolvePresetService(space: string, root: string, requested: str
 
 /** Save `row` again with the options a start named, when they differ from the saved ones. Only a
  *  definition with no running, supervised or retained instance is saved again, as `service remove`
- *  requires; the stack's own definitions keep the options `up` gave them. */
+ *  requires; the stack's own definitions keep the options `up` gave them. A dry run makes the same
+ *  checks and saves nothing (#7072). */
 function redefine(space: string, root: string, preset: ServicePreset, row: ServiceDefinitionSnapshot, requested: string, options: readonly string[], values: ParsedArgs["values"]): PresetServiceTarget {
   const launch = row.record.value.launch;
   if (launch.type !== "adapter") throw new CommandFailure("refused", "CONFLICT", "a preset service's saved definition is not an adapter launch; it was not changed");
@@ -155,12 +159,20 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   if (!changed.length) return { requested, name: row.name, preset: preset.name, saved: null };
   const shown = changed.map((name) => `--${name}`).join(", ");
   if (isStackDefinition(row.name)) throw new CommandFailure("refused", "CONFLICT", `${requested} here is ${row.name}, which \`cotal up\` saved with its own ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `start it as \`cotal up\` saved it with \`cotal service start ${row.name}\`, or pass ${shown} to \`cotal up\`` });
+  const merged = Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined));
+  // The start's options are judged with the saved ones they keep: a --read-only start of a posting
+  // dashboard keeps its --posting-creds, a pair the dashboard's launch refuses (#7589).
+  if (launch.adapter === WEB_SERVICE_ADAPTER && changed.includes("read-only") && merged["read-only"] === true && typeof merged["posting-creds"] === "string")
+    throw new CommandFailure("refused", "CONFLICT", `--read-only would keep the saved ${row.name} definition's --posting-creds, and the dashboard posts only with --no-read-only; nothing was changed`, { target: { space, name: row.name }, remedy: `remove it with \`cotal service remove ${row.name} --space ${space} --yes\`, then run \`cotal service add ${row.name} --preset ${preset.name} --space ${space} --read-only\`` });
   if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${row.name}`}\`, then start it again with the new ${shown}` });
   removableServiceInstances(space, row.name);
-  const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined)) } };
+  const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);
+  if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);
-  store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name));
+  let retired: string[] = [];
+  store.commit(row.name, row, undefined, () => { retired = removeStoppedInstanceRecords(space, row.name); });
+  removeServiceLogs(space, retired);
   store.commit(row.name, undefined, checked);
   return { requested, name: row.name, preset: preset.name, saved: { kind: "redefined", options: changed } };
 }
@@ -172,7 +184,10 @@ export function forgetRefusedPresetService(space: string, name: string): boolean
   try {
     const store = serviceDefinitionStore(space, addedDefinitionStep), row = store.read(name);
     if (!row) return true;
-    store.commit(name, row, undefined, () => removeStoppedInstanceRecords(space, name));
+    let retired: string[] = [];
+    store.commit(name, row, undefined, () => { retired = removeStoppedInstanceRecords(space, name); });
+    removeServiceLogs(space, retired);
+    pruneEmptyServiceSpace(space);
     return store.read(name) === undefined;
   } catch { return false; }
 }

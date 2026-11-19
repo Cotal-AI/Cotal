@@ -43,7 +43,7 @@ const postTo = (r: Recipient | undefined) => (r?.kind === "channel" ? { postTo: 
 
 /** Which shared commands the app runs, and why the rest do not. A record over every shared name, so
  *  a new shared command fails the build until it is classified here. */
-export const APP_SLASH: Readonly<Record<SlashCommand["name"], "run" | "tree" | "cli">> = {
+const APP_SLASH: Readonly<Record<SlashCommand["name"], "run" | "tree" | "cli">> = {
   who: "tree",
   whoami: "run",
   status: "run",
@@ -62,7 +62,7 @@ export const APP_SLASH: Readonly<Record<SlashCommand["name"], "run" | "tree" | "
 }
 
 /** `/help` in the app: the shared commands it runs, with their arguments. */
-export const appSlashHelp = () =>
+const appSlashHelp = () =>
   `commands: ${SLASH_COMMANDS.filter((s) => APP_SLASH[s.split(" ")[0]!.slice(1) as SlashCommand["name"]] === "run").join(", ")}. Start a message with // to send a leading /`
 
 const withDraft = (state: ComposerState, key: DraftKey, draft: Draft): ComposerState => {

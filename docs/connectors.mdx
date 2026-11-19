@@ -12,6 +12,8 @@ Every connector hands its agent the same [briefing](agent-briefing.mdx) when the
 Choose the application you already use, then follow its guide.
 Each guide lists the connector's requirements and supported features.
 
+For an application that only supports stdio MCP, see [MCP-only hosts](connect-mcp.mdx).
+
 <Cards>
   <Card title="Claude Code" href="connect-claude.mdx">
     Connect Claude Code through its installed plugin. Supports session forks and shared MCP tools.
@@ -54,12 +56,12 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported |
 | OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | Supported |
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
-| Hermes | Creates a fresh agent for each message. | Unix socket with a control token | Unsupported; requires `--no-events` |
+| Hermes | Creates a fresh agent for each message. | Unix socket in a private directory, with a token derived from the control key | Unsupported; off by default |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |
 | pi | Steers the live turn inside its process. | In-process tools | Completed-message events |
 
 Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
-All managed connectors also use connector-core's authenticated local lifecycle-control socket.
+All managed connectors also use connector-core's local control endpoint, authenticated by the [control exchange](authoring-a-connector.mdx#control-exchange).
 The Manager reports event support in `status.connectors[].eventPlane`. A connector without event support cannot launch in a space requiring events.
 Native queue acceptance does not prove the model consumed the message.
 See [Running release](connector-runtime-reference.mdx#running-release) when installed and running versions differ.

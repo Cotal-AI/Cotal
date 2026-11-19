@@ -1,0 +1,3 @@
+# A pi seat's mention wake names the sender on one line, with line breaks in a peer's name and role
+# shown as spaces.
+smoke:pi-mention-label

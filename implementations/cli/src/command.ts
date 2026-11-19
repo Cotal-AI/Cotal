@@ -1,6 +1,6 @@
-import { writeSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -70,7 +70,7 @@ import { reportLostOutput } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
-import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
+import { didYouMean, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -91,7 +91,7 @@ function asksForHelp(args: readonly string[]): boolean {
 function takeGlobalFlag(word: string): boolean {
   if (!GLOBAL_FLAG_WORDS.has(word)) return false;
   if (word === "--no-color") disableColor();
-  else if (word === "--no-input") disableInput();
+  else if (word === "--no-input") disableInput(true);
   else return false;
   return true;
 }
@@ -203,9 +203,9 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * which resolves its alias too.
  */
 async function extSeedGate(registry: Registry, argv: string[], configFolder: ConfigFolderProblem | undefined, leading: ReadonlySet<string>): Promise<boolean> {
-  const [word, sub] = argv;
+  const [word, ...words] = argv;
   const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
-  if (extCmd?.name !== "ext" || sub !== "seed") return false;
+  if (extCmd?.name !== "ext" || metadataPositionals(extCmd, words).positionals[0]?.value !== "seed") return false;
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
   if (asksForHelp(argv)) {
@@ -231,6 +231,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (cmd && readsOnly(cmd, sub)) return true;
   if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
+  if (name === "sync") return true; // refreshing account catalogs does not install connectors
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
@@ -245,7 +246,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "team" && (sub === "deploy" || sub === "remove")) return true; // existing native manager/channel operations never install local connectors
   // `backup restore` is excluded: it starts the restored stack and resumes its seats through `up
   // --restore`, so it reconciles connectors under the same rules as that startup. Other modes stay offline.
-  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "input" || name === "auth" || name === "endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
+  if (name === "reset" || name === "down" || name === "doctor" || name === "feedback" || (name === "backup" && sub !== "restore") || name === "mint" || (name === "manager" && sub !== "start" && sub !== "restart") || name === "channel" || name === "stop" || name === "attach" || name === "input" || name === "auth" || name === "endpoint" || name === "service-endpoint" || name === "service" || name === "daemon") return true; // native maintenance and channel policy never install connector packages
   if (name === "run" && (sub === "turns" || sub === "yield")) return true; // self-only relay does not repair the operator installation
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
@@ -266,7 +267,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "agent-bearer") return true;
   // `app-identity` is machine-facing too: the Claude connector's local server runs it on every
   // connection, so, like a credential exchange, it must not seed the store under a running connector.
-  if (name === "app-identity") return true;
+  if (name === "app-identity" || name === "mcp") return true;
   return false;
 }
 
@@ -380,6 +381,14 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
   process.exit(1);
 }
 
+/** The refusal for one of the option `names` or `shorts` typed with a typographic dash pasted from
+ *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
+function typographicOption(word: string, names: ReadonlySet<string>, shorts: ReadonlySet<string> = new Set()): { message: string; remedy: string } | undefined {
+  const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
+  if (!typed || !(names.has(typed[1]!) || shorts.has(typed[1]!))) return undefined;
+  return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
+}
+
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
@@ -393,9 +402,8 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const short = /^-([^-=])=(.*)$/su.exec(word);
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
-    const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
-    if (typed && (names.has(typed[1]!) || shorts.has(typed[1]!)))
-      return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
+    const typed = typographicOption(word, names, shorts);
+    if (typed) return typed;
   }
   return undefined;
 }
@@ -496,6 +504,16 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
  *  Node caches the first read that succeeds. One read refuses that case before the command's own
  *  checks, such as `up`'s, or any effect, unless the command never reads the folder. */
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs): void {
+  if (cmd.name === "update") {
+    // Global maintenance must not inherit an unrelated disposable working folder. Keep the
+    // project's root when one exists and resolve a relative credential before changing folders.
+    const removed = workingFolderRemoved();
+    const root = removed ? undefined : findCotalRoot();
+    if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
+      parsed.values.creds = resolve(parsed.values.creds);
+    process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
+    return;
+  }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
   failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true);
 }
@@ -595,8 +613,13 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
   else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
+  // The built-in check reports an unreadable inventory itself. Do not require that inventory to
+  // construct its command surface, or recover an installation as a prelude to this read-only mode.
+  const builtin = findCommand(registry.all<Command>("command"), argv[0]);
+  const updateCheck = builtin?.name === "update" && argv.includes("--check") && !asksForHelp(argv.slice(1))
+    && parseOrExit(builtin, ownWords(builtin, argv.slice(1), leadingGlobals)).values.check === true;
   const configFolder = globalConfigDirProblem();
-  if (opts.extensions) {
+  if (opts.extensions && !updateCheck) {
     try {
       recoverExtensionPromotion();
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
@@ -608,7 +631,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
+      commands = opts.extensions && !updateCheck ? overlayExtensions(registry) : registry.all<Command>("command");
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
@@ -643,6 +666,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       const lifecycle = managerServiceCommand(found, words);
       return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
     } catch (error) {
+      if (asksForHelp(words)) return { cmd: found, rest: words };
       const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
       return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
     }
@@ -664,6 +688,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
   const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
+  // A leading flag typed with a typographic dash is read as the command word, so it is refused as the
+  // same word after the command word is.
+  const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))));
+  if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
   if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only

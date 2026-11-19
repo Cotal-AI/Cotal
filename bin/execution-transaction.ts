@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
 import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
@@ -9,22 +9,29 @@ interface ExecutionTransaction {
   installed: string;
   launchEntry?: string;
   previous: { manifest: string; bootstrap: string; descriptor: ExecutionDescriptor | null };
+  completed?: boolean;
   target: RetainedExecutionGeneration;
 }
 
-/** The admission check runs before creating staging, records or configuration directories. */
+/** Restore owner write on owned update directories before creating staging, records or configuration. */
 export function assertExecutionDestination(installed: string): void {
   if (existsSync(join(installed, "desktop-runtime.json"))) throw new Error("staged execution updates are unavailable on the desktop runtime");
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("staged execution updates are unavailable on this platform");
-  for (const path of [installed, dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
     const stat = lstatSync(path);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
-  try {
-    for (const path of [installed, join(installed, "dist"), dirname(dirname(installed))]) accessSync(path, constants.W_OK);
-  } catch {
-    throw new Error(`installation is not writable; use the owning command: npm install -g --prefix ${dirname(dirname(dirname(installed)))} cotal-ai@latest`);
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))]) {
+    const stat = lstatSync(path);
+    const owned = stat.uid === process.getuid?.();
+    try {
+      if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      accessSync(path, constants.W_OK);
+    } catch {
+      if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+      throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installed))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
+    }
   }
   selectExecutionProgram(installed);
 }
@@ -93,6 +100,11 @@ export function publishExecutionTransaction(installed: string, path: string, res
   selectExecutionProgram(installed);
 }
 
+export function completeExecutionTransaction(installed: string, path: string): void {
+  const record = readExecutionTransaction(installed, path);
+  atomicFile(path, JSON.stringify({ ...record, completed: true }), 0o600);
+}
+
 /** Stage only within the owned retained store; npm receives this private prefix, never the live root.
  *  The caller holds the claim on npm's global root, so a staging folder already here was abandoned by
  *  an attempt that ended, and it is removed first. */
@@ -102,17 +114,38 @@ export function executionStagingPrefix(installed: string): string {
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (executionShared(installed)) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
   protectedExecutionEntry(store);
-  for (const name of readdirSync(store)) {
-    if (/^\.(?:installing|preparing)-[A-Za-z0-9]{6}$/.test(name)) rmSync(join(store, name), { recursive: true, force: true });
-  }
   return mkdtempSync(join(store, ".installing-"));
+}
+
+/** Rebind only the already selected launch route after our own mode-only hardening. */
+export function repairExecutionInstallModes(installed: string, repair: () => number): number {
+  const selected = selectExecutionProgram(installed);
+  const descriptor = selected.retained ? executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor : undefined;
+  const changed = repair();
+  if (descriptor?.launch) {
+    const launch = executionLaunchBinding(installed, descriptor.launch.entry);
+    const { ctime: before, ...previous } = descriptor.launch;
+    const { ctime: after, ...current } = launch;
+    if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error("execution launch route changed during permission repair");
+    if (before !== after) {
+      if (!changed) throw new Error("execution launch route changed without a permission repair");
+      writeExecutionDescriptor(installed, { ...descriptor, launch });
+    }
+    if (selectExecutionProgram(installed).root !== selected.root) throw new Error("selected execution changed during permission repair");
+  }
+  return changed;
 }
 
 /** Remove a superseded active descriptor after an in-place package-manager install took over. */
 export function retireSupersededExecutionDescriptor(installed: string): boolean {
   if (existsSync(join(installed, "desktop-runtime.json")) || (process.platform !== "linux" && process.platform !== "darwin")) return false;
   const descriptorPath = executionDescriptorPath(installed);
-  if (!lstatSync(descriptorPath, { throwIfNoEntry: false })) return false;
+  try {
+    if (!lstatSync(descriptorPath, { throwIfNoEntry: false })) return false;
+  } catch (error) {
+    if (["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  }
   const selected = selectExecutionProgram(installed);
   if (selected.retained) return false;
   rmSync(descriptorPath, { force: true });

@@ -18,6 +18,7 @@ import {
   chatStream,
   dmStream,
   taskStream,
+  subjectMatches,
   AmbiguousPeerError,
   CotalEndpoint,
   mentionsIn,
@@ -329,26 +330,44 @@ function storeFullRefusal(error: unknown, root: string | undefined, space: strin
   });
 }
 
-/** The broker refused a channel publication, so it was not stored. The remedy names what this
- *  identity may post to: its grant when this machine holds it, read as `cotal whoami` reads it, the
- *  post grant in the claims of a `--creds` agent file (`credsFile`), and otherwise the space's
- *  registered channels. */
+/** An explicit file is never replaced automatically. The default identity only helps if it can
+ *  reach this same space on this broker. */
+function useOperator(space: string): string {
+  return `if this machine has operator access to the same broker, rerun ${codeSpan("cotal send")} without --creds and with ${codeSpan(`--space ${shellWord(space)}`)}`;
+}
+
+const publishRefusal = "the broker refused the message, so it was not stored";
+
+/** Explain the channel grant without inferring the cause of a refusal from the registry. */
 async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
   let post: string[] | undefined;
-  if (connection.mode === "user" && connection.root) {
+  let profile: "agent" | "observer" | "admin" | undefined;
+  if (credsFile !== undefined) {
+    const claims = credsClaims(credsFile);
+    if (claims.name === "agent" || claims.name === "observer" || claims.name === "admin") {
+      profile = claims.name;
+      post = agentGrants(claims.nats ?? {}, target.space).post;
+    }
+  } else if (connection.mode === "user" && connection.root) {
     try {
       const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
       post = status.grant === "not-granted" ? [] : status.grant?.allowPublish;
     } catch { /* the grant stays unknown */ }
-  } else if (credsFile !== undefined) {
-    const claims = credsClaims(credsFile);
-    if (claims.name === "agent") post = agentGrants(claims.nats ?? {}, target.space).post;
   }
   const list = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
-  const remedy = post === undefined
+  let remedy = post === undefined
     ? `this machine cannot read this identity's post grant${registered.length ? `; the channels registered in ${target.space} are ${list(registered)}` : ""}`
     : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
-  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; the broker refused the message, so it was not stored`, { target: { ...target, post: post ?? null }, remedy });
+  if (credsFile !== undefined) {
+    if (profile !== undefined) remedy += `. Credential profile: ${profile}`;
+    remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
+    if (post !== undefined && !post.some((pattern) => subjectMatches(pattern, channel))) {
+      const publish = `--allow-publish${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+      const mint = codeSpan(`cotal auth mint <label> --space ${shellWord(target.space)} ${publish} --no-persona --out <file>`);
+      remedy += `: on the machine that signs this space's credentials, run ${mint} and pass the new file with --creds`;
+    }
+  }
+  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; ${publishRefusal}`, { target: { ...target, post: post ?? null }, remedy });
 }
 
 /** The warning for a post to a channel with no registry entry. Whether the channel already holds
@@ -418,8 +437,12 @@ export async function send(args: ParsedArgs): Promise<void> {
     // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
     // send on the task stream. Confirmed absence of that stream refuses before publication. An
     // unread check does not refuse, and a direct message is not refused because the chat stream is gone.
+    // An open space that runs elsewhere gets its streams from its first participant, and this send
+    // may be that participant, as a chat session is when it starts (#7045).
     const storedOn = input.mode === "msg" ? chatStream(space) : input.mode === "dm" ? dmStream(space) : taskStream(space);
-    if (spaceStreamsExpected(space, connection.mode) && await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
+    if (spaceStreamsExpected(space, connection.mode)) {
+      if (await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
+    } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
     const rest = await bodyRest(body, ep.maxPayload, refusal);
     if ("over" in rest) throw tooLarge(rest.over);
     const { text } = rest;
@@ -459,16 +482,20 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (peer) {
         const { msg, ack } = await ep.unicastAttributed(peer.card.id, text, { replyTo: values["reply-to"] });
         messageId = msg.id; sequence = ack.seq;
-        if (peer.status === "offline") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
       } else if (input.mode === "ask") {
         const { msg, ack } = await ep.anycastAttributed(input.target, text);
         messageId = msg.id; sequence = ack.seq;
-        const unheld = await unheldRole(ep, input.target, target);
-        if (unheld) warnings.push(unheld);
       } else messageId = (await ep.multicast(text, { channel: input.target, mentions })).id;
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
-      if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+      if (isPublishPermissionDenied(error)) {
+        if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+        const destination = input.mode === "ask" ? `role ${input.target}` : input.target;
+        const useAuthorized = `use a credential that may send to ${destination} in ${space}`;
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `${destination}: ${publishRefusal}`, {
+          target, remedy: values.creds === undefined ? useAuthorized : `${useOperator(space)}, or ${useAuthorized}`,
+        });
+      }
       const full = storeFullRefusal(error, connection.root, space, target);
       if (full) throw full;
       // Later stream absence cannot rule out storage before an acknowledgement was lost.
@@ -479,6 +506,12 @@ export async function send(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `No storage acknowledgement was established, and the broker logged a store write failure at ${store.at}: ${store.cause}${store.path ? ` (${store.path})` : ""}. The message was probably not stored; it was not retried.`, { target, remedy: `${repair[0]!.toUpperCase()}${repair.slice(1)}, then restart the broker with \`cotal down\` and \`cotal up\` before sending again.${store.jetStreamDisabled ? " The broker disabled JetStream, so if `cotal down` refuses because the manager's stop cannot be recorded, it names the manager process to end on this host first." : ""}` });
       }
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "No storage acknowledgement was established. The message may have been stored; it was not retried.", { target, remedy: "Inspect the destination before sending again. The native publisher did not return a message identifier." });
+    }
+    if (peer) {
+      if (peer.status === "offline") warnings.push({ code: "RECIPIENT_OFFLINE", target, message: offlineRecipientNotice(peer.card.name) });
+    } else if (input.mode === "ask") {
+      const unheld = await unheldRole(ep, input.target, target);
+      if (unheld) warnings.push(unheld);
     }
     receipt = { kind: "send", messageId, sequence, destination: peer?.card.id ?? input.target, sender: { principal: ep.card.id, kind: ep.card.kind }, stored: true, delivery: null, acceptance: null, completion: null, replyListener: false, replyTo: values["reply-to"] ?? null, bodySource: input.source, mentions: [...new Set(mentions)], channelPolicy: policy };
   } catch (error) { failure = error; }

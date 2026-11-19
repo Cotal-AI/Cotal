@@ -288,9 +288,9 @@ The connector or launcher sets these variables for the spawned child. Sessions r
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
 | `COTAL_BACKFILL_FLOOR` | The CHAT stream sequence a resumed seat's prior incarnation had reached before its preservation cut; the boot backfill reads only what came after it. Set by the manager on a preserved resume, absent on a fresh spawn. Must parse as a non-negative integer; a broken launcher's malformed value fails loud rather than silently falling back to a full replay |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
-| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, the required-events flag, and the control token. Contains a path, not the material values |
-| `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it. A launcher-spawned session carries the token that authenticates the first frame in its launch material. A hand-driven Claude Code or jcode session sets this path and `COTAL_CONTROL_TOKEN` itself (see [Launch material](#launch-material)) |
-| `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch). The bridge socket's first frame carries the control token from the launch material (or `COTAL_CONTROL_TOKEN` in standalone mode) |
+| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, the required-events flag, and the control key with its protocol version. Contains a path, not the material values |
+| `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it, through the [control exchange](authoring-a-connector.mdx#control-exchange). Off Windows it must sit in a directory only the session's user can enter. A launcher-spawned session carries the key and its version in its launch material. A hand-driven Claude Code or jcode session sets this path, `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION` itself (see [Launch material](#launch-material)) |
+| `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch). The bridge socket sits beside the control socket, and each bridge connection opens with a token derived from the control key in the launch material (or `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION` in standalone mode) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `COTAL_OPENCODE_*` | OpenCode server plumbing (the per-agent DB, and the connector's home, port and server URL) |
 
@@ -372,7 +372,7 @@ manager boot, then the bare name.
 
 ### Launch material
 
-The launcher writes the broker URL, credential reference, auth identity, and control token to one
+The launcher writes the broker URL, credential reference, auth identity, and control key to one
 `0600` file inside a private `0700` directory. The child receives only the file path through
 `COTAL_LAUNCH_MATERIAL`. Build scripts, linters, and other descendants do not inherit the material
 values through their environment or command arguments. `cotal agent-bearer` uses the same file-based
@@ -389,7 +389,7 @@ static startup value.
 | `pi`, `codex`, `jcode` | The session drops the environment path and attempts to delete the material file and its directory after reading them |
 | `opencode` | The session runs in `opencode serve`, started by the seat shim. It drops the path and attempts the same deletion after reading the file |
 | `claude` | Retains the file for its MCP server and later lifecycle-hook processes. The launcher removes it after the seat exits |
-| `hermes` | The launcher merges inherited material with its control token into a new gateway file, then attempts to discard the inherited file. The merged file remains for the gateway child and is not a launch artifact |
+| `hermes` | The launcher merges inherited material with its control key into a new gateway file, then attempts to discard the inherited file. The merged file remains for the gateway child and is not a launch artifact |
 
 Startup deletion is best effort. Directory removal requires the expected filename, the launcher's
 directory prefix, and a parent directly under the OS temp root. The removal is non-recursive and
@@ -410,8 +410,11 @@ quartet, without a material file. A material file combined with direct material 
 `COTAL_LINK` also conflicts because it contains the server, auth, and space.
 
 Claude Code and jcode sessions require a local control endpoint. A hand-driven session supplies
-`COTAL_CONTROL_SOCKET` and a random secret in `COTAL_CONTROL_TOKEN`. OpenCode, Codex, and pi can
-start without them.
+`COTAL_CONTROL_SOCKET`, a random secret in `COTAL_CONTROL_KEY`, and `COTAL_CONTROL_VERSION=1`.
+The key is used as given, so a key with whitespace around it is refused, and the version must read
+`1` with nothing around it. A version set without a key is refused. Off Windows the socket path must
+sit in an existing directory only that user can enter, such as one made with mode `0700`; the server
+does not create it. OpenCode, Codex, and pi can start without them.
 
 `eventsRequired` is an additive boolean in launch material. The launcher derives it from the selected
 user-auth registration. A Claude, OpenCode, Codex, Jcode or Pi launch that carries it also sets
@@ -421,9 +424,16 @@ exposes it and the Claude, OpenCode 1.x, Codex, Jcode and Pi startup gates arm o
 user-auth quartet. The session refuses if its post ACL does not cover its own `events.<owner>.<actor>`
 channel.
 
-The control endpoint requires both socket path and token. A launch with only one fails with an
-error naming the missing part. The lifecycle hook relay catches this error, writes one warning to
-stderr without the values, and skips the relay so the hook does not block the session.
+The control endpoint requires both socket path and key. A launch with only one fails with an error
+naming the missing part. The key travels with its protocol version (`controlKey` and
+`controlVersion` in the material, `COTAL_CONTROL_KEY` and `COTAL_CONTROL_VERSION` for a hand-driven
+session). A key without a version, or with a version this release does not speak, is refused where
+it is read. A release before the control exchange carried the key as `controlToken` and
+`COTAL_CONTROL_TOKEN`. A reader from such a release finds no key in a new launch, and this release
+refuses the old names. An older Hermes launcher mints its own key, so given a new launch it runs its
+own older sidecar and gateway together. A session launched before the upgrade must be restarted. The lifecycle hook relay
+catches this error, writes one warning to stderr without the values, and skips the relay so the hook
+does not block the session.
 
 ## On-disk layout
 
@@ -462,6 +472,16 @@ segments for other spaces. Root-scoped `membership.json` and `membership-*.creds
 `space.<key>/`.
 
 #### Generated broker config
+
+Stock supports nats-server 2.12 and later, as enforced by `BROKER_FLOOR` in the core package.
+The CLI reads the version of the selected broker binary before rendering its configuration and
+refuses with the binary path if that version cannot be read. For 2.15 and later the JetStream block
+includes `limits { default_max_consumers: -1 }`, removing the server's 1,000-consumer default.
+Earlier supported versions omit that key because they do not recognize it and have no such default.
+Existing streams keep `max_consumers: -1`; reloading the broker configuration applies the default
+without changing those streams. Explicit account and stream limits still apply.
+Embedding callers pass the target binary's version as `brokerVersion` to `serverConfig` or
+`openServerConfig`; omitting it retains the older configuration shape.
 
 `auth/server.conf` starts with ``# Generated by `cotal up` - do not edit by hand.``.
 Its path is `<projectRoot>/.cotal/auth/server.conf`. `~/.cotal` is used only when it is the mesh root.
@@ -543,6 +563,7 @@ that root as `cwd` is also required to isolate a probe.
 | `services/<key>/` | Saved service definitions and instance records, including a controller stack's `stack-*` members |
 | the Claude plugin marketplace (`claude-plugin/`) | The installed `cotal-mesh` plugin assets |
 | `idp-sessions.json` · `space-catalogs.json` | Cached IdP sessions and discovered space catalogs |
+| `.update-closure.lock` | Installation writer ownership barrier. This machine record cannot be used as a project root, including under a redirected `COTAL_HOME` |
 
 ### Configuration files
 
@@ -556,15 +577,19 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 |---|---|
 | `config.json` | Operator-level connector config (the base layer above) |
 | `preferences.json` | Your [preferences](#preferences), private to you (`0600`), written by `cotal config` |
-| `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
-| `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
+| `installs/<sha256>/sets/<version>/cotal/extensions/` | Installed POSIX CLI's `cotal ext` prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
+| `installs/<sha256>/sets/<version>/cotal/seed/` | Installed POSIX CLI's built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 
 #### Shared extension storage
 
-`extensions/` and `seed/store/` are operator-global. Every space, project, and checkout shares them.
-Their location follows the configuration directory above, including `$XDG_CONFIG_HOME` and, on
-Windows, `%APPDATA%`. A fresh project isolates `.cotal/` but does not isolate these stores.
-`COTAL_HOME` does not move them.
+On Linux and macOS, an installed CLI keeps `extensions/` and `seed/` under
+`installs/<sha256>/sets/<version>/cotal/` in the configuration directory above. The hash identifies
+the logical CLI entry path. Spaces and projects using that installation share its stores.
+`cotal ext root` prints the extension prefix, including before its first seed, without creating it.
+A new version reads its retained predecessor until reconciliation copies and selects a new set.
+An existing legacy `extensions/` or `seed/` directly under the configuration directory remains
+readable until that migration. Windows, desktop runtimes and source checkouts use the direct paths.
+A fresh project isolates `.cotal/` but does not isolate these stores. `COTAL_HOME` does not move them.
 
 A CLI from a source checkout refuses to write, stamp, or garbage-collect the seed store. Checkout
 entries include `pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, and their suite children. The

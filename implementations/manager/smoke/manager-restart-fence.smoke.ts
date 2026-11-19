@@ -29,24 +29,26 @@ import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
-import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
-// `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
-// the split is deliberate. The long-lived-client behaviour graded below lives in
-// `invokeService`, and a suite that imports `dist` cannot make a claim about `src`: a mutation of
-// the source leaves it green, which is a mutation surviving for the one reason that says nothing
-// about the test. Nothing is shared across the two copies — the client's only contact with the
-// manager (which reaches core through `dist`) is over NATS, and the goal helpers above operate on
-// the manager's own context, so no branded object crosses the boundary.
+// Core comes from its BUILT output, by path, and the same module is what the manager's own
+// `@cotal-ai/core` import resolves to, so the client and the manager share one copy. The
+// long-lived-client behaviour graded below lives in `invokeService` in core's source, so a
+// mutation of that source reaches this suite only through a build: the mutation config's command
+// builds core before it runs this file, and the path import is what lets the coverage check see
+// that the built output it loads comes from the mutated file.
+//
+// This import is static while the workspace and manager imports below stay dynamic. Those are
+// deferred so `COTAL_HOME` names the private home before any module that records a mesh loads.
+// Core reads no environment when it loads, so loading it first does not change that.
+import {
+  CotalEndpoint, probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER,
+  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
+  type ActionContext, type EpAttributedReply, type EpCaller, type EpEnvelopeError as EpEnvelopeErrorType,
+  type ParsedEpRequest, type Connector, type LaunchSpec,
+} from "../../../packages/core/dist/index.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
 process.env.COTAL_HOME = home;
-const {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER,
-  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
-} = await import("@cotal-ai/core");
-const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
 const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
@@ -65,7 +67,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void>; ep: SourceCotalEndpoint };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; lease: { renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -91,8 +93,8 @@ const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
 let mgr: InstanceType<typeof Manager> | undefined;
-let client: SourceCotalEndpoint | undefined;
-let reader: SourceCotalEndpoint | undefined;
+let client: CotalEndpoint | undefined;
+let reader: CotalEndpoint | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mrf-js-`))], { stdio: "ignore" });
   teardownOnSignal(broker);
@@ -236,7 +238,7 @@ try {
   // Fired here, BEFORE stop(): untracked (not through `renewLease()`'s entry fence, and not joined
   // by stop's `leaseRenewTask`), so stop cannot wait it out. Its broker call is gated above and does
   // not actually run until the release below has completed.
-  const lateRenewSettled = M1.renewLeaseAttempt();
+  const lateRenewSettled = M1.lease.renewLeaseAttempt();
   // stop() closes the endpoint last (`await this.ep.stop()`); keep it open until the late renew has
   // fully settled, so its verdict (gone, not unknown-from-a-closed-connection) is always reached.
   m1ep.stop = async () => { await lateRenewSettled.catch(() => {}); await realEpStop(); };

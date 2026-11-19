@@ -43,6 +43,8 @@ pub enum DesktopRequest {
     Status {},
     #[serde(rename = "status-watch")]
     StatusWatch {},
+    #[serde(rename = "log")]
+    Log {},
     #[serde(rename = "install")]
     Install {},
     #[serde(rename = "name")]
@@ -202,6 +204,10 @@ mod tests {
         assert!(!status.is_watch());
         let watch = serde_json::from_str::<DesktopRequest>(r#"{"op":"status-watch"}"#).unwrap();
         assert!(watch.is_watch());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log"}"#).is_ok());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","path":"/foreign"}"#).is_err());
+        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"log","limit":1000000}"#).is_err());
+        assert!(DesktopRequest::Log {}.validate().is_ok());
         for input in [
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
