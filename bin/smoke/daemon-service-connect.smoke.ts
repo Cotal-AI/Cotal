@@ -190,7 +190,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 }
 type Frame = Record<string, unknown>;
 let seq = 0;
-type AskObservation = (phase: string, facts?: { id?: string; bytes?: number; hadError?: boolean }) => void;
+type AskObservation = (phase: string, facts?: { id?: string; bytes?: number; hadError?: boolean; ok?: boolean; code?: string }) => void;
 async function ask(socket: string, req: Frame, ms = 40_000, observe?: AskObservation): Promise<Frame> {
   const sock = netConnect(socket);
   await new Promise<void>((res, rej) => { sock.once("connect", () => res()); sock.once("error", rej); });
@@ -1930,8 +1930,10 @@ try {
                 let ready = false;
                 let last: Frame | undefined;
                 let poll = 0;
-                const output = process.platform === "darwin" && process.arch === "x64" && process.env.RUNNER_TEMP
-                  ? join(process.env.RUNNER_TEMP, "desktop-account-e2e", "intel-account-status-polls.jsonl") : undefined;
+                const output = process.platform === "darwin" && process.env.RUNNER_TEMP
+                  ? join(process.env.RUNNER_TEMP, "desktop-account-e2e", "mac-account-status-polls.jsonl") : undefined;
+                const control = output ? await import("../../desktop/e2e/mac-status-control.js") : undefined;
+                let controlStarted = false;
                 while (Date.now() < deadline) {
                   const ordinal = ++poll;
                   const observe: AskObservation | undefined = output ? (phase, facts) => {
@@ -1944,7 +1946,25 @@ try {
                     try { appendFileSync(output, `${JSON.stringify({ at: new Date().toISOString(), poll: ordinal, phase, ...facts, daemonLogBytes, daemonLogInode })}\n`, { mode: 0o600 }); }
                     catch { /* Observations cannot decide acceptance or replace its original error. */ }
                   } : undefined;
-                  last = await ask(desktopSocket, { op: "status" }, 10_000, observe);
+                  let trigger: ReturnType<typeof setTimeout> | undefined;
+                  let stopControl: (() => void) | undefined;
+                  try {
+                    last = await ask(desktopSocket, { op: "status" }, 10_000, observe && ((phase, facts) => {
+                      observe(phase, facts);
+                      if (phase === "sending" && facts?.id && control && !controlStarted) {
+                        const id = `control-${facts.id}`;
+                        trigger = setTimeout(() => {
+                          controlStarted = true;
+                          try {
+                            stopControl = control.startMacStatusControl(desktopSocket, id, 8_000, ({ phase: controlPhase, ...controlFacts }) => observe(controlPhase, controlFacts));
+                          } catch { observe("control-error", { id }); }
+                        }, 2_000);
+                      }
+                    }));
+                  } finally {
+                    if (trigger !== undefined) clearTimeout(trigger);
+                    stopControl?.();
+                  }
                   ready = last.ok === true && resultOf(last).managers?.some((manager: any) => manager.space === ON
                     && manager.state === "answering" && typeof manager.instanceId === "string"
                     && manager.connectors?.some((connector: any) => connector.state === "available"));

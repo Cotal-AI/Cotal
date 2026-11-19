@@ -1002,7 +1002,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     if (process.platform !== "win32" && existsSync(join(daemonHome, "daemon.log"))) {
       const log = readFileSync(join(daemonHome, "daemon.log"), "utf8").slice(-64 * 1024).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
       writeFileSync(join(output, "daemon-native.log"), log);
-      if (process.platform === "darwin" && process.arch === "x64" && fixture.account) {
+      if (process.platform === "darwin" && fixture.account) {
         try {
           const fd = openSync(join(daemonHome, "daemon.log"), "r");
           try {
@@ -1014,7 +1014,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
             const offsets: number[] = [];
             const observed = bytes.subarray(0, count);
             for (let index = observed.indexOf(marker); index >= 0; index = observed.indexOf(marker, index + marker.length)) offsets.push(start + index);
-            writeFileSync(join(output, "intel-account-peer-drop-offsets.json"), JSON.stringify({ ino, size, start, count, offsets }), { mode: 0o600 });
+            writeFileSync(join(output, "mac-account-peer-drop-offsets.json"), JSON.stringify({ ino, size, start, count, offsets }), { mode: 0o600 });
           } finally { closeSync(fd); }
         } catch { /* Missing offset evidence must not replace the outcome. */ }
       }
