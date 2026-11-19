@@ -1,8 +1,30 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parseDocument } from "yaml";
 
 const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
+
+test("Windows installer presence runs on a fresh profile before the native account fixture", () => {
+  const workflow = parseDocument(read("../../.github/workflows/desktop.yml"));
+  assert.deepEqual(workflow.errors, []);
+  const steps = workflow.toJS().jobs["native-build"].steps;
+  const step = name => steps.findIndex(entry => entry.name === name);
+  const launch = step("Launch the installed release package and capture its first window");
+  const presence = step("Verify installed Windows shortcuts and taskbar presence");
+  const upload = step("Upload Windows native presence evidence");
+  const fixture = step("Build release-isolated real-window test binary");
+  const account = step("Windows connected account Ready, Settings and login-command lifecycle");
+  assert.ok(launch >= 0 && launch < presence && presence < upload && upload < fixture && fixture < account);
+  assert.equal(steps.filter(entry => entry.run === "./desktop/scripts/check-presence-windows.ps1").length, 1);
+  assert.equal(steps[presence].if, "runner.os == 'Windows'");
+  assert.equal(steps[presence]["continue-on-error"], undefined);
+  assert.equal(steps[account]["continue-on-error"], undefined);
+  assert.equal(steps[upload].if, "always() && runner.os == 'Windows'");
+  const other = steps[step("Upload native presence evidence")];
+  assert.equal(other.if, "always() && runner.os != 'Windows'");
+  assert.deepEqual(steps[upload].with, other.with);
+});
 
 test("native Windows presence retains its original UIA name assertion and requires a new unique legacy name", () => {
   const checker = read("../scripts/check-presence-windows.ps1");

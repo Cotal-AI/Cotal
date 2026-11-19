@@ -396,6 +396,20 @@ jobs:
           path: ${{ runner.temp }}/desktop-launch/
           if-no-files-found: error
           retention-days: 7
+      # The installer login-scope check needs a fresh runner profile. The later
+      # debug account journey intentionally writes that profile's preferences.
+      - name: Verify installed Windows shortcuts and taskbar presence
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/scripts/check-presence-windows.ps1
+      - name: Upload Windows native presence evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-presence-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
+          path: ${{ runner.temp }}/desktop-presence/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Install native window driver
         if: runner.os != 'macOS'
         timeout-minutes: 10
@@ -626,10 +640,6 @@ jobs:
       - name: Verify macOS window-scoped Dock presence, focus and reopen
         if: runner.os == 'macOS'
         run: bash -x desktop/scripts/check-presence-macos.sh
-      - name: Verify installed Windows shortcuts and taskbar presence
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./desktop/scripts/check-presence-windows.ps1
       - name: Verify Linux launcher packaging
         if: runner.os == 'Linux'
         run: |
@@ -644,7 +654,7 @@ jobs:
             grep -E 'share/icons/.*\.png' "$manifest"
           done
       - name: Upload native presence evidence
-        if: always()
+        if: always() && runner.os != 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-presence-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
