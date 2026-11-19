@@ -282,6 +282,7 @@ export const claudeConnector: Connector = {
   // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
   waitsForOperator: (launchOptions) => (launchOptions?.resume === "" ? "Claude's session picker" : undefined),
 
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
@@ -411,6 +412,7 @@ export const claudeConnector: Connector = {
     // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
     // directory is an artifact, so a later writeLaunchArtifact failure removes it too. The control
     // endpoint is minted here, after every refusal, because minting makes its socket directory.
+    if (opts.validateOnly) return { command: "", args: [] };
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     // Everything after the mint runs under this guard: minting made the control socket's directory,
     // so a step that throws below (placing a carried transcript, say) removes what the launch has

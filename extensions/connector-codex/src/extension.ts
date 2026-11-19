@@ -145,6 +145,7 @@ export const codexConnector: Connector = {
   // channel would fuse two principals' streams onto one subject.
   eventChannel,
 
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("codex connector does not support exact-session continuation");
     // Resuming isn't wired: a thread brought up with `thread/resume` does not carry the cotal_*
@@ -275,6 +276,7 @@ export const codexConnector: Connector = {
     // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a
     // signal-less runtime. Minted here, after every refusal, because minting makes its socket
     // directory; held in memory by the manager, served by the host. The key goes into the material.
+    if (opts.validateOnly) return { command: "", args: [] };
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
 

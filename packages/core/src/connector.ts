@@ -16,6 +16,9 @@ export interface UserAuthLaunch {
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
+  /** Validate options without creating launch files or changing session state. The returned spec
+   * is not executable. Only set when the connector declares {@link Connector.supportsLaunchValidation}. */
+  validateOnly?: boolean;
   space: string;
   name: string;
   role?: string;
@@ -282,6 +285,8 @@ export interface ConnectorModelCatalog extends ModelCatalog {
  * and core stays ignorant of which ones exist.
  */
 export interface Connector extends Extension {
+  /** `buildLaunch` accepts `validateOnly` and does not write files or change state in that mode. */
+  supportsLaunchValidation?: true;
   readonly kind: "connector";
   readonly name: string;
   /** Connector-owned setup surface. The base CLI resolves this through the extension registry and

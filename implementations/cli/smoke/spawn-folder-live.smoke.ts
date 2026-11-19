@@ -33,6 +33,7 @@ import { PassThrough, Writable } from "node:stream";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, repoRoot, wait } from "./_console-pty.js";
 import type { FolderCheck } from "../src/lib/manager-choice.js";
+import { checkSpawnPreflight } from "./_spawn-preflight-live.js";
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -210,6 +211,7 @@ try {
   check("a launch on a stopped mesh is refused TARGET_UNAVAILABLE with no question asked",
     stopped.code === 2 && stopped.out.includes("TARGET_UNAVAILABLE") && !/should the agent work in/.test(stopped.out), stopped);
 
+  await checkSpawnPreflight(check);
   console.log("\nSPAWN FOLDER LIVE SMOKE done");
   finish();
 } finally {
