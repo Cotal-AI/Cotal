@@ -26,7 +26,7 @@
     },
     {
       "name": "exponent evaluates as multiplication",
-      "file": "packages/lang/src/interpret.ts",
+      "file": "packages/lang/src/interpret-operators.ts",
       "find": "    case \"**\":\n      return a ** b;",
       "replace": "    case \"**\":\n      return a * b;",
       "expectRed": "compound assignment, every operator",
