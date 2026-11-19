@@ -1351,8 +1351,10 @@ if (process.platform === "linux") {
   check("...and its JSON says the selection still names the space and this up did not change it",
     bare.env?.result.selection?.current === "demo" && bare.env.result.selection.changed === false, bare.env?.result.selection);
   // The receipt's Next runs as printed: down stops only the stack of the folder it runs in.
-  check("up in its root offers a bare cotal up and cotal down as its Next",
-    /^ +cotal up +Add the manager to this stack$/m.test(up.stdout) && /^ +cotal down +Stop every recorded member$/m.test(up.stdout), shown(up));
+  check("up in its root offers unqualified up and down using the same launcher in its Next",
+    ["cotal", "pnpm cotal"].some((launcher) =>
+      new RegExp(`^ +${launcher} up +Add the manager to this stack$`, "m").test(up.stdout) &&
+      new RegExp(`^ +${launcher} down +Stop every recorded member$`, "m").test(up.stdout)), up.stdout);
   const remote = await run(["up", "--detach", "--no-manager", "--root", fresh], {}, elsewhere);
   check("up --root from another folder says where cotal down runs and offers cotal up --root",
     remote.status === 0 && remote.stdout.includes(`cotal down`) && remote.stdout.includes(`Stop every recorded member; run it from ${fresh}`) && remote.stdout.includes(`cotal up --root ${fresh}`), shown(remote));
