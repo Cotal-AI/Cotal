@@ -229,11 +229,7 @@ if (!brokerDisplayOnly) {
   const cleanHint = "if the stored JetStream state is stale: `cotal clean store --force`, then `up` with your usual flags (`clean all` also resets identity)";
   const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; detail?: string; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
     const base = selected.envelope!.result!;
-    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? {
-      name, state: name === "nats" && opts.pid === null ? "not-recorded" : "stopped",
-      pid: opts.pid === undefined ? 4242 : opts.pid,
-      detail: opts.detail ?? (opts.pid === null ? "no pidfile" : "stale pidfile"),
-    } : { name, state: "running", pid: 4343, detail: null });
+    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? { name, state: "stopped", pid: opts.pid === undefined ? 4242 : opts.pid, detail: opts.detail ?? (opts.pid === null ? "no pidfile" : "stale pidfile") } : { name, state: "running", pid: 4343, detail: null });
     const legacy = { ...base, folder: { ...base.folder, root: opts.root ?? home, controllerStack: opts.controllerStack ?? false, processSpace: "alpha", processes, storedState: exited.includes("nats"), stackBlock: null, stackUnfinished: null },
       meshes: { ...base.meshes, items: base.meshes.items.map((m) => m.space === "alpha" ? { ...m, mode: opts.mode ?? "auth", origin: opts.origin ?? "up" } : m) },
       selected: { ...base.selected, resolved: true, space: "alpha", root: home, mode: opts.mode ?? "auth", connection: exited.includes("nats") ? "unreachable" : "reachable" },
