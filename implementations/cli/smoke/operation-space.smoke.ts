@@ -311,11 +311,11 @@ for (const args of [["--config", "--json"], ["\u2013\u2013config", "default", "-
 const configTypo = cotal("spawn", "--confg", "default", "--dry-run", "--json");
 check("spawn does not suggest the reserved flag for a typo",
   configTypo.status === 1 && configTypo.stderr === "" && configTypo.envelope?.error?.code === "USAGE_INVALID"
-    && configTypo.envelope.error.message?.includes("Unknown option '--confg'") && !configTypo.stdout.includes("--config"), shown(configTypo));
+    && configTypo.envelope.error.message?.includes("Unknown option '--confg'") === true && !configTypo.stdout.includes("--config"), shown(configTypo));
 const fileTypo = cotal("spawn", "--flie", "./pv.md", "--dry-run", "--json");
 check("spawn still suggests the public --file flag for a typo",
   fileTypo.status === 1 && fileTypo.envelope?.error?.code === "USAGE_INVALID"
-    && fileTypo.envelope.error.message?.includes("did you mean --file?"), shown(fileTypo));
+    && fileTypo.envelope.error.message?.includes("did you mean --file?") === true, shown(fileTypo));
 const spawnOptions = cotal("__complete", "spawn", "--");
 check("spawn option completion offers --file but does not suggest the reserved flag",
   spawnOptions.status === 0 && /^--file\t/m.test(spawnOptions.stdout) && !/^--config\b/m.test(spawnOptions.stdout), shown(spawnOptions));
