@@ -1510,10 +1510,31 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
-  if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
-    target: { space, path },
-    remedy: `Follow ${["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/"} to install ${missing.join(", ")}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
-  });
+  if (missing.length) {
+    const binaries = missing.join(", ");
+    const guide = ["claude", "codex", "opencode", "jcode", "hermes", "pi"].includes(agentType) ? `https://docs.cotal.ai/docs/connect-${agentType}/` : "https://docs.cotal.ai/docs/connectors/";
+    const message = `${agentType} needs ${binaries} on PATH; nothing was launched`;
+    const install = `Follow ${guide} to install ${binaries}`;
+    if (agentType === "hermes") {
+      if (process.env.COTAL_HERMES_ADOPT_HOME?.trim()) {
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, {
+          target: { space, path },
+          remedy: `${install} and check the adopted Hermes profile's requirements before retrying.`,
+        });
+      }
+      if (!model) {
+        const example = codeSpan(`${displayCmd()} spawn --harness hermes --no-events --model <model>`);
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${message}. A managed Hermes profile needs a model. Set one with --model or the agent file's model: field.`, {
+          target: { space, path },
+          remedy: `${install}. For a basic launch: ${example}`,
+        });
+      }
+    }
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, {
+      target: { space, path },
+      remedy: `${install}, then retry: \`${displayCmd()} spawn ${args.raw.map(shellWord).join(" ")}\``,
+    });
+  }
   if (variant && !connector.supportsModelVariant) {
     throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, { target: { space, path } });
   }
