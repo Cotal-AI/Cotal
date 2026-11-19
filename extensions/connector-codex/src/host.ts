@@ -1302,6 +1302,7 @@ export async function runCodexHost(): Promise<void> {
   scrubLaunchMaterial();
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  process.on("SIGHUP", () => void shutdown());
 
   // PATH preflight (parity with the manager's `requires` check, for a foreground `--live-only`
   // launch that bypasses it): fail with a clear message naming the binary rather than a raw

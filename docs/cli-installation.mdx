@@ -214,11 +214,12 @@ From 0.167.1 on Linux, an automatic updater and its reconcile child move into an
 sibling systemd scope. After reconciliation, the updater restarts the owned service and waits
 for the target daemon. A failed activation restores and verifies the previous generation before
 recording the failed attempt. macOS and Windows retain their separate activation behavior.
-On Linux, manual `cotal update --self` also repairs a dead owner's ambiguous global child marker
-under the global update lock. It stops only this installation's service after empty hosted admission,
-requires this account's other application processes to exit, and retains the marker before continuing.
-Unreadable evidence or a live writer leaves the marker intact. It starts the enabled owned service
-again after the attempt. It does not enable a disabled service.
+On Linux, rerun `cotal update --self` after an interruption. The update resumes when it can prove
+the previous updater died before its child was allowed to start, or that the recorded child and
+its process group are gone. A live writer or unreadable evidence leaves the record intact.
+For an older record without child custody, manual repair still requires this account's other
+application processes to exit. It stops only this installation's service after confirming its
+hosted Managers have no seats, and starts the enabled service again after the attempt.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.
 Update that app with its signed platform installer so the app, CLI and runtime stay together.
@@ -447,11 +448,11 @@ other accounts' directories unchanged. If write access still fails, it names the
 directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
 before downloading archives or reserving the update lock.
 If an installation owned by another account is not writable, the update refuses before replacing it.
-For a root-owned npm installation, have an administrator run the printed
-`sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
-Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
-extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
-Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
+For a root-owned npm installation, have an administrator follow the printed npm install command.
+The command uses `sudo` if it is on PATH, otherwise `doas` if it is on PATH. If neither is
+available, the administrator runs `npm install -g --prefix '<install-prefix>' cotal-ai@latest` as root.
+Then run `cotal update` as your normal account to reconcile your connectors and extensions.
+Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
 
 From 0.167.1, retrying `cotal update --self` after killing its updater waits up to ten minutes
 for its recorded live install or reconciliation child to finish. The reservation stays held during
@@ -549,7 +550,7 @@ cotal join --link <url> | --token <t>
 | `--token <t>` | none | Join token |
 | `--lifecycle-uid <uid>` | none | Required with `--creds`: the lifecycle UID minted alongside the credential (`COTAL_LIFECYCLE_UID` works too). A credential's durable grants name exact lifecycle-keyed resources, so `join` refuses to invent one |
 | `--tls` | off | Connect over TLS |
-| `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A bare join on a static mesh only, one or the other: when the session's issued credential ends. Without either it has no expiry, and it is retired when you leave. Refused with `--link`, `--token` or `--creds`, and on a user-auth or open mesh |
+| `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A bare join on a static mesh only, one or the other: when the session's issued credential ends. At that time the session leaves cleanly and retires its issued credential. Without either it has no expiry, and it is retired when you leave. Refused with `--link`, `--token` or `--creds`, and on a user-auth or open mesh |
 
 An interactive presence: join a space under your own name and role, without launching an agent
 harness. Another participant whose name is only whitespace is shown as the id, in the roster,
@@ -584,7 +585,7 @@ Reading, roster commands and DMs remain available. Use the intended channel in b
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
 the delivery daemon. A credential minted without `--provision` has no inbox there; with its paired
 UID and a read grant, the refusal names that lifecycle and the mint that makes one. Without a UID, `join`
-first refuses with the lifecycle-pairing requirement.
+first refuses with the lifecycle-pairing requirement. An `observer` or `admin` credential cannot join as a participant and is refused with `PERMISSION_DENIED` before the lifecycle-pairing check, naming the `agent` mint command.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel

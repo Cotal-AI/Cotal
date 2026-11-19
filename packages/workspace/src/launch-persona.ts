@@ -1,11 +1,31 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { parseDocument } from "yaml";
-import { parseAgentFileSource, type AgentDef } from "@cotal-ai/core";
+import { parseAgentFileSource, utf16Problem, type AgentDef } from "@cotal-ai/core";
 import { MeshManifestSchema } from "./mesh-manifest-schema.js";
 
 /** A workstation-file refusal, mapped onto existing native bad-request/CLI schema-invalid codes. */
 export class PersonaSourceError extends Error {
   readonly code = "SCHEMA_INVALID";
+  readonly remedy?: string;
+
+  constructor(message: string, opts?: { remedy?: string }) {
+    super(message);
+    this.remedy = opts?.remedy;
+  }
+}
+
+/** Why the agent-file parser refused a definition. A YAML error keeps only its rule and position:
+ *  the parser's own text can quote the document's sensitive values. */
+export function personaDefinitionProblem(error: unknown, path: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const prefix = `agent file ${path}: `;
+  const reason = message.startsWith(prefix) ? message.slice(prefix.length) : message;
+  if (!reason.startsWith("invalid YAML frontmatter")) return reason;
+  // The parser counts lines from the first line after the opening `---`.
+  const at = /at line (\d+), column (\d+)/.exec(reason);
+  const where = at ? ` at line ${Number(at[1]) + 1}, column ${at[2]}` : "";
+  if (reason.includes("Map keys must be unique")) return `the frontmatter has a duplicate YAML key${where}`;
+  return `the frontmatter is not valid YAML${where}`;
 }
 
 /** Public --file denotes a file even when its basename has no extension. Paths stay host-relative. */
@@ -16,7 +36,7 @@ export function personaFileReference(value: string): string {
 
 /** Read a regular persona file on the execution host; never deploy a manifest from this door. */
 export function loadLaunchPersonaFile(path: string): AgentDef {
-  const notRegular = () => new PersonaSourceError(`persona is not a regular file: ${path}`);
+  const notRegular = () => new PersonaSourceError(`persona is not a regular file: ${path}`, { remedy: "pass a regular persona file" });
   if (!statSync(path).isFile()) throw notRegular();
   // Follow persona links as before. NONBLOCK keeps a replacement FIFO from hanging the open;
   // validate and read the same descriptor so a path replacement cannot bypass the type check.
@@ -33,7 +53,9 @@ export function loadLaunchPersonaFile(path: string): AgentDef {
     const document = parseDocument(source);
     if (!document.errors.length) manifest = MeshManifestSchema.safeParse(document.toJS({ maxAliasCount: 100 })).success;
   } catch { /* A non-manifest still has to pass the native persona parser below. */ }
-  if (manifest) throw new PersonaSourceError("--file names a Mesh manifest, not a persona file; use `cotal team deploy <file>`. No agent was allocated");
+  if (manifest) throw new PersonaSourceError("--file names a Mesh manifest, not a persona file; use `cotal team deploy <file>`. No agent was allocated", { remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
+  const encoding = utf16Problem(source);
+  if (encoding) throw new PersonaSourceError(`invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   try { return parseAgentFileSource(source, path); }
-  catch { throw new PersonaSourceError(`persona file ${path} has invalid native frontmatter; check its name, selectors and access declarations. File contents were not echoed`); }
+  catch (error) { throw new PersonaSourceError(`invalid persona definition ${path}: ${personaDefinitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
 }

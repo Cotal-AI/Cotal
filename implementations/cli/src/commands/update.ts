@@ -1730,27 +1730,33 @@ async function runGlobalProcess(
   inherit = false,
   windowsVerbatimArguments = false,
 ): Promise<CommandResult> {
-  const mutation = beginGlobalUpdateChild(root, operation);
+  const gated = process.platform === "linux";
+  const mutation = beginGlobalUpdateChild(root, operation, gated);
   let cache: string | undefined;
   let published = false;
   let preservePending = false;
   try {
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
-    const child = withInstallUmask(() => spawn(file, args, {
+    // The pipe closes without permission if the parent dies before publishing the PID.
+    // exec keeps the published PID and the real child keeps its original argv and stdin.
+    const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
+    const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-update", file, ...args] : args, {
       env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,
       windowsHide: true,
       windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : {}),
+      ...(gated ? { stdio: [inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", "pipe"] } : inherit ? { stdio: "inherit" as const } : {}),
     }));
+    const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
     let error = "";
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
     child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
     child.once("error", (e) => { error = e.message; });
+    permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
       try {
         mutation.markLive(child.pid);
@@ -1760,6 +1766,7 @@ async function runGlobalProcess(
         preservePending = true;
       }
     }
+    permit?.end(published ? "run\n" : undefined);
     const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>
       child.once("close", (status, signal) => resolveClose({ status, signal })),
     );

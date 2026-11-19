@@ -22,7 +22,7 @@
  * Needs `nats-server` on PATH (as the rest of smoke:ci does) for the live-broker probes, and
  * `openssl` for the test certificates.
  *
- * KNOWN LIMIT: the live broker here is open and JetStream-less, so the AUTH admission path is
+ * KNOWN LIMIT: the live verification broker is open, so the AUTH admission path is
  * covered only by its refusals (a broker that enforces nothing, a root whose trust does not
  * compose). A positive auth registration against a provisioned mesh belongs with the provisioning
  * smokes (`multi-space`), not here — this file must not be read as proving that path works.
@@ -217,7 +217,7 @@ function projectRoot(label: string): string {
 const DEAD = `nats://127.0.0.1:${await freePort()}`;
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
 teardownOnSignal(broker);
 // A second broker that actually ENFORCES something, so the guided flow's auth branches (the
 // "this folder holds no credentials" recovery) are reachable at all. Password auth is enough:

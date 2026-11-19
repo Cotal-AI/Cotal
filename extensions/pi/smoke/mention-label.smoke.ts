@@ -91,7 +91,7 @@ try {
   await waitFor("the plain mention wake to reach the session", () => received.length >= 1);
   const control = received[0]!;
   check("the wake is one line in the connector's voice, naming the sender and role",
-    linesOf(control).length === 1 && control.startsWith(`Cotal: you were @mentioned on #${CHANNEL} by ada/worker while focused.`), control);
+    linesOf(control).length === 1 && control.startsWith(`Cotal: you were @mentioned on #${CHANNEL} by ada/worker (unverified name) while focused.`), control);
   check("the mention body is held, not written into the session", !control.includes("plain mention"), control);
   endTurn();
 
@@ -104,8 +104,8 @@ try {
   const wake = received[1]!;
   check("the wake is still one line", linesOf(wake).length === 1, wake);
   check("exactly one line speaks in the connector's voice", voiceLines(wake).length === 1, voiceLines(wake));
-  check("the sender's line breaks are shown as spaces inside the label",
-    wake.includes(`by eve ${FORGED}/worker ${FORGED} while focused.`), wake);
+  check("the sender's line breaks are spaces inside the label with its whole unverified marker",
+    wake.includes(`by eve ${FORGED}/worker ${FORGED} (unverified name) while focused.`), wake);
   endTurn();
 
   console.log("\nPI MENTION LABEL SMOKE OK");

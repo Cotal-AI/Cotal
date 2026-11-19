@@ -1,4 +1,4 @@
-import { UserProvision, type ManagedEnrollment, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
+import { UserProvision, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
 import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, onceTurnNote, turnHoldToken, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
 import { createHash, randomBytes } from "node:crypto";
 import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStream, drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
@@ -85,8 +85,9 @@ import {
   shownSpawner,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type RenewalRecord, type SeatCap } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -101,6 +102,8 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { Retirement, type TeardownTarget } from "./retirement.js";
+import type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
+export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { ServePlane } from "./serve-plane.js";
 import { NamesCapacity, type Occupancy } from "./names-capacity.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
@@ -111,10 +114,10 @@ export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js"
 import { LeaseKeeper } from "./lease-keeper.js";
 export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
 import { SessionRecovery } from "./session-recovery.js";
-import { SeatCustody } from "./seat-custody.js";
+import { SeatCustody, watchConnectorHolder } from "./seat-custody.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, type ContinuityAssignment } from "./launch.js";
+import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting, servedRequestSubject } from "./run-hosting.js";
@@ -134,7 +137,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { serveIssuanceGateKv, commitSiblingIssuance, epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalStatus, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalRefOf, goalProgressTopic, turnNoticeSubject, epeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, seatCapRefused, lifecycleBlockedFrom, renderLifecycleBlocked, controlReplyFromThrown, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { serveIssuanceGateKv, commitSiblingIssuance, epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, transitionGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalStatus, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, GOAL_TERMINAL_STATES, goalRefOf, goalProgressTopic, turnNoticeSubject, epeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, renderLifecycleBlocked, controlReplyFromThrown, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerCommandDefs, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import { measureManagerVitals } from "./vitals.js";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -410,6 +413,8 @@ export interface ManagerOptions {
    *  as the published binary does. A library composition leaves this off and resolves only what its
    *  composition root imported — a direct `new Manager()` never implicitly reads the machine manifest. */
   installedExtensions?: boolean;
+  /** The machine daemon's command for repairing host setup. Absent outside daemon hosting. */
+  machineSetupCommand?: string;
   /** The {@link SecretStore} for EVERY secret this manager touches — the daemon-cred renewal write side
    *  (`remintDaemonCreds`) AND the per-agent standing-secret kinds (static creds / actor tokens /
    *  sentinel creds). ONE store, so a hosted composition (KMS/Vault) can never end up with the manager
@@ -787,148 +792,6 @@ export interface ManagerResumeResult {
   error?: string;
 }
 
-/** A spawn request, typed. The control-plane `start` op parses one of these out of an
- *  untyped request; roster boot constructs them directly. Both funnel into {@link Manager.startAgent}. */
-export interface StartAgentOpts {
-  /** The persona REF to spawn — a filename in `.cotal/agents` (the unique spawn key), discovered as
-   *  `.cotal/agents/<name>.md`. NOT the mesh identity: the spawned peer presents under the file's
-   *  own `name:` (auto-numbered on collision). The file must exist (no silent default-ACL fallback).
-   *  With {@link persona}, the helper's own name instead, numbered on collision the same way. */
-  name: string;
-  /** An inline persona in place of a catalog file. It takes no `config` or `identity`. Validated
-   *  where it is read, so a direct call meets the same refusals as the served door. */
-  persona?: InlinePersona;
-  /** The workflow run whose driver sends this spawn (SPEC 14.8). A manager that does not host the
-   *  run reads the run's admission and bounds the helper by it, as the hosting manager does. */
-  runId?: string;
-  /** Connector / agent type — resolved from the registry. Outranks the persona pin and every default (see `resolveAgentType`). */
-  agent?: string;
-  /** Detached caller's default connector, kept separate from an explicit flag so the persona file
-   *  can outrank it. Imperative control requests only; direct and manifest launches omit it. */
-  defaultAgent?: string;
-  role?: string;
-  /** Explicit agent-file path that overrides the `name` ref for *which file to load* (identity still
-   *  comes from that file's `name:`). The file must exist. */
-  config?: string;
-  /** Presence-identity OVERRIDE (the `--name` flag with a positional/`--config` naming the file):
-   *  wins over the persona file's `name:`, exactly as in foreground `cotal spawn`. Imperative-only —
-   *  a manifest launch (`resolved`) is the identity authority and rejects it. */
-  identity?: string;
-  /** Model override (the `--model` flag). Takes precedence over the agent file's `model:`. */
-  model?: string;
-  /** Model variant override (the `--variant` flag). Takes precedence over the agent file's `variant:`. */
-  variant?: string;
-  /** Opaque connector launch options (the `--opt k=v` flags). Merged per key over the agent file's
-   *  `launchOptions:` (imperative wins); forwarded verbatim to the connector, which validates them. */
-  launchOptions?: Record<string, unknown>;
-  /** USER-MESH manifest launches only: the derived owner (`u_…`) from the launch spec (the
-   *  logged-in operator who applied it). Imperative spawns resolve the owner from the ctl
-   *  CALLER's principal instead — never from a payload field. */
-  owner?: string;
-  /** Opaque host-local session id to FORK into the mesh (the `--resume` flag), forwarded verbatim to
-   *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
-   *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
-  resume?: string;
-  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume} (#1499), and
-   *  the agent the CLI found them with. Imperative control args only, like `resume`. */
-  resumeClaim?: string;
-  resumeAgent?: string;
-  /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
-   *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
-  events?: boolean;
-  eventPayloads?: boolean;
-  /** #373: set by `opStart` when a non-owner, non-admin caller omitted `events` and the plane was served
-   *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
-  eventsNotice?: string;
-  /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
-   *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
-   *  and rejects this flag alongside it (one source, no merge). */
-  prompt?: string;
-  /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
-   *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
-   *  creds AND forwarded to the connector from ONE source. Imperative-only — a manifest launch
-   *  (`resolved`) is the access authority and rejects these. */
-  subscribe?: string[];
-  allowSubscribe?: string[];
-  allowPublish?: string[];
-  /** Channels the seat joins on top of its resolved read set (the peer door's `join`). Each must
-   *  fall within the read ACL that resolves below, or the spawn is refused; nothing is widened.
-   *  Imperative-only, rejected with `resolved`. */
-  join?: string[];
-  /** The spawner's own read/post ACL. Consulted only when the persona file names no channel field
-   *  at all (`subscribe`, `allowSubscribe`, `allowPublish` all absent): the seat is then scoped to
-   *  its spawner, never wider. A persona that names any channel field is the authority and this is
-   *  ignored. The spawner's event channel is never inherited (the seat mints its own below).
-   *  Imperative-only, rejected with `resolved`. */
-  callerAcl?: { allowSubscribe: string[]; allowPublish: string[] };
-  /** The request subject the served `spawn` door answered. A hosted enrollment forwards it, and the
-   *  issuing host makes the caller it saw publish that subject the helper's parent (SPEC 13.6).
-   *  Set by the served door only. */
-  served?: string;
-  /** Names of the operator's configured MCP servers this agent gets (absent → all declared for the
-   *  connector — the pre-merge manager behavior; `[]` → none). */
-  shareTools?: readonly string[];
-  /** Declarative in-place restart policy from a workflow `spawn`. When set, the manager restarts
-   *  the process under the same name, lifecycle uid, persona, worktree and permits until
-   *  `restarts` deaths fall inside `windowMs`. Absent: only a continuation-capable connector
-   *  (pi) arms the existing session-recovery constants. */
-  supervise?: { restarts: number; windowMs: number };
-  /** A `once` spawn: the prompt is relayed as the seat's one turn instead of a kickoff, and the
-   *  seat is stopped when that turn ends. `deadlineMs` is resolved: `undefined` means no deadline. */
-  once?: { deadlineMs: number | undefined };
-  /** A fully-resolved launch profile (from a mesh manifest via `supervise --launch`). When present,
-   *  `startAgent` takes identity/role/ACLs/capabilities/model from here — NOT from a persona file —
-   *  and `config` points at the materialized transient persona the connector reads. The persona file
-   *  is never the access authority in this path. */
-  resolved?: MeshLaunchAgent;
-  /** Per-agent working directory to root this agent at, overriding the manager's shared
-   *  workspaceRoot. Lets different agents run in different repos/folders. A relative path is
-   *  resolved against the manager's workspace root. Omitted → the agent uses workspaceRoot. */
-  cwd?: string;
-  /** Internal resolved-manifest provenance used by the preservation inventory. */
-  launchRef?: { runId: string; requested: string; hash: string };
-  /** The §13.2 rail this spawn rode. Class-rail harness refusals name `--on`; instance-pinned
-   *  refusals stay local. Direct `startAgent` (roster / `--spawn`) is not a class request. */
-  route?: "one" | "all" | "inst";
-  /** The terminal runtime this one seat launches on. Absent uses this manager's own runtime, the
-   *  same choice `cotal up --runtime` made. A named runtime is resolved once and reused for every
-   *  later seat that names it. An unknown or unreachable one refuses the launch and starts nothing. */
-  runtime?: string;
-  /** Launch under an admitted delegated user intent (SPEC 13.16): the agent is `owner`'s, and
-   *  `parent` is its ledger parent and its recorded spawner. Set only by the composition root's
-   *  in-process call; the ctl spawn handler never maps a payload field into it. */
-  delegatedIntent?: { intentId: string; owner: string; parent: string };
-}
-
-interface ManagedLaunch {
-  source: ManagerResumeAgent["launch"]["source"];
-  /** The runtime kind this seat was launched on. Absent means the manager's own runtime. */
-  runtime?: string;
-  cwd: string;
-  model?: string;
-  variant?: string;
-  prompt?: string;
-  subscribe?: string[];
-  allowSubscribe: string[];
-  allowPublish?: string[];
-  capabilities?: string[];
-  /** The persona's endpoint commands, as minted. Renewal re-mints their rows. */
-  endpoints?: PersonaEndpoint[];
-  events: boolean;
-  eventPayloads?: boolean;
-  shareTools?: readonly string[];
-  forkSource?: string;
-  /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
-  resumed?: ForkProvenance;
-  /** A carried resume's claim (#1499): the digest the manager staged, which the seat's fork record
-   *  must name before {@link resumed} is set, the host it came from, and when it was staged. */
-  carried?: { transcriptSha256: string; host: string; transferredAt: string };
-  /** The connector's {@link LaunchSpec.resumeRecordPath} for this seat's fork. */
-  resumeRecordPath?: string;
-  sessionId?: string;
-  unresolvedLaunchOptionKeys?: string[];
-}
-
 interface PreparedResume {
   spec: LaunchSpec;
   /** The retained manifest declaration says `continuity: exact`. */
@@ -1018,147 +881,6 @@ function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
     "Drop `endpoints` from the persona, and ask the operator to grant the helper with `cotal service-endpoint grant` once it runs.";
 }
 
-export interface ManagedAgent {
-  name: string;
-  role?: string;
-  agent: string;
-  /** The seat-private Claude home a carried resume launched in (#1499), removed when the seat is freed. */
-  seatHome?: string;
-  /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
-   *  the owner+actor principal dot-form (user mode). */
-  id: string;
-  /** This incarnation's lifecycle UID (SPEC §13.1), minted once per spawn: the uid its
-   *  lifecycle-keyed broker footprint (`dm_…-<uid>`/`dlv_…-<uid>`/ACL row) carries and the ONLY
-   *  incarnation its teardown credential may name — a replayed teardown cannot reach a same-name
-   *  successor (its uid differs). */
-  lifecycleUid: string;
-  /** Private nkey seed, kept so a later step can mint matching creds for this id. Static auth
-   *  only — a user-mode agent has no static identity (its credential is its bearer). */
-  seed?: string;
-  /** The SPEC 13.15 issuance of a static agent's credential: the generation its rails carry and
-   *  the accepted-row token its endpoint discovers it by. A renewal keeps both (the ceiling is
-   *  unchanged by construction); absent on a user-mode or open agent. */
-  issued?: IssuedBinding;
-  /** Set for a USER-MODE agent: its derived owner. Marks the slot for user-mode teardown (ledger
-   *  revoke + token/sentinel/health file removal) and the auth-health read in {@link list}. */
-  userOwner?: string;
-  /** Launched under a delegated user intent (SPEC 13.16). Only {@link Manager.retireDelegatedAgent}
-   *  retires it: this holder's own prepare and requester bind to the holder's owner. */
-  delegated?: true;
-  /** The FS materialization paths of THIS incarnation's secret family, recorded at spawn (the
-   *  lifecycle-keyed derivation) or at adoption (the resume inventory's recorded paths — possibly a
-   *  previous generation's name-keyed layout). Teardown, preservation, and health reads consume
-   *  THESE, never a re-derivation by name alone, so a stale/replayed teardown can only ever address
-   *  this incarnation's own files — the manager-local half of the SPEC 13.1 name-disjoint
-   *  discipline (the broker half is the uid-pinned deprovisioner). Present per mode: static =
-   *  `creds`; user = `actorToken`/`sentinelCreds`/`health`; open = absent. Absent (never `{}`)
-   *  when nothing was recorded, so teardown's uid-keyed derivation fallback stays reachable. */
-  secretPaths?: { creds?: string; actorToken?: string; sentinelCreds?: string; health?: string };
-  /** Authenticated id of the peer that requested this spawn (the control-plane `req.from.id`),
-   *  or the manager's own id for roster/pre-spawn. Non-forgeable — set by `handle()`. The spawner
-   *  ledger (P4b) keys own-children despawn + reap-on-parent-exit off this. */
-  spawner: string;
-  authorityParent?: string;
-  startedAt: number;
-  handle: AgentHandle;
-  /** This agent's local control endpoint (path + first-frame auth token), when its connector runs
-   *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
-   *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
-   *  kill that would deny the agent its clean mesh-leave. */
-  control?: ControlEndpoint;
-  /** Set when `Runtime.spawnDelegated` started this seat outside the manager's filesystem. Its
-   *  handle's `stop()` is the fenced close by lifecycle key, which retirement runs only after the
-   *  host revoked the grant, never from the stop door. */
-  handedOff?: true;
-  launch: ManagedLaunch;
-  /** The bounded launch wait elapsed without a join. Process liveness is separate, and an
-   * exact-incarnation late join clears this diagnostic without stopping the seat. */
-  joinIssue?: string;
-  /** Set on a manifest `continuity: exact` seat once its first session was proven: the coordinates
-   *  its assignment is recorded under, kept current at every later proven rebind and at its stop. */
-  continuity?: Omit<ContinuityAssignment, "version" | "sessionId">;
-  /** In-memory process-recovery input. It is never persisted with secret values: preservation
-   * reconstructs it from the validated inventory and current config. Continuation-capable
-   * connectors (pi) receive it by default; any connector receives it when spawn carries
-   * `supervise`. */
-  restart?: {
-    opts: LaunchOpts;
-    sessionStatePath?: string;
-    crashes: number[];
-    recovering: boolean;
-    armed: boolean;
-    /** Present when spawn carried `supervise`; recoverManagedSession takes its budget from it.
-     *  Absent on the pi path without a policy, which keeps SESSION_RESTART_LIMIT / WINDOW_MS. */
-    policy?: { restarts: number; windowMs: number };
-  };
-  /** Set on a `once` seat: the goal of its one task, and why this manager stopped the seat, if it
-   *  did. The task is cancelled with that reason when the seat's exit is proved before it ended. */
-  once?: { ref: GoalRef; stopReason?: string; retire?: string };
-  /** The connector's clause when this seat's startup ended `ready` on a connector whose idle wake
-   *  needs a confirmed startup: mesh traffic does not wake the seat. On the spawn reply and the ps row. */
-  startupNotice?: string;
-  /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
-  suppressCleanup?: boolean;
-  /** The TERMINALIZING latch: flipped SYNCHRONOUSLY before the first await on every
-   *  stop/despawn path (stopHandle + freeSlot are the chokepoints). Once set, this principal's
-   *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
-   *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
-  terminalizing?: boolean;
-  /** Why this manager stopped the seat, set with {@link terminalizing} by the first stop. The exit
-   *  watcher frees the slot with it, so an exit the stop caused is not logged or ended as the
-   *  seat's own. */
-  stopCause?: FreeSlotCause;
-  /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
-   *  cleared when the seat is logged back on. */
-  offMesh?: boolean;
-  /** The one renewal admitted before terminalization. Retirement drains it before revocation and
-   *  cleanup; callers arriving after the latch never join it. */
-  staticCredentialRenewal?: Promise<void>;
-}
-
-/** Runtime hooks the spawn-as-action serve path injects into {@link Manager.startAgent}.
- *  Roster boot and the blocking callers pass none (unchanged behavior). */
-export interface SpawnHooks {
-  /** Fires synchronously AFTER the incarnation identity (nkey + lifecycleUid) is minted but BEFORE
-   *  any provision/side-effect — the accept seam: it binds the goal and replies the acceptance. A
-   *  THROW here aborts the spawn before provisioning (the existing catch returns the failure and the
-   *  finally releases the reserve, so no footprint leaks) — this is the bind-conflict refusal path.
-   *  On the hosted enrollment arm it fires right after the host enrolls the agent, because the host
-   *  picks the uid; a throw there rolls that enrollment back. */
-  onAccepted?: (allocated: { name: string; identity: Identity; lifecycleUid: string; agentTriple: { owner: string; actor: string; uid: string } }) => Promise<void> | void;
-  /** Fires once the child process has been launched (the "launched" progress edge). A THROW here
-   *  aborts the spawn with the seat already running and the handle held only in a local, so the
-   *  finally's orphan rollback reaps it by the reference the spawn reserved. */
-  onLaunched?: () => void;
-  /** Fires once the connector has supplied the exact bounded readiness window for this launch,
-   * before the process starts. The action goal records that same value at acceptance. */
-  onReadinessWindow?: (readinessTimeoutMs: number) => Promise<void> | void;
-  /** Fires at the readiness verdict (presence join → succeeded / process exit → failed / window
-   *  elapsed → uncertain), carrying the succeeded reply data — the async serve body commits the goal
-   *  terminal + emits the final progress event here. Awaited, but the caller swallows its own errors
-   *  so a terminal-commit failure never disrupts the (already-replied) spawn. Resolves true only
-   *  when this call committed the terminal; a once task is served only after that. */
-  onOutcome?: (outcome: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }) => Promise<boolean | void> | boolean | void;
-  /** Fires when this spawn ends with its goal's terminal owned by ANOTHER path — today only a
-   *  despawn/stop that lands inside the readiness window, whose own handler commits `cancel`.
-   *  It commits nothing; it only claims the terminal so the post-accept fallback does not
-   *  manufacture a `failed` from the non-ok reply and race the real `cancel`. Without it, a
-   *  deliberate stop mid-launch reports the agent as having died on launch. */
-  onTerminalDeferred?: () => void;
-  /** Fires right before the first effect this spawn or launch takes: the name reserve, a re-driven
-   *  teardown, or a launch file written to disk. A refusal before it changed nothing, so the
-   *  action path answers it `not-executed` (SPEC 13.3); one after it keeps an unknown outcome. */
-  onEffect?: () => void;
-  /** Fires when a refusal after the first effect left nothing behind: the host refused the agent's
-   *  enrollment with `code`, and the spawn removed every secret it had staged. The action path
-   *  answers it `not-executed` with that code, as it answers a refusal before the first effect. */
-  onUndone?: (code: EpErrorCode) => void;
-  /** Fires right after `onAccepted` on a `once` spawn, before anything launches: accepts the seat's
-   *  one task as a turn addressed to the allocated incarnation and returns its goal. A throw fails
-   *  the spawn. */
-  onOnce?: (task: { seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string }) => Promise<{ ref: GoalRef; deadlineAt?: number }>;
-}
-
 class LegacyEventCountPermissionError extends Error {}
 
 const TURN_PARTICIPATION_TTL_MS = 5 * 60_000;
@@ -1175,23 +897,6 @@ interface PersonalTurnParticipant {
 
 function participantKey(owner: string, actor: string, uid: string): string {
   return `${owner}.${actor}.${uid}`;
-}
-
-/** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the
- *  addressing triple) plus the goal coordinates (goalId = the request id) and
- *  the executor coordinate (the manager incarnation its terminal fences on). Carries NO secret
- *  material; it names what was actually allocated, never a requested-but-unallocated name. */
-export interface SpawnAcceptance {
-  name: string;
-  owner: string;
-  actor: string;
-  uid: string;
-  goalId: string;
-  fingerprint: string;
-  /** The connector-selected readiness budget persisted on this goal. A synchronous follower must
-   *  outlive it; otherwise it can time out while the manager is still legitimately waiting. */
-  readinessDeadlineMs: number;
-  executor: { lifecycleUid: string; epoch: number };
 }
 
 /**
@@ -1248,6 +953,34 @@ class DeliveryAdminUnanswered extends Error {}
 /** How long one store challenge waits for the delivery daemon's answer. */
 const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
 
+/** The refusal a control instance with `execution: none` gives every launch, hosting, model and write door. */
+const EXECUTION_NONE_REFUSAL = "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
+
+/** The sha256 hex digest of a file's bytes. */
+function fileDigest(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+/** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
+ *  entries already store it in `id`; static mints store the raw nkey there (the durable/teardown
+ *  key), so the wire form derives under DEV_OWNER. Every comparison against an AUTHENTICATED wire
+ *  id (presence card.id, control from.id) must go through this, never raw `a.id`. */
+function managedPrincipal(a: { id: string; userOwner?: string }): string {
+  return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
+}
+
+/** How a once seat's startup watch ended, waited for until {@link STARTUP_OUTCOME_MS} after its
+ *  launch or the readiness window, whichever is longer. A watch that has not ended by then, or a
+ *  seat being stopped, answers what the handle reports at that moment. */
+async function awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number, stopping: () => boolean): Promise<StartupOutcome> {
+  const until = launchedAt + Math.max(readinessTimeoutMs, STARTUP_OUTCOME_MS);
+  for (;;) {
+    const outcome = a.handle.startupOutcome?.() ?? "pending";
+    if (outcome !== "pending" || a.terminalizing || stopping() || Date.now() >= until) return outcome;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
  * It serves control requests on the "manager" service and spawns/kills agents
@@ -1277,6 +1010,7 @@ export class Manager {
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
   private readonly expectedConnectorGeneration: string;
+  private readonly machineSetupCommand?: string;
   private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
@@ -1410,9 +1144,11 @@ export class Manager {
   private readonly onceWatched = new Set<string>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
-  /** Connector harness paths resolved ONCE at boot. Missing binaries do not stop unrelated manager
-   * work, but they are named before the manager reports ready and remain visible in manager status. */
+  /** Connector harness inventory. Available paths stay pinned; unavailable rows are retried when
+   * launch, model lookup or status asks, without stopping unrelated Manager work. */
   private connectorStatuses: ManagerConnectorStatus[] = [];
+  private connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
+  private claudeWakeRecheck?: Promise<void>;
   /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
   private bootNotes: string[] = [];
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
@@ -1445,6 +1181,9 @@ export class Manager {
   private userMode = false;
   private readonly namesCapacity = new NamesCapacity({
     userMode: () => this.userMode,
+    seatCap: () => this.seatCap,
+    managerInstanceId: () => this.managerInstanceId,
+    agents: () => this.agents.values(),
     authEnabled: () => this.auth !== undefined,
     maintenanceActive: () => this.maintenanceState === "active",
     roster: () => this.ep.getRoster(),
@@ -1488,7 +1227,7 @@ export class Manager {
     setSessionPlane: (value) => { this.sessionPlane = value; },
     sessionKeyRenewTimer: () => this.sessionKeyRenewTimer,
     setSessionKeyRenewTimer: (value) => { this.sessionKeyRenewTimer = value; },
-    connectorStatuses: () => this.connectorStatuses,
+    connectorStatuses: () => { this.refreshUnavailableConnectors(); return this.connectorStatuses; },
     setGoalWriterIdentity: (value) => { this.goalWriterIdentity = value; },
     setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
@@ -1821,6 +1560,7 @@ export class Manager {
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.expectedConnectorGeneration = MANAGER_VERSION;
+    this.machineSetupCommand = opts.machineSetupCommand;
     this.pooled = opts.pooled === true;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
     if (!this.remoteAuthority) {
@@ -1886,7 +1626,7 @@ export class Manager {
   }
 
   private executionRefusal(): string {
-    return "execution: none forbids seat launch, workflow hosting, model inspection and caller-driven writes on this control instance; select the participant Manager with an instance-pinned manager-caller view";
+    return EXECUTION_NONE_REFUSAL;
   }
 
   /** A defensive last barrier, not a substitute Runtime. Entry admission runs before effects. */
@@ -3414,9 +3154,7 @@ export class Manager {
     return undefined;
   }
 
-  private fileDigest(path: string): string {
-    return createHash("sha256").update(readFileSync(path)).digest("hex");
-  }
+  private fileDigest(path: string): string { return fileDigest(path); }
 
   private fileDigestOrEmpty(path: string): string {
     try { return this.fileDigest(path); } catch { return ""; }
@@ -4109,7 +3847,7 @@ export class Manager {
    *  readiness reads the same status; the maintenance fence refuses every other command in both
    *  states. The read is counted in `lifecycleInFlight` like any admitted operation and released in
    *  `finally`, so a drain waits at most for one status snapshot; the membership gate still
-   *  applies. `preserving` and a stopping manager stay fenced. Status writes nothing. */
+   *  applies. `preserving` and a stopping manager stay fenced. */
   private async serveObservation<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
     const preserved = this.maintenanceState === "preserved" && !this.resumeRequired;
     const resumePending = this.maintenanceState === "active" && this.resumeRequired;
@@ -4365,7 +4103,12 @@ export class Manager {
       vitals: (ctx) => this.serveGated(ctx, () => measureManagerVitals()),
       // A remote Manager files every seat under its own owner, so only a user mesh's shared local
       // Manager narrows the count, and status never waits on a remote admin check.
-      status: (ctx) => this.serveObservation(ctx, async () => this.managerStatusData(this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false))),
+      status: (ctx) => this.serveObservation(ctx, async () => {
+        const ownerFilter = this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false);
+        // The daemon's status deadline is shorter than an install. Report the current inventory
+        // without waiting for the install, which has its own lifecycle admission below.
+        return this.managerStatusData(ownerFilter, !this.resumeRequired);
+      }),
       ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
@@ -4659,13 +4402,8 @@ export class Manager {
     });
   }
 
-  /** The wire PRINCIPAL dot-form a managed agent's presence/control identity carries: user-mode
-   *  entries already store it in `id`; static mints store the raw nkey there (the durable/teardown
-   *  key), so the wire form derives under DEV_OWNER. Every comparison against an AUTHENTICATED wire
-   *  id (presence card.id, control from.id) must go through this, never raw `a.id`. */
-  private managedPrincipal(a: { id: string; userOwner?: string }): string {
-    return a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key;
-  }
+  /** The wire principal of a managed agent: {@link managedPrincipal}. */
+  private managedPrincipal(a: { id: string; userOwner?: string }): string { return managedPrincipal(a); }
 
   private resumeLivenessErrors(inventory: ManagerResumeInventory, roster: Presence[]): string[] {
     const inactive: string[] = [];
@@ -4844,8 +4582,6 @@ export class Manager {
       .finally(() => this.releaseLifecycle());
   }
 
-  private servedSpawnRequest(served: string, caller: EpCaller | undefined): { served: string; runId?: string } { return this.userProvision.servedSpawnRequest(served, caller); }
-
   private provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | UserAgentRefusal> { return this.userProvision.provisionUserAgent(name, opts); }
 
   /** Shred a user agent's secret family from the store and from disk. Every removal is attempted,
@@ -4856,10 +4592,6 @@ export class Manager {
     for (const path of [family.actorToken, family.sentinelCreds, family.health])
       if (path) await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
   }
-
-  private delegatedMeshRecord(): MeshEntry & { userAuth: UserAuthInfo } { return this.userProvision.delegatedMeshRecord(); }
-
-  private composeManagedHandoff(enrolled: ManagedEnrollment, actorToken: string): ManagedLifecycleHandoff { return this.userProvision.composeManagedHandoff(enrolled, actorToken); }
 
   /**
    * WHY A SEAT LEFT — one line, at the one place every free path passes through.
@@ -5029,14 +4761,6 @@ export class Manager {
     return this.sessionRecovery.forkProvenance(a);
   }
 
-  private refuseCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<string | undefined> {
-    return this.sessionRecovery.refuseCarriedFork(a, timeoutMs);
-  }
-
-  private refuseLateCarriedFork(a: ManagedAgent, timeoutMs: number): Promise<void> {
-    return this.sessionRecovery.refuseLateCarriedFork(a, timeoutMs);
-  }
-
   private readManagedSession(a: ManagedAgent): string {
     return this.sessionRecovery.readManagedSession(a);
   }
@@ -5113,8 +4837,6 @@ export class Manager {
     this.reapChildrenOf(this.managedPrincipal(a));
   }
   private nameError(name: string): string | undefined { return this.namesCapacity.nameError(name); }
-  private nameInUse(name: string, live?: Set<string>): boolean { return this.namesCapacity.nameInUse(name, live); }
-  private uniqueName(base: string, unavailable: ReadonlySet<string> = new Set()): string { return this.namesCapacity.uniqueName(base, unavailable); }
 
   /** Spawn a teammate by persona ref (`name` loads `.cotal/agents/<name>.md`; the peer presents
    *  under that file's own `name:`), as if a peer asked via the control plane. Used to pre-spawn the
@@ -5307,10 +5029,10 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; pkg?: string }>;
     if (this.installedExtensions) {
       try {
-        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
+        declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
@@ -5325,8 +5047,12 @@ export class Manager {
         eventPlane: connector.eventChannel !== undefined,
       }));
     }
+    this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
+      requires, needsClaudeWake: !!this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
+    }]));
     for (const { name, requires, eventPlane } of declared) {
-      const { binaries, reason } = resolveHarness(name, requires);
+      const { binaries, reason: missing } = resolveHarness(name, requires);
+      const reason = missing ?? (this.connectorRequirements.get(name)?.needsClaudeWake ? await this.prepareClaudeWake() : undefined);
       if (reason) {
         rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
@@ -5337,6 +5063,61 @@ export class Manager {
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
+  }
+
+  /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
+  private async prepareClaudeWake(): Promise<string | undefined> {
+    try {
+      const connector = await this.resolveConnector("claude");
+      if (!connector.setup) throw new Error("Claude connector has no setup provider");
+      const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.expectedConnectorGeneration });
+      if (!provider.connector) throw new Error("Claude connector has no install action");
+      const cotal = bearerEntryArgv();
+      cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
+      await provider.connector.run({ cotal, machineHost: true });
+    } catch (error) {
+      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
+      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
+    }
+  }
+
+  /** Retry unavailable applications without changing resolved available rows. Claude launches
+   *  join the status or launch that started wake setup, before any name or capacity is reserved. */
+  private refreshUnavailableConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
+    const wasEnabled = this.classSpawnEnabled();
+    let pending: Promise<void> | undefined;
+    for (const row of this.connectorStatuses) {
+      if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
+      const requirements = this.connectorRequirements.get(row.agent);
+      if (!requirements) continue;
+      if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
+        pending = this.claudeWakeRecheck;
+        continue;
+      }
+      const { binaries, reason } = resolveHarness(row.agent, requirements.requires);
+      if (reason) {
+        row.binaries = binaries;
+        row.reason = reason;
+      } else if (requirements.needsClaudeWake) {
+        const release = setupClaude ? this.beginLifecycle(true) : undefined;
+        if (!release) continue;
+        pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
+          row.binaries = binaries;
+          if (failure) { row.reason = failure; return; }
+          const alreadyEnabled = this.classSpawnEnabled();
+          row.state = "available";
+          delete row.reason;
+          if (!alreadyEnabled) this.servePlane.enableClassSpawn();
+        }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
+        void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
+      } else {
+        row.binaries = binaries;
+        row.state = "available";
+        delete row.reason;
+      }
+    }
+    if (!wasEnabled && this.classSpawnEnabled()) this.servePlane.enableClassSpawn();
+    return pending;
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed
@@ -5364,7 +5145,8 @@ export class Manager {
   /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
    *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
    *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
-   *  is there. A connector registered after boot has no inventory row and is checked on PATH now. */
+   *  is there. Callers recheck unavailable rows first; available rows retain their resolved files.
+   *  A connector registered after boot has no inventory row and is checked on PATH now. */
   private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
     const row = this.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
@@ -5475,8 +5257,9 @@ export class Manager {
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
+      await this.refreshUnavailableConnectors(connector.name, true);
       const harness = this.launchHarness(connector);
+      if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
         const catalog = await connector.listModels({ refresh, resolvedBinaries: harness.binaries });
@@ -5935,12 +5718,17 @@ export class Manager {
     if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
       return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
 
-    // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
-    // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
-    // atomic: the capacity snapshot and the reserve land in one tick (P4a/P4c), and two concurrent
-    // spawns can't overshoot the ceiling or pick the same name.
-    const occupancy = this.occupancy(); // prunes expired cooling stamps; counts each name once
-    if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.capacityRefusal(occupancy) };
+    // Fail fast when full. If hosted Claude has to await wake setup, resample capacity after it.
+    // The final capacity check and the reserve below stay in the same tick or two concurrent
+    // spawns could overshoot the ceiling or pick the same name.
+    let occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
+    if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
+    const recheck = this.refreshUnavailableConnectors(connector.name, true);
+    if (recheck) {
+      await recheck;
+      occupancy = this.namesCapacity.occupancy();
+      if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
+    }
 
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
@@ -6004,7 +5792,7 @@ export class Manager {
       if (!this.remoteAuthority?.enrollManagedAgent)
         return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
       try {
-        this.delegatedMeshRecord();
+        this.userProvision.delegatedMeshRecord();
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
@@ -6180,7 +5968,7 @@ export class Manager {
     // `start` op's checks, and no connector may receive a blank one (#2862).
     if (model !== undefined && !model.trim()) return { ok: false, error: "model: must not be empty" };
     if (variant !== undefined && !variant.trim()) return { ok: false, error: "variant: must not be empty" };
-    const idErr = this.nameError(identityName);
+    const idErr = this.namesCapacity.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${where}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
     // is what other agents ROUTE on (role is the anycast address). The gap is silent today because
@@ -6236,7 +6024,7 @@ export class Manager {
     const held = this.retirement.held(identityName);
     if (held !== undefined) {
       hooks?.onEffect?.();
-      void this.deprovision(held.target).catch(() => {});
+      void this.retirement.deprovision(held.target).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
         { blockedOp: "retirement", opId: held.opId, remedy: "retry" });
@@ -6291,12 +6079,12 @@ export class Manager {
     let name: string;
     for (;;) {
       if (hardPinned) {
-        if (this.nameInUse(identityName))
+        if (this.namesCapacity.nameInUse(identityName))
           return { ok: false, code: "already-exists", error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
         name = identityName;
       } else {
         try {
-          name = this.uniqueName(identityName, unavailable);
+          name = this.namesCapacity.uniqueName(identityName, unavailable);
         } catch (e) {
           return { ok: false, error: rejectionText(e) };
         }
@@ -6333,7 +6121,7 @@ export class Manager {
         }
         // Another spawn may have reserved the candidate while the disk/broker proof awaited.
         // Recheck in the same synchronous window as the cap and reservation below.
-        if (this.nameInUse(name) || (!hardPinned && name !== identityName && this.namesCapacity.numberedIssued(name))) {
+        if (this.namesCapacity.nameInUse(name) || (!hardPinned && name !== identityName && this.namesCapacity.numberedIssued(name))) {
           if (!hardPinned) continue;
           return { ok: false, code: "already-exists", error: `the hard-pinned name "${name}" became occupied while checking event startup; pick another name` };
         }
@@ -6391,7 +6179,7 @@ export class Manager {
       // launch. Minting it inside `runtime.spawn` (as it used to be) put the processes on disk
       // before anything recorded how to address them, so a crash in that window left a live seat
       // outside every manager and the successor retired the slot over it.
-      const custody = this.reserveCustody(runtime);
+      const custody = this.seatCustody.reserveCustody(runtime);
       // ACCEPT SEAM (spawn-as-action): the incarnation identity is minted and NOTHING has
       // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
@@ -6489,7 +6277,7 @@ export class Manager {
           lifecycleUid,
           enrollmentCaller: authenticatedCaller ? { owner: authenticatedCaller.owner, actor: authenticatedCaller.actor } : undefined,
           delegatedIntent: opts.delegatedIntent,
-          ...(opts.served !== undefined ? { spawnRequest: this.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
+          ...(opts.served !== undefined ? { spawnRequest: this.userProvision.servedSpawnRequest(opts.served, authenticatedCaller) } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local
           // step runs, so no later failure, its refusal included, releases a lifecycle that only that
           // user's retirement intent retires.
@@ -6652,7 +6440,7 @@ export class Manager {
       let spec: LaunchSpec | undefined;
       let handle: AgentHandle;
       if (runtime.spawnDelegated) {
-        const handoff = this.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
+        const handoff = this.userProvision.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
         if (this.delegatedLaunched.has(lifecycleUid))
           throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
@@ -6661,7 +6449,7 @@ export class Manager {
           { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
-        this.watchConnectorHolder(handle, holder);
+        watchConnectorHolder(handle, holder);
       } else {
         if (carried) {
           seatHome = join(this.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
@@ -6671,7 +6459,7 @@ export class Manager {
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
-        handle = await this.spawnCustodied(runtime, name, spec, cwd, custody);
+        handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)
         throw new Error(`once: runtime "${handle.kind}" cannot prove the seat's exit, which is what ends its task when the seat goes first`);
@@ -6766,8 +6554,7 @@ export class Manager {
           await casStaticSlot(t, { ...slot.row, phase: "active", ...(handle.reference ? { runtime: handle.reference } : {}) }, slot.revision);
         });
       }
-      this.agents.set(name, managed);
-      this.namesCapacity.placed(name);
+      this.place(name, managed);
       if (managed.once) this.watchOnceExit(managed);
       // The live slot now owns teardown — freeSlot deprovisions this identity on exit — so the
       // orphan-rollback in `finally` no longer applies to it.
@@ -6799,13 +6586,12 @@ export class Manager {
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       if (!readiness.ok) {
         this.watchExit(managed);
-        if (managed.launch.carried) void this.refuseLateCarriedFork(managed, readinessTimeoutMs);
+        if (managed.launch.carried) void this.sessionRecovery.refuseLateCarriedFork(managed, readinessTimeoutMs);
         // A once seat is never left running with nothing to do, and its stop does not wait on the
         // spawn's terminal, whose write can stall. The spawn keeps that terminal: the stop lets go
         // of the spawn goal first. Its task was never served and is cancelled with the verdict.
         if (managed.once) {
-          this.agentGoals.delete(managed.name);
-          this.stopOnceSeat(managed, "readiness-timeout");
+          this.endOnceBeforeServe(managed, "readiness-timeout");
         }
         await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });
         return { ok: false, error: readiness.detail };
@@ -6820,9 +6606,7 @@ export class Manager {
           const watch = { ready: "opened its input screen without the prompt", failed: "failed", exited: "saw the seat exit", pending: "had not ended" }[startup];
           const error = `${name} joined, but ${connector.onceNeedsConfirmed}: its startup watch ${watch}, so it cannot take a once task`;
           this.watchExit(managed);
-          this.agentGoals.delete(managed.name);
-          managed.once!.stopReason ??= "launch-failed";
-          this.stopOnceSeat(managed, "launch-failed");
+          this.endOnceBeforeServe(managed, "launch-failed", "launch-failed");
           await hooks?.onOutcome?.({ kind: "failed", data: { error } });
           return { ok: false, error };
         }
@@ -6839,11 +6623,10 @@ export class Manager {
         }
       }
       if (managed.launch.carried) {
-        const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
+        const refused = await this.sessionRecovery.refuseCarriedFork(managed, readinessTimeoutMs);
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
-          this.stopHandle(managed, false, "carried-fork-refused");
-          this.trackStoppedHandle(managed, true, "carried-fork-refused");
+          this.stopAndTrack(managed, "carried-fork-refused");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
           return { ok: false, error: refused };
         }
@@ -6851,22 +6634,21 @@ export class Manager {
       if (managed.restart) {
         if (connector.supportsSessionContinuation) {
           try {
-            await this.armSessionRecovery(managed);
+            await this.sessionRecovery.armSessionRecovery(managed);
             // The capability flags are only a claim. An exact seat is recorded once the connector
             // has proved its session over its authenticated control endpoint, never before.
             if (exact && !managed.restart.armed)
               throw new Error("continuity: exact needs the connector to prove its session over an authenticated control endpoint, and it supplied none");
-            managed.launch.sessionId = this.readManagedSession(managed);
+            managed.launch.sessionId = this.sessionRecovery.readManagedSession(managed);
             if (reopenSession !== undefined && managed.launch.sessionId !== reopenSession)
               throw new Error(`continuity: exact asked for session ${reopenSession}, the connector bound ${managed.launch.sessionId}`);
             if (exact) {
               managed.continuity = { space: this.space, name, connector: agent, cwd };
-              this.recordContinuity(managed, managed.launch.sessionId);
+              this.sessionRecovery.recordContinuity(managed, managed.launch.sessionId);
             }
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
-            this.stopHandle(managed, false, "session-bind-failed");
-            this.trackStoppedHandle(managed, true, "session-bind-failed");
+            this.stopAndTrack(managed, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -6875,11 +6657,10 @@ export class Manager {
         }
         if (managed.restart.policy) {
           try {
-            this.recordSeat(managed);
+            this.seatCustody.recordSeat(managed);
           } catch (error) {
             const detail = `${managed.name} joined, but supervise cannot cover a manager restart for it: ${rejectionText(error)}`;
-            this.stopHandle(managed, false, "supervise-record-failed");
-            this.trackStoppedHandle(managed, true, "supervise-record-failed");
+            this.stopAndTrack(managed, "supervise-record-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -6887,7 +6668,7 @@ export class Manager {
       }
       // An unsupervised seat a successor could adopt keeps a record too; one that cannot be written
       // costs only that adoption, so the spawn stands and the line says so.
-      if (!managed.restart?.policy) this.refreshSeatRecord(managed);
+      if (!managed.restart?.policy) this.seatCustody.refreshSeatRecord(managed);
       this.watchExit(managed);
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
@@ -6907,9 +6688,7 @@ export class Manager {
       const committed = await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);
       else if (onceTask) {
-        this.agentGoals.delete(managed.name);
-        managed.once!.stopReason ??= "launch-failed";
-        this.stopOnceSeat(managed, "launch-failed");
+        this.endOnceBeforeServe(managed, "launch-failed", "launch-failed");
       }
       return { ok: true, data: okData };
     } catch (e) {
@@ -7340,6 +7119,7 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
+      await this.refreshUnavailableConnectors(connector.name, true);
       const harness = this.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
@@ -7864,58 +7644,13 @@ export class Manager {
   private occupancyText(o: Occupancy): string { return this.namesCapacity.occupancyText(o); }
   private capacityRefusal(o: Occupancy): string { return this.namesCapacity.capacityRefusal(o); }
 
-  /**
-   * The owner a launch belongs to, read ONCE so the per-owner ceiling, the agent's addressing
-   * triple and the user-mode provisioner cannot charge three different owners for one seat. A
-   * static or open mesh has one owner by construction; a user-auth mesh takes the spec's owner,
-   * else the owner of the principal that asked, which is what {@link provisionUserAgent} resolves
-   * from the same two values (it refuses outright where this falls back, so the two never disagree
-   * on an admitted launch).
-   */
-  private launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string {
-    if (!this.userMode) return DEV_OWNER;
-    const asked = spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner;
-    return opts.owner ?? (asked?.startsWith("u_") ? asked : DEV_OWNER);
-  }
-
-  /** The owner of a seat this manager supervises, by the same rule {@link launchOwner} admitted it
-   *  under: a user-mode seat records its derived owner, and every other seat is the mesh's one owner. */
-  private seatOwner(a: Pick<ManagedAgent, "userOwner">): string {
-    return a.userOwner ?? DEV_OWNER;
-  }
-
-  /**
-   * Live seats this manager holds for one owner: the seats it supervises, plus the launches it has
-   * reserved for that owner and not yet placed. It deliberately does NOT count cooling stamps — a
-   * cooling slot is a seat that already freed, and the recycle floor it holds is a global
-   * fork-bomb bound (P4c), not one tenant's occupancy. Mirrors {@link occupancy}'s reserved rule,
-   * so a reservation stops being counted twice the moment its seat reaches `agents`.
-   */
-  private ownerSeats(owner: string): number {
-    let seats = 0;
-    for (const a of this.agents.values()) if (this.seatOwner(a) === owner) seats++;
-    seats += this.namesCapacity.ownerReservations(owner);
-    return seats;
-  }
-
-  /**
-   * The per-owner ceiling, consulted at accept: `undefined` admits the launch, and a refusal
-   * carries the owner's count and the cap so a caller can render a remedy and a script can decide
-   * without re-reading prose. Distinct from {@link capacityRefusal}, which bounds the HOST: that
-   * one frees when anyone stops a seat or a cooling slot expires, this one frees only when THIS
-   * owner stops one of its own, or the operator raises the cap, so they cannot share a sentence.
-   */
-  private seatCapRefusal(owner: string): EpEnvelopeError | undefined {
-    const cap = this.seatCap;
-    if (cap === SEAT_CAP_UNLIMITED) return undefined;
-    const seats = this.ownerSeats(owner);
-    if (seats < cap) return undefined;
-    return seatCapRefused(
-      `owner ${owner} holds ${seats} of the ${cap} seat${cap === 1 ? "" : "s"} manager ${this.managerInstanceId} admits per owner; ` +
-        `stop one of that owner's seats, or ask the operator who runs this manager for a higher seat cap`,
-      { owner, seats, cap },
-    );
-  }
+  /** The owner a launch belongs to: {@link NamesCapacity.launchOwner}. */
+  private launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string { return this.namesCapacity.launchOwner(opts, spawner); }
+  /** Live seats this manager holds for one owner: {@link NamesCapacity.ownerSeats}. */
+  // @ts-expect-error TS6133: the seat-cap smoke reads this private count through a structural view.
+  private ownerSeats(owner: string): number { return this.namesCapacity.ownerSeats(owner); }
+  /** The per-owner ceiling at accept: {@link NamesCapacity.seatCapRefusal}. */
+  private seatCapRefusal(owner: string): EpEnvelopeError | undefined { return this.namesCapacity.seatCapRefusal(owner); }
 
   // @ts-expect-error TS6133: retained fixtures call this private adapter through structural views.
   private async opStop(args: Record<string, unknown>, caller: string, admin: boolean): Promise<ControlReply> {
@@ -8159,7 +7894,8 @@ export class Manager {
   /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
-  private managerStatusData(ownerFilter: string | undefined): ManagerStatus {
+  private managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
+    this.refreshUnavailableConnectors(undefined, setupClaude);
     return {
       instanceId: this.managerInstanceId,
       lifecycleUid: this.managerLifecycleUid,
@@ -8955,16 +8691,9 @@ export class Manager {
     seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string;
   }): Promise<{ ref: GoalRef; deadlineAt?: number }> { return this.turnRelay.acceptOnceTurn(o); }
 
-  /** How a once seat's startup watch ended, waited for until {@link STARTUP_OUTCOME_MS} after its
-   *  launch or the readiness window, whichever is longer. A watch that has not ended by then, or a
-   *  seat being stopped, answers what the handle reports at that moment. */
-  private async awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number): Promise<StartupOutcome> {
-    const until = launchedAt + Math.max(readinessTimeoutMs, STARTUP_OUTCOME_MS);
-    for (;;) {
-      const outcome = a.handle.startupOutcome?.() ?? "pending";
-      if (outcome !== "pending" || a.terminalizing || this.leaseStopping || Date.now() >= until) return outcome;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
+  /** How a once seat's startup watch ended: {@link awaitStartupOutcome}. */
+  private awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readinessTimeoutMs: number): Promise<StartupOutcome> {
+    return awaitStartupOutcome(a, launchedAt, readinessTimeoutMs, () => this.leaseStopping);
   }
 
   /** Serve a once task from now on: its spawn's succeeded terminal is written. */
@@ -8989,6 +8718,27 @@ export class Manager {
     this.stopHandle(a, true, cause);
     this.trackStoppedHandle(a, false, cause);
     void this.cancelAgentGoal(a.name, "graceful");
+  }
+
+  /** Stop a seat this spawn just placed and track its exit: the stop first, so the terminalizing
+   *  latch is set before anything awaits, then the exit tracking. Both are synchronous. */
+  private stopAndTrack(a: ManagedAgent, cause: FreeSlotCause): void {
+    this.stopHandle(a, false, cause);
+    this.trackStoppedHandle(a, true, cause);
+  }
+
+  /** End a once seat before its task is served: let go of the spawn goal, record why it stopped if
+   *  `stopReason` is given and none is recorded yet, then stop the seat. Synchronous, in that order. */
+  private endOnceBeforeServe(a: ManagedAgent, reason: string, stopReason?: string): void {
+    this.agentGoals.delete(a.name);
+    if (stopReason !== undefined) a.once!.stopReason ??= stopReason;
+    this.stopOnceSeat(a, reason);
+  }
+
+  /** Put a launched seat in the agent table, then mark its reserved name placed. */
+  private place(name: string, a: ManagedAgent): void {
+    this.agents.set(name, a);
+    this.namesCapacity.placed(name);
   }
 
   /** The once task's exit hook, on the handle the seat was launched with: whichever path ends the
@@ -9070,18 +8820,8 @@ export class Manager {
     return this.seatCustody.spawnCustodied(runtime, name, spec, cwd, reserved);
   }
 
-  /** Keep launch provenance independent of status and runtime wire contracts. */
-  private watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
-    if (!holder.active) return;
-    holder.launched(handle.pid);
-    // A released handle may outlive its Manager. Only an authoritative exit removes
-    // identity-less holders, never a release or a failed stop request.
-    watchProvedExit(handle, () => holder.ended(), () => true);
-  }
-
-  private recordSeat(a: ManagedAgent): void {
-    return this.seatCustody.recordSeat(a);
-  }
+  /** Keep launch provenance independent of status and runtime wire contracts: {@link watchConnectorHolder}. */
+  private watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void { watchConnectorHolder(handle, holder); }
 
   private refreshSeatRecord(a: ManagedAgent): void {
     return this.seatCustody.refreshSeatRecord(a);

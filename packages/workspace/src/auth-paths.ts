@@ -841,7 +841,7 @@ function readAuthRecord<T>(f: string, what: string): T | undefined {
   try {
     return JSON.parse(readFileSync(f, "utf8")) as T;
   } catch (e) {
-    throw new Error(`${f} does not parse as ${what} (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it deliberately`);
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `${f} does not parse as ${what}`, { target: { path: f }, remedy: `restore ${f} from backup; do not remove other account records, then re-run \`cotal up\`` });
   }
 }
 
@@ -1293,7 +1293,7 @@ function parseStoreRecord<T>(raw: string, key: string, what: string): T {
   try {
     return JSON.parse(raw) as T;
   } catch {
-    throw new Error(`the ${what} (${key}) is not valid JSON - repair or replace the store value`);
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the ${what} (${key}) is not valid JSON - repair or replace the store value`, { target: { key }, remedy: `restore the ${key} trust record from backup; do not remove other account records, then re-run \`cotal up\`` });
   }
 }
 
@@ -1355,8 +1355,9 @@ export async function getSpaceAuth(store: SecretStore, space: string): Promise<S
   try {
     return composeSpaceAuth(broker, account);
   } catch {
-    throw new Error(
+    throw new CommandFailure("refused", "SCHEMA_INVALID",
       `the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - the store values are corrupt, mismatched, or outside one broker/account trust chain; repair or replace them`,
+      { target: { keys: [BROKER_AUTH_KEY, accountKey], space }, remedy: `restore the ${BROKER_AUTH_KEY} and ${accountKey} trust records from a matching backup; do not remove other account records, then re-run \`cotal up\`` },
     );
   }
 }

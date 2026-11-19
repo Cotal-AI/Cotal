@@ -143,10 +143,12 @@ mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the
 `doctor auth --space <space>` to inspect their state and the guidance for each file, and the
 space's root to run it in, since `doctor auth` reads the root it runs in.
 `--replace` takes no `--out`. An exported file stays outside
-managed `.cotal` and workstation state. Its path, label, profile and public key, without the
+managed `.cotal` and workstation state. Its path, label, profile, public key and whether `--provision` ran, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
-and identities refuse. New outputs use create-only publication. The output's directories follow
+and identities refuse. New outputs use create-only publication. Invalid `--allow-subscribe` or
+`--allow-publish` channel patterns refuse before output folders are created, naming the flag, the
+channel and a corrected example. The output's directories follow
 the [`space create`](cli-selection.mdx#selecting-a-space) path rule, which also accepts a root-owned sticky directory
 such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather than weakening it.
 A credential is never written through a symbolic link: a link among the output's folders refuses
@@ -478,13 +480,18 @@ again with the same grants. One whose key was revoked, or that an earlier space 
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
 refuses a revoked one. For an agent file, that mint names the file's read and post channels and its
 role with `--allow-subscribe`, `--allow-publish` and `--role`, since a new key holds only the grants
-its mint names.
+its mint names. When the exported agent file was minted with `--provision`, both repair commands include `--provision` so the new lifecycle gets its inbox.
 A run with no findings says so in its heading only when nothing else is printed. While an exported
 file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
 names each, such as `2 exported credential files need attention`. The exit code stays 0.
 Missing local signing trust is not inferred to mean an open or healthy mesh. An unreadable renewal
 record prevents a complete healthy verdict. Locally ordered older incarnation files are labeled as
 file observations, never proof of a live successor or permission to delete or respawn an agent.
+An unreadable trust record names its file and the restore step without directing removal of another
+account record. A corrupt system credential stays in the per-file table with its rotation guidance,
+so read-only diagnosis still reports the other credentials. An unreadable renewal record names its
+backup restore step and the manager that records the next renewal. It is never replaced with an
+inferred broker acceptance.
 
 
 ### Supported repair

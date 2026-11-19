@@ -496,9 +496,9 @@ A copied or moved project folder keeps a stack journal that names the folder it 
 --root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
 this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
-with the copied store. It also moves the recorded store identity path, keeping its directory pins.
-A renamed store therefore gives no replacement warning before startup, while a replaced or missing
-store still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+with the copied store. When that store directory is present under this folder, it refreshes the recorded store identity from
+it, so a moved or copied store gives no replacement warning before startup, while a missing store or a
+replacement made after adoption still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
 link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
 that runs from there, when this machine records an instance of that stack, because the folder was
 then moved on this machine and moves back, and when the space is prepared or registered on this
@@ -1139,6 +1139,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
+  An unreadable renewal record or a recorded adoption refusal makes delivery `refused`, even when
+  its responder is bound. Bare status reports the same finding and exits partial rather than healthy.
 - **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
   An installed dashboard with no PID record or unsettled owned instance is `not-started`, which does not fail the check.
   A dead PID with a stale record is still `absent` and exits `1`.
@@ -1158,8 +1160,24 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
+  For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the
+  recorded authentication requirement. An unauthenticated substitute for a static-auth broker
+  is not reported as serving. When the address and process identity match this space's running
+  local broker, missing JetStream does not trigger the substitute-broker remedy. A request that
+  fails after the broker disables JetStream keeps its store write diagnosis and history-preserving repair.
+
+When a stopped local broker's address accepts a connection without a NATS greeting, `status`
+and read commands name the occupied address and recommend stopping that listener or starting
+on another port. They keep the space's registration.
+
+When `--server` matches several registered spaces, add `--space <name>` to choose one.
+Selecting a default with `cotal use <name>` applies only after removing `--server`.
+`whoami` recognizes equivalent registered URL spellings, including a trailing slash or
+scheme case, without treating another transport as the same registered address.
 
 An unreadable component PID file is `refused`, and its row names the file path and read error.
+A malformed PID file is not a stopped process. Bare status names the uncertain record and exits
+partial. An unreadable mesh registry record produces a `target refused` component row and exit 3.
 A missing or empty PID file still means no local process record.
 PID records with creation pins are checked against the live process identity. A reused PID
 is stale, not running, and cannot keep a dead delivery daemon's ready lease bound. Unknown or

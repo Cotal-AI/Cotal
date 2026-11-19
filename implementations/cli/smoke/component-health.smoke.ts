@@ -53,7 +53,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -648,8 +648,8 @@ try {
   });
   const deliveryNotReady = cli("status", "--components", "--space", SPACE, "--server", server);
   const deliveryNotReadyText = `${deliveryNotReady.stdout}${deliveryNotReady.stderr}`;
-  check("delivery ready lease and renewal adoption report independently from its own surfaces",
-    deliveryNotReady.status === 2 && /delivery\s+not-serving/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
+  check("a recorded renewal refusal wins the verdict while independent delivery readiness stays visible",
+    deliveryNotReady.status === 3 && /delivery\s+refused/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
   await stop(delivery);
   delivery = undefined;
   rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
@@ -733,16 +733,26 @@ try {
     reusedDelivery.status === 1 && /delivery\s+absent.*stale pidfile/.test(reusedDelivery.stdout) && !/Delivery responder:\s+● bound/.test(reusedDelivery.stdout), `${reusedDelivery.stdout}${reusedDelivery.stderr}`);
   await reusePid(webRoot, WEB_SPACE, MANAGER_PIDFILE);
   await reusePid(webRoot, WEB_SPACE, "nats.pid");
+  const reusedPids = replacements.map((child) => ({ pid: child.pid!, token: defaultStartToken(child.pid!) }));
   const reusedLegacy = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
   check("all reused legacy PIDs read absent, never running or serving",
     reusedLegacy.status === 1 && ["manager", "delivery", "broker"].every((name) => new RegExp(`${name}\\s+absent`).test(reusedLegacy.stdout)) && !/\b(?:Manager|Delivery|Broker)\s+running/.test(reusedLegacy.stdout), `${reusedLegacy.stdout}${reusedLegacy.stderr}`);
-  const refusedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
-  check("down refuses reused legacy records without stopping unrelated processes",
-    refusedDown.status !== 0 && refusedDown.stderr.includes("pid has been reused") && replacements.every((child) => child.exitCode === null && child.signalCode === null), `${refusedDown.stdout}${refusedDown.stderr}`);
-  for (const child of replacements) await stop(child);
   const legacyDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = legacyDown.status !== 0;
-  check("down clears the stale legacy records after the replacement processes exit", !webStack, `${legacyDown.stdout}${legacyDown.stderr}`);
+  await sleep(100); // Allow ChildProcess exit notifications from the synchronous CLI run to arrive.
+  check("down clears each reused legacy PID and pin while the unrelated processes are still running",
+    legacyDown.status === 0 && replacements.every((child) => child.exitCode === null && child.signalCode === null) &&
+    reusedPids.every(({ pid, token }) => token !== undefined && defaultStartToken(pid) === token) &&
+    [MANAGER_PIDFILE, DELIVERY_PIDFILE, "nats.pid"].every((template) => {
+      const path = canonicalLocalProcessPath(template, { root: webRoot, space: WEB_SPACE });
+      return !existsSync(path) && !existsSync(`${path}.identity`);
+    }), `${legacyDown.stdout}${legacyDown.stderr}`);
+  check("down reports stale cleanup, not a stop of an unrelated process",
+    reusedPids.every(({ pid }) => legacyDown.stderr.includes(`pid ${pid} was reused by another process`) && !legacyDown.stdout.includes(`(pid ${pid})`)), `${legacyDown.stdout}${legacyDown.stderr}`);
+  for (const child of replacements) await stop(child);
+  const repeatedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = repeatedDown.status !== 0;
+  check("down is still successful after the replacement processes exit", !webStack, `${repeatedDown.stdout}${repeatedDown.stderr}`);
   const restartController = cliIn(controllerRoot, ["up"], 120_000);
   controllerStack = restartController.status === 0;
   check("restart the controller with all components", controllerStack, `${restartController.stdout}${restartController.stderr}`);

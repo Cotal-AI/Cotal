@@ -4,8 +4,7 @@
  * CLI: --event event.json --context context.json (context includes eventName).
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMainEntry } from "./main-entry.mjs";
 
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const platforms = ["linux", "darwin", "win32"];
@@ -301,7 +300,7 @@ export function verifyResults(expected, results, { knownRefusals = [] } = {}) {
   return { acceptance, upgradeAcceptance: acceptance && acceptedRefusals.length === 0, requiredCount, passed, knownRefusals: acceptedRefusals, excluded, failures };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainEntry(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
     requireValue(args.length === 2 || args.length === 4, "usage: --event file [--context file]");

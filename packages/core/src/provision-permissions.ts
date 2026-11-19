@@ -1,3 +1,4 @@
+import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
@@ -40,6 +41,7 @@ export type Profile =
   | "delivery"
   | "membership-rw"
   // The scoped CLI-surface profiles.
+  | "space-quiescence-reader" // host-only one-shot idle-work census
   | "probe" // connect-only liveness/auth preflight
   | "channel-writer" // channel-registry value-writes (channels set/default, spawn -f seed)
   | "channel-purger" // channel-writer + STREAM.PURGE.CHAT (web channel-delete)
@@ -262,6 +264,7 @@ export function permissionsFor(
       throw new Error('permissionsFor: "remote-manager" requires opts.remoteManager ({instanceId, owner} of the authorized manager lifecycle)');
     return remoteManagerPermissions(space, pr, opts.remoteManager);
   }
+  if (profile === "space-quiescence-reader") return spaceQuiescenceReaderGrants(space, pr.connId);
   if (profile === "issuer") return issuerPermissions(space, pr);
   if (profile === "registry-reader") return registryReaderPermissions(space, pr);
   if (profile === "run-admitter") {
@@ -713,12 +716,15 @@ export function permissionsFor(
   const subChat = allowSubscribe.map((ch) => chatSubject(space, "*", "*", ch));
   const payloadReads = eventPayloadReadSubjects(space, pr.owner, allowSubscribe);
   if (opts.eventPayloads !== false) pubAllow.push(eventPayloadSubject(space, pr.owner, pr.actor));
+  const payloadReaders = Array.from({ length: HISTORY_READERS }, (_, i) => historyReaderConsumer(pr.readerId ?? pr.connId, i));
   pubAllow.push(
     `$JS.API.STREAM.INFO.${PAYLOAD}`,
-    ...payloadReads.map(subject => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${chatHistD}.${subject}`),
-    `$JS.API.CONSUMER.INFO.${PAYLOAD}.${chatHistD}`,
-    `$JS.API.CONSUMER.MSG.NEXT.${PAYLOAD}.${chatHistD}`,
-    `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${chatHistD}`,
+    ...payloadReaders.flatMap(name => [
+      ...payloadReads.map(subject => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${name}.${subject}`),
+      `$JS.API.CONSUMER.INFO.${PAYLOAD}.${name}`,
+      `$JS.API.CONSUMER.MSG.NEXT.${PAYLOAD}.${name}`,
+      `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${name}`,
+    ]),
   );
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.

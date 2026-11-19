@@ -52,6 +52,6 @@ export function assertChannelServerDeclared(name: string, cwd: string): void {
   throw new Error(
     `claude connector: Claude Code binds the server:${name} wake channel only to a server its own configuration declares, ` +
       `and neither the user config nor ${join(cwd, ".mcp.json")} declares one named ${name}; ` +
-      "run `cotal setup` or `cotal update`, which registers it at user scope",
+      "run `cotal setup` on a space host or `cotal daemon setup --space <space>` on a daemon-connected computer",
   );
 }

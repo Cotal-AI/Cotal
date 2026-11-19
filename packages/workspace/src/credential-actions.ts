@@ -1,7 +1,8 @@
 import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { spaceFlag, serverFlag } from "./flags.js";
+import { parseCommaList, spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag, SHOWN_VALUE_MAX } from "./output.js";
 import { presentationOf } from "./present.js";
+import { shellPath } from "./local-record-source.js";
 
 export const privateOutputFlag = { name: "out", type: "string", value: "<private-file>", description: "private output file; required for signer export and endpoint caller issuance", completion: "files" } as const satisfies FlagSpec;
 export const credentialMintFlags = [
@@ -68,6 +69,46 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   });
 }
 
+function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", entry: string, error: unknown): CommandFailure {
+  const shown = oneLine(boundedValue(entry, SHOWN_VALUE_MAX));
+  if (entry.startsWith("#")) {
+    const stripped = entry.replace(/^#+/, "");
+    let validStripped = false;
+    try { assertValidChannel(stripped); validStripped = [...stripped].length <= SHOWN_VALUE_MAX; } catch { validStripped = false; }
+    return new CommandFailure(
+      "refused",
+      "USAGE_INVALID",
+      `the ${flag} channel "${shown}" starts with "#", which is not part of a channel name`,
+      {
+        remedy: validStripped
+          ? `drop the leading "#", for example \`${flag} ${shellPath(stripped)}\``
+          : `pass channel names or patterns without a leading "#", such as \`${flag} general\` or \`${flag} 'team.>'\``,
+        selfContained: true,
+      },
+    );
+  }
+  const fixed = entry
+    .replace(/\.{2,}/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .split(".")
+    .map((seg, idx, arr) => (seg === "*" || (seg === ">" && idx === arr.length - 1) ? seg : seg.replace(/[^A-Za-z0-9_-]/gu, "_")))
+    .join(".");
+  let validFixed = false;
+  try { assertValidChannel(fixed); validFixed = [...fixed].length <= SHOWN_VALUE_MAX; } catch { validFixed = false; }
+  const reason = (error as Error).message.replace(/^invalid channel "[^"]*":\s*/, "");
+  return new CommandFailure(
+    "refused",
+    "USAGE_INVALID",
+    `the ${flag} channel "${shown}" is not a valid channel pattern: ${oneLine(boundedValue(reason, SHOWN_VALUE_MAX))}`,
+    {
+      remedy: validFixed
+        ? `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} ${shellPath(fixed)}\``
+        : `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} general\` or \`${flag} 'team.>'\``,
+      selfContained: true,
+    },
+  );
+}
+
 export function validateCredentialMintArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint needs one credential label");
@@ -96,6 +137,15 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   const profile = values.profile ?? "agent";
   if (!["agent", "observer", "admin"].includes(String(profile))) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint supports agent, observer or admin; internal service profiles are not exposed");
   if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision", "no-persona"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
+  for (const key of ["allow-subscribe", "allow-publish"] as const) {
+    const raw = values[key];
+    if (raw === undefined) continue;
+    if (typeof raw !== "string" || raw.length > 16384) throw new CommandFailure("refused", "USAGE_INVALID", `--${key} must be bounded text; no input coercion was used`);
+    for (const channel of parseCommaList(raw)) {
+      try { assertValidChannel(channel); }
+      catch (error) { throw channelPatternRefusal(`--${key}`, channel, error); }
+    }
+  }
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
   for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");

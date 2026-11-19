@@ -7,14 +7,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
 import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignalStop, abandonUnresolvedLaunch, pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords, resumableSignalStop, retainedStopMaySettle, retainedStopRequest, settleExitedInstance, settleRetainedNativeStop } from "./service-process.js";
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
-import type { StoreIdentity } from "./store-identity.js";
+import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -258,8 +258,8 @@ export function adoptionRefusal(root: string, found: { journal: StackJournal; re
 /** `space create --adopt`: rewrite, at `root`, the stack journal another folder recorded, as a copy
  *  from another machine or a folder moved after its stack stopped keeps it, so it names this root.
  *  It refuses as {@link stackAdoptionBlock} says. The adopted journal keeps the space, address, mode and
- *  broker inputs, with a store and its recorded identity path under the old root moved under this one,
- *  keeping the directory identity pins so a replacement still warns, and records an
+ *  broker inputs, with a store under the old root moved under this one and its directory identity
+ *  refreshed when present there so a later replacement or missing store still warns, and records an
  *  up refused before any member started, as a stack that never ran here. Returns the recorded root. */
 export function adoptStackJournal(root: string, space: string): string {
   const canonical = canonicalRoot(root), path = stackJournalPath(canonical);
@@ -271,14 +271,28 @@ export function adoptStackJournal(root: string, space: string): string {
     const block = stackAdoptionBlock(canonical, found.recordedRoot, space, found.journal.members);
     if (block) throw new CommandFailure("refused", "CONFLICT", `${block.message}; it was not adopted and nothing was written`, { target: { root: canonical, recordedRoot: found.recordedRoot, space }, remedy: block.remedy });
     const under = (path: string) => { const rest = relative(found.recordedRoot, path); return rest !== "" && !rest.startsWith("..") && !isAbsolute(rest) ? join(canonical, rest) : path; };
+    const storeDir = found.journal.broker ? under(found.journal.broker.storeDir) : undefined;
+    const adoptedStoreIdentity = (): StoreIdentity | undefined => {
+      const recorded = found.journal.broker?.storeIdentity;
+      if (!recorded || !storeDir) return undefined;
+      const rebased = under(recorded.path);
+      if (rebased !== recorded.path) {
+        try {
+          const current = readStoreIdentity(storeDir);
+          if (current.path === rebased) return current;
+        } catch { /* missing or unreadable store keeps the rebased pin so status diagnoses it */ }
+      }
+      return { ...recorded, path: rebased };
+    };
+    const storeIdentity = adoptedStoreIdentity();
     const now = new Date().toISOString();
     const next: StackJournal = {
       schemaVersion: 1, kind: "cotal-stack-controller", root: canonical, space, server: found.journal.server, mode: found.journal.mode,
       members: STACK_ROLES.map((role) => ({ role, definition: STACK_DEFINITION[role], instanceId: null, state: "not-attempted" })),
-      ...(found.journal.broker ? { broker: {
+      ...(found.journal.broker && storeDir ? { broker: {
         ...found.journal.broker,
-        storeDir: under(found.journal.broker.storeDir),
-        ...(found.journal.broker.storeIdentity ? { storeIdentity: { ...found.journal.broker.storeIdentity, path: under(found.journal.broker.storeIdentity.path) } } : {}),
+        storeDir,
+        ...(storeIdentity ? { storeIdentity } : {}),
       } } : {}),
       operation: { id: randomUUID(), kind: "up", phase: "refused", recordedAt: now, withAgents: false },
       updatedAt: now,
@@ -363,7 +377,7 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   const paths = maintenancePaths(root);
   const created = [paths.versionDir, paths.maintenanceDir, paths.cotalDir].filter((dir) => !existsSync(dir));
   let lock: MaintenanceLock;
-  try { lock = acquireMaintenanceLock(root, operation ? { operation } : {}); }
+  try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     let holder: number | undefined;
@@ -712,12 +726,24 @@ export function stackManagerStarting(root: string, space: string): boolean {
   } catch { return false; }
 }
 
-/** Whether this root records a controller stack for `space` with no live manager instance. False
- *  when it records none, or an unreadable one, so a remote or legacy mesh keeps its own answer. */
+function legacyStackManagerRecord(root: string, space: string): ProcessRecord | undefined {
+  const canonical = canonicalRoot(root);
+  const stackRoot = localStackRoot(space);
+  if (stackRoot === undefined || canonicalRoot(stackRoot) !== canonical) return undefined;
+  return readProcessRecord(localProcessPath(MANAGER_PIDFILE, { root: canonical, space }), commandIsCotalSupervisor, probeLiveness, readProcessCommand);
+}
+
+/** Whether this root records a local stack for `space` with no live manager process: a controller
+ *  stack with no running manager instance, or a default `cotal up` stack whose recorded manager PID is
+ *  dead. False when it records none or an unreadable one, so a remote mesh keeps its own answer. */
 export function stackManagerAbsent(root: string, space: string): boolean {
   try {
-    if (readStackJournal(root)?.journal.space !== space) return false;
-    return !serviceInstances(space, STACK_DEFINITION.manager).some((row) => observeServiceProcess(row.record.value) === "running");
+    const journal = readStackJournal(root)?.journal;
+    if (journal) {
+      if (journal.space !== space) return false;
+      return !serviceInstances(space, STACK_DEFINITION.manager).some((row) => observeServiceProcess(row.record.value) === "running");
+    }
+    return legacyStackManagerRecord(root, space)?.state === "dead";
   } catch { return false; }
 }
 
@@ -725,8 +751,13 @@ export function stackManagerAbsent(root: string, space: string): boolean {
  *  it. Undefined when the root records no stack for `space` or its records cannot be read. */
 export function runningStackManagerPid(root: string, space: string): number | undefined {
   try {
-    if (readStackJournal(root)?.journal.space !== space) return undefined;
-    return serviceInstances(space, STACK_DEFINITION.manager).find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid;
+    const journal = readStackJournal(root)?.journal;
+    if (journal) {
+      if (journal.space !== space) return undefined;
+      return serviceInstances(space, STACK_DEFINITION.manager).find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid;
+    }
+    const record = legacyStackManagerRecord(root, space);
+    return record?.state === "alive" ? record.pid : undefined;
   } catch { return undefined; }
 }
 
@@ -763,6 +794,8 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
  *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
 export function goneStackRoot(space: string): string | undefined {
   try {
+    const native = loadMeshes().find((entry) => entry.space === space && entry.origin === "up");
+    if (native && !existsSync(native.root)) return native.root;
     const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
     if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
     return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
@@ -890,10 +923,12 @@ export function stackMemberRecord(space: string, path: string): { definition: st
 }
 
 /** Remove the records under the root that front no process, `gone` and `reused` ones, and return
- *  them. Each is removed with its pin, only while its pidfile still reads as it did. */
+ *  them. Each is removed with its pin, only while its pidfile still reads as it did and the
+ *  process is still gone or reused. */
 export function removeStaleLocalRecords(root: string, space: string): LocalRecord[] {
   const stale = localRecords(root, space).filter((row) => row.state !== "live");
-  for (const row of stale) removePidPair(join(root, row.path), row.raw);
+  for (const row of stale)
+    if (!removePidPair(join(root, row.path), row.raw, "stale")) throw new Error(`${row.path} changed before stale record cleanup. Its record was kept.`);
   return stale;
 }
 

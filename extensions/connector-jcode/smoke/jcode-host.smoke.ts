@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -115,11 +115,15 @@ function managedHome(space: string, name: string): string {
   return join(root, ".cotal", "jcode", `${slug || "agent"}-${key}`);
 }
 
-function connectorLog(home: string): string {
+function connectorLogPath(home: string): string {
   const logs = join(home, "logs");
   const files = readdirSync(logs).filter((file) => /^connector-.*\.log$/.test(file));
   assert.equal(files.length, 1, `expected one connector log in ${logs}, found ${files.join(", ")}`);
-  return readFileSync(join(logs, files[0]!), "utf8");
+  return join(logs, files[0]!);
+}
+
+function connectorLog(home: string): string {
+  return readFileSync(connectorLogPath(home), "utf8");
 }
 
 type JcodeMcpEntry = { command: string; args: string[]; env: Record<string, string> };
@@ -335,8 +339,11 @@ try {
       ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
+      COTAL_MANAGER_INSTANCE: "j".repeat(30),
       COTAL_NAME: "jcodepeer",
       COTAL_ID: "jcodepeer",
+      COTAL_LIFECYCLE_UID: "k".repeat(30),
+      COTAL_HOME: join(root, "cotal-home"),
       COTAL_SERVERS: servers,
       COTAL_SUBSCRIBE: "team",
       COTAL_ALLOW_SUBSCRIBE: "team",
@@ -372,7 +379,27 @@ try {
   );
   const argv = entries().find((entry) => entry.ev === "argv") as { argv?: string[]; env?: Record<string, string> };
   check("host uses api-bridge with its private socket", argv.argv?.[0] === "api-bridge" && argv.argv?.[1] === "--api-socket", argv);
-  check("host scrubs Cotal material before launching Jcode", Object.keys(argv.env ?? {}).every((key) => !key.startsWith("COTAL_")), argv.env);
+  const allowedSeatCotal = new Set([
+    "COTAL_SPACE",
+    "COTAL_MANAGER_INSTANCE",
+    "COTAL_NAME",
+    "COTAL_ID",
+    "COTAL_LIFECYCLE_UID",
+    "COTAL_ACCEPTED_TOKEN",
+    "COTAL_HOME",
+  ]);
+  check(
+    "host scrubs Cotal material before launching Jcode while preserving seat attribution (#7594)",
+    Object.keys(argv.env ?? {}).filter((key) => key.startsWith("COTAL_")).every((key) => allowedSeatCotal.has(key)) &&
+      argv.env?.COTAL_SPACE === "jcodehost" &&
+      argv.env?.COTAL_MANAGER_INSTANCE === "j".repeat(30) &&
+      argv.env?.COTAL_NAME === "jcodepeer" &&
+      argv.env?.COTAL_ID === "jcodepeer" &&
+      argv.env?.COTAL_LIFECYCLE_UID === "k".repeat(30) &&
+      argv.env?.COTAL_ACCEPTED_TOKEN === undefined &&
+      argv.env?.COTAL_HOME === join(root, "cotal-home"),
+    argv.env,
+  );
   check("private JCODE_HOME is passed to the harness", Boolean(argv.env?.JCODE_HOME?.includes("/tmp/jc-") && argv.env?.JCODE_HOME?.endsWith("/home")), argv.env);
   check("host disables SDK symlinked credential inheritance", argv.env?.JCODE_HOME !== undefined && !Object.keys(argv.env ?? {}).some((key) => key === "COTAL_JCODE_HOME"), argv.env);
   // A seat that updates its own binary restarts its process tree, which drops the only connection
@@ -1405,9 +1432,10 @@ try {
     await Promise.race([once(failed, "exit"), sleep(20_000)]);
     const failedCode = failed.exitCode;
     await stopHostTree(failed, "SIGKILL");
-    const expected = `Jcode host startup failed (${modelCase.code})`;
-    const persisted = connectorLog(managedHome("jcodehost", modelCase.name));
-    check(`${modelCase.code} names the connector-owned refusal`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
+    const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
+    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${relative(root, logPath)}\n`;
+    const persisted = readFileSync(logPath, "utf8");
+    check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
     check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);
     check(`${modelCase.code} keeps downstream model text scrubbed`, !failedErr.includes(modelCanary) && !persisted.includes(modelCanary), { failedErr, persisted });
     const caseEntries = readFileSync(caseLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) as Array<{ ev?: string; frame?: { req?: string } }>;

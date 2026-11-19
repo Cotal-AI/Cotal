@@ -228,6 +228,14 @@ A command that connects to a static-auth
 space, such as `send` or `history`, is refused with `DEPENDENCY_UNAVAILABLE`, because the seed went
 with the folder, and its Next names the same `down`.
 
+A default `cotal up` stack also keeps its members' process creation pins in its local registration.
+When its project folder is gone, `status` and `space show` report that root as gone, and
+`cotal down --space <space> --yes` stops those exact members without needing the missing folder.
+A registration from an older start with no creation pins requires restoring the folder first.
+
+A controller stack reached from another Cotal home names its recorded launching `COTAL_HOME`.
+Run the command with that home rather than repeating a recovery stop under the wrong home.
+
 
 On Linux, a default stack started without `space create` also accepts `down --space <space> --yes`
 after its project folder is deleted. It finds this account's retained manager and delivery children
@@ -511,7 +519,8 @@ process start reported by the OS. Every stop path, including `down` for the brok
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
 that names a different start means the pid was reused. The local stop removes that stale pidfile
 and pin without signalling the unrelated process, and continues stopping later components. A
-controller stack's bare `down` clears the same stale records, as described above. A torn
+controller stack's bare `down` clears the same stale records, as described above. If a replacement
+with the same PID publishes a new creation pin during cleanup, `down` keeps the replacement record. A torn
 or unreadable pin also refuses. On macOS, the reader calls `sysctl` through a bundled Node-API
 binding for x64 or arm64 and records the process start in microseconds. A macOS pin that an earlier
 release wrote holds the `ps -o lstart` start date instead and is verified with that same reader. That
