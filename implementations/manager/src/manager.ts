@@ -1144,10 +1144,11 @@ export class Manager {
   private readonly onceWatched = new Set<string>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
-  /** Connector harness inventory. Available paths stay pinned; missing binaries are retried when
+  /** Connector harness inventory. Available paths stay pinned; unavailable rows are retried when
    * launch, model lookup or status asks, without stopping unrelated Manager work. */
   private connectorStatuses: ManagerConnectorStatus[] = [];
-  private connectorRequirements = new Map<string, readonly string[]>();
+  private connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
+  private claudeWakeRecheck?: Promise<void>;
   /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
   private bootNotes: string[] = [];
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
@@ -3846,7 +3847,7 @@ export class Manager {
    *  readiness reads the same status; the maintenance fence refuses every other command in both
    *  states. The read is counted in `lifecycleInFlight` like any admitted operation and released in
    *  `finally`, so a drain waits at most for one status snapshot; the membership gate still
-   *  applies. `preserving` and a stopping manager stay fenced. Status writes nothing. */
+   *  applies. `preserving` and a stopping manager stay fenced. */
   private async serveObservation<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
     const preserved = this.maintenanceState === "preserved" && !this.resumeRequired;
     const resumePending = this.maintenanceState === "active" && this.resumeRequired;
@@ -4102,7 +4103,12 @@ export class Manager {
       vitals: (ctx) => this.serveGated(ctx, () => measureManagerVitals()),
       // A remote Manager files every seat under its own owner, so only a user mesh's shared local
       // Manager narrows the count, and status never waits on a remote admin check.
-      status: (ctx) => this.serveObservation(ctx, async () => this.managerStatusData(this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false))),
+      status: (ctx) => this.serveObservation(ctx, async () => {
+        const ownerFilter = this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false);
+        // The daemon's status deadline is shorter than an install. Report the current inventory
+        // without waiting for the install, which has its own lifecycle admission below.
+        return this.managerStatusData(ownerFilter, !this.resumeRequired);
+      }),
       ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
@@ -5041,24 +5047,12 @@ export class Manager {
         eventPlane: connector.eventChannel !== undefined,
       }));
     }
-    this.connectorRequirements = new Map(declared.map(({ name, requires }) => [name, requires]));
-    for (const { name, requires, eventPlane, pkg } of declared) {
+    this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
+      requires, needsClaudeWake: !!this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
+    }]));
+    for (const { name, requires, eventPlane } of declared) {
       const { binaries, reason: missing } = resolveHarness(name, requires);
-      let reason = missing;
-      if (!reason && this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude) {
-        try {
-          const connector = await this.resolveConnector(name);
-          if (!connector.setup) throw new Error("Claude connector has no setup provider");
-          const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.expectedConnectorGeneration });
-          if (!provider.connector) throw new Error("Claude connector has no install action");
-          const cotal = bearerEntryArgv();
-          cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
-          await provider.connector.run({ cotal, machineHost: true });
-        } catch (error) {
-          const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
-          reason = `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
-        }
-      }
+      const reason = missing ?? (this.connectorRequirements.get(name)?.needsClaudeWake ? await this.prepareClaudeWake() : undefined);
       if (reason) {
         rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
@@ -5071,22 +5065,59 @@ export class Manager {
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
   }
 
-  /** Retry missing applications on the Manager's PATH without changing resolved available rows. */
-  private refreshUnavailableConnectors(name?: string): void {
+  /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
+  private async prepareClaudeWake(): Promise<string | undefined> {
+    try {
+      const connector = await this.resolveConnector("claude");
+      if (!connector.setup) throw new Error("Claude connector has no setup provider");
+      const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.expectedConnectorGeneration });
+      if (!provider.connector) throw new Error("Claude connector has no install action");
+      const cotal = bearerEntryArgv();
+      cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
+      await provider.connector.run({ cotal, machineHost: true });
+    } catch (error) {
+      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
+      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.machineSetupCommand}\` on this computer.`;
+    }
+  }
+
+  /** Retry unavailable applications without changing resolved available rows. Claude launches
+   *  join the status or launch that started wake setup, before any name or capacity is reserved. */
+  private refreshUnavailableConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
     const wasEnabled = this.classSpawnEnabled();
+    let pending: Promise<void> | undefined;
     for (const row of this.connectorStatuses) {
       if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
-      const requires = this.connectorRequirements.get(row.agent);
-      if (!requires) continue;
-      const { binaries, reason } = resolveHarness(row.agent, requires);
-      row.binaries = binaries;
-      if (reason) row.reason = reason;
-      else {
+      const requirements = this.connectorRequirements.get(row.agent);
+      if (!requirements) continue;
+      if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
+        pending = this.claudeWakeRecheck;
+        continue;
+      }
+      const { binaries, reason } = resolveHarness(row.agent, requirements.requires);
+      if (reason) {
+        row.binaries = binaries;
+        row.reason = reason;
+      } else if (requirements.needsClaudeWake) {
+        const release = setupClaude ? this.beginLifecycle(true) : undefined;
+        if (!release) continue;
+        pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
+          row.binaries = binaries;
+          if (failure) { row.reason = failure; return; }
+          const alreadyEnabled = this.classSpawnEnabled();
+          row.state = "available";
+          delete row.reason;
+          if (!alreadyEnabled) this.servePlane.enableClassSpawn();
+        }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
+        void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
+      } else {
+        row.binaries = binaries;
         row.state = "available";
         delete row.reason;
       }
     }
     if (!wasEnabled && this.classSpawnEnabled()) this.servePlane.enableClassSpawn();
+    return pending;
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed
@@ -5114,10 +5145,9 @@ export class Manager {
   /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
    *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
    *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
-   *  is there. Unavailable rows are checked again on PATH; available rows retain their resolved files.
+   *  is there. Callers recheck unavailable rows first; available rows retain their resolved files.
    *  A connector registered after boot has no inventory row and is checked on PATH now. */
   private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
-    this.refreshUnavailableConnectors(connector.name);
     const row = this.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };
@@ -5227,6 +5257,7 @@ export class Manager {
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
+      await this.refreshUnavailableConnectors(connector.name, true);
       const harness = this.launchHarness(connector);
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
@@ -5687,12 +5718,17 @@ export class Manager {
     if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
       return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
 
-    // Capacity check first (cheap, fail-fast). Everything from here to the reserve below is
-    // SYNCHRONOUS (existsSync / registry / accessSync / readFileSync — no await), so the gate stays
-    // atomic: the capacity snapshot and the reserve land in one tick (P4a/P4c), and two concurrent
-    // spawns can't overshoot the ceiling or pick the same name.
-    const occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
+    // Fail fast when full. If hosted Claude has to await wake setup, resample capacity after it.
+    // The final capacity check and the reserve below stay in the same tick or two concurrent
+    // spawns could overshoot the ceiling or pick the same name.
+    let occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
     if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
+    const recheck = this.refreshUnavailableConnectors(connector.name, true);
+    if (recheck) {
+      await recheck;
+      occupancy = this.namesCapacity.occupancy();
+      if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
+    }
 
     // Harness preflight before reserving a slot or minting — a missing `claude`/`opencode` binary
     // fails here with a clear name, not obscurely at process spawn. No fallback. All synchronous, so
@@ -7083,6 +7119,7 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
+      await this.refreshUnavailableConnectors(connector.name, true);
       const harness = this.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
@@ -7857,8 +7894,8 @@ export class Manager {
   /** The served manager-level health summary. Given an owner, `agentCount` counts only that owner's
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
-  private managerStatusData(ownerFilter: string | undefined): ManagerStatus {
-    this.refreshUnavailableConnectors();
+  private managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
+    this.refreshUnavailableConnectors(undefined, setupClaude);
     return {
       instanceId: this.managerInstanceId,
       lifecycleUid: this.managerLifecycleUid,

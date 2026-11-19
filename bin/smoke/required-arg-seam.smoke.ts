@@ -567,7 +567,8 @@ const SEAMS: Seam[] = [
   // 452/360 -> 457/365: run-host-live adds four connections (the interrupted driver, the reader,
   // the admitter and the fresh driver of the interrupted-activation cells) and run-command adds
   // one; each states `tls: false` for the suite's loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 457, untypecheckedSites: 365 },
+  // The idle-work observer adds one native connection and its suites add seven fixture calls.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 465, untypecheckedSites: 372 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

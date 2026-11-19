@@ -1,3 +1,4 @@
+import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
@@ -40,6 +41,7 @@ export type Profile =
   | "delivery"
   | "membership-rw"
   // The scoped CLI-surface profiles.
+  | "space-quiescence-reader" // host-only one-shot idle-work census
   | "probe" // connect-only liveness/auth preflight
   | "channel-writer" // channel-registry value-writes (channels set/default, spawn -f seed)
   | "channel-purger" // channel-writer + STREAM.PURGE.CHAT (web channel-delete)
@@ -262,6 +264,7 @@ export function permissionsFor(
       throw new Error('permissionsFor: "remote-manager" requires opts.remoteManager ({instanceId, owner} of the authorized manager lifecycle)');
     return remoteManagerPermissions(space, pr, opts.remoteManager);
   }
+  if (profile === "space-quiescence-reader") return spaceQuiescenceReaderGrants(space, pr.connId);
   if (profile === "issuer") return issuerPermissions(space, pr);
   if (profile === "registry-reader") return registryReaderPermissions(space, pr);
   if (profile === "run-admitter") {

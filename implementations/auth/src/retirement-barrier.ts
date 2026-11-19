@@ -161,7 +161,8 @@ function parseRetirementIntent(raw: Uint8Array, key: string, space: string): Ret
   return o as unknown as RetirementIntent;
 }
 
-async function readRetirementIntent(authKv: KV, opId: string, space: string): Promise<RetirementIntent | undefined> {
+/** Package-internal canonical intent read; observers bind the KV to leader reads. */
+export async function readRetirementIntent(authKv: KV, opId: string, space: string): Promise<RetirementIntent | undefined> {
   const key = stageIntentKey(opId);
   const entry = await authKv.get(key);
   if (!entry) return undefined;
