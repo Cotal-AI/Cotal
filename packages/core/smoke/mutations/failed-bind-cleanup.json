@@ -19,7 +19,7 @@
     },
     {
       "name": "a probe timeout collapses to unreachable again, so a TLS-required target's slow link reads as a trust failure (#851)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-dial.ts",
       "find": "  if (e instanceof TimeoutError) return { ok: false, reason: \"timeout\" };",
       "replace": "  if (e instanceof TimeoutError) return { ok: false, reason: \"unreachable\" };",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:preflight",
@@ -39,7 +39,7 @@
     },
     {
       "name": "probeConnect's plaintext gate reverts to handshake-only, so a slow greeting orphans the socket again (#2156)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-dial.ts",
       "find": "  const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;",
       "replace": "  const gate = tcpDialable;",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:probe-teardown",
