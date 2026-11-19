@@ -291,6 +291,11 @@ registered space, including when its broker does not answer. The refusal gives t
 as `--space` for that registration, including where to restart a stopped local space. Matching
 preserves the URL's transport scheme and TLS intent. If equivalent addresses name several
 registered spaces, pass `--space` to choose one.
+When no space is named or found for the current folder, an unmatched loopback host spelling
+can give a `TARGET_NOT_FOUND` refusal, exit 2, listing registrations with another loopback host
+at the same port and transport. `localhost`, `127.0.0.1` and `[::1]` can reach different listeners.
+The command does not connect on the strength of the hint. Use a listed address, or verify the
+requested broker and name its space with `--space <name>`.
 When an overriding `--server` requires auth but the selected space is recorded as open at another
 address, the refusal names both brokers. Its Next says to check the address or drop `--server`
 to reach the space at its recorded broker, not to start a new space in the current folder.
