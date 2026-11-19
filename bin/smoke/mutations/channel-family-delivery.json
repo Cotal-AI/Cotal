@@ -94,7 +94,7 @@
     },
     {
       "name": "an agent's join asks for a family row only when the space default is durable",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
       "replace": "    else if (effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
       "expectRed": "with a live default, joining team.x.> still asks for and gets its family row",
@@ -103,7 +103,7 @@
     },
     {
       "name": "an agent's leave closes a family row only when the space default is durable",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    if (this.authed && (isChannelFamily(channel) || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\")) {",
       "replace": "    if (this.authed && effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === \"durable\") {",
       "expectRed": "leaving team.x.> with a live default closes its family row",
@@ -121,7 +121,7 @@
     },
     {
       "name": "a * pattern join gives no reason it stays live only",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "    if (!family && !isConcreteChannel(channel))\n      reason = \"a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>\";\n    else if",
       "replace": "    if (false)\n      reason = \"\";\n    else if",
       "expectRed": "joining team.* says a * pattern stays live only",
