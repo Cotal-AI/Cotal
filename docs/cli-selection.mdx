@@ -71,10 +71,13 @@ whose stack ran and was stopped, and `unsettled` when its last `up` or `down` re
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
 `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
 a missing folder `(no longer exists)` and names `cotal space forget <space>` for it instead of
-`cotal up`. If you stop a stack and rename its project, run `space show <name>` in the renamed
-folder. It reads the matching journal and tells you how to move the folder back. After a completed
-`cotal down`, it also gives the exact `cotal space forget <name>` and
-`cotal space create <name> --adopt --root <dir>` commands for keeping the new location.
+`cotal up`. If you stop a stack and rename its project, run `cotal status` in the renamed folder.
+When the original path is gone and the retained stack is confirmed stopped, `cotal up` and
+`cotal status` show how to move the folder back or keep the new location. To keep the new location,
+run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
+commands, then run `cotal up` from that folder. Forget releases the stopped stack definitions and
+leaves the project data in place. `cotal space show <name>` also shows how to recover a stopped stack
+from its matching moved journal.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -520,17 +523,16 @@ If the original home's records were removed, the project's `cotal down --dry-run
 If another home still holds the records, use that home instead.
 
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
-`space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
---root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
+`space create <name>` there refuses `CONFLICT`, exit 2. `cotal status` lists the applicable recovery
+options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
 this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
 with the copied store. When that store directory is present under this folder, it refreshes the recorded store identity from
 it, so a moved or copied store gives no replacement warning before startup, while a missing store or a
 replacement made after adoption still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
-link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
-that runs from there, when this machine records an instance of that stack, because the folder was
-then moved on this machine and moves back, and when the space is prepared or registered on this
-machine, where its Next names `cotal space forget` first. A copy brought from another machine and a
+link, when the recorded folder still holds the journal, when this machine records an instance of
+that stack, or when the space is prepared or registered on this machine. For a confirmed stopped
+stack at a missing path, follow the forget and adopt commands shown by `cotal status`. A copy brought from another machine and a
 folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
 refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
 the stack. Without `--adopt`, nothing rewrites a journal.
