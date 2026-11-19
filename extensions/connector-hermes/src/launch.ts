@@ -17,10 +17,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
-import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
@@ -72,25 +71,17 @@ function processTree(pid: number): number[] {
   return tree;
 }
 
-/** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
- *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
- *  path from public identity the way the old `space`+`name` name let it. The token is what
- *  authenticates the socket (see bridge.ts); the path merely stops it being guessed at a glance. */
-function bridgeSocketPath(space: string, name: string, token: string): string {
-  const id = createHash("sha256")
-    .update(`${space}\0${name}\0${process.pid}\0${token}\0bridge`)
-    .digest("base64url")
-    .slice(0, 32);
-  const path = join(tmpdir(), `cotal-hermes-bridge-${id}.sock`);
+/** The bridge socket sits beside the control socket, in that socket's private per-launch directory,
+ *  so another user can create no name for it. Its first frame carries a token derived from the
+ *  launch's control key (see `bridgeToken` in bridge.ts). */
+function bridgeSocketPath(controlPath: string): string {
+  const path = join(dirname(controlPath), `${basename(controlPath, ".sock")}.bridge.sock`);
   const bytes = Buffer.byteLength(path);
   if (bytes > SUN_PATH_MAX_BYTES) {
-    const tail = `/cotal-hermes-bridge-${id}.sock`.length;
     throw new Error(
       `bridge socket path is ${bytes} bytes, over the ${SUN_PATH_MAX_BYTES}-byte sun_path limit on ` +
         `${process.platform}, so it cannot be bound and the kernel would report only EINVAL: ${path}. ` +
-        `The socket name is a fixed ${tail} bytes, so the temp root must be at most ` +
-        `${SUN_PATH_MAX_BYTES - tail} bytes — TMPDIR is ${Buffer.byteLength(tmpdir())} bytes ` +
-        `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
+        `TMPDIR is ${Buffer.byteLength(tmpdir())} bytes (${tmpdir()}). Point TMPDIR at a shorter directory.`,
     );
   }
   return path;
@@ -306,6 +297,10 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
   return JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as HermesFork;
 }
 
+/** The control socket's per-launch directory, once minted. Shutdown removes it after the gateway has
+ *  exited, and a launch that fails before then removes it on its way out. */
+const localArtifacts: string[] = [];
+
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
   if (!hasIdentity()) {
@@ -321,12 +316,12 @@ async function main(): Promise<void> {
   // Managed (default): a disposable profile under tmp, regenerated every launch and removed when the
   // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
   // which only this connector's plugin directory is written, and which is never removed.
+  const persistent = adopt ? undefined : hermesSeatHome(config.space, config.name);
+  const moved = persistent && moveLegacyHermesFork(config.space, config.name);
   const disposableHome = process.env.COTAL_HERMES_SEAT_HOME;
-  let managed = adopt ? undefined : disposableHome
+  const managed = persistent && disposableHome && !existsSync(join(persistent.home, HERMES_FORK_RECORD))
     ? { root: dirname(dirname(disposableHome)), home: disposableHome }
-    : hermesSeatHome(config.space, config.name);
-  const moved = managed && moveLegacyHermesFork(config.space, config.name);
-  if (moved) managed = hermesSeatHome(config.space, config.name);
+    : persistent;
   const home = adopt ?? managed!.home;
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
   if (adopt) setupAdoptedProfile(home, { persona });
@@ -349,46 +344,36 @@ async function main(): Promise<void> {
     log(`${fork.created ? "forked" : "continuing the fork of"} Hermes session ${fork.source}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} as ${fork.fork} (${fork.messages} messages, transcript sha256:${fork.transcriptSha256})`);
   }
 
+  // Fail loudly before we hand control to the gateway if the Hermes API line is wrong, and before the
+  // control endpoint is minted, since minting makes its socket directory.
+  if (!fork) assertHermesVersion();
+
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
+  // A managed launch has already registered the control directory and material with its watcher.
+  // A standalone launcher owns anything it creates here until the gateway drains.
   const suppliedControl = controlFromEnv();
-  const control = suppliedControl ?? controlEndpoint(config.space, config.name);
-  const bridgeSock = process.env.COTAL_BRIDGE_SOCKET ?? bridgeSocketPath(config.space, config.name, control.token);
+  const control = suppliedControl ?? controlEndpoint(config.space, config.name, localArtifacts);
+  const bridgeSock = bridgeSocketPath(control.path);
   const toolsFile = join(home, "cotal-tools.json");
-  // buildLaunch supplies a tracked carrier containing both mesh credentials and the control token.
-  // Reuse it so the launch's exit watcher owns the file and both sockets even after SIGKILL.
-  // Direct legacy invocations without a supplied endpoint still merge their material here.
-  // The gateway keeps the material pointer for later readers. Same-user descendants can open it
-  // deliberately, but do not inherit the credential or token as an environment value.
+  // The sidecar and gateway both read the same private file. The gateway inherits the path, not
+  // the key, though another process running as this user can still open the file deliberately.
   const inherited = process.env[LAUNCH_MATERIAL_ENV]?.trim();
-  const material = suppliedControl && inherited ? inherited : writeLaunchMaterial({
-    ...(inherited ? readLaunchMaterial(inherited) : {}),
-    controlToken: control.token,
-  });
+  let material = inherited;
+  if (!suppliedControl || !material) {
+    material = writeLaunchMaterial({
+      ...(inherited ? readLaunchMaterial(inherited) : {}),
+      controlKey: control.token,
+      controlVersion: control.version,
+    });
+    localArtifacts.push(dirname(material));
+    if (inherited) discardLaunchMaterial(inherited);
+  }
   process.env[LAUNCH_MATERIAL_ENV] = material;
-  // The inherited copy has been folded into the merged one and has no reader left. Leaving it on
-  // disk would mean this connector, alone among the five, keeps TWO files holding the same
-  // credential for the life of the seat, which is a second copy nobody asked for and a longer
-  // exposure than the carrier's own contract describes. Best-effort: the merged file is already in
-  // place, so a failure to unlink is untidy rather than unsafe.
-  // Same discard the sessions use, so the superseded copy's private directory goes with it instead
-  // of being left behind empty, and so this connector cannot grow its own idea of what is safe to
-  // delete.
-  if (inherited && inherited !== material) discardLaunchMaterial(inherited);
   process.env.COTAL_CONTROL_SOCKET = control.path;
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
 
-  process.once("exit", () => {
-    discardLaunchMaterial(material);
-    rmSync(control.path, { force: true });
-    rmSync(bridgeSock, { force: true });
-    if (managed && !existsSync(join(home, HERMES_FORK_RECORD)))
-      rmSync(managed.root, { recursive: true, force: true });
-  });
-
-  // Refuse an unsupported gateway before opening the bridge or publishing presence.
-  if (!fork) assertHermesVersion();
   const sidecar = startSidecar();
 
   // A managed gateway's temp files land inside the root a stop removes, not in the shared temp dir.
@@ -410,10 +395,11 @@ async function main(): Promise<void> {
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 
-  // Remove the managed root, but only once the gateway can no longer write into it: let it drain,
-  // kill its tree if it is still up, and wait for its exit. Removing earlier would let a draining
-  // gateway recreate part of the directory after it was deleted.
-  const removeManaged = async (root: string): Promise<void> => {
+  // Let the gateway drain after SIGTERM, kill its tree if it is still up, and wait for its exit.
+  // Every stop waits for this before it removes the managed root or the control socket's directory:
+  // removing either earlier would let a draining gateway write into a directory after it was deleted,
+  // or dial a socket path whose directory is gone.
+  const drainGateway = async (): Promise<void> => {
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       let timer: NodeJS.Timeout | undefined;
       const drained = await Promise.race([
@@ -422,7 +408,7 @@ async function main(): Promise<void> {
       ]);
       clearTimeout(timer);
       if (!drained) {
-        log(`gateway still running ${GATEWAY_DRAIN_MS}ms after SIGTERM; killing it before removing ${root}`);
+        log(`gateway still running ${GATEWAY_DRAIN_MS}ms after SIGTERM; killing it`);
         for (const pid of processTree(child.pid)) {
           try {
             process.kill(pid, "SIGKILL");
@@ -433,7 +419,6 @@ async function main(): Promise<void> {
         await gatewayExit;
       }
     }
-    rmSync(root, { recursive: true, force: true });
   };
 
   let shuttingDown = false;
@@ -450,9 +435,27 @@ async function main(): Promise<void> {
     const forked = managed && existsSync(join(home, HERMES_FORK_RECORD)) ? managed : undefined;
     if (forked) log(`keeping the managed profile ${forked.root}: it holds this seat's --resume fork`);
     const disposable = forked ? undefined : managed;
-    const [, removed] = await Promise.allSettled([sidecar.stop(), disposable && removeManaged(disposable.root)]);
-    if (removed.status === "rejected")
-      log(`could not remove the managed profile ${disposable!.root}, so it is left on disk: ${(removed.reason as Error).message}`);
+    const [, drained] = await Promise.allSettled([sidecar.stop(), drainGateway()]);
+    // Removal needs proof that the gateway is gone. Without it (the drain failed, say because `ps`
+    // did), the gateway may still be running and using both directories, so they stay and the log
+    // says where.
+    if (drained.status === "rejected") {
+      const left = [dirname(control.path), dirname(material), ...(disposable ? [disposable.root] : [])].join(", ");
+      log(`could not prove the gateway exited (${String((drained.reason as Error).message).replace(/\s+/g, " ").trim()}), so ${left} is left on disk; remove it once the gateway has exited`);
+      process.exit(code);
+    }
+    if (disposable) {
+      try {
+        rmSync(disposable.root, { recursive: true, force: true });
+      } catch (e) {
+        log(`could not remove the managed profile ${disposable.root}, so it is left on disk: ${(e as Error).message}`);
+      }
+    }
+    try {
+      discardLaunchArtifacts(localArtifacts);
+    } catch (e) {
+      log(`could not remove the local launch artifacts, so they are left on disk: ${(e as Error).message}`);
+    }
     process.exit(code);
   };
 
@@ -468,6 +471,11 @@ async function main(): Promise<void> {
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   main().catch((e) => {
     log(e instanceof LaunchRefused ? `refused: ${e.message}` : `fatal: ${(e as Error).stack ?? String(e)}`);
+    try {
+      discardLaunchArtifacts(localArtifacts);
+    } catch (err) {
+      log(`could not remove the local launch artifacts, so they are left on disk: ${(err as Error).message}`);
+    }
     process.exit(1);
   });
 }

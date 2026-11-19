@@ -1,10 +1,10 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { agentFilePath, connectorServers, discardLaunchArtifacts, loadCotalConfig, parseAgentFileSource, parseShareSelection, registry, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
-import { materializeExtension, preflightRuntime } from "../ext-loader.js";
+import { agentFilePath, connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
+import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
 import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
@@ -28,8 +28,7 @@ function unknownHarness(harness: string | undefined, explicit: boolean, space: s
   }
 }
 
-/** An offline preview never signs in to a broker or allocates an agent. A direct preview imports
- * its connector to validate the launch without creating launch files. It
+/** An offline preview never signs in to a broker or allocates an agent. It
  *  reads whether the recorded brokers answer only where the launch reads it to pick its space, so the
  *  two name the same one. */
 export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
@@ -99,8 +98,10 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     } else if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       const missing = missingPersona(site, ref, from, path);
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { ...target, path }, ...(missing.remedy ? { remedy: missing.remedy } : {}) });
+    } else if (error instanceof PersonaSourceError) {
+      throw new CommandFailure("refused", "SCHEMA_INVALID", error.message, { target: { ...target, path }, ...(error.remedy ? { remedy: error.remedy } : {}) });
     } else {
-      throw new CommandFailure("refused", "SCHEMA_INVALID", "the local launch persona could not be read and validated; no contents were echoed and nothing was allocated", { target: { ...target, path }, remedy: "use a native persona file; a Mesh manifest belongs to `cotal team deploy <file>`" });
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target: { ...target, path } });
     }
   }
   let cwd: string;
@@ -112,27 +113,35 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     if (!isCommandFailure(error)) throw error;
     throw missingConnector(harness, { ...target, path });
   }
-  try { await materializeExtension({ kind: "connector", name: harness }); }
-  catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (error as Error).message, { target: { ...target, path } }); }
-  const connector = registry.resolve<Connector>("connector", harness);
-  const config = loadCotalConfig(root);
-  const shareTools = parseShareSelection(values["share-tools"]);
-  try {
-    const preview = connector.buildLaunch({
-      validateOnly: true, space, name: values.name ?? definition.name,
-      role: values.role ?? definition.role, configPath: personaWrite === "none" ? path : undefined,
-      model: values.model ?? definition.model, variant: values.variant ?? definition.variant,
-      launchOptions: mergeLaunchOptions(definition.launchOptions, parseLaunchOptions(values.opt)),
-      prompt: values.prompt, resume: values.resume, events: !values["no-events"],
-      mcpServers: connectorServers(config, harness, shareTools),
-      mcpServersExclusive: shareTools !== undefined, envAllow: spawnEnvAllow(config), workspaceRoot: root,
-    });
-    discardLaunchArtifacts(preview.artifacts);
-  } catch (error) {
-    throw new CommandFailure("refused", "USAGE_INVALID", (error as Error).message, { target: { ...target, path } });
+  const requestedName = values.name ?? definition.name;
+  const nameError = spawnNameError(requestedName, { userMode: targetMode === "user" });
+  if (nameError) throw new CommandFailure("refused", "USAGE_INVALID", nameError, { target: { ...target, path } });
+  let connectorArgumentsChecked = false;
+  if (extensionNames("connector").includes(harness)) {
+    let connector: Connector;
+    try { connector = await materializeExtension<Connector>({ kind: "connector", name: harness }); }
+    catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error instanceof Error ? error.message : String(error), { target: { ...target, path } }); }
+    if (connector.supportsLaunchValidation) {
+      const config = loadCotalConfig(root);
+      try {
+        const shareTools = parseShareSelection(values["share-tools"]);
+        connector.buildLaunch({
+          validateOnly: true, space, name: requestedName, role: values.role ?? definition.role,
+          configPath: personaWrite === "none" ? path : undefined,
+          model: values.model ?? definition.model, variant: values.variant ?? definition.variant,
+          launchOptions: mergeLaunchOptions(definition.launchOptions, parseLaunchOptions(values.opt)),
+          prompt: values.prompt, resume: values.resume, events: values.events || (!values["no-events"] && !!connector.eventChannel),
+          mcpServers: connectorServers(config, harness, shareTools), mcpServersExclusive: shareTools !== undefined,
+          envAllow: spawnEnvAllow(config), workspaceRoot: root,
+        });
+        connectorArgumentsChecked = true;
+      } catch (error) {
+        throw new CommandFailure("refused", "USAGE_INVALID", error instanceof Error ? error.message : String(error), { target: { ...target, path } });
+      }
+    }
   }
-  const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName: values.name ?? definition.name, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", authorization: "not-checked", allocated: false, launched: false };
+  const result = { kind: "direct-launch-preview", dryRun: true, space, executionHost: hostname(), persona: { path, source: requested.source, write: personaWrite as "none" | "shipped-default" }, requestedName, harness, cwd, role: values.role ?? definition.role ?? null, model: values.model ?? definition.model ?? null, variant: values.variant ?? definition.variant ?? null, promptProvided: values.prompt !== undefined, enrollment: "not-read-or-redeemed", connectorAvailability: "not-checked", connectorArgumentValidation: connectorArgumentsChecked ? "checked" : "not-checked", authorization: "not-checked", allocated: false, launched: false };
   writeResult(presentationOf(values), { command: "spawn", target, result }, (data): Report => ({ sections: [
-    { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.write === "shipped-default" ? `${data.persona.path} (the launch writes the shipped default persona here; the preview wrote nothing)` : data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["Local selection, file and connector launch-argument validation only. No broker connection, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
+    { title: "Direct launch preview", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Execution host", data.executionHost], ["Persona file", data.persona.write === "shipped-default" ? `${data.persona.path} (the launch writes the shipped default persona here; the preview wrote nothing)` : data.persona.path], ["Source", sourceText(data.persona.source)], ["Requested name", data.requestedName], ["Harness", data.harness], ["Working directory", data.cwd], ["Role", data.role ?? "not declared"], ["Model", data.model ?? "application default; not checked"], ["Variant", data.variant ?? "not declared"], ["Connector arguments", connectorArgumentsChecked ? "checked" : "not checked"], ["Enrollment", "not read or redeemed"], ["Binary/login/authority checks", "not performed"]] }, { kind: "lines", lines: ["No broker connection, provisioning, identity allocation or launch occurred. Native foreground execution is not a detachable Cotal view."] }] },
   ] }));
 }

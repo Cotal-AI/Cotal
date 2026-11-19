@@ -611,6 +611,8 @@ export interface MaintenanceLock {
   readonly path: string;
   readonly token: string;
   readonly owner: ProcessOwner;
+  /** Empty directories created only to hold this lock, deepest first. */
+  readonly createdDirectories?: readonly string[];
 }
 
 export interface AcquireMaintenanceLockOptions {
@@ -1097,6 +1099,10 @@ export function releaseMaintenanceLock(lock: MaintenanceLock): void {
   assertLock(lock);
   unlinkSync(lock.path);
   fsyncDirectory(dirname(lock.path));
+  const onlyLockLayout = lock.createdDirectories !== undefined && readdirSync(join(lock.root, ".cotal")).every((entry) => entry === "maintenance");
+  for (const dir of onlyLockLayout ? lock.createdDirectories ?? [] : []) {
+    try { rmdirSync(dir); } catch { break; }
+  }
 }
 
 export function withMaintenanceLock<T>(

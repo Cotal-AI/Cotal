@@ -49,6 +49,9 @@
  *     it. `status` says the space was deleted under the running stack and leads its Next with
  *     `cotal down --yes`, then `cotal up`; history, send and `run ps` refuse with that cause and
  *     remedy. `down --yes` and `up` give the space its streams back.
+ *     After `down`, `doctor auth` still identifies the recorded open stack, including with `--fix`
+ *     or `--space`. An overriding auth broker names the address mismatch, not a new `up` here.
+ *     A stopped auth space whose folder is deleted names moving it back or forgetting the space.
  * 12. Reset targets with nothing to reset. `reset store` and `reset space` of a name no space has
  *     refuse TARGET_NOT_FOUND saying so, naming `cotal space` first. Of a prepared space no stack
  *     has run for, they refuse TARGET_NOT_FOUND naming its root, `cotal up` and `cotal space forget`.
@@ -490,6 +493,31 @@ try {
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.
+  if (process.platform === "linux") {
+    const space = "tear-retained";
+    const root = folder(space);
+    anchor(root);
+    const started = cli(root, "up", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
+    check("default up starts a retained stack", started.status === 0, shown(started));
+    const files = readdirSync(join(root, ".cotal")).filter((name) => name.endsWith(".pid"));
+    const pids = files.map((name) => ({ name, pid: Number(readFileSync(join(root, ".cotal", name), "utf8")) }));
+    check("the default stack recorded all three components", pids.length === 3, pids);
+    anchors.delete(root);
+    rmSync(root, { recursive: true, force: true });
+    const other = folder(`${space}-other`);
+    anchor(other);
+    const refused = cli(other, "space", "forget", space, "--json");
+    check("forget names all retained processes and the whole-stack stop", refused.status === 2 && Boolean(refused.env?.error?.message.includes("manager: pid")) && Boolean(refused.env?.error?.message.includes("delivery: pid")) && Boolean(refused.env?.error?.remedy?.includes(`cotal down --space ${space} --yes`)), shown(refused));
+    const preview = cli(other, "down", "--space", space, "--dry-run", "--json");
+    check("the deleted default stack preview lists three members", preview.status === 0 && (preview.env?.result?.members as unknown[])?.length === 3, shown(preview));
+    // Following the historical listener-only remedy must not make forget lose the daemons.
+    process.kill(pids.find((row) => row.name === "nats.pid")!.pid, "SIGTERM");
+    const stillRefused = cli(other, "space", "forget", space, "--json");
+    check("forget still refuses after only its broker stops", stillRefused.status === 2 && findMesh(space) !== undefined && Boolean(stillRefused.env?.error?.message.includes("manager: pid")), shown(stillRefused));
+    const stopped = cli(other, "down", "--space", space, "--yes", "--json");
+    check("down stops the surviving retained components from another folder", stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && findMesh(space) === undefined, shown(stopped));
+    check("the deleted default stack leaves no component process", pids.every(({ pid }) => { try { process.kill(pid, 0); return false; } catch { return true; } }), pids);
+  }
   {
     const space = "tear7";
     const root = folder(space);
@@ -519,6 +547,9 @@ try {
       stopped.status === 0 && stopped.env?.result?.kind === "gone-root-stack-stop" && members.length === 3 && members.every((row) => row.result === "stopped")
         && JSON.stringify(stopped.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]), shown(stopped));
     check("no member process is left", pids.every((pid) => { try { process.kill(pid!, 0); return false; } catch { return true; } }), pids);
+    const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
+    check("gone-root down removes retired instance logs, sidecars, broker launch scratch, and the empty space service directory",
+      !existsSync(spaceServiceDir), spaceServiceDir);
     const elsewhere = folder(`${space}b`);
     const again = cli(home, "space", "create", space, "--root", elsewhere, "--json");
     anchor(elsewhere);
@@ -526,6 +557,16 @@ try {
     check("another folder prepares and starts a stack under the same name", again.status === 0 && reused.status === 0, { create: shown(again), up: shown(reused) });
     const last = cli(elsewhere, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+    anchors.delete(elsewhere);
+    rmSync(elsewhere, { recursive: true, force: true });
+    for (const args of [["send", "-c", "general", "hi"], ["history", "general"]]) {
+      const refused = cli(other, ...args, "--space", space, "--json");
+      check(`${args[0]} keeps move-back or forget advice when the gone folder has no running stack members`,
+        refused.status === 2 && refused.env?.error?.code === "TARGET_UNAVAILABLE"
+          && refused.env.error.message.includes(`${elsewhere}, which no longer exists`)
+          && Boolean(refused.env.error.remedy?.includes(`cotal space forget ${space}`))
+          && !refused.env.error.remedy?.includes("cotal down"), shown(refused));
+    }
   }
 
   // 11. An open space another machine deleted under its running stack.
@@ -569,6 +610,56 @@ try {
     check("down --yes, then up, gives the space its streams back", stopped.status === 0 && restarted.status === 0 && sent.status === 0, { down: shown(stopped), up: shown(restarted), send: shown(sent) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
+    for (const flags of [[], ["--fix"], ["--space", space], ["--space", space, "--fix"]]) {
+      const diagnosed = cli(root, "doctor", "auth", ...flags, "--json");
+      check(`doctor auth ${flags.join(" ")} on a stopped open stack is a root-local no-op`,
+        diagnosed.status === 0 && diagnosed.env?.outcome === "no-op" && diagnosed.env.target?.root === root
+          && diagnosed.env.result?.space === space && diagnosed.env.result?.credentialScope === "open-space"
+          && diagnosed.env.result?.brokerAuthorization === "not-checked"
+          && (diagnosed.env.result?.repair as { attempted?: boolean } | undefined)?.attempted === false, shown(diagnosed));
+      const plain = cli(root, "doctor", "auth", ...flags, "--plain");
+      check("the stopped open stack's text report says there are no credentials, with no root-folder remedy",
+        plain.status === 0 && plain.stdout.includes("No credentials to check") && !`${plain.stdout}${plain.stderr}`.includes("root folder"), shown(plain));
+    }
+    const wrongSpace = cli(root, "doctor", "auth", "--space", "not-this-stack", "--json");
+    check("an open stack does not establish open mode for another named space",
+      wrongSpace.status === 2 && wrongSpace.env?.error?.code === "AUTH_REQUIRED", shown(wrongSpace));
+
+    const authSpace = "tear9auth";
+    const openUp = cli(root, "up", "--json");
+    check("the open stack starts again at its recorded broker", openUp.status === 0, shown(openUp));
+    const authRoot = folder(authSpace);
+    const authServer = `nats://127.0.0.1:${await freePort()}`;
+    const authCreated = cli(home, "space", "create", authSpace, "--root", authRoot, "--json");
+    check("space create prepares the second auth stack's root", authCreated.status === 0, shown(authCreated));
+    const authUp = cli(authRoot, "up", "--server", authServer, "--json");
+    check("a second stack starts an authenticated broker", authUp.status === 0, shown(authUp));
+    anchor(authRoot);
+    const caller = folder("doctor-caller");
+    mkdirSync(join(caller, ".cotal"), { mode: 0o700 });
+    {
+      const mismatch = cli(caller, "send", "-c", "general", "hi", "--space", space, "--server", authServer, "--json");
+      check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
+        mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
+          && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
+          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
+    }
+    const openDown = cli(root, "down", "--yes", "--json");
+    check("the open stack stops after the mismatched broker refusal", openDown.status === 0, shown(openDown));
+    const authDown = cli(authRoot, "down", "--yes", "--json");
+    check("the auth stack stops cleanly before its folder is deleted", authDown.status === 0, shown(authDown));
+    anchors.delete(authRoot);
+    rmSync(authRoot, { recursive: true, force: true });
+    for (const flags of [[], ["--fix"]]) {
+      const missing = cli(caller, "doctor", "auth", "--space", authSpace, ...flags, "--json");
+      check("doctor auth for the deleted auth root names moving it back or forgetting it, not rerunning in that folder",
+        missing.status === 2 && missing.env?.error?.code === "AUTH_REQUIRED"
+          && Boolean(missing.env.error.remedy?.includes(`${authRoot}, no longer exists`))
+          && Boolean(missing.env.error.remedy?.includes("move it back"))
+          && Boolean(missing.env.error.remedy?.includes(`cotal space forget ${authSpace}`))
+          && !missing.env.error.remedy?.startsWith("run `"), shown(missing));
+    }
   }
 
   // 12. A mistyped name and a prepared space no stack ran for have nothing to reset.
@@ -623,6 +714,9 @@ try {
       const status = cli(root, "status", "--json");
       const selected = status.env?.result?.selected as { spaceStreams?: { state: string } } | undefined;
       check("status names the write failure and does not report the streams absent", (status.env?.result?.store as { state?: string; cause?: string } | undefined)?.state === "write-failed" && selected?.spaceStreams?.state !== "absent", shown(status));
+      const components = cli(root, "status", "--components");
+      check("component health grades the reachable broker not-serving after its store write fails",
+        components.status !== 0 && /broker\s+not-serving/.test(components.stdout) && components.stdout.includes("store write failed:") && components.stdout.includes("permission denied"), shown(components));
       const statusText = cli(root, "status");
       check("its Next leads with down, after making the store writable again",
         statusText.stdout.split("\n").some((line) => /cotal down +First make /.test(line) && line.includes(`${store} writable by this account again`)) && !statusText.stdout.includes("deleted under"), shown(statusText));
@@ -695,9 +789,20 @@ try {
       omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
+    const cycledDown = cli(root, "down", "--yes", "--json");
+    const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));
+    const instanceEntries = existsSync(join(spaceServiceDir, "instances")) ? readdirSync(join(spaceServiceDir, "instances")).sort() : [];
+    check("restarting and stopping the stack replaces retired manager logs and prior broker launch scratch without leaking retired files",
+      cycledUp.status === 0 && cycledDown.status === 0 && gone(cycledPids)
+        && instanceEntries.filter((f) => f.endsWith(".log")).length === 3
+        && instanceEntries.filter((f) => f.startsWith(".broker-ports-")).length === 1
+        && instanceEntries.filter((f) => f.startsWith(".broker-launch-")).length === 1
+        && !instanceEntries.some((f) => f.includes(Buffer.from(manager!, "utf8").toString("hex"))),
+      { cycledRows, instanceEntries });
     const forgot = cli(home, "space", "forget", space, "--json");
-    check("space forget removes the three stack definitions, and the journal then names none of their instances",
-      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0, { forget: shown(forgot), journal: journalRows() });
+    check("space forget removes the three stack definitions, the journal names none of their instances, and the space's services directory is gone",
+      forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === JSON.stringify(["stack-broker", "stack-delivery", "stack-manager"]) && ids(journalRows()).length === 0 && !existsSync(spaceServiceDir), { forget: shown(forgot), journal: journalRows(), exists: existsSync(spaceServiceDir) });
     const again = cli(home, "space", "create", space, "--root", root, "--json");
     const restarted = cli(root, "up", "--server", server, "--no-manager", "--json"), second = rows(restarted), secondPids = pidsOf();
     check("space create there and up --no-manager start a new broker and delivery, and record no manager instance",

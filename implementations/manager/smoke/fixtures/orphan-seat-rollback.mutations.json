@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "leave the reserved custody reference off the rollback object",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) };",
       "replace": "provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath } };",
       "expectRed": "the rollback reaps the launched seat by the reference the spawn reserved",

@@ -150,7 +150,100 @@ A local bind address does not isolate applications that share a workstation or O
 Reuse a shipped design:
 
 - The [Codex loopback MCP endpoint](../extensions/connector-codex/src/mcp.ts).
-- The [connector-core control server](../extensions/connector-core/src/control.ts), which exports helpers for another listener in the same process.
+- The [connector-core control server](../extensions/connector-core/src/control.ts), and the
+  [control exchange](#control-exchange) in `@cotal-ai/core`, whose server and client halves another
+  listener can run on its own socket.
+
+### The control exchange [#control-exchange]
+
+A connector's local control endpoint serves its lifecycle hooks and the Manager's cooperative stop
+and session calls. Each connection proves that both ends hold the endpoint's key, and neither end
+sends it. A process that takes the name of a server that has exited receives no key, and nothing it
+sends is used.
+
+The launcher mints the endpoint: a socket path, a random key, and the exchange version. The path
+reaches the child in `COTAL_CONTROL_SOCKET`. The key and version reach it in the launch material
+(`controlKey` and `controlVersion`), never in command arguments. A connector's `buildLaunch` returns
+the endpoint as `LaunchSpec.control`, and the Manager keeps it in memory for its stop and session
+calls. The Hermes launcher mints its own endpoint for its sidecar and gateway and returns none.
+
+Off Windows each launch's socket sits in a directory of its own, `cotal-ctl-<id>` under the temp
+directory, where `<id>` is derived from the key. The launcher creates the directory with mode `0700`
+when it mints the endpoint and refuses one that already exists, because from then on its path is
+public: it is in the command line of the process that removes the launch's artifacts, which other
+local users can read. The server checks the directory's owner and mode before
+it binds and never creates it, and every client checks them again before it connects. A directory
+that is missing or fails the check counts as no endpoint, and the refusal names the problem and how
+to recover. The launcher records the directory as a launch artifact and removes it once the child has
+exited. That is the lifecycle of an endpoint a TypeScript launcher mints. Hermes standalone mode
+instead makes its own private directory, `cotal-hermes-*` under the temp directory, for both
+sockets and the tools file, and nothing removes it when the gateway stops or fails to start. On Windows the endpoint is a named pipe in the global namespace, and the exchange is the only
+boundary.
+
+One connection carries four lines, and a fifth when the client asks for a delivery receipt:
+
+```text
+C -> S  {"v":1,"nonce":"<Nc>"}
+S -> C  {"v":1,"nonce":"<Ns>","mac":"<Ms>"}
+C -> S  <Mc> <request JSON>
+S -> C  <Mr> <reply JSON>
+C -> S  <Mk>
+```
+
+`Nc` and `Ns` are 32 random bytes each. Every MAC is HMAC-SHA256 keyed with the UTF-8 bytes of the
+key. Nonces and MACs are base64url without padding: 43 characters from `A-Z`, `a-z`, `0-9`, `-` and
+`_`. The MACs cover these bytes, where `\0` is one zero byte and the request and reply are the bytes
+between the space and the newline, which must be valid UTF-8:
+
+```text
+Ms = HMAC(K, "cotal-control/1\0server\0"  Nc "\0" Ns)
+Mc = HMAC(K, "cotal-control/1\0client\0"  Nc "\0" Ns "\0" request)
+Mr = HMAC(K, "cotal-control/1\0reply\0"   Nc "\0" Ns "\0" reply)
+Mk = HMAC(K, "cotal-control/1\0receipt\0" Nc "\0" Ns "\0" reply)
+```
+
+A presented MAC must be 43 characters of that alphabet before it is compared, and the comparison runs
+in constant time. The exchange authenticates both ends, the request, the reply and the receipt. It
+does not encrypt them.
+
+The hook relay asks for a receipt with `"handoff": true` in its request, and sends `Mk` once the reply
+has reached the runtime. The server commits the peer messages that reply carried only on that
+receipt. Any other line, a closed connection, or no receipt within 5 seconds leaves them for
+redelivery. A process that forwards the connection without the key therefore cannot drop a reply and
+confirm it.
+
+Every line is bounded in bytes before it is parsed or a MAC is computed over it, whether or not its
+newline has arrived. The hello and the challenge are bounded at 1 KiB, a request's JSON at 1 MiB, and
+a reply's JSON at the limit the client sets: 1 MiB for the hook relay, 16 KiB for the Manager's
+session call, 1 KiB for its stop call, and 4 KiB for the Hermes hooks. The 44 bytes of MAC and space
+before a request or reply do not count against its limit.
+
+A client waits at most 1 second from connect for the server's proof. A server drops a connection that
+has not sent a proven request within 5 seconds of accept. Once a client has sent its request, a
+missing or unproven reply means the server may have handled it. The hook relay says so whether the
+connection closed, failed, or reached the relay's 2-second deadline. Nothing is sent twice.
+
+A client and a server of different versions refuse each other: the version is in the hello, the
+challenge and every MAC, and nothing is negotiated. A launch whose material carries a key without a
+version, or a version the build does not speak, is refused where it is read.
+
+A release before the exchange carried the key as `controlToken` in the launch material and as
+`COTAL_CONTROL_TOKEN` in the environment, and its hook sent the key in its first frame. The key now
+travels under new names, so a reader from that release finds no key in a new launch. A connector
+that requires a control endpoint then refuses to start, and one that can start without it runs with
+none. This release refuses the old names in turn. An older Hermes launcher mints its own key for its
+sidecar and gateway, so given a new launch it runs that older pair by itself. A session launched
+before the upgrade must be restarted.
+
+The Hermes bridge socket sits beside the control socket, in the same private directory. Its adapter
+opens each connection with a `subscribe` carrying a token derived from the key: HMAC-SHA256 keyed
+with the key over `cotal-hermes-bridge/1`, base64url without padding. The key itself never crosses
+the bridge socket, and a sidecar of another version derives another token and drops the connection.
+The token authenticates the adapter only. The bridge server proves nothing, and the frames after
+`subscribe` carry no MAC, so the private directory is what keeps other users off the bridge. A
+process running as the same user can take the bridge socket's name and read the token, as it can read
+the launch material that holds the key. A bridge socket in a directory that is not private is never
+dialed, and the adapter reports a permanent error.
 
 ## Package the extension [#packaging-rules-enforced-at-ext-add]
 

@@ -67,7 +67,7 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | # | Claim | | Backing |
 |---|---|---|---|
 | 32 | `$SYS.REQ.USER.INFO` returns the server's own view including enforced allow lists, on NATS 2.14.5 | M-nomut | every discovery cell depends on parsing that response; the positive control is a conforming discovery returning the exact minted reference |
-| 33 | Only provisioner and teardown hold the server-view grant | C | census cell "only provisioner and teardown hold the server-view grant", with detector controls, the closed trusted-holder set and exact grant checks. The optional detector mutation config is retained but was not rerun for this correction |
+| 33 | Only provisioner, quiescence reader and teardown hold the server-view grant | C | census cell "only provisioner, quiescence reader and teardown hold the server-view grant", with detector controls, the closed trusted-holder set and exact grant checks. The optional detector mutation config is retained but was not rerun for this correction |
 | 34 | A connection without that grant cannot discover its generation | M | static cell of that name |
 | 35 | Server-view discovery for peer-held profiles would require granting it to them | A | follows from 33 and 34; this prototype does not select an issuer change |
 | 36 | An unrestricted publish ceiling names no generation and refuses | M | same static cell, second half |

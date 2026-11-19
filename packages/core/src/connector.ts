@@ -1,6 +1,7 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
+import type { ControlEndpoint } from "./control-exchange.js";
 import type { PersonaEndpoint } from "./persona-endpoints.js";
 
 /** User-mode launch identity shared by the manager, connector and launch-material carrier. The
@@ -15,8 +16,8 @@ export interface UserAuthLaunch {
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
-  /** Validate and render without creating launch files or changing session state. The returned
-   * spec is not executable. Launchers use this before provisioning and for offline previews. */
+  /** Validate options without creating launch files or changing session state. The returned spec
+   * is not executable. Only set when the connector declares {@link Connector.supportsLaunchValidation}. */
   validateOnly?: boolean;
   space: string;
   name: string;
@@ -210,14 +211,13 @@ export interface LaunchSpec {
    *  show the state a launch needs, as Claude's registration notice shows its channel server was
    *  admitted. */
   confirmNotice?: string;
-  /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
-   *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
-   *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY
-   *  (never persisted — token hygiene) to send a cooperative `{op:"shutdown"}` on a runtime that
-   *  can't deliver a clean exit signal (ConPTY/Windows). Both the Claude Code (MCP server) and
-   *  OpenCode (in-process plugin) connectors mint one; absent only for a connector with no control
-   *  plane at all. */
-  control?: { path: string; token: string };
+  /** This agent's local control endpoint: the OS path its lifecycle hooks connect to (the child
+   *  env's `COTAL_CONTROL_SOCKET`), the key that both ends prove they hold without sending it, and
+   *  the exchange version (both in the launch material). The connector mints it in `buildLaunch`;
+   *  the manager keeps it IN MEMORY (never persisted) to send a cooperative `{op:"shutdown"}` on a
+   *  runtime that can't deliver a clean exit signal (ConPTY/Windows) and to read Pi's session.
+   *  Absent only for a connector with no control plane at all. */
+  control?: ControlEndpoint;
   /** Connector-owned host-session state file. A supervised restart reads this exact manager-provided
    *  path after process exit, then verifies the successor reports the same session over `control`.
    *  Contains no transcript or credential; currently used by Pi for its current session id. */
@@ -285,6 +285,8 @@ export interface ConnectorModelCatalog extends ModelCatalog {
  * and core stays ignorant of which ones exist.
  */
 export interface Connector extends Extension {
+  /** `buildLaunch` accepts `validateOnly` and does not write files or change state in that mode. */
+  supportsLaunchValidation?: true;
   readonly kind: "connector";
   readonly name: string;
   /** Connector-owned setup surface. The base CLI resolves this through the extension registry and

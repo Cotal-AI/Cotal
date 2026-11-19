@@ -497,7 +497,7 @@
    "current:endpoint invoke --on"
   ],
   "cli:endpoint--plain": "current:endpoint --plain",
-  "cli:endpoint--refresh": "pending:endpoint describe --refresh",
+  "cli:endpoint--refresh": "current:endpoint describe --refresh",
   "cli:endpoint--result": "pending:endpoint work commit --result",
   "cli:endpoint--self": "current:endpoint invoke --self",
   "cli:endpoint--server": [
@@ -1244,8 +1244,10 @@
   "env:COTAL_CODEX_RESOLVED_BIN": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CODEX_TUI": "pending:config",
   "env:COTAL_COMPLETE_DEBUG": "pending:config",
+  "env:COTAL_CONTROL_KEY": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CONTROL_SOCKET": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CONTROL_TOKEN": "internal:connector plumbing the launcher sets for one harness",
+  "env:COTAL_CONTROL_VERSION": "internal:connector plumbing the launcher sets for one harness",
   "env:COTAL_CREDS": "current:spawn --creds",
   "env:COTAL_DEBUG": "pending:config",
   "env:COTAL_DEFAULT_AGENT": "current:config set",
@@ -1769,7 +1771,7 @@
   "tool:cotal_describe": "current:describe",
   "tool:cotal_describe.endpoint": "current:describe",
   "tool:cotal_describe.instance": "current:describe --on",
-  "tool:cotal_describe.refresh": "pending:endpoint describe --refresh",
+  "tool:cotal_describe.refresh": "current:endpoint describe --refresh",
   "tool:cotal_despawn": "current:stop",
   "tool:cotal_despawn.graceful": "current:stop --force",
   "tool:cotal_despawn.name": "current:stop --name",

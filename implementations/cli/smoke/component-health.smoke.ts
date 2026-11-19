@@ -25,7 +25,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -53,7 +53,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -74,6 +74,7 @@ const store = join(root, "jetstream");
 // managed `.cotal` directories and COTAL_HOME, where an explicit credential export is refused.
 const WEB_SPACE = "component-health-web";
 const webRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-web-root-`));
+const openRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-open-root-`));
 const controllerRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}component-health-controller-root-`));
 const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 // `cotal up` and `cotal service start` below leave the stack and the dashboard in `webRoot` but
@@ -82,6 +83,7 @@ const credsDir = mkdtempSync(join(tmpdir(), "cotal-component-health-creds-"));
 const sandboxes = new Map([
   [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome })],
   [webRoot, recordSmokeSandbox({ root: webRoot, cotalHome: home, xdgConfigHome })],
+  [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome })],
   [controllerRoot, recordSmokeSandbox({ root: controllerRoot, cotalHome: home, xdgConfigHome })],
 ]);
 
@@ -335,6 +337,7 @@ const server = `nats://127.0.0.1:${port}`;
 let broker: ChildProcess | undefined;
 let holder: ChildProcess | undefined;
 let webStack = false;
+let openStack = false;
 let webService = false;
 let delivery: ChildProcess | undefined;
 let servingManager: { close(): Promise<void> } | undefined;
@@ -472,19 +475,101 @@ try {
   check("a healthy default stack exits 0 with the installed dashboard not-started",
     notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
       ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
+  const managerGuidance = (cwd: string) => {
+    const roster = cliIn(cwd, ["ps", "--json"]);
+    const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
+    for (const name of ["manager", manager]) {
+      const read = cliIn(cwd, ["status", name, "--plain"]);
+      check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
+        read.status === 2 && `${read.stdout}${read.stderr}`.includes(`${name} is this space's manager, which is answering, not an agent it runs`), `${read.stdout}${read.stderr}`);
+    }
+  };
+  managerGuidance(webRoot);
+  if (process.platform !== "win32") {
+    const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
+    chmodSync(deliveryCreds, 0o644);
+    try {
+      const doctor = cliIn(webRoot, ["doctor", "auth", "--plain"]);
+      check("doctor auth refuses the exposed managed delivery credential", doctor.status === 5 && `${doctor.stdout}${doctor.stderr}`.includes("chmod 600"), `${doctor.stdout}${doctor.stderr}`);
+      for (const output of ["--plain", "--json"]) {
+        const report = cliIn(webRoot, ["status", output]);
+        const text = `${report.stdout}${report.stderr}`;
+        check(`status ${output} reports the delivery credential gap with its native repair`, report.status === 4 && text.includes("mode 0644") && text.includes("chmod 600") && text.includes("delivery.creds"), text);
+      }
+      const health = cliIn(webRoot, ["status", "--components"]);
+      const text = `${health.stdout}${health.stderr}`;
+      check("component health refuses delivery instead of dropping holder attribution", health.status === 3 && /delivery\s+refused/.test(text) && text.includes("chmod 600"), text);
+    } finally { chmodSync(deliveryCreds, 0o600); }
+    const repaired = cliIn(webRoot, ["status", "--components"]);
+    check("private delivery credentials restore serving health", repaired.status === 0 && /delivery\s+serving/.test(repaired.stdout), `${repaired.stdout}${repaired.stderr}`);
+  }
   const creds = join(credsDir, "dashboard.creds");
   // The admin profile is the one the dashboard connected with before it became a service.
   const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
   check("the dashboard's protected credential file is minted", minted.status === 0 && existsSync(creds), `${minted.stdout}${minted.stderr}`);
   const webPort = await freePort();
+  check("space create prepares an open controller stack", cliIn(openRoot, ["space", "create", "component-health-open"]).status === 0);
+  const openUp = cliIn(openRoot, ["up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  openStack = openUp.status === 0;
+  check("an open controller stack starts", openStack, `${openUp.stdout}${openUp.stderr}`);
+  const openHealth = cliIn(openRoot, ["status", "--components"]);
+  const openText = `${openHealth.stdout}${openHealth.stderr}`;
+  check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
+  managerGuidance(openRoot);
+  const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
+  openStack = openDown.status !== 0;
+  check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
+  const stoppedStore = (cwd: string) => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    const cleared = cliIn(cwd, ["use", "--clear"]);
+    check("clear the sibling selection before inspecting this stopped stack", cleared.status === 0, `${cleared.stdout}${cleared.stderr}`);
+    const store = join(cwd, ".cotal", "nats");
+    spawnSync("chmod", ["-R", "a-w", store]);
+    try {
+      for (const command of ["status", "ps"]) for (const output of ["--plain", "--json"]) {
+        const report = cliIn(cwd, [command, output]);
+        const text = `${report.stdout}${report.stderr}`;
+        check(`${command} ${output} names the stopped store permission repair before restart`,
+          report.status === (command === "status" ? 0 : 2) && text.includes("not writable by this account") && text.includes("chmod -R u+w") && !text.includes("reset store") && !text.includes("there to restart") && !/cotal up +Start this folder's stopped stack/.test(text), text);
+      }
+    } finally { spawnSync("chmod", ["-R", "u+rwX", store]); }
+  };
+  stoppedStore(openRoot);
+  const defaultDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = defaultDown.status !== 0;
+  check("stop the default stack before inspecting its retained store", defaultDown.status === 0, `${defaultDown.stdout}${defaultDown.stderr}`);
+  stoppedStore(webRoot);
+  const defaultUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE], 120_000);
+  webStack = defaultUp.status === 0;
+  check("the default stack restarts after its store permission repair", webStack, `${defaultUp.stdout}${defaultUp.stderr}`);
   const added = cliIn(webRoot, ["service", "add", "web", "--preset", "web", "--space", WEB_SPACE, "--root", webRoot, "--creds", creds, "--read-only", "--port", String(webPort)]);
   webService = added.status === 0;
   check("service add saves the web preset for this stack", webService, `${added.stdout}${added.stderr}`);
+  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
+  // #7632: A dashboard start that fails before publishing its session record (e.g., port already bound)
+  // releases web.pid, and a stale web.pid whose PID was reused by a live process with another start
+  // token is cleared on the next start without signaling that process.
+  const portBlocker = await new Promise<import("node:net").Server>((resolveServer, rejectServer) => {
+    const srv = import("node:net").then(({ createServer }) => {
+      const s = createServer();
+      s.once("error", rejectServer);
+      s.listen(webPort, "127.0.0.1", () => resolveServer(s));
+    });
+    void srv;
+  });
+  try {
+    const failedStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 60_000);
+    check("a failed dashboard start releases web.pid and its identity pin",
+      failedStart.status !== 0 && !existsSync(webPid) && !existsSync(`${webPid}.identity`), `${failedStart.stdout}${failedStart.stderr}`);
+  } finally {
+    await new Promise<void>((resolveClose) => portBlocker.close(() => resolveClose()));
+  }
+  writeFileSync(webPid, `${process.pid}\n`, { mode: 0o600 });
+  writeFileSync(`${webPid}.identity`, `${process.pid} stale-start-token\n`, { mode: 0o600 });
   const webStart = cliIn(webRoot, ["service", "start", "web", "--space", WEB_SPACE, "--json"], 120_000);
   const instance = webStart.status === 0 ? (JSON.parse(webStart.stdout) as { result?: { instanceId?: string; pid?: number } }).result : undefined;
-  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: webRoot, space: WEB_SPACE });
   const web = existsSync(webPid) ? Number(readFileSync(webPid, "utf8").trim()) || undefined : undefined;
-  check("the dashboard starts as a service whose process holds web.pid",
+  check("the dashboard starts as a service whose process holds web.pid after clearing a reused-PID slot",
     webStart.status === 0 && web !== undefined && instance?.pid === web, `${webStart.stdout}${webStart.stderr}`);
   const anonymousMeta = await fetch(`http://127.0.0.1:${webPort}/api/meta`);
   check("the dashboard refuses an anonymous /api/meta", anonymousMeta.status === 401, anonymousMeta.status);
@@ -628,8 +713,8 @@ try {
   });
   const deliveryNotReady = cli("status", "--components", "--space", SPACE, "--server", server);
   const deliveryNotReadyText = `${deliveryNotReady.stdout}${deliveryNotReady.stderr}`;
-  check("delivery ready lease and renewal adoption report independently from its own surfaces",
-    deliveryNotReady.status === 2 && /delivery\s+not-serving/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
+  check("a recorded renewal refusal wins the verdict while independent delivery readiness stays visible",
+    deliveryNotReady.status === 3 && /delivery\s+refused/.test(deliveryNotReadyText) && deliveryNotReadyText.includes("starting (lease not ready)") && deliveryNotReadyText.includes("renewal adoption refused: fixture broker refusal"), deliveryNotReadyText);
   await stop(delivery);
   delivery = undefined;
   rmSync(join(root, ".cotal", "delivery.pid"), { force: true });
@@ -713,16 +798,26 @@ try {
     reusedDelivery.status === 1 && /delivery\s+absent.*stale pidfile/.test(reusedDelivery.stdout) && !/Delivery responder:\s+● bound/.test(reusedDelivery.stdout), `${reusedDelivery.stdout}${reusedDelivery.stderr}`);
   await reusePid(webRoot, WEB_SPACE, MANAGER_PIDFILE);
   await reusePid(webRoot, WEB_SPACE, "nats.pid");
+  const reusedPids = replacements.map((child) => ({ pid: child.pid!, token: defaultStartToken(child.pid!) }));
   const reusedLegacy = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
   check("all reused legacy PIDs read absent, never running or serving",
     reusedLegacy.status === 1 && ["manager", "delivery", "broker"].every((name) => new RegExp(`${name}\\s+absent`).test(reusedLegacy.stdout)) && !/\b(?:Manager|Delivery|Broker)\s+running/.test(reusedLegacy.stdout), `${reusedLegacy.stdout}${reusedLegacy.stderr}`);
-  const refusedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
-  check("down refuses reused legacy records without stopping unrelated processes",
-    refusedDown.status !== 0 && refusedDown.stderr.includes("pid has been reused") && replacements.every((child) => child.exitCode === null && child.signalCode === null), `${refusedDown.stdout}${refusedDown.stderr}`);
-  for (const child of replacements) await stop(child);
   const legacyDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = legacyDown.status !== 0;
-  check("down clears the stale legacy records after the replacement processes exit", !webStack, `${legacyDown.stdout}${legacyDown.stderr}`);
+  await sleep(100); // Allow ChildProcess exit notifications from the synchronous CLI run to arrive.
+  check("down clears each reused legacy PID and pin while the unrelated processes are still running",
+    legacyDown.status === 0 && replacements.every((child) => child.exitCode === null && child.signalCode === null) &&
+    reusedPids.every(({ pid, token }) => token !== undefined && defaultStartToken(pid) === token) &&
+    [MANAGER_PIDFILE, DELIVERY_PIDFILE, "nats.pid"].every((template) => {
+      const path = canonicalLocalProcessPath(template, { root: webRoot, space: WEB_SPACE });
+      return !existsSync(path) && !existsSync(`${path}.identity`);
+    }), `${legacyDown.stdout}${legacyDown.stderr}`);
+  check("down reports stale cleanup, not a stop of an unrelated process",
+    reusedPids.every(({ pid }) => legacyDown.stderr.includes(`pid ${pid} was reused by another process`) && !legacyDown.stdout.includes(`(pid ${pid})`)), `${legacyDown.stdout}${legacyDown.stderr}`);
+  for (const child of replacements) await stop(child);
+  const repeatedDown = cliIn(webRoot, ["down", "--yes"], 120_000);
+  webStack = repeatedDown.status !== 0;
+  check("down is still successful after the replacement processes exit", !webStack, `${repeatedDown.stdout}${repeatedDown.stderr}`);
   const restartController = cliIn(controllerRoot, ["up"], 120_000);
   controllerStack = restartController.status === 0;
   check("restart the controller with all components", controllerStack, `${restartController.stdout}${restartController.stderr}`);
@@ -743,11 +838,13 @@ try {
     cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   }
   if (webStack) cliIn(webRoot, ["down", "--yes"], 120_000);
+  if (openStack) cliIn(openRoot, ["down", "--yes"], 120_000);
   await stop(holder);
   await stop(broker);
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(webRoot, { recursive: true, force: true });
+  rmSync(openRoot, { recursive: true, force: true });
   rmSync(credsDir, { recursive: true, force: true });
   rmSync(controllerRoot, { recursive: true, force: true });
 }

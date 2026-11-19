@@ -256,6 +256,9 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+  const emptyProject = await json([...FULL("empty-project", ""), "--configure-only", "--yes"], dirs.name);
+  check("an empty --project refuses before preparing the current directory",
+    refused(emptyProject, 1, "USAGE_INVALID") && /--project \./.test(emptyProject.env?.error?.remedy ?? "") && !existsSync(join(dirs.name, ".cotal")) && findPreparedSpace("empty-project") === undefined, shown(emptyProject));
   const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
   check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")

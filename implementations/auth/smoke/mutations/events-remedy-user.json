@@ -40,7 +40,7 @@
     },
     {
       "name": "R2 the spawn door prints the route for the OTHER mesh, on a user mesh",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
       "replace": "            `spawn: \\`cotal mint <reader> --profile agent --allow-subscribe ${foreign[0]!} --provision\\`, where there is no actor ledger for \\`actor grant\\` to write to.`,",
       "expectRed": "the user-mesh refusal prints the user-mesh route (actor grant), never the static mint route",

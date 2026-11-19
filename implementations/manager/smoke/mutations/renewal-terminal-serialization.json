@@ -78,7 +78,7 @@
     },
     {
       "name": "the production renewal sweep no longer enters managed-static renewal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/credential-renewal.ts",
       "find": "            await this.renewManagedStaticCred(a);",
       "replace": "            void a;",
       "expectRed": "racer_exit: renewal records exactly one new credential id",

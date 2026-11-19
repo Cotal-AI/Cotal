@@ -145,6 +145,7 @@ export const codexConnector: Connector = {
   // channel would fuse two principals' streams onto one subject.
   eventChannel,
 
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("codex connector does not support exact-session continuation");
     // Resuming isn't wired: a thread brought up with `thread/resume` does not carry the cotal_*
@@ -163,8 +164,9 @@ export const codexConnector: Connector = {
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("codex connector: tool-sharing (connectors.codex.mcpServers) is not implemented");
 
-    // Minted before the env is built: the token goes into the launch material, the path into the env.
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
+    const artifacts: string[] = [];
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CODEX_ENV_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -272,16 +274,17 @@ export const codexConnector: Connector = {
     if (hasOverrides) env.COTAL_CODEX_CONFIG = JSON.stringify(overrides);
 
     // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a
-    // signal-less runtime. Minted here, held in memory by the manager, served by the host.
+    // signal-less runtime. Minted here, after every refusal, because minting makes its socket
+    // directory; held in memory by the manager, served by the host. The key goes into the material.
+    if (opts.validateOnly) return { command: "", args: [] };
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
 
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
     // host drops even that once it has read it, so a shell this seat runs inherits neither. Written
     // after every refusal above, and its directory is a launch artifact the launcher removes once the
     // child has exited (core launch-artifacts).
-    if (opts.validateOnly) return { command: "", args: [] };
-    const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },

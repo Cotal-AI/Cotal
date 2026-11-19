@@ -3,7 +3,7 @@
   "mutations": [
     {
       "name": "a long-lived client stops recovering from a bind refusal (the stale bind strands it)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false\n          && (replyRefusedBeforeEffect(r.reply.error) || unmappedHere(r)); reissues++) {",
       "replace": "        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false\n          && (false || unmappedHere(r)); reissues++) {",
       "expectRed": "the stale (epoch 0) bind was replaced by the successor's",
@@ -14,7 +14,7 @@
     },
     {
       "name": "the recovery stops counting the split (handled, and the split rate goes with it)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "          this.splitsRecovered++;\n",
       "replace": "",
       "expectRed": "the silent recovery was COUNTED",
@@ -25,7 +25,7 @@
     },
     {
       "name": "the recovery stops announcing itself",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "          this.emit(\"split-recovered\", {\n",
       "replace": "          this.emit(\"split-recovered-MUTANT-NOT-ANNOUNCED\", {\n",
       "expectRed": "it was announced to anyone listening",

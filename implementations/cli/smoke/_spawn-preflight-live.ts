@@ -15,7 +15,7 @@ export async function checkSpawnPreflight(check: (name: string, condition: boole
   mkdirSync(root);
   mkdirSync(bins);
   const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-  Object.assign(env, { HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", PATH: `${bins}:${env.PATH}` });
+  Object.assign(env, { HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, TMPDIR: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", PATH: `${bins}:${env.PATH}` });
   const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: xdg });
   const piCalls = join(home, "pi-calls");
   for (const name of ["claude", "pi", "codex", "opencode"])
@@ -27,10 +27,12 @@ if (process.argv.includes("python")) {
   console.log(fs.existsSync(${JSON.stringify(badVersion)}) ? "9.0.0" : "0.20.1");
   process.exit(0);
 }
-const token = JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL, "utf8")).controlToken;
+const { controlKey, controlVersion } = JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL, "utf8"));
+const token = require("node:crypto").createHmac("sha256", controlKey).update("cotal-hermes-bridge/" + controlVersion).digest("base64url");
 const socket = require("node:net").connect(process.env.COTAL_BRIDGE_SOCKET, () => {
   socket.write(JSON.stringify({ t: "subscribe", token }) + "\\n");
 });
+socket.on("error", () => process.exit(1));
 setInterval(() => {}, 60_000);
 `, { mode: 0o700 });
   const prefix = join(xdg, "cotal", "extensions");
@@ -49,7 +51,7 @@ setInterval(() => {}, 60_000);
     return { ...result, out: result.stdout + result.stderr };
   };
   const server = `nats://127.0.0.1:${await freePort()}`;
-  const artifacts = () => readdirSync(tmpdir()).filter((name) => /^(cotal-launch-|cotal-hermes-)|\.sock$/.test(name)).sort();
+  const artifacts = () => readdirSync(home).filter((name) => /^(cotal-launch-|cotal-ctl-|cotal-hermes-)|\.sock$/.test(name)).sort();
   const before = artifacts();
   try {
     const prepared = cli("space", "create", "preflight-live");
@@ -78,6 +80,7 @@ setInterval(() => {}, 60_000);
     const valid = cli("spawn", "-H", "pi", "--resume", "session-valid");
     check("valid pi resume still reaches the native harness as one fork argument", valid.status === 0
       && readFileSync(piCalls, "utf8").includes("--fork\nsession-valid\n"), valid.out);
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const blocked = join(root, "noperm_dir");
     mkdirSync(blocked, { mode: 0 });
     try {
@@ -86,6 +89,7 @@ setInterval(() => {}, 60_000);
         && /LIFECYCLE_BLOCKED/.test(refusal.out) && /EACCES/.test(refusal.out) && refusal.out.includes(blocked)
         && /not-executed/.test(refusal.out) && !/chdir\(2\)|OPERATION_FAILED/.test(refusal.out), refusal.out);
     } finally { chmodSync(blocked, 0o700); }
+    }
     for (const force of [false, true]) {
       const name = force ? "hermes_force" : "hermes_graceful";
       const launched = cli("spawn", "-d", "-H", "hermes", "--no-events", "--model", "test-model", "--name", name);

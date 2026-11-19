@@ -21,7 +21,7 @@
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,7 +69,7 @@ const SPACE = "detach-e2e";
 
 // Workspace: a persona with a file ACL (so the override test proves flags WIN), plus config.json
 // declaring shareable MCP servers for the e2e connector.
-const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-detach-ws-"));
+const workspaceRoot = mkdtempSync(join(tmpdir(), `cotal-detach-ws-${"long-workspace-".repeat(14)}`));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 writeFileSync(
   join(workspaceRoot, ".cotal", "agents", "poet.md"),
@@ -255,11 +255,20 @@ try {
     fixture("opencode", "if(process.argv[2]==='--version'){console.log('1.2.0');process.exit(0)}" + errorLines);
     const serveFailure = await failedLaunch("opencode", "failed_serve");
     ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
-    const jcodeFailure = await failedLaunch("jcode", "failed_jcode");
-    ok("Jcode startup failure names its private diagnostic log", isCommandFailure(jcodeFailure) && jcodeFailure.message.includes("connector-") && jcodeFailure.message.includes(".log"), String(jcodeFailure));
+    const jcodeFailure = await failedLaunch("jcode", "failed_jcode", ["--cwd", fakeBin]);
+    const jcodeMessage = isCommandFailure(jcodeFailure) ? jcodeFailure.message : "";
+    const jcodeLog = /workspace log: (\.cotal\/jcode\/[^/]+\/logs\/connector-[\w-]+\.log)/.exec(jcodeMessage)?.[1];
+    ok("Jcode startup failure reports the complete workspace-relative diagnostic path", !!jcodeLog && jcodeMessage.includes("startup_failed"), String(jcodeFailure));
+    const logPath = join(workspaceRoot, jcodeLog!);
+    const jcodeErrors = ["invalid provider key", "run auth login to reauthenticate"];
+    const privateOutput = readFileSync(logPath, "utf8");
+    ok("Jcode retains both child errors in its owner-only log and not in the refusal",
+      (statSync(logPath).mode & 0o777) === 0o600 && jcodeErrors.every((line) => privateOutput.includes(line) && !jcodeMessage.includes(line)), jcodeMessage);
     const hermesFailure = await failedLaunch("hermes", "failed_hermes", ["--model", "test-model"]);
     ok("Hermes gateway exit fails instead of reporting joined", isCommandFailure(hermesFailure) && hermesFailure.message.includes("run auth login to reauthenticate"), String(hermesFailure));
-    fixture("hermes", "const fs=await import('node:fs');const net=await import('node:net');const token=JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL,'utf8')).controlToken;const s=net.connect(process.env.COTAL_BRIDGE_SOCKET,()=>s.write(JSON.stringify({t:'subscribe',token})+'\\n'));setInterval(()=>{},60000);");
+    // The stand-in gateway subscribes as the plugin does: with the bridge token derived from the
+    // launch material's control key, HMAC-SHA256 over `cotal-hermes-bridge/<version>`.
+    fixture("hermes", "const fs=await import('node:fs');const net=await import('node:net');const {createHmac}=await import('node:crypto');const m=JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL,'utf8'));const token=createHmac('sha256',Buffer.from(m.controlKey,'utf8')).update('cotal-hermes-bridge/'+m.controlVersion,'utf8').digest('base64url');const s=net.connect(process.env.COTAL_BRIDGE_SOCKET,()=>s.write(JSON.stringify({t:'subscribe',token})+'\\n'));setInterval(()=>{},60000);");
     const hermesJoined = await capture(() => run("spawn", ["poet", "--detach", "--agent", "hermes", "--space", SPACE, "--name", "ready_hermes", "--model", "test-model"]));
     ok("Hermes joins after its authenticated bridge subscribes without --no-events", joinedAs(hermesJoined, "ready_hermes"), hermesJoined);
     await capture(() => run("stop", ["--name", "ready_hermes", "--space", SPACE]));

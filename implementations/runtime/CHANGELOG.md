@@ -1,5 +1,68 @@
 # @cotal-ai/runtime
 
+## 0.170.0
+
+### Patch Changes
+
+- a9e235f: Workflow plans report the correct call-site line numbers for every JavaScript line ending.
+- 49f387d: Quote option values in CLI corrections so they can be pasted into a shell, and show the required status and handoff destination when `cotal run yield` is missing a turn ID.
+- a171c3e: Workflow simulations now name the results file and explain what to correct when a scripted checkpoint result is invalid.
+- ee44b80: Separate the mesh handler's pause timers and settlement into an internal module without changing the runtime API.
+- 78b79b8: Separate the mesh handler's checkpoint relay and presence watch into an internal module without changing the runtime API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+- Updated dependencies [3e748e8]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+  - @cotal-ai/lang@0.170.0
+
+## 0.169.0
+
+### Patch Changes
+
+- 3f04b38: Scope CLI subcommand help and flag validation across `config`, `run`, `daemon`, `manager`, `service`, `service-endpoint`, and `ext`, and emit JSON envelopes for `daemon --json` usage refusals.
+- 67d9a30: Recover workflow runs after an activation stops before recording its status, reject unsupported check and resume flags before connecting, and keep missing-run remedies on the selected space and manager.
+- Updated dependencies [ec01e0a]
+- Updated dependencies [f5aee20]
+- Updated dependencies [a9cb553]
+- Updated dependencies [a59864f]
+- Updated dependencies [a3d78c7]
+- Updated dependencies [e9bee41]
+- Updated dependencies [58c16f7]
+- Updated dependencies [55e3e40]
+- Updated dependencies [37a700f]
+- Updated dependencies [c2f9729]
+- Updated dependencies [c4ca691]
+- Updated dependencies [71088a6]
+- Updated dependencies [67d9a30]
+- Updated dependencies [e7fa3bf]
+- Updated dependencies [eee44d8]
+- Updated dependencies [1360657]
+- Updated dependencies [f5aee20]
+- Updated dependencies [3e4862f]
+- Updated dependencies [4362eb1]
+- Updated dependencies [963db93]
+- Updated dependencies [f5aee20]
+- Updated dependencies [4050457]
+- Updated dependencies [1a968ba]
+- Updated dependencies [339d6ee]
+- Updated dependencies [a6496a5]
+- Updated dependencies [de57e89]
+- Updated dependencies [2a71cc3]
+  - @cotal-ai/core@0.169.0
+  - @cotal-ai/workspace@0.169.0
+  - @cotal-ai/lang@0.169.0
+
 ## 0.168.0
 
 ### Patch Changes

@@ -610,8 +610,8 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(wake({ fromName: "" }).includes("by local.blank while"), "an empty mention sender is named by id");
   const broken = wake({ fromName: "\n" });
   ok(broken.includes("by local.blank while") && !broken.includes("\n"), "a newline mention sender is named by id on one line");
-  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank/worker while"), "a whitespace mention sender keeps its role beside the id");
-  ok(wake({ fromName: " ada" }).includes("by  ada while"), "a mention sender with a leading space keeps that name");
+  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank/worker (unverified role) while"), "a whitespace mention sender keeps its unverified role beside the id");
+  ok(wake({ fromName: " ada" }).includes("by  ada (unverified name) while"), "a mention sender with a leading space keeps that unverified name");
 }
 
 // Abort retains even provider-confirmed work, holds new traffic, then a clean continuation commits.
@@ -1214,7 +1214,7 @@ for (const assistant of [
     "COTAL_HOME",
     "COTAL_DEFAULT_AGENT",
     "COTAL_CONTROL_SOCKET",
-    "COTAL_CONTROL_TOKEN",
+    "COTAL_CONTROL_KEY",
     "COTAL_LAUNCH_MATERIAL",
     "COTAL_SPACE",
     "COTAL_ID",
@@ -1234,7 +1234,7 @@ for (const assistant of [
     registerTool(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control key could be resolved/);
   checks++;
 
   // Managed reload has already consumed its launch material. It must bind the existing

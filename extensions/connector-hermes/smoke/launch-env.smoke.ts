@@ -8,16 +8,19 @@
  * Run: pnpm --filter @cotal-ai/connector-hermes test
  */
 import { strict as nodeAssert } from "node:assert";
-import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { writeLaunchMaterial } from "@cotal-ai/core";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
 import { briefing } from "@cotal-ai/connector-core";
-import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -49,7 +52,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 172;
+const EXPECTED_CELLS = 174;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -76,7 +79,7 @@ const HOST_MARKERS = [
 
 /** One name from every per-session family a connector assigns conditionally. None may cross. */
 const PER_SESSION = [
-  "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_TOKEN",
+  "COTAL_LAUNCH_MATERIAL", "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_KEY",
   "COTAL_CONTROL_SOCKET", "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
   "COTAL_HERMES_UV_BIN",
   "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
@@ -104,12 +107,7 @@ for (const k of HOST_MARKERS)
   assert.ok(!(k in env), `${k} leaked from this process into the child: a host-session marker must be withheld`);
 
 for (const k of PER_SESSION)
-  assert.ok(k === "COTAL_LAUNCH_MATERIAL" || k === "COTAL_CONTROL_SOCKET" ? env[k] !== `parent-${k}` : !(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
-
-assert.ok(readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).controlToken, "the tracked launch carrier already holds the control token");
-assert.equal(join(env[LAUNCH_MATERIAL_ENV], "..", "c.sock"), env.COTAL_CONTROL_SOCKET, "control socket belongs to the tracked material directory");
-assert.equal(join(env[LAUNCH_MATERIAL_ENV], "..", "b.sock"), env.COTAL_BRIDGE_SOCKET, "bridge socket belongs to the tracked material directory");
-assert.ok(env.COTAL_HERMES_SEAT_HOME?.includes("/profiles/cotal-"), "disposable profile is named before launch so its root can be tracked");
+  assert.ok(!(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
 
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
@@ -130,7 +128,7 @@ assert.ok(!("GH_TOKEN" in confined), "an undeclared name is withheld under conta
 assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allow-list plus the declared names, nothing else");
 assert.ok(confined.PATH !== undefined, "the OS allow-list still carries what the child needs to run");
 for (const k of PER_SESSION)
-  assert.ok(k === "COTAL_LAUNCH_MATERIAL" || k === "COTAL_CONTROL_SOCKET" ? confined[k] !== `parent-${k}` : !(k in confined), `${k} must be absent under containment too`);
+  assert.ok(!(k in confined), `${k} must be absent under containment too`);
 for (const k of HOST_MARKERS)
   assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
 
@@ -372,6 +370,94 @@ console.log(
     `${FORMERLY_EXCLUDED.length + HOST_MARKERS.length + 1} undeclared names withheld, ` +
     `${PER_SESSION.length} per-session names reset, ${OPERATOR_KNOBS.length} operator knobs crossed, both modes held`,
 );
+
+// ---- the launcher's stop: the control socket's directory goes only once the gateway is gone -----
+// Drives the real launcher (src/launch.ts) with an adopted profile and a stand-in `uv` whose
+// gateway ignores SIGTERM, so the stop has to kill its process tree, which needs `ps`.
+const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
+const launcher = fileURLToPath(new URL("../src/launch.ts", import.meta.url));
+const stopRoot = mkdtempSync(join(tmpdir(), "cotal-hermes-stop-"));
+const bin = join(stopRoot, "bin");
+const noPs = join(stopRoot, "no-ps");
+const home = join(stopRoot, "home");
+for (const d of [bin, noPs, home]) mkdirSync(d);
+writeFileSync(
+  join(bin, "uv"),
+  "#!/bin/sh\ncase \"$*\" in\n  *\"python -c\"*) echo 0.19.0 ;;\n  *\"gateway run\"*) trap '' TERM; echo $$ > \"$FAKE_GW_PID\"; i=0; while [ $i -lt 40 ]; do sleep 0.25; i=$((i+1)); done ;;\n  *) exit 2 ;;\nesac\n",
+  { mode: 0o755 },
+);
+writeFileSync(join(noPs, "ps"), "#!/bin/sh\necho 'ps: unavailable' >&2\nexit 1\n", { mode: 0o755 });
+writeFileSync(join(home, "config.yaml"), "plugins:\n  enabled: [cotal]\ngateway:\n  platforms:\n    cotal:\n      enabled: true\n");
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const waitFor = async (ok: () => boolean, ms: number): Promise<boolean> => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if (ok()) return true;
+  return ok();
+};
+/** Start the launcher, stop it with SIGTERM, and report what was left. */
+const stopRun = async (label: string, opts: { psFails: boolean; holdBridge: boolean }) => {
+  // The launcher's own temp dir, kept short: the control socket's path has to fit in sun_path.
+  const tmp = mkdtempSync(join(tmpdir(), "chs-"));
+  const pidFile = join(tmp, "gateway.pid");
+  const outer = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  const material = writeLaunchMaterial({ servers: "nats://127.0.0.1:9" });
+  if (outer === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = outer;
+  const child = spawn(process.execPath, [tsxCli, launcher], {
+    env: {
+      PATH: opts.psFails ? `${noPs}:${process.env.PATH}` : (process.env.PATH ?? ""),
+      HOME: process.env.HOME ?? "",
+      TMPDIR: tmp,
+      COTAL_NAME: label,
+      COTAL_SPACE: "stop",
+      COTAL_LAUNCH_MATERIAL: material,
+      COTAL_HERMES_ADOPT_HOME: home,
+      COTAL_HERMES_UV_BIN: join(bin, "uv"),
+      FAKE_GW_PID: pidFile,
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  const exited = new Promise<void>((r) => child.once("exit", () => r()));
+  const started = await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "", 15_000);
+  const gateway = started ? Number(readFileSync(pidFile, "utf8").trim()) : 0;
+  const dir = readdirSync(tmp).filter((n) => n.startsWith("cotal-ctl-")).map((n) => join(tmp, n))[0] ?? "";
+  let heldClosedWithDir: boolean | undefined;
+  if (opts.holdBridge && dir) {
+    await waitFor(() => existsSync(join(dir, "ctl.bridge.sock")), 5_000);
+    const held = connect(join(dir, "ctl.bridge.sock"));
+    held.on("error", () => {});
+    held.once("close", () => (heldClosedWithDir = existsSync(dir)));
+    await new Promise((r) => held.once("connect", r));
+  }
+  child.kill("SIGTERM");
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 15_000))]);
+  await new Promise((r) => setTimeout(r, 200));
+  const report = { started, dirKept: dir !== "" && existsSync(dir), gatewayAlive: gateway > 0 && alive(gateway), heldClosedWithDir, stderr, dir };
+  if (report.gatewayAlive) process.kill(gateway, "SIGKILL");
+  rmSync(tmp, { recursive: true, force: true });
+  return report;
+};
+
+const unproven = await stopRun("ps-fails", { psFails: true, holdBridge: false });
+assert.ok(unproven.started && unproven.dir, `stop: the launcher started its gateway: ${unproven.stderr}`);
+assert.ok(unproven.gatewayAlive, "stop: with `ps` failing, the gateway that ignores SIGTERM is still running after the launcher exits");
+assert.ok(unproven.dirKept, `stop: a drain that cannot prove the gateway exited leaves the control socket's directory in place: ${unproven.stderr}`);
+assert.ok(/could not prove the gateway exited/.test(unproven.stderr) && unproven.stderr.includes(unproven.dir), `stop: and the log names the directory it left: ${unproven.stderr}`);
+
+const held = await stopRun("held-bridge", { psFails: false, holdBridge: true });
+assert.equal(held.heldClosedWithDir, true, `stop: the sidecar ends an accepted bridge connection before the directory goes: ${held.stderr}`);
+assert.ok(!held.dirKept && !held.gatewayAlive, `stop: once the gateway's exit is proved, the directory is removed: ${held.stderr}`);
+rmSync(stopRoot, { recursive: true, force: true });
+console.log("stop: the control socket's directory is kept without proof of the gateway's exit, and removed after it");
 
 // Terminal sentinel, last line of output, with the count taken from the counting proxy above.
 // Any assertion that threw would have aborted before this line, so reaching it means every

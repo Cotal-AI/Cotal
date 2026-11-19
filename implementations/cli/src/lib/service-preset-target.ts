@@ -6,7 +6,7 @@ import { observeServiceProcess, serviceInstances } from "./service-instances.js"
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
-import { removableServiceInstances, removeStoppedInstanceRecords } from "./service-process.js";
+import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
 
@@ -170,7 +170,9 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   const checked = validateServiceDefinition(next, space);
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);
-  store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name));
+  let retired: string[] = [];
+  store.commit(row.name, row, undefined, () => { retired = removeStoppedInstanceRecords(space, row.name); });
+  removeServiceLogs(space, retired);
   store.commit(row.name, undefined, checked);
   return { requested, name: row.name, preset: preset.name, saved: { kind: "redefined", options: changed } };
 }
@@ -182,7 +184,10 @@ export function forgetRefusedPresetService(space: string, name: string): boolean
   try {
     const store = serviceDefinitionStore(space, addedDefinitionStep), row = store.read(name);
     if (!row) return true;
-    store.commit(name, row, undefined, () => removeStoppedInstanceRecords(space, name));
+    let retired: string[] = [];
+    store.commit(name, row, undefined, () => { retired = removeStoppedInstanceRecords(space, name); });
+    removeServiceLogs(space, retired);
+    pruneEmptyServiceSpace(space);
     return store.read(name) === undefined;
   } catch { return false; }
 }

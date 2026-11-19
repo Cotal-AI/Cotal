@@ -25,6 +25,7 @@ export * from "./endpoint-journal.js";
 export * from "./endpoint-binding.js";
 export * from "./endpoint-schema-diff.js";
 export * from "./space-resource-definitions.js";
+export * from "./space-quiescence-resources.js";
 export * from "./space-deletion-targets.js";
 export * from "./authority-store-config.js";
 export * from "./broker-identity.js";
@@ -112,6 +113,7 @@ export {
   writeSecretFileCreateOnly,
 } from "./secret-fs.js";
 export * from "./launch-material.js";
+export * from "./control-exchange.js";
 export * from "./launch-artifacts.js";
 export * from "./connector-config.js";
 export * from "./kv-scan.js";
