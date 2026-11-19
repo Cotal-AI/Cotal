@@ -121,8 +121,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 {
   const fresh = cotal([]);
   local("bare cotal prints the entry screen and writes nothing", fresh);
-  check("a fresh machine is pointed to sign-in and setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  cotal login  [^\n]*\n  cotal setup  /m.test(fresh.stdout), shown(fresh));
-  check("the entry screen names common commands and where the rest are", /^Everyday\n  cotal ps  /m.test(fresh.stdout) && /^More\n  cotal help  /m.test(fresh.stdout), shown(fresh));
+  check("a fresh machine is pointed to sign-in and setup", /^No space is selected\.$/m.test(fresh.stdout) && /^Start here\n  (?:pnpm )?cotal login  [^\n]*\n  (?:pnpm )?cotal setup  /m.test(fresh.stdout), shown(fresh));
+  check("the entry screen names common commands and where the rest are", /^Everyday\n  (?:pnpm )?cotal ps  /m.test(fresh.stdout) && /^More\n  (?:pnpm )?cotal help  /m.test(fresh.stdout), shown(fresh));
   const ghost = cotal([], (home) => writeFileSync(join(home, "current-mesh"), "ghost\n"));
   local("bare cotal with a selected space writes nothing", ghost);
   check("the entry screen names the selected space, and says when it is not recorded here", ghost.stdout.startsWith("ghost · not recorded · "), shown(ghost));
@@ -137,14 +137,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   });
   local("bare cotal with a prepared space selected writes nothing", elsewhere);
   check("a selected prepared space is started from its folder",
-    elsewhere.stdout.startsWith("planned · prepared · ") && /^Start here\n  cotal up --root \S+\/project +Start this space$/m.test(elsewhere.stdout) && !elsewhere.stdout.includes("cotal spawn"), shown(elsewhere));
+    elsewhere.stdout.startsWith("planned · prepared · ") && /^Start here\n  (?:pnpm )?cotal up --root \S+\/project +Start this space$/m.test(elsewhere.stdout) && !elsewhere.stdout.includes("cotal spawn"), shown(elsewhere));
   const here = cotal([], (home) => {
     mkdirSync(join(dirname(home), ".cotal"));
     prepare(home, "planned", dirname(home));
   });
   local("bare cotal in a prepared folder writes nothing", here);
   check("the space prepared in this folder is named and started here, with nothing selected",
-    here.stdout.startsWith("planned · prepared here · ") && /^Start here\n  cotal up +Start this space$/m.test(here.stdout) && !here.stdout.includes("No space is selected"), shown(here));
+    here.stdout.startsWith("planned · prepared here · ") && /^Start here\n  (?:pnpm )?cotal up +Start this space$/m.test(here.stdout) && !here.stdout.includes("No space is selected"), shown(here));
   // A space this machine started records its root, as `up` does, and stops being a prepared one.
   const register = (cotalHome: string, space: string, root: string): void => {
     mkdirSync(join(cotalHome, "meshes"), { recursive: true });
@@ -156,11 +156,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   });
   local("bare cotal in a started space's folder writes nothing", running);
   check("the space started in this folder leads, with nothing selected, and setup is not the first step",
-    running.stdout.startsWith("live · local · ") && /^Start here\n  cotal spawn +Open your default agent$/m.test(running.stdout) && !running.stdout.includes("No space is selected"), shown(running));
+    running.stdout.startsWith("live · local · ") && /^Start here\n  (?:pnpm )?cotal spawn +Open your default agent$/m.test(running.stdout) && !running.stdout.includes("No space is selected"), shown(running));
   const away = cotal([], (home) => register(home, "live", join(dirname(home), "project")));
   local("bare cotal outside any space's folder writes nothing", away);
   check("with spaces on the machine but none selected or here, it names use and space instead of setup",
-    /^No space is selected\.$/m.test(away.stdout) && /^Start here\n  cotal use <name> +Choose the space commands use\n  cotal space +List the spaces on this machine$/m.test(away.stdout) && !away.stdout.includes("cotal setup  Choose"), shown(away));
+    /^No space is selected\.$/m.test(away.stdout) && /^Start here\n  (?:pnpm )?cotal use <name> +Choose the space commands use\n  (?:pnpm )?cotal space +List the spaces on this machine$/m.test(away.stdout) && !away.stdout.includes("cotal setup  Choose"), shown(away));
 }
 
 // ── Help ───────────────────────────────────────────────────────────────────────────────────────────

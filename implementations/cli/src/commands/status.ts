@@ -1471,8 +1471,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
     else if (instances) hints.push(instances.remedy ?? instances.message);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
-    else if (!d.unsettled || !servedStack(folder, result)) hints.push(remedy ?? message);
-    else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
+    else if (!d.unsettled || !servedStack(folder, result)) {
+      const step = remedy ?? message;
+      hints.push(e.code === "no-meshes" && d.root === undefined ? step.replaceAll("`cotal ", () => `\`${cmd} `) : step);
+    } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
     return result;
   }
   const target = selected.target;
@@ -2018,7 +2020,7 @@ function spacesOverview(r: StatusResult, wide: boolean): Section {
     detail: cell(signsInText(entry, wide), "hint"),
   });
   const columns = [{ key: "space", label: "Space" }, { key: "state", label: "Connection" }, { key: "detail", label: "Signs in" }];
-  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell("Sign in to Cotal Cloud with `cotal login`.", "hint")] });
+  if (!r.meshes.items.length && !r.meshes.unreadable.length) blocks.push({ kind: "lines", lines: [cell("No spaces registered", "hint"), cell(`Sign in to Cotal Cloud with \`${displayCmd()} login\`.`, "hint")] });
   else if (wide) {
     const groups = new Map<string, StatusResult["meshes"]["items"]>();
     for (const entry of r.meshes.items) {
