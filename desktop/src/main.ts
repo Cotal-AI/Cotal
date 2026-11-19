@@ -340,6 +340,7 @@ let editing = false;
 let completedSetup = false;
 let observedReadySpaces: string[] = [];
 let poll: ReturnType<typeof setTimeout> | undefined;
+let watchReconnect: ReturnType<typeof setTimeout> | undefined;
 let windowHidden = false;
 let tickRunning = false;
 let lastTickAt = 0;
@@ -918,8 +919,11 @@ function startStatusWatch(): void {
     watchActive = false;
     const result = requireResult(frame);
     if (initialized && result.closed === true && !upgradeNeeded) {
-      if (poll) clearTimeout(poll);
-      poll = setTimeout(() => void refresh(), 1000);
+      if (watchReconnect) clearTimeout(watchReconnect);
+      watchReconnect = setTimeout(() => {
+        watchReconnect = undefined;
+        if (!watchActive && !watchStarting && !tickRunning && !busy && !rowOperation && !appApplyRunning) void refresh();
+      }, 1000);
     }
   }).catch(async (error) => {
     watchStarting = false;
@@ -1340,7 +1344,7 @@ document.addEventListener("keydown", event => {
   const primary = [...document.querySelectorAll<HTMLButtonElement>(".connection-card .primary:not(:disabled):not([hidden])")].find(button => !button.closest("[hidden]"));
   if (primary) { event.preventDefault(); primary.click(); }
 });
-window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
+window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (watchReconnect) clearTimeout(watchReconnect); if (countdown) clearInterval(countdown); });
 if (isTauri()) {
   void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke<boolean | null>("first_paint"))
     .then(visible => { if (visible === false) windowHidden = true; return start(); }, error => { notice(String(error), true); return start(); });

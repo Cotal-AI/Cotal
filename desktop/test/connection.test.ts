@@ -222,18 +222,20 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
     const doc = win.document as Document;
     const calls: Request[] = [];
     const delays: number[] = [];
+    const timers = new Map<number, { fn: () => Promise<void>; ms: number }>();
     const callbacks = new Map<number, (frame: unknown) => void>();
     const listeners = new Map<string, number>();
     let callback = 0;
-    let tickFn: (() => Promise<void>) | undefined;
     let pushStatus: ((status: Record<string, unknown>) => void) | undefined;
+    let closeWatch: (() => void) | undefined;
+    let daemonRunning = true;
     win.HTMLImageElement.prototype.decode = () => Promise.resolve();
     win.setTimeout = (fn: () => Promise<void>, ms: number) => {
       delays.push(ms);
-      tickFn = fn;
+      timers.set(delays.length, { fn, ms });
       return delays.length;
     };
-    win.clearTimeout = () => {};
+    win.clearTimeout = (id: number) => { timers.delete(id); };
     win.isTauri = true;
     win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     win.__TAURI_INTERNALS__ = {
@@ -257,12 +259,16 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
           account: { mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed: "connected" }] },
         };
         if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "win32", arch: "x64", memoryBytes: 0 } };
-        if (req.op === "status") return { v: 1, event: "result", ok: true, result: statusResult };
+        if (req.op === "status") return daemonRunning
+          ? { v: 1, event: "result", ok: true, result: statusResult }
+          : { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is stopped." } };
         if (req.op === "status-watch") {
           let index = 0;
           pushStatus = (nextStatus) => callbacks.get(args.onEvent!.id)!({ index: index++, message: { v: 1, event: "status", ok: true, watchMode: "push", result: nextStatus } satisfies Frame });
           pushStatus(statusResult);
-          return await new Promise<Frame>(() => {});
+          return await new Promise<Frame>(resolve => {
+            closeWatch = () => resolve({ v: 1, event: "result", ok: true, result: { closed: true } });
+          });
         }
         if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://cloud.cotal.ai/api/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
         throw new Error(`Unexpected request ${req.op}`);
@@ -270,14 +276,20 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
     };
     const emit = (event: string) => callbacks.get(listeners.get(event)!)!({ event, payload: null });
     const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+    async function runTimer(ms: number) {
+      const entry = [...timers].find(([, timer]) => timer.ms === ms);
+      assert.ok(entry, `${ms} ms status timer is armed`);
+      timers.delete(entry[0]);
+      await entry[1].fn();
+      await settle();
+    }
     try {
       win.eval(bundle.code);
       await settle();
       assert.equal(doc.documentElement.dataset.watchMode, "push");
       assert.equal(calls.filter(c => c.op === "status-watch").length, 1, "opens one persistent status-watch stream");
       const statusAfterInit = calls.filter(c => c.op === "status").length;
-      await tickFn!();
-      await settle();
+      await runTimer(60_000);
       emit("desktop-hidden");
       await settle();
       emit("desktop-tray-open");
@@ -293,6 +305,15 @@ test("status-watch pushes updates without polling and VERSION_MISMATCH recovers 
       });
       await settle();
       assert.equal(doc.getElementById("connection-title")!.textContent, "This computer is connected to your account");
+
+      daemonRunning = false;
+      closeWatch!();
+      await settle();
+      await runTimer(1000);
+      assert.equal(calls.filter(c => c.op === "status").length, statusAfterInit + 1);
+      daemonRunning = true;
+      await runTimer(60_000);
+      assert.equal(calls.filter(c => c.op === "status-watch").length, 2, "the minute check reconnects after a slow daemon restart");
     } finally {
       win.close();
     }
