@@ -1128,7 +1128,9 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
-    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    // Match extension installation: npm installs the declared dependencies, and reconciliation
+    // links Cotal peers from the target binary. Its archives were checked at the selected version.
+    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--legacy-peer-deps", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) throw releaseReadError(result, `installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
