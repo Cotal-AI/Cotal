@@ -112,7 +112,7 @@
     },
     {
       "name": "boot joins a family only when the space default is durable",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-boot-memberships.ts",
       "find": "      if (!isChannelFamily(channel)) {\n        if (!isConcreteChannel(channel)) continue;",
       "replace": "      if (true) {\n        if (!isConcreteChannel(channel)) continue;",
       "expectRed": "an agent booted on team.> with a live default holds its family row",
