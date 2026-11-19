@@ -176,6 +176,24 @@ try {
     const wheres = details.map((d) => (d as { where?: { file?: unknown; line?: unknown; frame?: unknown } }).where);
     c("each problem names its file and line and carries no rendered source frame (the caller holds the source)",
       wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
+    const syntaxFile = "syntax.cotal.js";
+    writeFileSync(join(wsA, syntaxFile), "const answer = 42\nconst broken =\n  )\n");
+    const startSyntax = (mode: "--json" | "--plain") => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "start", "--file", syntaxFile, mode], {
+      cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000,
+    }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr }), (error: { code: number; stdout: string; stderr: string }) => error);
+    const syntaxJson = await startSyntax("--json");
+    const syntax = (() => { try { return JSON.parse(syntaxJson.stdout); } catch { return undefined; } })();
+    const problem = syntax?.error?.cause?.detail?.[0];
+    c("hosted start JSON carries the syntax diagnostic and writes nothing to stderr",
+      syntaxJson.code === 1 && syntaxJson.stderr === "" && syntax?.outcome === "refused" && syntax.error?.code === "SCHEMA_INVALID"
+        && syntax.error.cause?.code === "bad-request" && syntax.error.cause.detail?.length === 1
+        && problem?.kind === LANG_PROBLEM_DETAIL_KIND && problem.code === "L1008" && problem.title === "Invalid syntax or newline hazard"
+        && problem.where?.file === syntaxFile && problem.where.line === 3 && problem.where.column === 3
+        && problem.cause?.includes("Unexpected token") && problem.fix === "Fix the syntax at the marked position.", syntaxJson);
+    const syntaxPlain = await startSyntax("--plain");
+    c("hosted start still prints the language problem in plain mode", syntaxPlain.code === 1 && syntaxPlain.stdout === ""
+      && syntaxPlain.stderr.includes("L1008 Invalid syntax or newline hazard (syntax.cotal.js:3:3)")
+      && syntaxPlain.stderr.includes("fix: Fix the syntax at the marked position."), syntaxPlain);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
   }
@@ -1104,7 +1122,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 102;
+const EXPECTED_CELLS = 104;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;
