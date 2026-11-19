@@ -401,7 +401,8 @@ remedy without the command's help, because the command itself was not mistyped. 
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
 2, before it does anything, names that file and says to rename or move it. `help`, `version` and
 `completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
-exists, and there `help` says the folder is gone instead of showing a space.
+exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
+contains relative entries.
 
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
