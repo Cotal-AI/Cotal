@@ -479,7 +479,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
-  if (!values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
+  if (!values.yes && !interactive) {
+    const command = withAgents ? "cotal down --with-agents" : "cotal down";
+    throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: `run \`${command} --yes\` to stop it. \`${command} --dry-run\` shows what it stops` });
+  }
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
   // members, and put back as it was when the stop ends before any member stops.
   const stranded = strandedRegistration(journal0, members);

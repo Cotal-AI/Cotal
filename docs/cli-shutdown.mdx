@@ -91,9 +91,10 @@ interactive terminal it shows the member set and the live manager's native agent
 confirm, then stops manager, delivery and broker in that order. `--yes` acknowledges that scope in
 scripts and prints no plan. The receipt names the mesh once, lists each member with its result in
 stop order, and names `cotal up` as the next step. `--with-agents`
-requests the manager's native retirement policy. A stack started with `up --no-manager` refuses
-`down --with-agents` with `LIFECYCLE_BLOCKED` and stops nothing. To stop that stack without
-requesting agent retirement, run `cotal down --yes`. Pending native lifecycle work refuses before any
+requests the manager's native retirement policy. If a noninteractive stop needs confirmation, its
+confirmation and preview commands keep `--with-agents` when you requested it. A stack started with
+`up --no-manager` refuses `down --with-agents` with `LIFECYCLE_BLOCKED` and stops nothing. To stop
+that stack without requesting agent retirement, run `cotal down --yes`. Pending native lifecycle work refuses before any
 stop. The refusal lists each blocker and its count and names `cotal ps` to inspect the agents before
 retrying. Another live service instance in the space
 refuses `LIFECYCLE_BLOCKED` before the first stop; the Next names the
@@ -105,7 +106,9 @@ nothing. It refuses neither bare `down` nor a stop of `stack-broker`, `down --dr
 a complete bare `down` removes it with its pin and names it in a `STALE_PROCESS_RECORD` warning. The
 process that holds a reused pid is never signalled. The broker scope
 is checked again after its dependants stop. A failure stops the sequence and preserves completed and
-unattempted members. A member stopped by signal that has not exited 15 seconds after SIGTERM gets
+unattempted members. When `down` finds the original manager process gone during its stop, it checks
+for a matching completion receipt before continuing. Process exit alone does not confirm that stop.
+A member stopped by signal that has not exited 15 seconds after SIGTERM gets
 SIGKILL. Its row then reads `stopped with SIGKILL`, and a `STOP_ESCALATED` warning names its pid.
 Only a complete confirmed stop removes the delivery credential and local registration. After the
 delivery daemon stops, `down` reads its lease. When the daemon was already gone, or the lease still

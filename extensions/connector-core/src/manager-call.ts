@@ -17,6 +17,7 @@ import {
   dialerFor,
   goalFollowRefusal,
   invokeCommand,
+  isAuthRejection,
   isPermissionDenied,
   issuedUserCaller,
   managerCallerBinding,
@@ -164,14 +165,21 @@ export class AgentManagerCalls {
       if (this.config.userAuth) {
         const bearerCmd = this.config.userAuth.bearerCmd;
         if (!bearerCmd)
-          return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };
+          throw new EpEnvelopeError("failed-precondition", `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable`, undefined, "not-executed");
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
         // An ambiguity refusal names the bearer command's own selector. This caller passes it from
         // the tool's `instance` argument, so the tool's caller is told that argument instead.
         const bearerArgv = [...bearerCmd, "--manager-call", ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : [])];
         const bearer = (signal?: AbortSignal) => this.managerCallBearer(bearerArgv, signal).catch((e: unknown) => {
-          throw e instanceof Error ? new Error(e.message.replace("--manager-instance <instanceId>", "the instance argument")) : e;
+          if (signal?.aborted || !(e instanceof Error) || e instanceof EpEnvelopeError) throw e;
+          const message = e.message.replace("--manager-instance <instanceId>", "the instance argument");
+          if (typeof (e as Error & { retryAfterSeconds?: number }).retryAfterSeconds === "number")
+            throw new EpEnvelopeError("resource-exhausted", message, undefined, "not-executed");
+          // The bearer subprocess only reports a refusal as an operator sentence, as on the seat-read path.
+          if (e.message.startsWith("agent-bearer: exchange refused:"))
+            throw new EpEnvelopeError("permission-denied", message, undefined, "not-executed");
+          throw new Error(message);
         });
         dropBearer = () => { this.managerBearers.delete(JSON.stringify(bearerArgv)); };
         // Subscribe before submission on the renewing main connection. A long accepted launch
@@ -391,20 +399,31 @@ export async function invokeUserManager(
   const connect = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)) => {
     const token = await bearer(signal);
     let credentialId: string | undefined;
-    ({ caller, instanceId, credentialId } = managerCallerBinding(token, {
-      space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
-    }));
+    try {
+      ({ caller, instanceId, credentialId } = managerCallerBinding(token, {
+        space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
+      }));
+    } catch {
+      throw new EpEnvelopeError("failed-precondition", "the manager control bearer is not bound to the expected caller and manager instance", undefined, "not-executed");
+    }
     const connectOpts = standaloneConnectOpts({ bearer: token, sentinelCreds: user.sentinelCreds, tls: config.tls });
     signal?.throwIfAborted();
     const left = deadline - Date.now();
     if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
       "the deadline passed before the manager was connected; the manager request WAS NOT RUN", undefined, "not-executed");
-    nc = await dialerFor(config.servers)({
-      servers: config.servers,
-      ...connectOpts,
-      maxReconnectAttempts: 0,
-      timeout: left,
-    });
+    try {
+      nc = await dialerFor(config.servers)({
+        servers: config.servers,
+        ...connectOpts,
+        maxReconnectAttempts: 0,
+        timeout: left,
+      });
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof EpEnvelopeError) throw error;
+      throw new EpEnvelopeError(isAuthRejection(error) ? "permission-denied" : "unavailable",
+        error instanceof Error ? error.message : String(error), undefined, "not-executed");
+    }
     // An in-flight dial has no connection handle to close yet. A late result never publishes, and
     // it is closed here because a follow that stopped or reached its deadline has already returned.
     if (signal?.aborted) onAbort();

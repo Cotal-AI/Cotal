@@ -129,13 +129,14 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the native manager refused the changed request or impact before stopping; inspect again before a new confirmation");
       }
       if (phases.some((row) => row.phase === "failed")) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager reported a failed stop; process and cleanup completion remain unconfirmed and the original request was retained");
-      const completed = phases.find((row) => row.phase === "completed");
       const identity = assertRecordIdentity(context.process);
-      if (completed && (identity.kind === "gone" || identity.kind === "mismatch")) {
+      if (identity.kind === "gone" || identity.kind === "mismatch") {
+        // The manager can publish completion and exit after the phase read above.
+        const completed = phases.find((row) => row.phase === "completed") ?? readServiceStopReceipts(context, request).find((row) => row.phase === "completed");
+        if (!completed) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original manager process exited without its native returned receipt; disappearance was not treated as a completed stop or cleanup");
         releasable = true;
         return { requestId: request.requestId, scopeSha256: request.scopeSha256, process: { ...request.target }, nativeStop: request.preserved ? "preserved-exit-returned" : "returned", cleanup: "not-checked", observedAt: completed.observedAt };
       }
-      if (!completed && (identity.kind === "gone" || identity.kind === "mismatch")) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original manager process exited without its native returned receipt; disappearance was not treated as a completed stop or cleanup");
       await delay(100, undefined, { signal: context.signal });
     }
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native manager stop did not confirm both return and process exit; its request/reservation were retained, without force kill or restart");
