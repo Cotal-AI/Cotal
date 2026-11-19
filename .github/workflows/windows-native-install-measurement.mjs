@@ -45,9 +45,10 @@ require("node:module").syncBuiltinESMExports();
 `);
 
 function call(verb, flags = [], slow = false) {
-  const args = [...(slow ? ["--require", preload] : []), cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
+  const args = [cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
+  const env = slow ? { ...process.env, NODE_OPTIONS: `--require "${preload.replaceAll("\\", "/")}"` } : process.env;
   const start = Date.now();
-  const child = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 190_000, windowsHide: true });
+  const child = spawnSync(process.execPath, args, { env, encoding: "utf8", timeout: 190_000, windowsHide: true });
   console.log(JSON.stringify({ verb, flags, slow, elapsedMs: Date.now() - start, status: child.status, stdout: child.stdout, stderr: child.stderr }));
   assert.ifError(child.error);
   return { exit: child.status, body: JSON.parse(child.stdout), diagnostic: child.stderr };

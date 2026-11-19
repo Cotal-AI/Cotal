@@ -2,7 +2,7 @@ name: Windows native install measurement
 on:
   push:
     branches: [fix/windows-native-install-timeout]
-    paths: ['.github/workflows/windows-native-install-measurement.yml', 'bin/daemon/install*.ts', 'bin/daemon/ownership-win32.ts']
+    paths: ['.github/workflows/windows-native-install-measurement.*', 'bin/daemon/install*.ts', 'bin/daemon/ownership-win32.ts']
 permissions:
   contents: read
 env:
