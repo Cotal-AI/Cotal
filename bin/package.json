@@ -38,6 +38,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
     "seeded-connectors": "node scripts/copy-seeded-connectors.mjs",
+    "postinstall": "node scripts/pin-npm-node.mjs",
     "prepack": "node scripts/copy-seeded-connectors.mjs",
     "prepublishOnly": "pnpm run build"
   },
@@ -70,6 +71,7 @@
   },
   "files": [
     "dist",
+    "scripts/pin-npm-node.mjs",
     "seeded-connectors",
     "README.md",
     "LICENSE"

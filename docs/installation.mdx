@@ -92,6 +92,9 @@ Use this route on Windows.
 The shell installer does not support Windows shells.
 You can also use the shell installer inside WSL.
 
+On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.
+The launcher uses it when Node is not on PATH. If that executable is gone, restore a supported Node to PATH and reinstall Cotal with npm.
+
 Cotal includes a `nats-server` binary for its local broker.
 If you put your own `nats-server` on PATH, Cotal uses it when its folder is not writable by other accounts.
 Otherwise it uses the bundled binary. `cotal up` refuses a selected broker older than 2.12 and names its path and version.
@@ -107,6 +110,8 @@ The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable i
 Reinstalling over retained daemon records reconciles the owned service before reporting success.
 On Linux, if its old Node runtime was removed with the shell installation, the installer binds the unchanged service to the Node it selected for the same CLI entry.
 It does not adopt a service from another installation or overwrite an edited unit.
+If the destination launcher belongs to a different npm installation and a daemon service is recorded, the shell installer refuses before changing the launcher.
+Keep the npm installation and run `cotal update --self`, or stop your spaces and run `cotal daemon uninstall` from the installation that owns the service before switching.
 
 Open a new terminal, then run:
 

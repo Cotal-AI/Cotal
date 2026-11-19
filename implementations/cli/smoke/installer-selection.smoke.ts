@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -76,9 +76,11 @@ try {
   const npmPackage = join(root, "npm-package");
   mkdirSync(npmHome);
   mkdirSync(npmPackage);
-  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "cotal.js" } }));
-  writeFileSync(join(npmPackage, "cotal.js"), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n');
-  chmodSync(join(npmPackage, "cotal.js"), 0o755);
+  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "dist/cotal.js" }, scripts: { postinstall: "node scripts/pin-npm-node.mjs" } }));
+  mkdirSync(join(npmPackage, "dist"));
+  mkdirSync(join(npmPackage, "scripts"));
+  copyFileSync(resolve(import.meta.dirname, "../../../bin/scripts/pin-npm-node.mjs"), join(npmPackage, "scripts/pin-npm-node.mjs"));
+  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log("cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   const npmSection = installation.split("## Install with npm")[1]?.split("## ")[0];
   const npmSteps = npmSection?.match(/```bash\n([^`]+)```/)?.[1];
@@ -94,12 +96,27 @@ try {
     npm_config_registry: "http://127.0.0.1:9",
     FIXTURE_PACKAGE: npmPackage,
   };
-  const npmInstall = spawnSync("/bin/sh", ["-c", `set -eu\n${npmSteps.replace("npm install -g cotal-ai", 'npm install -g "$FIXTURE_PACKAGE" --offline --ignore-scripts --no-audit --no-fund')}\ncotal --version`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
+  const npmInstall = spawnSync("/bin/sh", ["-c", `set -eu\n${npmSteps.replace("npm install -g cotal-ai", 'archive=$(npm pack "$FIXTURE_PACKAGE" --offline --pack-destination "$HOME" --silent)\nnpm install -g "$HOME/$archive" --offline --no-audit --no-fund')}\ncotal --version`], { env: npmEnv, encoding: "utf8", timeout: 30_000 });
   assert.equal(npmInstall.status, 0, output(npmInstall));
   assert(output(npmInstall).includes("cotal-ai 0.0.0"), "the documented PATH selects npm's installed executable, including with spaces and quotes in HOME");
   const npmPrefix = spawnSync("npm", ["prefix", "-g"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
   assert.equal(npmPrefix.status, 0, output(npmPrefix));
   assert.equal(npmPrefix.stdout.trim(), join(npmHome, ".local"), "the documented npm prefix persists for future global installs");
+  const npmLauncher = join(npmHome, ".local/bin/cotal");
+  const npmLink = readlinkSync(npmLauncher);
+  const noNode = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
+  assert.equal(noNode.status, 0, output(noNode));
+  assert.equal(noNode.stdout.trim(), "cotal-ai 0.0.0", "npm launcher uses the install-time Node without Node on PATH");
+  const daemonDir = join(npmHome, "cotal", "daemon");
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(join(daemonDir, "service-unit.json"), "{}\n");
+  const cutover = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup", "--no-modify-path"], {
+    env: { ...npmEnv, COTAL_HOME: dirname(daemonDir) }, encoding: "utf8", timeout: 10_000,
+  });
+  assert.equal(cutover.status, 1, output(cutover));
+  assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
+  assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
+  assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage a second installation");
   const removeSection = installation.split("## Remove Cotal")[1]?.split("## ")[0];
   const removeSteps = removeSection?.match(/```bash\n([^`]+)```/)?.[1];
   assert(removeSteps, "npm removal instructions include a shell command block");
@@ -357,7 +374,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 90 : 69, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 96 : 75, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });
