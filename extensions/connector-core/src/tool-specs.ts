@@ -102,18 +102,24 @@ function renderAnycastCancel(status: AnycastStatus): string {
   return `Not cancelled: request seq ${seq} on @${status.role} is still waiting. Try the cancel again.`;
 }
 
+/** Why an empty local buffer says nothing about the mesh while the session cannot hear from it, or
+ *  "" when it can. */
+export function connectionNotReadyWarning(agent: MeshAgent): string {
+  const state = agent.connectionState;
+  if (state === "ready" || state === "stalled") return "";
+  const issue = agent.connectionIssue;
+  return `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`;
+}
+
 /** A local inbox read cannot establish that a session is receiving from the mesh. */
 function inboxConnectionWarning(agent: MeshAgent): string {
-  const state = agent.connectionState;
   const channelIssue = agent.channelDeliveryIssue;
   // A role request whose take the delivery daemon could not decide is held, not shown (SPEC §8.1).
   const held = agent.heldTakes();
   const heldIssue = held.count && held.detail
     ? `${held.count} role request${held.count === 1 ? " is" : "s are"} held and not shown: ${held.detail}`
     : undefined;
-  if (state === "ready" || state === "stalled") return [channelIssue, heldIssue].filter(Boolean).join("\n");
-  const issue = agent.connectionIssue;
-  return [channelIssue, heldIssue, `Mesh connection is not ready (${state})${issue ? `: ${issue.slice(0, 500)}` : "."}\nLocally buffered messages are still readable; an empty buffer does not mean no new mesh messages.`].filter(Boolean).join("\n");
+  return [channelIssue, heldIssue, connectionNotReadyWarning(agent)].filter(Boolean).join("\n");
 }
 
 /** Cap on the JSON text a generic endpoint tool returns into the session. */
