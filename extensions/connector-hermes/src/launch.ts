@@ -318,8 +318,13 @@ async function main(): Promise<void> {
   const persistent = adopt ? undefined : hermesSeatHome(config.space, config.name);
   const moved = persistent && moveLegacyHermesFork(config.space, config.name);
   const disposableHome = process.env.COTAL_HERMES_SEAT_HOME;
-  const managed = persistent && disposableHome && !existsSync(join(persistent.home, HERMES_FORK_RECORD))
-    ? { root: dirname(dirname(disposableHome)), home: disposableHome }
+  const disposableRoot = disposableHome && dirname(dirname(disposableHome));
+  if (persistent && disposableRoot && (dirname(disposableRoot) !== tmpdir()
+    || !/^cotal-hermes-[A-Za-z0-9]{6}$/.test(basename(disposableRoot))
+    || disposableHome !== join(disposableRoot, "profiles", basename(persistent.home))))
+    throw new LaunchRefused("the disposable Hermes profile is not inside its launch temporary directory");
+  const managed = persistent && disposableRoot && disposableHome && !existsSync(join(persistent.home, HERMES_FORK_RECORD))
+    ? { root: disposableRoot, home: disposableHome }
     : persistent;
   const home = adopt ?? managed!.home;
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
