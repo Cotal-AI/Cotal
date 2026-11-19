@@ -19,8 +19,8 @@
     {
       "name": "replacement strings are literal again, the shipped defect",
       "file": "packages/lang/src/library.ts",
-      "find": "    replace: (_f, s, a) => s.replace(str(\"replace\", a[0]), String(a[1])),",
-      "replace": "    replace: (_f, s, a) => s.replace(str(\"replace\", a[0]), () => String(a[1])),",
+      "find": "      return s.replace(from, String(a[1]));",
+      "replace": "      return s.replace(from, () => String(a[1]));",
       "expectRed": "replacement strings mean what JavaScript says: $-patterns, first vs all",
       "completionMarker": "ok a program that logs a literal",
       "cell": "replacement strings mean what JavaScript says: $-patterns, first vs all",
@@ -29,8 +29,8 @@
     {
       "name": "the free replace is split/join again, so $-patterns are literal",
       "file": "packages/lang/src/library.ts",
-      "find": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).replaceAll(strArg(\"replace\", a[1]), String(a[2])))],",
-      "replace": "    [\"replace\", fn(\"replace\", (_f, a) => strArg(\"replace\", a[0]).split(strArg(\"replace\", a[1])).join(String(a[2])))],",
+      "find": "      assertStringFits(\"replace\", replacedUnits(s, from, String(a[2]), true));\n      return s.replaceAll(from, String(a[2]));",
+      "replace": "      assertStringFits(\"replace\", replacedUnits(s, from, String(a[2]), true));\n      return s.split(from).join(String(a[2]));",
       "expectRed": "the free string builtins ARE the methods, spelled free: substitution included",
       "completionMarker": "ok a program that logs a literal",
       "cell": "the free string builtins ARE the methods, spelled free: substitution included",

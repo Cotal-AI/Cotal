@@ -51,13 +51,21 @@ export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> =
   template: [2, 2],
   binary: [3, 3],
   unary: [2, 2],
-  iter: [1, 1],
+  // 1 to spread or loop; 3 for a destructuring pattern's reading of a string (how many elements it
+  // takes, and whether a rest element takes the others).
+  iter: [1, 3],
   caught: [1, 1],
   // Member 14: L4011 at a non-function callee. `const f = 1; f()` is a program the
   // validator ADMITS (measured at 9dc154f8), and the walker answers L4011 where a native call
   // answers a host TypeError. Emitted behind a `typeof` fast path, so a call to a real function
   // never reaches the host.
   callee: [1, 1],
+  // Member 15: the value-size bound for a literal, call or rest that spreads. Each operand is copied
+  // as it is evaluated, in source order, and counted here right after, so an over-bound spread is
+  // refused before the host builds it: (kind, operands so far, the other elements' count or a
+  // record's plain keys, the operation the refusal names), and a fifth, the keys an object rest
+  // pattern took by name.
+  spread: [4, 5],
 });
 
 /** The member NAMES the seam grants. Derived from the table above, so the two cannot disagree. */

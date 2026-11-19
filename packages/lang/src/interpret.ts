@@ -30,6 +30,7 @@ export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from
 import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
 import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
+import { assertArrayFits, assertFieldWriteFits, assertRecordFits, assertStringFits, codePoints, distinctFields, sized, stringElements } from "./limits.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
@@ -552,9 +553,11 @@ class Interpreter {
           `index ${i} is past the end of this array (length ${obj.length}), and JavaScript would fill the gap with holes, which this language does not have. Write at an existing index, at the length to append, or use \`push\`.`,
         );
       }
+      if (i === obj.length) assertArrayFits("this index write", i + 1);
     } else if (prop === "__proto__") {
       throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
     }
+    if (!Array.isArray(obj)) assertFieldWriteFits(obj as object, prop);
     setRecordMember(obj, prop, value);
   }
 
@@ -637,6 +640,7 @@ class Interpreter {
         let out = "";
         for (let i = 0; i < quasis.length; i += 1) {
           out += ((quasis[i] as AnyNode).value as { cooked: string }).cooked;
+          assertStringFits("this template", out.length);
           if (i < exprs.length) {
             // Primitives interpolate as JavaScript interpolates them; a container or a function is
             // refused (L4018). Measured before the refusal: `${o}` on a record with its own
@@ -644,26 +648,33 @@ class Interpreter {
             // INTERPRETER'S OWN COMPILED CLOSURE — an implementation detail leaking into a value.
             const v = await this.evaluate(exprs[i] as AnyNode, env, frame);
             refuseCoercion("${...}", v);
-            out += String(v);
+            const text = String(v);
+            assertStringFits("this template", out.length + text.length);
+            out += text;
           }
         }
         return out;
       }
       case "ArrayExpression": {
-        const out: unknown[] = [];
-        for (const el of (node.elements as AnyNode[]) ?? []) {
-          if (el.type === "SpreadElement") out.push(...this.spreadable(await this.evaluate(el.argument as AnyNode, env, frame)));
-          else out.push(await this.evaluate(el, env, frame));
-        }
-        return born(out, frame.depth);
+        const elements = (node.elements as AnyNode[]) ?? [];
+        const spreads = elements.some((el) => el.type === "SpreadElement");
+        return born(await this.evaluateList(elements, env, frame, spreads ? "this spread" : "this array"), frame.depth);
       }
       case "ObjectExpression": {
+        // Each property in order, as JavaScript builds it and as main's walker did: a spread's fields
+        // are copied the moment it is evaluated, and a member the record may not have (a callable
+        // `then`, L4021) is refused before the next property runs. The distinct fields are counted
+        // at each spread, before it is copied, and once at the end, as the compiled engine counts.
         const out: Record<string, unknown> = {};
-        for (const p of (node.properties as AnyNode[]) ?? []) {
+        const props = (node.properties as AnyNode[]) ?? [];
+        const spreads = props.some((p) => p.type === "SpreadElement");
+        for (const p of props) {
           if (p.type === "SpreadElement") {
             const src = await this.evaluate(p.argument as AnyNode, env, frame);
             if (src !== null && src !== undefined) {
-              for (const [k, v] of Object.entries(src as Record<string, unknown>)) setRecordMember(out, k, v);
+              const entries = Object.entries(src as Record<string, unknown>);
+              assertRecordFits("this record spread", distinctFields(out, entries));
+              for (const [k, v] of entries) setRecordMember(out, k, v);
             }
             continue;
           }
@@ -671,6 +682,7 @@ class Interpreter {
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
           setRecordMember(out, name, await this.evaluate(p.value as AnyNode, env, frame));
         }
+        assertRecordFits(spreads ? "this record spread" : "this record", Object.keys(out).length);
         return born(out, frame.depth);
       }
       case "MemberExpression": {
@@ -818,10 +830,36 @@ class Interpreter {
     return v;
   }
 
+  /**
+   * Evaluate a list's elements in order into one array, as JavaScript builds an array literal or an
+   * argument list: a spread's elements are copied the moment the spread is evaluated, so a later
+   * element that changes the operand changes nothing already copied (`[...xs, xs.push(2)]` is
+   * `[1, 2]` for `xs = [1]`). The length is checked before each part is added, naming `where`, so a
+   * list over the bound is refused before the host builds it.
+   */
+  private async evaluateList(nodes: readonly AnyNode[], env: Env, frame: Frame, where: string): Promise<unknown[]> {
+    const out: unknown[] = [];
+    for (const n of nodes) {
+      if (n.type === "SpreadElement") {
+        const items = this.spreadable(await this.evaluate(n.argument as AnyNode, env, frame));
+        assertArrayFits(where, out.length + items.length);
+        for (const x of items) out.push(x);
+      } else {
+        const v = await this.evaluate(n, env, frame);
+        assertArrayFits(where, out.length + 1);
+        out.push(v);
+      }
+    }
+    return out;
+  }
+
   /** What `...x` and `for (const v of x)` may iterate: an array or a string, and nothing else (L4015). */
   private spreadable(v: unknown): unknown[] {
     if (Array.isArray(v)) return v;
-    if (typeof v === "string") return [...v];
+    if (typeof v === "string") {
+      assertArrayFits("spreading this string", codePoints(v));
+      return [...v];
+    }
     throw new RuntimeFault(
       "L4015",
       `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
@@ -843,7 +881,7 @@ class Interpreter {
       for (let i = 0; i < params.length; i += 1) {
         const param = params[i] as AnyNode;
         if (param.type === "RestElement") {
-          await this.bindPattern(param.argument as AnyNode, born(args.slice(i), frame.depth), env, frame, "let");
+          await this.bindPattern(param.argument as AnyNode, born(sized("these rest parameters", args.slice(i)), frame.depth), env, frame, "let");
           break;
         }
         await this.bindPattern(param, args[i], env, frame, "let");
@@ -894,8 +932,11 @@ class Interpreter {
         const taken: string[] = [];
         for (const p of pattern.properties as AnyNode[]) {
           if (p.type === "RestElement") {
+            // Counted before it is built: the fields not taken by name, each once.
+            const entries = Object.entries(src).filter(([k]) => !taken.includes(k));
+            assertRecordFits("this rest element", entries.length);
             const rest: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setRecordMember(rest, k, v);
+            for (const [k, v] of entries) setRecordMember(rest, k, v);
             await this.bindPattern(p.argument as AnyNode, born(rest, frame.depth), env, frame, mode);
             continue;
           }
@@ -910,13 +951,18 @@ class Interpreter {
         if (value === null || value === undefined) {
           throw new RuntimeFault("L4010", `cannot destructure ${String(value)}: there are no elements to take`);
         }
-        const src = this.spreadable(value);
         const els = pattern.elements as (AnyNode | null)[];
+        // A string gives only what the pattern takes, so an in-bound string destructures whatever its
+        // length; a rest element is the one part that builds an array, and it is bounded.
+        const restAt = els.findIndex((el) => el?.type === "RestElement");
+        const src = typeof value === "string"
+          ? stringElements(value, restAt === -1 ? els.length : restAt, restAt !== -1, "this rest element")
+          : this.spreadable(value);
         for (let i = 0; i < els.length; i += 1) {
           const el = els[i];
           if (el === null || el === undefined) continue;
           if (el.type === "RestElement") {
-            await this.bindPattern(el.argument as AnyNode, born(src.slice(i), frame.depth), env, frame, mode);
+            await this.bindPattern(el.argument as AnyNode, born(sized("this rest element", src.slice(i)), frame.depth), env, frame, mode);
             break;
           }
           await this.bindPattern(el, src[i], env, frame, mode);
@@ -952,11 +998,8 @@ class Interpreter {
       fn = await this.evaluate(callee, env, frame);
     }
     if ((fn === null || fn === undefined) && node.optional === true) throw SHORT_CIRCUIT;
-    const args: unknown[] = [];
-    for (const a of argNodes) {
-      if (a.type === "SpreadElement") args.push(...this.spreadable(await this.evaluate(a.argument as AnyNode, env, frame)));
-      else args.push(await this.evaluate(a, env, frame));
-    }
+    const spreads = argNodes.some((a) => a.type === "SpreadElement");
+    const args = await this.evaluateList(argNodes, env, frame, spreads ? "this spread" : "these arguments");
     if (typeof fn !== "function") {
       throw new RuntimeFault("L4011", `this value is not a function, so it cannot be called`);
     }
@@ -1382,6 +1425,7 @@ function applyBinary(op: string, l: unknown, r: unknown): unknown {
     case ">=":
       return a >= b;
     case "+":
+      if (typeof l === "string" || typeof r === "string") assertStringFits("`+`", String(l).length + String(r).length);
       return a + b;
     case "-":
       return a - b;
