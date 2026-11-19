@@ -640,11 +640,11 @@ function assertInterrupts(list: readonly AguiInterrupt[]): void {
  * outcome IS supplied its discriminator key is `type`, not `status` (measured: the schema refuses
  * `{status:"success"}` naming `outcome.type`), and the object is STRICT.
  *
- * The `interrupt` outcome is REPRESENTABLE and VALIDATED here, and UNSPENT: no source on this plane
- * constructs one, because a harness-native park is what would justify it and none of the three
- * sources reports one. It is checked anyway because the arm exists, and an arm that builds an event
- * the schema refuses is worse than an arm that does not exist. Its first draft took `unknown[]` and
- * passed it through, so `[]` and `[{}]` both produced a refused event with nothing looking.
+ * The `interrupt` outcome closes a turn its harness reports as interrupted: an aborted Codex turn,
+ * Claude Code's record of its user interrupting a turn, and an aborted Pi turn. Its list is checked
+ * because an arm that builds an event the schema refuses is worse than an arm that does not exist:
+ * the first draft took `unknown[]` and passed it through, so `[]` and `[{}]` both produced a refused
+ * event with nothing looking.
  */
 export function runFinished(o: {
   threadId: string;

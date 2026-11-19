@@ -30,6 +30,7 @@ import {
 import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
 import { recordCarriedFork } from "./carried.js";
+import { watchForInterrupt } from "./interrupt-watch.js";
 
 const STOP_TRANSCRIPT_WAIT_MS = 750;
 const STOP_TRANSCRIPT_POLL_MS = 25;
@@ -378,6 +379,40 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
+  /** The interrupt ends the turn as `Stop` would. Its record closes the run on the event plane, so
+   *  this flushes it and reports no terminal. The prompt the turn may have been waiting on is gone,
+   *  so its condition is cleared too. */
+  const endInterruptedTurn = async (agent: MeshAgent, path: string): Promise<void> => {
+    if (!turnOpen) return;
+    sealAwaiting();
+    turnOpen = false;
+    promptOpen = false;
+    pendingTool = undefined;
+    flushEvents(path);
+    await safeCondition(agent, null);
+    await safeStatus(agent, "idle");
+    if (agent.pendingWake() > 0) agent.requestWake();
+  };
+
+  /** Stops the interrupt watch of the open main-agent turn. Claude Code fires no hook when its user
+   *  interrupts a turn, so the transcript is watched for the interrupt record while a turn is open,
+   *  and every terminal hook stops the watch. */
+  let stopInterruptWatch: (() => void) | undefined;
+  const unwatchTurn = (): void => {
+    stopInterruptWatch?.();
+    stopInterruptWatch = undefined;
+  };
+  const watchTurn = (agent: MeshAgent, path: unknown): void => {
+    unwatchTurn();
+    if (typeof path !== "string" || !path) return;
+    const stop = watchForInterrupt(path, () => {
+      if (stopInterruptWatch !== stop) return;
+      stopInterruptWatch = undefined;
+      void endInterruptedTurn(agent, path);
+    });
+    stopInterruptWatch = stop;
+  };
+
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. A
    *  role request is taken only when the batch carries it (SPEC §8.1). */
   const surfaceAutomatic = async (agent: MeshAgent, ev: HookEvent, reserved = 0): Promise<string | undefined> => {
@@ -543,6 +578,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "UserPromptSubmit": {
           const begun = terminals;
           turnOpen = true;
+          watchTurn(agent, ev.transcript_path);
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           promptOpen = false;
           flushEvents(ev.transcript_path);
@@ -559,6 +595,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // let a subagent open the main turn or a later tool clear an unresolved prompt.
           if (!turnOpen && ev.agent_id === undefined) {
             turnOpen = true;
+            watchTurn(agent, ev.transcript_path);
             promptOpen = false;
             await safeStatus(agent, "working");
           }
@@ -602,6 +639,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "StopFailure": {
           sealAwaiting();
           turnOpen = false;
+          unwatchTurn();
           promptOpen = false;
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
           const stoppedAt = Date.now();
@@ -638,6 +676,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "SessionEnd":
           sealAwaiting();
           turnOpen = false;
+          unwatchTurn();
           promptOpen = false;
           flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");

@@ -649,6 +649,11 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
+An interrupt, such as Escape in the session, fires no hook. Claude Code writes it to the transcript
+instead, so while a turn is open the connector watches the transcript for that record. The record
+ends the turn: presence returns to `idle` within about a second, and any `approval` or `input`
+condition clears.
+
 The connector also leaves gracefully when its stdin closes. An MCP client closes it to end the
 session, and a killed `claude` closes it with no `SessionEnd`, so a dead session drops off the
 roster instead of staying on it as a live peer.
@@ -886,7 +891,8 @@ reported nor its error kind is published there: both are upstream values that ca
 tool output, and the events channel has a different read ACL. The error kind still reaches presence
 as the agent's condition (`rate_limit`, `auth`, `billing` and the rest). A turn that ended normally still
 ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
-succeeded.
+succeeded. A turn you interrupt ends with a run-finished event whose outcome is `interrupt`, read
+from the interrupt record Claude Code writes to the transcript.
 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
