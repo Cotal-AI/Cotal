@@ -1098,8 +1098,9 @@ login --idp <url>` line when it does not, with no network round trip either way.
 provisioned space also shows the actor grant row; a discovered or registered remote entry reports
 the grant as not checkable on this machine, because the ledger runs where the space was
 provisioned. `--components` on a user-mode target probes delivery as that
-same signed-in login, never a static mint. The broker row only checks that the
-registered address is reachable. It does not present the login. The manager
+same signed-in login, never a static mint. The broker row checks that the
+registered address is reachable and includes any observed local store write failure or full store.
+It does not present the login. The manager
 `status` probe uses the manager-caller view `cotal spawn` already exchanges for
 that login. When this machine's manager process is live, the exchange is pinned
 to the instance id that process persisted. If that id is not known, or a different
@@ -1139,6 +1140,10 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   command was asked about, keyed per space the way the pidfiles are. A re-signed credential and a
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
+  On an open mesh with no delivery process record or lease, delivery is `not-started` and does not
+  fail the check. A managed delivery credential exposed to other local readers makes this row
+  `refused`, with its native permission repair. The ordinary report names that credential as an
+  unreadable part and exits `4` instead of silently skipping lease-holder verification.
   An unreadable renewal record or a recorded adoption refusal makes delivery `refused`, even when
   its responder is bound. Bare status reports the same finding and exits partial rather than healthy.
 - **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
@@ -1158,6 +1163,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   session record or service instance record that exists but cannot be read is also `refused`, and
   the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
+  An observed local store write failure or full store makes it `not-serving`, with the store
+  failure in its facts, even if that URL is reachable.
   For a locally owned stack, a missing or dead broker process is `absent`, not `not-serving`.
   A cleanly stopped controller target reports `absent` and exits `1` without dialing another space.
   For open and static-auth plaintext NATS targets with no absent local process, the probe also checks JetStream and the

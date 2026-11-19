@@ -714,6 +714,9 @@ try {
       const status = cli(root, "status", "--json");
       const selected = status.env?.result?.selected as { spaceStreams?: { state: string } } | undefined;
       check("status names the write failure and does not report the streams absent", (status.env?.result?.store as { state?: string; cause?: string } | undefined)?.state === "write-failed" && selected?.spaceStreams?.state !== "absent", shown(status));
+      const components = cli(root, "status", "--components");
+      check("component health grades the reachable broker not-serving after its store write fails",
+        components.status !== 0 && /broker\s+not-serving/.test(components.stdout) && components.stdout.includes("store write failed:") && components.stdout.includes("permission denied"), shown(components));
       const statusText = cli(root, "status");
       check("its Next leads with down, after making the store writable again",
         statusText.stdout.split("\n").some((line) => /cotal down +First make /.test(line) && line.includes(`${store} writable by this account again`)) && !statusText.stdout.includes("deleted under"), shown(statusText));
