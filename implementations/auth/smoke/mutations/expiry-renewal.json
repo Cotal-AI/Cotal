@@ -44,8 +44,8 @@
     },
     {
       "name": "N2 the reconnect wait goes back to a fixed interval",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    const delay = Math.min(this.retryMs * 2 ** this.retryAttempt, CotalEndpoint.RETRY_BACKOFF_CAP_MS);",
+      "file": "packages/core/src/endpoint-reconnect.ts",
+      "find": "    const delay = Math.min(this.retryMs * 2 ** this.retryAttempt, EndpointReconnect.RETRY_BACKOFF_CAP_MS);",
       "replace": "    const delay = this.retryMs;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "the wait between reconnect attempts grows past the flat retry interval",
