@@ -35,7 +35,6 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
 import {
   agentHandles,
-  dispatchPrimitive,
   freeConstructors,
   onceBodyNotCallable,
   option,
@@ -44,6 +43,7 @@ import {
   runScope,
   type EffectHost,
 } from "./perform.js";
+import { dispatchPrimitive } from "./perform-dispatch.js";
 import {
   Cancelled,
   RunReleased,

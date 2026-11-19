@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "L1 the definition is not hashed",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "          ...(inline !== undefined ? { inline } : {}),\n        },",
       "replace": "        },",
       "expectRed": "its input hash is the catalog projection plus the definition, byte for byte",
@@ -21,7 +21,7 @@
     },
     {
       "name": "L2 the definition is not forwarded",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "        ...(inline !== undefined ? { inline } : {}),\n        ...(inline === undefined && model !== undefined ? { model } : {}),",
       "replace": "        ...(inline === undefined && model !== undefined ? { model } : {}),",
       "expectRed": "an inline spawn forwards its definition whole",
@@ -29,7 +29,7 @@
     },
     {
       "name": "L3 a record naming both a catalog persona and a prompt is accepted",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  if (\"persona\" in r) refuse(",
       "replace": "  if (false) refuse(",
       "expectRed": "a malformed inline persona is refused as L3049, naming what is wrong",
@@ -37,7 +37,7 @@
     },
     {
       "name": "L4 an unknown field is accepted",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  if (unknown.length) refuse(",
       "replace": "  if (false) refuse(",
       "expectRed": "a malformed inline persona is refused as L3049, naming what is wrong",
