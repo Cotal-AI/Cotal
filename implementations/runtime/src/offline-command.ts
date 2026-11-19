@@ -80,9 +80,17 @@ function scriptOf(file: string | undefined): SimScript {
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
   for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
-    for (const result of Array.isArray(entry) ? entry : [entry]) {
+    for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const problem = checkpointResultProblem(result);
-      if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted checkpoint '${name}': ${problem}`, { target: { file } });
+      if (problem) {
+        const path = `checkpoints.${name}${Array.isArray(entry) ? `[${index}]` : ""}`;
+        const correction = problem.field === "status"
+          ? `set ${path}.status in ${file} to "resolved" or "expired"`
+          : `correct ${path} in ${file}`;
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted checkpoint '${name}' in ${file}: ${problem.message}`, {
+          target: { file }, remedy: `${correction}, then rerun the simulation`,
+        });
+      }
     }
   }
   for (const [name, entry] of Object.entries((script.turns ?? {}) as Record<string, unknown>)) {
@@ -97,16 +105,16 @@ function scriptOf(file: string | undefined): SimScript {
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The
  *  simulator reads only an `expired` status and takes any other entry as an answer, so a malformed
  *  one is refused here rather than simulated as resolved. */
-function checkpointResultProblem(result: unknown): string | undefined {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
+function checkpointResultProblem(result: unknown): { message: string; field?: "status" } | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return { message: "a result must be an object" };
   const fields = result as Record<string, unknown>;
-  if (fields.status !== "resolved" && fields.status !== "expired") return "status must be \"resolved\" or \"expired\"";
-  if ("at" in fields) return "at is stamped from virtual time and cannot be scripted";
+  if (fields.status !== "resolved" && fields.status !== "expired") return { message: 'status must be "resolved" or "expired"', field: "status" };
+  if ("at" in fields) return { message: "at is stamped from virtual time and cannot be scripted" };
   const known = new Set(["status", "value", "by", "artifact"]);
   const unknown = Object.keys(fields).find((key) => !known.has(key));
-  if (unknown !== undefined) return `unknown field '${unknown}'`;
-  if (fields.by !== undefined && typeof fields.by !== "string") return "by must be a string";
-  if (fields.artifact !== undefined && typeof fields.artifact !== "string") return "artifact must be a string";
+  if (unknown !== undefined) return { message: `unknown field '${unknown}'` };
+  if (fields.by !== undefined && typeof fields.by !== "string") return { message: "by must be a string" };
+  if (fields.artifact !== undefined && typeof fields.artifact !== "string") return { message: "artifact must be a string" };
   return undefined;
 }
 

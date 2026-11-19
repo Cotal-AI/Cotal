@@ -296,6 +296,12 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const at = await simulate({ checkpoints: { go: { status: "resolved", at: 5 } } });
   c("a scripted checkpoint at is refused, since the simulator stamps it from virtual time",
     scriptRefusal(at, "at is stamped from virtual time"), at);
+  const handler = join(dir, "results.json");
+  const invalidList = await simulate({ checkpoints: { go: [{ status: "resolved" }, { status: "done" }] } });
+  c("a wrong checkpoint status in a list names the results file and indexes the result to correct",
+    isCommandFailure(invalidList) && scriptRefusal(invalidList, `in ${handler}: status must be "resolved" or "expired"`)
+    && (invalidList.target as { file?: string })?.file === handler
+    && invalidList.remedy === `set checkpoints.go[1].status in ${handler} to "resolved" or "expired", then rerun the simulation`, invalidList);
   // A scripted turn result goes to the program as written, so a status no live turn yields is
   // refused like a malformed checkpoint, in any entry of a list, and a documented one still runs.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
