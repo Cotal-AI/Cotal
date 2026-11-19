@@ -1472,7 +1472,7 @@ for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECO
     const output = fixture.events.filter(event => /^(out:|err:)/.test(event)).join("\n");
     if (offline) {
       assert.match(output, /The registry cannot be reached; nothing was changed\./);
-      assert.doesNotMatch(output, /npm error|release is not ready|still reaching|staged pre-install check refused/);
+      assert.doesNotMatch(output, /npm error|update preflight failed|still reaching|staged pre-install check refused/);
     } else assert.doesNotMatch(output, /The registry cannot be reached/);
     if (phase === "staging" || phase === "preflight") assert.ok(fixture.events.some(event => event.startsWith("release-global:")), "failed preparation releases global reservation");
     if (phase === "preflight") assert.ok(fixture.events.includes("discard"), "a prepared target failing its checks is still discarded and refused");

@@ -298,7 +298,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert(disconnected, 'registry connectivity was cut after the selected update progress');
       assert.equal(update.code, 0, update.output);
       assert.match(update.output, /The registry cannot be reached; nothing was changed\./);
-      assert.doesNotMatch(update.output, /npm error|release is not ready|still reaching|staged pre-install check refused/);
+      assert.doesNotMatch(update.output, /npm error|update preflight failed|still reaching|staged pre-install check refused/);
     } else if (scenario === 'concurrent') {
       assert.equal(selected, target);
     } else if (scenario === 'integrity') {
