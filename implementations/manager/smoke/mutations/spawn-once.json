@@ -141,7 +141,7 @@
     },
     {
       "name": "S17 the readiness verdict does not wait for the startup outcome",
-      "file": "implementations/manager/src/seat-launch.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);\n",
       "replace": "        const startup = \"confirmed\" as StartupOutcome;\n",
       "expectRed": "while the notice is awaited the seat has joined, but its pull finds no task"
