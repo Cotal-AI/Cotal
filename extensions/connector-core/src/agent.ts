@@ -52,6 +52,8 @@ import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
+import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+import type { CommandDispatch, CommandDispatcher } from "./agent-commands.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
 export { afterRecallMark, MAX_INBOX } from "./agent-inbox.js";
 export type { InboxItem, InboxSnapshot, InboxScope, ExactDrainResult, RecallMark, DeliveryNotice } from "./agent-inbox.js";
@@ -130,6 +132,9 @@ export interface MeshAgentOptions {
    *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
    *  cannot hold a served task. */
   onceClaimBound?: boolean;
+  /** Lists and starts the harness commands and skills this agent's `agent` endpoint offers. Without
+   *  one, `commands` answers `supported: false` and `command` is refused. */
+  commands?: CommandDispatcher;
 }
 
 /** Host-authorized participation for one native personal connection. The connector validates the
@@ -299,7 +304,8 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
  * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
  * acked-and-dropped (not buffered), so this
  * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
- * layer to wake the session now (the Stop→idle flush of held messages); `"stopping"` (no payload)
+ * layer to wake the session now (the Stop→idle flush of held messages); `"command"` (no payload)
+ * when a command waits for {@link MeshAgent.dispatchNextCommand}; `"stopping"` (no payload)
  * once, when {@link MeshAgent.stop} begins, whatever the transport's state; `"error"` (Error) for
  * endpoint faults.
  */
@@ -773,6 +779,8 @@ export class MeshAgent extends EventEmitter {
 
   private consumerClaim?: HeldLock;
   private connectFlight?: Promise<void>;
+  private agentEndpoint?: AgentEndpoint;
+  private agentEndpointOpened = false;
   private eventStartupChecked = false;
   private eventPlaneBlocked?: string;
 
@@ -793,6 +801,7 @@ export class MeshAgent extends EventEmitter {
             (this.config.backfillFloor !== undefined ? ` (backfill floor ${this.config.backfillFloor})` : ""),
         );
         this.armTurnRelay();
+        void this.serveAgentEndpoint();
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
         // stop() can win while the initial endpoint start is still pending. A rejection arriving
@@ -831,6 +840,37 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
+  /** Only a user-auth credential names who may call (SPEC 13.21), so an open or static mesh serves
+   *  nothing. */
+  private async serveAgentEndpoint(): Promise<void> {
+    if (this.agentEndpointOpened || !this.config.userAuth) return;
+    this.agentEndpointOpened = true;
+    try {
+      const served = await openAgentEndpoint(this.ep, {
+        warn: (msg) => this.log(msg),
+        dispatcher: this.options.commands,
+        onQueued: () => this.emit("command"),
+      });
+      if (this._stopping) return void served.close();
+      this.agentEndpoint = served;
+      // A command that arrived before the broker confirmed the serve was announced to a connector
+      // that could not take it yet.
+      if (served.commands.queued > 0) this.emit("command");
+    } catch (e) {
+      this.log(`the agent endpoint is not served: ${(e as Error).message}`);
+    }
+  }
+
+  /** Commands waiting for {@link dispatchNextCommand}. */
+  get queuedCommands(): number {
+    return this.agentEndpoint?.commands.queued ?? 0;
+  }
+
+  /** Hand the oldest waiting command to the connector's dispatcher. Call it only while no turn runs. */
+  dispatchNextCommand(): Promise<CommandDispatch> {
+    return this.agentEndpoint?.commands.dispatchNext() ?? Promise.resolve("empty");
+  }
+
   private stopFlight?: Promise<void>;
 
   stop(): Promise<void> {
@@ -850,6 +890,7 @@ export class MeshAgent extends EventEmitter {
       clearInterval(this.legacyTurnPoll);
       this.legacyTurnPoll = undefined;
     }
+    const agentEndpointClosed = this.agentEndpoint?.close();
     // stop() is a local terminal fact. Do not wait for an endpoint event that intentionally ignores
     // its own stopped close, or leave a cleanly stopped session reporting either state as live.
     this._connected = false;
@@ -857,6 +898,10 @@ export class MeshAgent extends EventEmitter {
       this._transportConnected = false;
       this.emit("transport", { connected: false });
     }
+    // The close answers every prompt caller at once, and those replies must go out before the
+    // departure closes the connection. A drain on a connection that is down settles only on its
+    // close, so the wait is bounded.
+    await Promise.race([agentEndpointClosed, sleep(3_000)]);
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
     // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop()
     // coalesces its retained shutdown outcome, including an earlier closure refusal.

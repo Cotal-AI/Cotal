@@ -2,7 +2,7 @@ import {
   CotalEndpoint, dialerFor, dmDurable, dmStream, HISTORY_READERS, historyReaderConsumer, idFromCreds, isConsumerAlreadyExists, isConsumerNotFound, isStreamNotFound,
   parsePrincipalKey, parseSubject, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
 } from "@cotal-ai/core";
-import { CommandFailure, connectOrThrow, isConnectRefusal, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, connectOrThrow, isConnectRefusal, isWorkspaceTargetError, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
 import { parseDmDurable } from "./pending.js";
@@ -42,7 +42,13 @@ export async function pendingView(args: ParsedArgs, command: "pending" | "delive
   let conn: Awaited<ReturnType<typeof connectOrThrow>>;
   try { conn = await connectOrThrow(values, "admin", { readOnly: true }); }
   catch (error) {
-    if (isConnectRefusal(error)) throw new CommandFailure("refused", error.code, "the selected admin credential could not establish the requested broker read; no other identity or mesh was substituted", { target: { requested } });
+    if (isConnectRefusal(error)) {
+      if (isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") {
+        const failure = error.failure();
+        throw new CommandFailure("refused", error.code, failure.message, { target: { ...error.target, requested }, remedy: failure.remedy });
+      }
+      throw new CommandFailure("refused", error.code, "the selected admin credential could not establish the requested broker read; no other identity or mesh was substituted", { target: { requested } });
+    }
     throw error;
   }
   const { space, server, tls } = conn;

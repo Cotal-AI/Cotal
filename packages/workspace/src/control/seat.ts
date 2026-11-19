@@ -102,7 +102,7 @@ export type SeatLocation =
   | { kind: "pin"; instanceId: string; expectedSeat?: ManagerPin["expectedSeat"] }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
-  | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
+  | { kind: "no-manager"; space: string; server: string; native: { code?: string; detail: string } }
   /** More than one instance that answered runs a seat of that name; `instances` names them. */
   | { kind: "several"; instances: string[]; space?: string; managers?: readonly ManagerCandidate[] }
   /** Every instance answered and none hosts the seat; `instances` names them. `space` is set by
@@ -153,7 +153,7 @@ export async function locateSeat(
     if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
   }
   const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
-  if (!census.ok && census.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: census.code, detail: census.error } };
+  if (!census.ok && census.noLiveManager) return { kind: "no-manager", space: probe.space, server: probe.server, native: { code: census.code, detail: census.error } };
   if (!census.ok) throw readFailure(census, { space: probe.space, scope: "all-managers" });
   const loc = locateSeatIn(census.instances, name);
   if (loc.kind === "pin") {
