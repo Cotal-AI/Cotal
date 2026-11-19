@@ -13,8 +13,8 @@
     {
       "name": "a probe's delete writes to the hidden store",
       "file": "implementations/acp/src/agent.ts",
-      "find": "        if (session.seat) options.hidden.add(session.seat.lifecycleUid);",
-      "replace": "        options.hidden.add(session.seat?.lifecycleUid ?? params.sessionId);",
+      "find": "        if (run) options.hidden.add(run.lifecycleUid);",
+      "replace": "        options.hidden.add(run?.lifecycleUid ?? params.sessionId);",
       "expectRed": "deleting a session that never spawned hides nothing"
     },
     {
@@ -198,9 +198,9 @@
     {
       "name": "a spawn that returns after a delete binds the deleted session",
       "file": "implementations/acp/src/agent.ts",
-      "find": "        if (sessions.get(session.id) !== session) {",
-      "replace": "        if (false) {",
-      "expectRed": "a delete during the first spawn hides the seat it returns and sends it nowhere"
+      "find": "        if (sessions.get(session.id) !== session) return;",
+      "replace": "        void sessions;",
+      "expectRed": "a delete during the first spawn answers once its seat is hidden, and sends that seat nowhere"
     }
   ]
 }

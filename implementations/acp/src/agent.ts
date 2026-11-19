@@ -92,6 +92,8 @@ interface Session {
   offer: Offer;
   selection: Selection;
   seat?: SeatRef;
+  /** The first prompt's spawn, while the manager has not answered it. */
+  spawning?: Promise<SeatRef>;
   mapper: FrameMapper;
   /** The seat's runs that started and have not ended, with when each started. A later prompt answers
    *  only once its own runs ended. */
@@ -414,7 +416,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const why = refusal(session.offer.catalogs, harness);
       if (why) throw RequestError.invalidParams(undefined, why);
       const stopReason = await runTurn(session, m, "run", async () => {
-        const seat = await m.spawn({
+        const spawning = m.spawn({
           name: session.id,
           agent: harness,
           ...(model ? { model } : {}),
@@ -425,11 +427,11 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
           prompt: text,
           ...(session.selection.machine ? { managerInstanceId: session.selection.machine } : {}),
         });
-        // A session deleted or replaced while the spawn was pending keeps no claim on the seat.
-        if (sessions.get(session.id) !== session) {
-          if (!sessions.has(session.id)) options.hidden.add(seat.lifecycleUid);
-          return;
-        }
+        session.spawning = spawning;
+        const seat = await spawning.finally(() => (session.spawning = undefined));
+        // A session deleted or replaced while the spawn was pending keeps no claim on the seat. A
+        // delete hides it.
+        if (sessions.get(session.id) !== session) return;
         bind(session, seat);
       });
       return { stopReason };
@@ -486,10 +488,13 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     .onRequest(methods.agent.session.delete, async ({ params }) => {
       const session = sessions.get(params.sessionId);
       if (session) {
-        // A session that never spawned, such as a client's probe, has no run to hide.
-        if (session.seat) options.hidden.add(session.seat.lifecycleUid);
+        const seat = session.seat;
         unbind(session);
         sessions.delete(params.sessionId);
+        // A session that never spawned, such as a client's probe, has no run to hide. One whose first
+        // spawn is pending hides the seat once the manager answers.
+        const run = seat ?? (await session.spawning?.catch(() => undefined));
+        if (run) options.hidden.add(run.lifecycleUid);
         return {};
       }
       const m = await mesh();

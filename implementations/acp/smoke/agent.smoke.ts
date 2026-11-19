@@ -382,12 +382,12 @@ mesh.script = { before: [], after: [] };
 const p6 = go(c6.sessionId);
 await tick(20);
 await agent.request(methods.agent.session.delete, { sessionId: c6.sessionId });
+const hiddenAtDelete = hidden.ids.has(`life-${c6.sessionId}`);
 const r6 = await p6;
-await tick(200);
 updates.length = 0;
 mesh.emit(seatOf(c6.sessionId), [{ type: "TEXT_MESSAGE_START", messageId: "z", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "z", delta: "orphan" }], "r1");
 await tick();
-check("a delete during the first spawn hides the seat it returns and sends it nowhere", r6?.stopReason === "cancelled" && hidden.ids.has(`life-${c6.sessionId}`) && !updates.some((u) => u.sessionId === c6.sessionId), { r6, hidden: [...hidden.ids], updates });
+check("a delete during the first spawn answers once its seat is hidden, and sends that seat nowhere", r6?.stopReason === "cancelled" && hiddenAtDelete && !updates.some((u) => u.sessionId === c6.sessionId), { r6, hiddenAtDelete, updates });
 mesh.spawnDelay = 0;
 
 let threw = false;
