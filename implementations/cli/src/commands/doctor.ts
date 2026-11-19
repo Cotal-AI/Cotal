@@ -349,15 +349,22 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     }
     // A file removed since is not listed.
     if (!bytes) continue;
+    const creds = bytes.toString("utf8");
     let claims: ReturnType<typeof credsClaims>;
-    try { claims = credsClaims(bytes.toString("utf8")); } catch { rows.push(row); continue; }
-    const health = inspectCredHealth(bytes.toString("utf8"));
+    try { claims = credsClaims(creds); } catch { rows.push(row); continue; }
     const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
     const provision = entry.profile === "agent" && entry.provisioned === true ? " --provision" : "";
     const quotedPath = shellWord(entry.path);
     // A new key holds only the grants its mint names, so the mint names the ones this file holds.
     const grants = entry.profile === "agent" && claims.name === "agent" ? agentGrants(claims.nats ?? {}, auth.space) : undefined;
     const fresh = `mint a new key${grants ? " with the grants this file holds" : ""}: \`${cmd} auth mint ${entry.label}${profile}${provision}${grants ? grantMintFlags(grants) : ""} --out <new file>\``;
+    const unusable = credsProblem(creds);
+    if (unusable) {
+      row.repair = `the NATS client cannot parse it: ${unusable.message}. Restore the complete credential file, or ${fresh}`;
+      rows.push(row);
+      continue;
+    }
+    const health = inspectCredHealth(creds);
     const revokedAt = claims.sub === undefined ? undefined : revocations[claims.sub];
     Object.assign(row, { state: health.state, issuedAt: claims.iat ?? null, expiresAt: claims.exp ?? null });
     if ((claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub)

@@ -305,6 +305,11 @@ preview, `cotal down --dry-run --with-agents`, shows the no-op and warns with th
 stack's last completed `down` took `--with-agents`, or the root never started a stack, no agent of
 it can remain, and `--with-agents` reports the same no-op.
 
+When a legacy preserved cut is `ready`, bare `down` checks that the recorded processes are stopped
+and that the recorded broker address has no listener. It leaves the cut unchanged, exits 0, and
+names `cotal status` for the next maintenance step instead of suggesting a start. If a process or
+listener may still be running, or maintenance is in progress, it refuses without stopping anything.
+
 
 ### Legacy stacks
 
@@ -350,6 +355,11 @@ maintenance lock, without adopting its effects into the preserved set.
 A validated completed restore in `active` for the registered space does not block ordinary
 bare `down`. The other root, ownership, sharing and native process guards still apply, and
 stopping leaves the restore journal and fallback store unchanged.
+When a legacy foreground `up` is still starting, `down --yes` refuses before the broker starts
+instead of reporting a stopped stack. Press Ctrl-C in the first terminal, or wait for startup and
+retry `cotal down --yes`. Once the broker is registered, `down` waits up to 20 seconds for startup
+to finish before stopping the stack. If it cannot finish waiting, it gives the same next step and
+stops nothing. A refused manager stop leaves delivery and the broker running.
 The machine home is not an isolated project root, so bare `down` refuses the home stack. Stop it
 with `cotal down --preserve-state`, which keeps its state for the next `cotal up`. The refusal names
 that command. `--preserve-state` takes its agent inventory from the manager that serves the space.

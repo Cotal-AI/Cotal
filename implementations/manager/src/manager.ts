@@ -1,12 +1,11 @@
 import { UserProvision, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
-import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, onceTurnNote, turnHoldToken, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
+import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
 import { createHash, randomBytes } from "node:crypto";
 import { checkEventStartup, EventStateConflictError, isPermissionDenied, chatStream, drainAndClose, requestSafeReconnect } from "@cotal-ai/core";
-import { hostname, homedir } from "node:os";
-import { listDirectory } from "./list-dir.js";
+import { hostname } from "node:os";
 import { credsAuthenticator, RequestError } from "@nats-io/transport-node";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
@@ -21,7 +20,6 @@ import {
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
   STANDING_RENEWABLE_TTL_SEC,
-  assertLifecycleToken,
   discardLaunchArtifacts,
   divergentSecretStoreNotice,
   injectedSecretStoreIdentity,
@@ -29,7 +27,6 @@ import {
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   agentFilePath,
-  assertValidChannel,
   clearSpaceHistory,
   dialerFor,
   connectorServers,
@@ -70,24 +67,15 @@ import {
   registry,
   resolveAuthProvider,
   resolveReadAcl,
-  runDriverCaller,
   saveAgentFile,
-  eventChannel,
   eventChannelPrincipal,
-  digestIdToken,
   capabilityWithin,
   grantOverreach,
-  grantParts,
-  isIssuedCaller,
-  issuedSpawnerStanding,
-  withIssuerSession,
-  renderOnceTask,
-  shownSpawner,
 } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
+import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type RenewalRecord, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type RenewalRecord, type SeatCap } from "@cotal-ai/workspace";
+import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -115,9 +103,10 @@ import { LeaseKeeper } from "./lease-keeper.js";
 export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
 import { SessionRecovery } from "./session-recovery.js";
 import { SeatCustody, watchConnectorHolder } from "./seat-custody.js";
+import { SeatLaunch, ownLists, ownPersona, userMeshEndpointsRefusal, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { inlinePersonaDir, inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment } from "./launch.js";
+import { inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, removeInlineSnapshot, writeInlineSnapshot, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting, servedRequestSubject } from "./run-hosting.js";
@@ -166,9 +155,6 @@ const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** The bound on one {@link Connector.retireAfterExit} call. An expired bound is not proof: the debt
  *  stays and the turn sweep asks again. */
 const ONCE_RETIRE_MS = 60_000;
-/** The goal index's bound on a relay note (core `GOAL_INDEX_NOTE_MAX`). A once task's note must
- *  fit it, and is refused at admission when it cannot. */
-const TURN_NOTE_MAX = 65536;
 /** Backstop for the detached-launch readiness race (#159 B1). `startAgent` waits on two REAL outcomes —
  *  the assigned id joining the mesh (presence) = started, the child process exiting = failed — NOT a
  *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
@@ -315,7 +301,6 @@ function failedTerminal(error: string, source: { details?: unknown } | undefined
   return { error: text };
 }
 
-
 /** One absolute budget across authority, preflight and adoption waits, or one closed-serve attempt. */
 function remoteStandingTimeLeft(deadline: number): number {
   const left = deadline - performance.now();
@@ -333,36 +318,6 @@ function sameStrings(a: readonly string[] | undefined, b: readonly string[] | un
  *  over `~/.local/bin/cotal`, which `npm i -g` had made a link to `dist/cotal.js`. */
 function bearerEntryArgv(): string[] {
   return [process.execPath, ...process.execArgv, realpathSync(process.argv[1]!)];
-}
-
-/** The caller keeps the arrays it passed, so a launch form is admitted with its own copies: a later
- *  write to the caller's array cannot change what the manager grants, shares or preserves. */
-function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: readonly string[]; allowPublish?: readonly string[]; capabilities?: readonly string[]; shareTools?: readonly string[] }>(form: T): T {
-  return {
-    ...form,
-    ...(form.subscribe && { subscribe: [...form.subscribe] }),
-    ...(form.allowSubscribe && { allowSubscribe: [...form.allowSubscribe] }),
-    ...(form.allowPublish && { allowPublish: [...form.allowPublish] }),
-    ...(form.capabilities && { capabilities: [...form.capabilities] }),
-    ...(form.shareTools && { shareTools: [...form.shareTools] }),
-  };
-}
-
-/** The inline record is admitted the same way, one level deeper: the record itself, its lists, and
- *  each `endpoints` entry with its commands. It is still untrusted here, so a shape the validator
- *  will refuse is copied as far as it goes and refused where it is read. */
-function ownPersona(record: InlinePersona): InlinePersona {
-  if (record === null || typeof record !== "object" || Array.isArray(record)) return record;
-  const owned = ownLists({ ...record });
-  const endpoints: unknown = owned.endpoints;
-  if (Array.isArray(endpoints))
-    owned.endpoints = endpoints.map((e: unknown) => {
-      if (e === null || typeof e !== "object" || Array.isArray(e)) return e;
-      const entry = { ...(e as Record<string, unknown>) };
-      if (Array.isArray(entry.commands)) entry.commands = [...entry.commands];
-      return entry;
-    }) as InlinePersona["endpoints"];
-  return owned;
 }
 
 export interface ManagerOptions {
@@ -584,7 +539,6 @@ export interface ManagerServiceObservation {
 
 export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
 
-
 /** A manager-initiated stop: WHICH door stopped the seat, and — where a door had one — the
  *  authenticated wire principal that asked for it (`callerOf(ctx)` or the `caller` the door already
  *  resolved, never a name taken from the request payload). The stop family carries its principal
@@ -803,82 +757,6 @@ interface PreparedResume {
   id?: string;
   creds?: string;
   userAuth?: UserAuthLaunch;
-}
-
-/** What bounds the grant a spawn hands its helper on a static mesh (SPEC 13.15). Nothing for the
- *  manager's own composition root, an operator instrument or a spawner holding the admin set; no
- *  grant at all for a caller whose evidence does not resolve; no spawn at all for a run that was
- *  revoked or whose revocation marker cannot be read; a run's admitted ceiling for its spawns;
- *  otherwise the caller's evidence. */
-type StaticSpawnBound =
-  | { kind: "exempt" }
-  | { kind: "none"; reason: string }
-  | { kind: "refused"; reason: string }
-  | { kind: "bounded"; caller: EpCaller; ceiling: IssuedSubjectPermissions; run?: string };
-
-/** The workflow run a spawn acts for (SPEC 14.8): the run this manager drives under the spawn's
- *  caller, or, on a static mesh, a run hosted elsewhere whose spawn reached this manager, read from
- *  its admission. That run's revocation marker is read with the admission; a hosted run's is read at
- *  the bound. */
-type SpawnRun = { admission: RunAdmission; hosted: boolean } | { refused: string };
-
-/** Why a revoked run starts no helper, the same words wherever the marker is read. */
-function revokedRunRefusal(runId: string, revoked: RunRevocation): string {
-  return `run ${runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
-}
-
-const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "endpoints", "save"];
-
-/** Read an inline persona into the definition a catalog file would load as, refusing what a file
- *  load refuses plus any shape the closed record does not take. The body is literal text: nothing in
- *  it becomes a field, so a body that starts with `---` stays body. */
-function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: boolean } {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona: expected an object");
-  const rec = raw as Record<string, unknown>;
-  const extra = Object.keys(rec).filter((k) => !INLINE_PERSONA_KEYS.includes(k));
-  if (extra.length) throw new Error(`persona: unknown key ${extra[0]}; it takes ${INLINE_PERSONA_KEYS.join(", ")}`);
-  const text = (k: string): string | undefined => {
-    const v = rec[k];
-    if (v === undefined) return undefined;
-    if (typeof v !== "string" || !v.trim()) throw new Error(`persona.${k}: expected a non-blank string`);
-    return v;
-  };
-  const list = (k: string): string[] | undefined => {
-    const v = rec[k];
-    if (v === undefined) return undefined;
-    if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) throw new Error(`persona.${k}: expected an array of strings`);
-    return [...v] as string[];
-  };
-  const prompt = text("prompt");
-  if (prompt === undefined) throw new Error("persona.prompt: required; it is the persona body");
-  if (rec.save !== undefined && typeof rec.save !== "boolean") throw new Error("persona.save: expected a boolean");
-  const def: AgentDef = {
-    name,
-    persona: prompt.trim(),
-    role: text("role"),
-    model: text("model"),
-    variant: text("variant"),
-    description: text("description"),
-    subscribe: list("subscribe"),
-    allowSubscribe: list("allowSubscribe"),
-    allowPublish: list("allowPublish"),
-    capabilities: list("capabilities"),
-    endpoints: parsePersonaEndpoints(rec.endpoints, "persona"),
-  };
-  // The checks a file load makes on these fields: channel names, and the read set within the read ACL.
-  try {
-    for (const ch of [...(def.subscribe ?? []), ...(def.allowSubscribe ?? []), ...(def.allowPublish ?? [])]) assertValidChannel(ch);
-    resolveReadAcl(def.subscribe ?? [], def.allowSubscribe);
-  } catch (e) {
-    throw new Error(`persona: ${rejectionText(e)}`);
-  }
-  return { def, save: rec.save === true };
-}
-
-/** The refusal a user-auth mesh gives a persona that names `endpoints`. */
-function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
-  return `${door}: this mesh has per-user auth, where endpoint access comes from the service owner's grants and a persona cannot hand it on (SPEC 13.15). ` +
-    "Drop `endpoints` from the persona, and ask the operator to grant the helper with `cotal service-endpoint grant` once it runs.";
 }
 
 class LegacyEventCountPermissionError extends Error {}
@@ -1520,6 +1398,29 @@ export class Manager {
     withProvisioner: (fn) => this.withProvisioner(fn),
     shredUserSecrets: (failures, family) => this.shredUserSecrets(failures, family),
     bearerEntryArgv,
+  });
+
+  /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
+  private readonly seatLaunch = new SeatLaunch({
+    space: () => this.space,
+    servers: () => this.servers,
+    workspaceRoot: () => this.workspaceRoot,
+    installedExtensions: () => this.installedExtensions,
+    ep: () => this.ep,
+    auth: () => this.auth,
+    userMode: () => this.userMode,
+    managerInstanceId: () => this.managerInstanceId,
+    serviceServe: () => this.serviceServe,
+    runHosting: () => this.runHosting,
+    connectorStatuses: () => this.connectorStatuses,
+    execution: () => this.execution,
+    requiredRuntime: () => this.requiredRuntime,
+    meshMode: () => this.meshMode,
+    executionRefusal: () => this.executionRefusal(),
+    nameError: (name) => this.nameError(name),
+    canReadPersona: (owner, caller, admin) => this.canReadPersona(owner, caller, admin),
+    epAdminReach: (caller) => this.epAdminReach(caller),
+    startAgent: (opts) => this.startAgent(opts),
   });
 
   constructor(opts: ManagerOptions) {
@@ -4842,7 +4743,7 @@ export class Manager {
    *  under that file's own `name:`), as if a peer asked via the control plane. Used to pre-spawn the
    *  demo's experts at startup so the manager owns them. */
   async startByName(name: string): Promise<ControlReply> {
-    return this.startAgent({ name });
+    return this.seatLaunch.startByName(name);
   }
 
   /** Resolve once `name` shows up on the mesh roster (presence registered), or after `timeoutMs`.
@@ -4851,12 +4752,7 @@ export class Manager {
    *  resolution: a same-named *unmanaged* peer already present could satisfy this early. That's
    *  acceptable for cold-start staggering; it never routes anything. */
   async waitForPresence(name: string, timeoutMs = 30_000): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (this.ep.getRoster().some((p) => p.card.name === name)) return true;
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
-    return false;
+    return this.seatLaunch.waitForPresence(name, timeoutMs);
   }
 
   /** Parse a served `spawn` request into {@link StartAgentOpts}. The compiled spawn input contract
@@ -4953,54 +4849,11 @@ export class Manager {
       authenticatedCaller,
     );
   }
-
-  /** The realpath + directory checks a placed spawn directory must pass on this manager's host,
-   * shared by the served `resolve-cwd` command and the `spawn` admission check (#385 item 2): one
-   * function, so the two doors never drift. Creates nothing and never substitutes the workspace root. */
-  private checkSpawnCwd(resolved: string): { cwd: string; host: string } | { refusal: string } {
-    let cwd = resolved;
-    try {
-      cwd = realpathSync(resolved);
-    } catch (error) {
-      return { refusal: `path cannot be resolved: ${rejectionText(error)}` };
-    }
-    try {
-      if (!statSync(cwd).isDirectory()) return { refusal: "path is not a directory" };
-    } catch (error) {
-      return { refusal: rejectionText(error) };
-    }
-    return { cwd, host: hostname() };
-  }
-
-  /** Refuse host directory reads before lookup when seats cannot use this host. */
-  private assertHostDirectoryExecution(): void {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-    if (this.execution === "runtime" && this.requiredRuntime.spawnDelegated)
-      throw new EpEnvelopeError("failed-precondition", `runtime "${this.requiredRuntime.kind}" starts seats outside this host, so it cannot resolve a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`);
-  }
-
-  private async listSpawnDirectory(args: Record<string, unknown>) {
-    this.assertHostDirectoryExecution();
-    const { cwd } = this.resolveSpawnCwd(args.path ?? homedir());
-    try {
-      return await listDirectory(cwd, args.includeHidden === true, typeof args.limit === "number" ? args.limit : 200);
-    } catch (error) {
-      throw new EpEnvelopeError("failed-precondition", `directory cannot be listed on this host: ${JSON.stringify(cwd)} (${rejectionText(error)})`);
-    }
-  }
-
-  /** Resolve a placed spawn directory without creating or substituting a workspace. */
-  private resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
-    this.assertHostDirectoryExecution();
-    const asked = typeof value === "string" ? value : String(value ?? "");
-    const refuse = (reason: string): never => {
-      throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${reason})`);
-    };
-    if (!isAbsolute(asked)) refuse("expected an absolute path");
-    const result = this.checkSpawnCwd(asked);
-    if ("refusal" in result) return refuse(result.refusal);
-    return result;
-  }
+  /** {@link SeatLaunch.checkSpawnCwd}. */
+  private checkSpawnCwd(resolved: string): { cwd: string; host: string } | { refusal: string } { return this.seatLaunch.checkSpawnCwd(resolved); }
+  private listSpawnDirectory(args: Record<string, unknown>) { return this.seatLaunch.listSpawnDirectory(args); }
+  /** {@link SeatLaunch.resolveSpawnCwd}. */
+  private resolveSpawnCwd(value: unknown): { cwd: string; host: string } { return this.seatLaunch.resolveSpawnCwd(value); }
 
   /** Resolve a connector by agent type. Library composition (installedExtensions off) → a registry
    *  hit, exactly as before (the composition root imported what it wants). The published binary gates
@@ -5015,12 +4868,8 @@ export class Manager {
     if (!manifestExtensionNames("connector").includes(name)) throw new Error(connectorInstallHint(name));
     return materializeFromManifest<Connector>({ kind: "connector", name }, { hint: (ref) => connectorInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
   }
-
-  /** Connector names the manager can spawn WITHOUT importing: the manifest on the published binary,
-   *  else whatever a composition root registered. Drives the `models` catalog enumeration. */
-  private connectorNames(): string[] {
-    return this.installedExtensions ? manifestExtensionNames("connector") : registry.all<Connector>("connector").map((c) => c.name);
-  }
+  /** {@link SeatLaunch.connectorNames}. */
+  private connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
   /** Resolve every installed/registered connector's declared harness binaries before the manager
    * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
@@ -5119,28 +4968,11 @@ export class Manager {
     if (!wasEnabled && this.classSpawnEnabled()) this.servePlane.enableClassSpawn();
     return pending;
   }
-
-  /** True when at least one declared connector is available. Empty inventory (or a failed
-   *  inventory load) skips the class `one` subscribe for spawn/launch so this member cannot
-   *  consume an unpinned request a sibling could serve. */
-  private classSpawnEnabled(): boolean {
-    if (this.execution === "none") return false;
-    return this.connectorStatuses.some((row) => row.state === "available");
-  }
-
-  private omitClassCommands(): readonly string[] | undefined {
-    return this.classSpawnEnabled() ? undefined : ["spawn", "launch"];
-  }
-
-  /** Named harness-unavailable refusal. On the class rail a partial inventory must not look
-   *  like the space cannot launch: name `--on` so the caller can pin a sibling. The standing
-   *  serve credential cannot enumerate sibling `svc.*.status` inventories, so the residual
-   *  is the flag, not a list of capable instance ids. Instance-pinned calls keep the local
-   *  reason only. */
-  private harnessUnavailableError(reason: string, route: "one" | "all" | "inst"): string {
-    if (route !== "one") return reason;
-    return `${reason}. This manager cannot launch that harness. The space may have other managers; pin one with --on <instance> (the whole id, as ps prints it)`;
-  }
+  /** {@link SeatLaunch.classSpawnEnabled}. */
+  private classSpawnEnabled(): boolean { return this.seatLaunch.classSpawnEnabled(); }
+  private omitClassCommands(): readonly string[] | undefined { return this.seatLaunch.omitClassCommands(); }
+  /** {@link SeatLaunch.harnessUnavailableError}. */
+  private harnessUnavailableError(reason: string, route: "one" | "all" | "inst"): string { return this.seatLaunch.harnessUnavailableError(reason, route); }
 
   /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
    *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
@@ -5196,45 +5028,10 @@ export class Manager {
       return `${connector.name} connector does not support exact session continuity (continuity: exact)`;
     return undefined;
   }
-
-  /** The refusal for a `once` spawn this manager cannot run as one task: every check is made before
-   *  anything is allocated, so a refused spawn leaves nothing behind. */
-  private onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined {
-    if (!hooks?.onOnce) return "once: a once task rides the spawn action, which this launch door is not";
-    if (launch.prompt === undefined || launch.prompt.trim() === "") return "once: needs a prompt, which is the task";
-    if (launch.supervise !== undefined) return "once: a once seat is never restarted, so it cannot carry supervise";
-    if (!connector.supportsTurnRelay)
-      return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
-    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)
-      return `once: runtime "${runtime.kind}" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;
-    if (runtime.spawnDelegated) return `once: runtime "${runtime.kind}" starts seats outside this host, where this manager cannot prove the seat's exit`;
-    const operator = connector.waitsForOperator?.(launch.launchOptions);
-    if (operator !== undefined) return `once: these launch options make the seat wait at ${operator} before it starts, so nothing could take its task`;
-    // The task's relay record, measured with the widest deadline it could carry.
-    const { note, payload } = onceTurnNote({
-      prompt: launch.prompt, spawner: this.spawnerName(spawner),
-      ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS, holdToken: turnHoldToken("") } : {}),
-      holdEpoch: this.serviceServe?.grant.epoch ?? 0,
-      ...(connector.retireAfterExit ? { retire: connector.name } : {}),
-      // The longest id token core accepts (endpoint-subjects `assertIdToken`).
-      spawn: "x".repeat(64),
-    });
-    if (note.length > TURN_NOTE_MAX) return `once: the prompt is too long for one task (its relay record is ${note.length} characters, over ${TURN_NOTE_MAX})`;
-    if (connector.turnFrameLimit !== undefined) {
-      // The text the seat shows, rendered by the seat's own function with the widest values it could
-      // carry: the task's goal id is a digest token, and a deadline renders as one ISO instant.
-      const text = renderOnceTask({ goalId: digestIdToken("once"), payload, spawner: this.spawnerName(spawner), ...(launch.once!.deadlineMs !== undefined ? { deadlineAt: MAX_SCHEDULE_MS } : {}) });
-      if (text.length > connector.turnFrameLimit)
-        return `once: the prompt is too long for one ${connector.name} turn (the task renders to ${text.length} characters, over ${connector.turnFrameLimit})`;
-    }
-    return undefined;
-  }
-
-  /** How a once task names who sent it: the spawner's roster name, or its principal when that name is missing or only whitespace. */
-  private spawnerName(spawner: string | undefined): string {
-    const id = spawner ?? this.ep.ref().id;
-    return shownSpawner(this.ep.getRoster().find((p) => p.card.id === id)?.card.name, id);
-  }
+  /** {@link SeatLaunch.onceRefusal}. */
+  private onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
+  /** {@link SeatLaunch.spawnerName}. */
+  private spawnerName(spawner: string | undefined): string { return this.seatLaunch.spawnerName(spawner); }
 
   /** The refusal for an event-plane choice the registration policy or the connector cannot meet.
    *  Spawn and resume both ask before a seat's launch is built, so a seat retained without the
@@ -5403,260 +5200,16 @@ export class Manager {
       release();
     }
   }
-
-  /** The persona file a spawn loads and the harness it resolves, shared by `spawn` and the served
-   *  `resolve-agent` read: a detached resume locates the session it carries with the connector this
-   *  names, so the two doors must not drift (#2899). */
-  private async spawnPersona(
-    opts: Pick<StartAgentOpts, "name" | "config" | "identity" | "agent" | "defaultAgent" | "resolved" | "persona">,
-    spawner: string | undefined,
-    authenticatedCaller: EpCaller | undefined,
-  ): Promise<
-    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined }
-    | { ref: string; configPath?: undefined; def: AgentDef; agent: string; inline: { save: boolean } }
-    | { error: string; code?: "bad-request" }
-  > {
-    // Both config-taking wire commands and direct/roster starts enter here before interpreting
-    // a path. A resolved manifest is host-built authority over its own materialized resource,
-    // never a wire-supplied config override (the public schemas accept no `resolved` field).
-    if (this.execution === "runtime" && this.requiredRuntime.spawnDelegated && opts.config !== undefined && !opts.resolved)
-      return { error: "delegated execution cannot use a manager-host persona config path; select a named persona" };
-    // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
-    // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
-    // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
-    // free-form name (socrates) — the same model `cotal spawn` already uses. You always spawn by
-    // filename (unique on disk); two files can't collide on the key.
-    const ref = opts.name.trim();
-    if (!ref) return { error: "name required" };
-    // An inline persona is its own definition, read here like a file so every later check sees a
-    // def. It has no file until its snapshot is written, once the seat's lifecycle uid is final.
-    if (opts.persona !== undefined) {
-      if (opts.resolved || opts.config !== undefined || opts.identity !== undefined)
-        return { error: "persona: an inline persona names the helper itself, so it takes no config, identity or manifest launch", code: "bad-request" };
-      const refErr = this.nameError(ref);
-      if (refErr) return { error: refErr };
-      let inline: { def: AgentDef; save: boolean };
-      try {
-        inline = inlinePersonaDef(ref, opts.persona);
-      } catch (e) {
-        return { error: rejectionText(e), code: "bad-request" };
-      }
-      // A save under a name the catalog already holds is refused here, before anything is allocated,
-      // so the refusal starts nothing. The create-only write after the grant settles a race.
-      if (inline.save) {
-        const target = agentFilePath(this.workspaceRoot, ref);
-        let taken = true;
-        try {
-          lstatSync(target);
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== "ENOENT") return { error: `persona.save: ${rejectionText(e)}` };
-          taken = false;
-        }
-        if (taken)
-          return { error: `persona.save: the catalog already holds a persona named "${ref}" (${target}). Spawn that persona by name, or pick another name to save this one under` };
-      }
-      return { ref, def: inline.def, agent: resolveAgentType({ flag: opts.agent, pin: undefined, callerDefault: opts.defaultAgent }), inline: { save: inline.save } };
-    }
-    // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
-    // `--config` path is validated by existsSync below instead.
-    if (!opts.config) {
-      const refErr = this.nameError(ref);
-      if (refErr) return { error: refErr };
-    }
-
-    // Resolve the persona file (fail loud — NO silent default-ACL fallback). A missing persona used
-    // to mint DEFAULT creds (read `general` only, default-deny publish, no capabilities), so a
-    // typo'd / renamed / spawned-by-display-name agent became live with silently-wrong ACLs — a
-    // behavioral/security bug. Fail loud instead, matching `cotal spawn` (loadAgentFile throws).
-    // This runs BEFORE the spawn path resolves its connector: the file's `agent:` pin participates in
-    // the harness choice (flag > file > COTAL_DEFAULT_AGENT > default, #869), which is impossible if
-    // the connector is materialized first.
-    let configPath: string;
-    if (opts.config) {
-      configPath = agentFilePath(this.workspaceRoot, opts.config);
-      if (!existsSync(configPath)) return { error: `agent file not found: ${configPath}` };
-    } else {
-      configPath = agentFilePath(this.workspaceRoot, ref);
-      if (!existsSync(configPath))
-        return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
-    }
-    // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
-    // refuses a restart once it changed, so no other launch may read it. Compared after symlinks
-    // resolve, for a config path and a catalog entry alike.
-    if (!opts.resolved && this.insideInlineDir(configPath))
-      return { error: `${configPath} is an inline persona's snapshot, which belongs to the seat it was written for; spawn a saved persona by name, or pass the persona inline` };
-
-    // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
-    // harness resolution below; the spawn path's identity/ACL profile block consumes the SAME def (no
-    // second load). A manifest launch (`resolved`) materializes its own transient persona and the
-    // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
-    // the manifest's own `agent:` field drove the launch object already.
-    let def: AgentDef | undefined;
-    if (!opts.resolved) {
-      try {
-        def = loadLaunchPersonaFile(configPath);
-      } catch (e) {
-        return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
-      }
-      // Shared operator files remain launchable. Owned content follows the catalog's visibility
-      // decision before connector loading or any allocation. A hosted run acts for its admission;
-      // only a complete authenticated caller can request the current ledger's admin decision.
-      if (this.userMode && def.owner !== undefined) {
-        const acting = authenticatedCaller === undefined ? undefined
-          : this.runHosting?.admittedCaller(authenticatedCaller) ?? authenticatedCaller;
-        const personaCaller = acting === undefined ? spawner ?? "" : principalKey(acting.owner, acting.actor).key;
-        const admin = authenticatedCaller !== undefined && await this.epAdminReach(authenticatedCaller);
-        if (!this.canReadPersona(def.owner, personaCaller, admin))
-          return { error: `no persona "${ref}"` };
-      }
-    }
-    return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
-  }
-
-  /** Whether a persona path resolves into the inline snapshot directory, the directory itself
-   *  included. A directory that does not exist holds nothing. */
-  private insideInlineDir(path: string): boolean {
-    const dir = inlinePersonaDir(this.workspaceRoot);
-    if (!existsSync(dir)) return false;
-    const real = realpathSync(path);
-    const realDir = realpathSync(dir);
-    return real === realDir || real.startsWith(realDir + sep);
-  }
-
-  /** The run a spawn acts for (SPEC 14.8). The run this manager drives under `caller` answers from
-   *  memory. On a static mesh, a spawn from a run hosted elsewhere names its run, whether the program
-   *  placed it here or the class queue delivered it, and its caller must be that run's driver, whose
-   *  triple derives from the run id; the run's admission and revocation marker are then read
-   *  leader-served, so the helper is bounded as the hosting manager bounds it. Elsewhere the run id
-   *  is not read: a user-auth run's issuing host bounds the helper, and an open mesh bounds none.
-   *  `undefined` for a spawn that acts for no run. */
-  private async spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> {
-    const hosted = caller !== undefined ? this.runHosting?.runAdmission(caller) : undefined;
-    if (hosted !== undefined) {
-      if (runId !== undefined && runId !== hosted.runId) return { refused: `it names run ${runId}, but its caller drives run ${hosted.runId}` };
-      return { admission: hosted, hosted: true };
-    }
-    if (runId === undefined || this.meshMode !== "static") return undefined;
-    let driver: EpCaller | undefined;
-    try {
-      driver = caller !== undefined ? runDriverCaller(runId, caller.owner) : undefined;
-    } catch (e) {
-      return { refused: `runId ${JSON.stringify(runId)} is not a run id (${rejectionText(e)})` };
-    }
-    if (driver === undefined || driver.actor !== caller!.actor || driver.uid !== caller!.uid)
-      return { refused: `it names run ${runId}, but its caller is not that run's driver` };
-    if (this.runHosting === undefined) return { refused: `run ${runId} asked this manager for a helper, but this manager hosts no runs, so it cannot read the run's admission` };
-    let view: { admission: RunAdmission; revoked: RunRevocation | undefined };
-    try {
-      view = await this.runHosting.admission(runId);
-    } catch (e) {
-      return { refused: `run ${runId}'s admission and revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)` };
-    }
-    if (view.revoked !== undefined) return { refused: revokedRunRefusal(runId, view.revoked) };
-    return { admission: view.admission, hosted: false };
-  }
-
-  /**
-   * Resolve what bounds a spawn's grant on a STATIC mesh: the caller's issued evidence, read the way
-   * keyed runs read it. A user-auth mesh bounds the mint on its ledger instead, and an open mesh
-   * mints no grant, so both return `exempt`. So does a call with no authenticated caller, which is
-   * the manager's own composition root (roster boot, a manifest `launch`, which a static mesh mints
-   * only into operator instruments). A workflow run's spawn, whether this manager hosts the run or
-   * its spawn reached this manager from another host ({@link spawnRun}), is bounded by the run's admission (SPEC 14.8):
-   * the ceiling it recorded, at the starter's coordinate, unless the starter was exempt then. That
-   * ceiling is the starter's evidence as resolved at admission, or for a local run the channels the
-   * operator named. Any other caller with no issued generation, or whose evidence does not resolve,
-   * hands on no grant. The evidence's own standing decides the rest.
-   */
-  private async staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> {
-    if (this.meshMode !== "static" || caller === undefined) return { kind: "exempt" };
-    // The driver's own credential is not the run's authority, and the starter's evidence may have
-    // expired or changed since: the admission recorded both the ceiling and the verdict.
-    if (run !== undefined) {
-      const admission = run.admission;
-      // Read leader-served before each of the run's spawns, so a run revoked mid-step starts no
-      // helper, and a marker this manager cannot read refuses the spawn too. The marker of a run
-      // hosted elsewhere was read with its admission.
-      let refusal: string | undefined;
-      if (run.hosted)
-        try {
-          const revoked = (await this.runHosting!.admission(admission.runId)).revoked;
-          if (revoked !== undefined) refusal = revokedRunRefusal(admission.runId, revoked);
-        } catch (e) {
-          refusal = `run ${admission.runId}'s revocation marker could not be read (${rejectionText(e)}), so it starts no helper (SPEC 14.8)`;
-        }
-      if (refusal !== undefined) return { kind: "refused", reason: refusal };
-      if (admission.spawnExempt) return { kind: "exempt" };
-      // The helper is projected at the admitted coordinate, which needs a lifecycle token. A local
-      // admission written before its uid was one records the CLI's own holder id, and bounds nothing.
-      try {
-        assertLifecycleToken(admission.caller.uid);
-      } catch {
-        return { kind: "refused", reason: `run ${admission.runId}'s admission records caller uid ${JSON.stringify(admission.caller.uid)}, which is not a lifecycle token, so its helpers cannot be measured and it starts none. Start the run again (SPEC 14.8)` };
-      }
-      return { kind: "bounded", caller: admission.caller, ceiling: admission.ceiling, run: admission.runId };
-    }
-    if (!isIssuedCaller(caller))
-      return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
-    const ref = { space: this.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
-    try {
-      const { evidence } = await withIssuerSession({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, auth: this.auth!, tls: false }, (s) =>
-        s.store.resolve(ref, s.sourceIsLive));
-      return issuedSpawnerStanding(evidence) === "bounded" ? { kind: "bounded", caller, ceiling: evidence.permissions } : { kind: "exempt" };
-    } catch (e) {
-      return { kind: "none", reason: `its issued evidence does not resolve: ${rejectionText(e)}` };
-    }
-  }
-
-  /** The refusal for a grant its static spawner does not hold, or `undefined` when it holds all of
-   *  it. Each part is named, so the caller can drop exactly what overreached. `armsEvents` is whether
-   *  the helper's own event plane will be minted: that row is keyed on a principal allocated later,
-   *  so it is measured as the spawner's own, the rule the ledger applies. `door` names the command
-   *  being bounded: a persona definition is bounded against its definer as a spawn is. */
-  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined {
-    if (bound.kind === "exempt") return undefined;
-    if (bound.kind === "refused") return `${door}: ${bound.reason}`;
-    let over: GrantOverreach[];
-    let eventsOver: boolean;
-    try {
-      over = bound.kind === "none" ? grantParts(grant) : grantOverreach(this.space, bound.caller, bound.ceiling, grant);
-      eventsOver = armsEvents && (bound.kind === "none"
-        || grantOverreach(this.space, bound.caller, bound.ceiling, { allowPublish: [eventChannel({ owner: bound.caller.owner, actor: bound.caller.actor })] }).length > 0);
-    } catch (e) {
-      return `${door}: ${rejectionText(e)}`;
-    }
-    if (!over.length && !eventsOver) return undefined;
-    const named = [
-      // A role is handed on by a spawner whose credential binds that role's task queue: its own
-      // role, or a `role:<r>` token in its capabilities.
-      ...over.map((o) => o.field === "role" ? `role ${o.value} (a spawner hands on a role it was given as its own or as the \`role:${o.value}\` capability)` : `${o.field} ${o.value}`),
-      ...(eventsOver ? ["events (the helper's own event plane; pass events: false to spawn without it)"] : []),
-    ].join(", ");
-    if (door === "define-persona")
-      return bound.kind === "none"
-        ? `define-persona: the definer holds no issued evidence (SPEC 13.15), so its persona can grant nothing: ${bound.reason}. This persona asks for ${named}. ` +
-            `Define it without these, or start the definer under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
-        : `define-persona: this persona grants more than the definer holds: ${named}. A definer hands on only what its own issued credential carries (SPEC 13.15). ` +
-            `Drop these from the persona, or have the operator widen the definer's own persona.`;
-    if (bound.kind === "bounded" && bound.run !== undefined)
-      return `spawn: this spawn hands its helper more than run ${bound.run}'s starter held when the run was admitted: ${named}. ` +
-        `A run hands on only what its admission recorded: its starter's issued credential, or for a \`--local\` run the channels named by \`--admit-read\` and \`--admit-publish\` (SPEC 14.8). ` +
-        `Drop these from the persona or the spawn, or start the run from a caller that holds them.`;
-    return bound.kind === "none"
-      ? `spawn: the spawner holds no issued evidence (SPEC 13.15), so it hands on no grant: ${bound.reason}. This spawn asks for ${named}. ` +
-          `Spawn a persona that names none of these, or start the spawner under a manager (\`cotal spawn --detach\`), whose seats carry issued evidence.`
-      : `spawn: this spawn hands its helper more than the spawner holds: ${named}. A spawner hands on only what its own issued credential carries (SPEC 13.15). ` +
-          `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
-  }
-
-  /** Ordinary static control seats can read their holding instance. A run's recorded ceiling is
-   *  authoritative, so its helpers receive no additional instance reads. */
-  private managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] {
-    if (this.meshMode !== "static" || !this.managerInstanceId || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
-    return ["describe", "inspect"].map(command => ({
-      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
-    }));
-  }
+  /** {@link SeatLaunch.spawnPersona}. */
+  private spawnPersona(...args: Parameters<SeatLaunch["spawnPersona"]>): ReturnType<SeatLaunch["spawnPersona"]> { return this.seatLaunch.spawnPersona(...args); }
+  /** {@link SeatLaunch.spawnRun}. */
+  private spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> { return this.seatLaunch.spawnRun(caller, runId); }
+  /** {@link SeatLaunch.staticSpawnBound}. */
+  private staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> { return this.seatLaunch.staticSpawnBound(caller, run); }
+  /** {@link SeatLaunch.spawnBoundRefusal}. */
+  private spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined { return this.seatLaunch.spawnBoundRefusal(bound, grant, armsEvents, door); }
+  /** {@link SeatLaunch.managedStaticInstanceReads}. */
+  private managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] { return this.seatLaunch.managedStaticInstanceReads(capabilities); }
 
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
