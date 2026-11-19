@@ -1194,9 +1194,11 @@ Each local JSON request line is limited to 64 KiB of UTF-8 text, including its n
 line receives `LINE_TOO_LONG` and the connection closes without processing later requests. This
 also applies to an unfinished tail after valid requests. Multiple valid lines are checked separately.
 Already accepted finite replies have up to five seconds to flush before close. Device sign-in streams
-are cancelled on close. `status-watch` sends one initial `status` event frame and pushes another
-whenever the daemon's computer name, account state, hosted Manager state, hosted agent inventory,
-update status or pending generation changes, until the connection closes.
+are cancelled on close. A local client can send `status-watch` with only `v`, `id`, and `op`.
+The daemon replies with a `status` event carrying the request `id` and the status snapshot in
+`result`. The daemon pushes another snapshot when its computer name, account state, hosted
+Manager state, hosted agent inventory, update status or pending generation changes. The stream
+ends when the connection closes.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
