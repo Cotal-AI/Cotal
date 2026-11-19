@@ -36,7 +36,7 @@ import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon
 import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, daemonServiceRequirement } from "./guidance.js";
 import { forgetHostedManagerIntents } from "./manager.js";
 import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
@@ -115,7 +115,7 @@ function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
 
 const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVAILABLE" | "CONFLICT" | "PERMISSION_DENIED"; remedy?: string }> = {
   UNSUPPORTED_PLATFORM: { code: "UNSUPPORTED" },
-  NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "run as the intended operating-system user with its private runtime directory available" },
+  NO_RUNTIME_DIR: { code: "TARGET_UNAVAILABLE", remedy: "Use a private runtime directory provisioned by systemd-logind or pam_rundir, or create one owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it" },
   NOT_RUNNING: { code: "TARGET_UNAVAILABLE", remedy: "start it with `cotal daemon serve`" },
   ALREADY_RUNNING: { code: "CONFLICT", remedy: "run `cotal daemon status` for the same daemon home; inspect the conflicting endpoint with your operating system before changing it. No foreign endpoint was removed" },
   DIR_NOT_DIRECTORY: { code: "PERMISSION_DENIED", remedy: "inspect the path; nothing was changed" },
@@ -362,7 +362,11 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
 /** Install or remove the daemon's platform user service. Both forms report the exact unit. */
 async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promise<void> {
   const presentation = presentationOf(args.values);
-  const values = args.values as { "dry-run"?: boolean; yes?: boolean };
+  const values = args.values as { "dry-run"?: boolean; yes?: boolean; "daemon-home"?: string };
+  if (op === "install" && (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"]))) {
+    const requirement = daemonServiceRequirement(values["daemon-home"]);
+    if (requirement) throw requirement;
+  }
   const { paths, home } = resolveTarget(args, true);
   if (op === "install") {
     const dry = values["dry-run"] === true;
@@ -405,17 +409,21 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
 /** Connect a headless machine with one command: install, sign in, register, connect. */
 async function setupCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
-  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean };
+  const values = args.values as { space?: string; idp?: string; "client-id"?: string; wait?: string; "no-manager"?: boolean; "daemon-home"?: string };
   const space = values.space;
   if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
   if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
-  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
-  let idp = choice?.url;
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
   if (values.wait !== undefined && values["no-manager"] !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--wait requires --no-manager; Manager setup never waits for machine approval");
+  if (values["daemon-home"] === undefined || isAbsolute(values["daemon-home"])) {
+    const requirement = daemonServiceRequirement(values["daemon-home"]);
+    if (requirement) throw requirement;
+  }
+  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
+  let idp = choice?.url;
   const { paths, home } = resolveTarget(args);
   let newSignIn = values.idp !== undefined || args.values.cloud === true;
   if (!space && !idp) {

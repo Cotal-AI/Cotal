@@ -610,7 +610,13 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
-On Linux, daemon installation reads its unit directory from the systemd user manager.
+On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
+On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
+runit or s6. Use `cotal update --self` for manual updates.
+If your login does not provide `XDG_RUNTIME_DIR`, use a runtime directory owned by your user
+with mode 0700 and set `XDG_RUNTIME_DIR` to its path.
+
+Daemon installation reads its unit directory from the systemd user manager.
 An owned group-writable unit directory can be used when an ancestor owned by you or root denies
 search permission to group and other accounts, such as an owned `.config` directory with mode 0700.
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
