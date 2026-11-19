@@ -79,7 +79,7 @@
       "name": "an agent is granted the responder's serve filter and can answer a peer's probe for a plane it does not own",
       "file": "packages/core/src/provision-permissions.ts",
       "find": "  const livenessReplies = LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`);",
-      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessServeFilter(space, plane))];",
+      "replace": "  const livenessReplies = [...LIVENESS_PLANES.map((plane) => `${livenessSubject(space, plane, pr.owner, pr.actor)}.>`), ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, \"*\", \"*\"))];",
       "expectRed": "CELL D3",
       "cell": "CELL D3: a peer CANNOT subscribe the responder's SERVE filter (it cannot answer for a plane)"
     },
