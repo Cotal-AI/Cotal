@@ -55,7 +55,7 @@ import {
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
 import { recoverExtensionPromotion } from "./lib/extension-stage.js";
-import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
+import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedDowngradeRefusal } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
@@ -708,17 +708,18 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  // An explicit restore can start its recorded manager even when --no-manager is present.
-  const brokerOnlyUp = cmd?.name === "up" && parsed?.values["no-manager"] === true && !parsed.values.restore;
-  if (opts.extensions && !controlOnlyManager && !brokerOnlyUp && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
+  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
     // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
     // in its own body leaves the operator-global store as it found it.
     const deferred = cmd?.name === "up";
     try {
       if (deferred) {
-        const refusal = deferredSeedRefusal();
+        // Broker-only startup still checks the store generation. An explicit restore can start its
+        // recorded manager even when --no-manager is present, so it retains the full seed path.
+        const brokerOnly = parsed?.values["no-manager"] === true && !parsed.values.restore;
+        const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
         if (refusal) throw refusal;
-        deferSeedToLaunch();
+        if (!brokerOnly) deferSeedToLaunch();
       } else await reconcileSeededConnectors();
     } catch (e) {
       // The seed runs before the command, so a command that asked for JSON has not reached its own
