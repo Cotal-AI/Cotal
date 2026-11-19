@@ -35,7 +35,7 @@ if (!["linux", "darwin"].includes(process.platform)) {
   Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
     value: Object.freeze({ logicalEntry: entry, launchEntry: entry, loadedEntry: entry }),
   });
-  const { installedGenerationVersion, watchDaemonGeneration } = await import(pathToFileURL(join(root, "dist/daemon/generation.js")).href) as typeof import("../daemon/generation.js");
+  const { installedGenerationVersion, watchDaemonGeneration, reconcileHostedConnectors } = await import(pathToFileURL(join(root, "dist/daemon/generation.js")).href) as typeof import("../daemon/generation.js");
   assert.equal(installedGenerationVersion(), "0.2.0");
   const read = fs.readFileSync, readdir = fs.readdirSync, open = fs.openSync;
   const reads: string[] = [], walks: string[] = [], opens: string[] = [];
@@ -97,7 +97,25 @@ if (!["linux", "darwin"].includes(process.platform)) {
     assert.equal(observeExecutionVersion(root), "0.1.0", "descriptor removal observes the installed generation");
     writeExecutionDescriptor(root, { ...descriptor, v: 99 } as unknown as typeof descriptor);
     assert.throws(() => observeExecutionVersion(root), /unsupported execution descriptor version/);
-    console.log("daemon generation poll: idle metadata reads, descriptor replacement, corrupt refusal, verified activation and unmarked observation passed");
+    fs.unlinkSync(executionDescriptorPath(root));
+    // Real child exits exercise the same installed-entry failure reporting as a hosted start.
+    for (const [body, cause] of [
+      ['process.stderr.write("first progress\\nfinal failure\\n"); process.exit(7);', 'exit 7'],
+      ['process.stderr.write("first progress\\nlast progress\\n"); process.kill(process.pid, "SIGTERM");', 'signal SIGTERM'],
+    ]) {
+      fs.writeFileSync(join(root, "dist/cotal-program.js"), body);
+      await assert.rejects(reconcileHostedConnectors("0.1.0"), (error: Error) => {
+        assert.ok(error.message.includes(`(${cause})`));
+        assert.ok(!/[\r\n]/.test(error.message), "reconciliation refusal stays on one line");
+        assert.ok(!error.message.includes("first progress"), "progress tail does not obscure the cause");
+        return true;
+      });
+    }
+    if (process.argv.includes("--reconcile-timeout")) {
+      fs.writeFileSync(join(root, "dist/cotal-program.js"), 'process.stderr.write("reconciling fixture\\n"); setInterval(() => {}, 1000);');
+      await assert.rejects(reconcileHostedConnectors("0.1.0"), /timed out after 600000ms, signal SIGKILL/);
+    }
+    console.log("daemon generation poll: idle metadata reads, descriptor replacement, corrupt refusal, verified activation, unmarked observation and one-line child failure causes passed");
   } finally {
     stop();
     fs.readFileSync = read;
