@@ -32,7 +32,8 @@ Set these choices in the guided flow:
 5. **Space name.** A local space defaults to the project folder's name.
 
 Review the choices before saving.
-Choose **Change** to edit them or **Cancel** to save nothing.
+Choose **Change** to edit them or **Cancel** to leave without saving the project setup choices.
+An approved Cloud sign-in and any spaces it registered remain on this machine.
 With `--configure-only`, setup does not start a process.
 For a local space, continue with the [Quickstart](getting-started.mdx#2-start-a-local-mesh).
 For a Cloud or self-hosted space, see [Launch agents](launch-agents.mdx#spawning-agents).
@@ -57,7 +58,8 @@ Replace `claude` with your connector's name.
 The application it needs must be installed and authenticated.
 
 The `--destination` flag accepts `local` or `self-hosted`.
-To prepare a Cloud space from a script, first sign in with `cotal login`, then use `--destination self-hosted --space <name>` with the other required flags.
+Before running a script that prepares a Cloud space, run `cotal login --cloud` in a terminal and approve sign-in.
+Then use `--destination self-hosted --space <name>` with the other required flags.
 
 A missing required flag is refused before setup writes anything.
 Scripts set up only the optional runtimes named with `--runtime <name>`.

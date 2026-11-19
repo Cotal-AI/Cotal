@@ -25,7 +25,7 @@ A terminal that reports 0 columns gets the splash, questions and notes drawn for
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. The flag value `cloud` is refused before anything is written or contacted, because the Cloud sign-in needs a terminal. The refusal names the scripted route: `cotal login`, then `--destination self-hosted --space <name>`. |
+| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server. The flag value `cloud` is refused before anything is written or contacted. For a Cloud space, [sign in before running the script](setup.mdx#automate-setup), then use `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. For a local space, `--yes` creates a missing folder; otherwise a script's folder must exist. A terminal offers to create it. |
@@ -43,8 +43,9 @@ A terminal that reports 0 columns gets the splash, questions and notes drawn for
 Setup saves preparation before a separate startup decision. Configure-only is the default;
 `--yes` never turns it into startup. On a terminal it asks for each input no flag gave: destination,
 application, runtimes, project folder and space.
-It shows the answers before it writes: Save writes them, Change asks every question again with the
-answers kept, and Cancel saves nothing.
+It shows the answers before preparing the project. Save applies them, Change asks the questions
+again with the answers kept, and Cancel skips project preparation.
+If you approved Cloud sign-in before reviewing the answers, that sign-in and its space registrations remain.
 An empty `--project` is refused before setup writes anything. Use `--project .` for the current folder.
 
 Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
