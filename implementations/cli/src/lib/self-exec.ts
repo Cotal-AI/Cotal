@@ -5,6 +5,7 @@ import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "no
 import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
+import { workingFolderRemoved } from "./paths.js";
 
 /** Is this process running the CLI's own entry? Decided on the RESOLVED file, never on its name.
  *
@@ -111,6 +112,8 @@ function inPnpmDlxCache(path: string, env: NodeJS.ProcessEnv): boolean {
   if (/[/\\]pnpm[/\\]dlx[/\\]/.test(path)) return true;
   const cache = env.npm_config_cache_dir;
   if (!cache || !path) return false;
+  // Relative paths cannot be compared against the configured cache without a working folder.
+  if ((!isAbsolute(cache) || !isAbsolute(path)) && workingFolderRemoved()) return false;
   // pnpm uses <cache>/dlx/<hash>/<id>/node_modules for both the entry and its PATH shim.
   const withinCache = relative(join(cache, "dlx"), path);
   const [hash, id, modules, child] = withinCache.split(sep);
@@ -183,11 +186,13 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
 
 /** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
  *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
- *  would scan the whole PATH for, npx and pnpm dlx transient bins included. */
+ *  would scan the whole PATH for, npx and pnpm dlx transient bins included. A relative entry is
+ *  unusable when the working folder has been removed. */
 function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
   return (env.PATH ?? "")
     .split(delimiter)
-    .filter((dir) => dir && !/[/\\]_npx[/\\]/.test(dir) && !inPnpmDlxCache(dir, env))
+    .filter((dir) => dir && (isAbsolute(dir) || !workingFolderRemoved()))
+    .filter((dir) => !/[/\\]_npx[/\\]/.test(dir) && !inPnpmDlxCache(dir, env))
     .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
