@@ -1,0 +1,95 @@
+name: Windows responsiveness observation
+
+on:
+  push:
+    branches: [fix/windows-native-smoke-hang]
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: 1
+
+jobs:
+  observe:
+    runs-on: windows-2022
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows process identity
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+      - run: pnpm --workspace-concurrency=1 --filter cotal-ai... build
+      - name: Build Windows daemon host primitives
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - name: Unmodified native smoke chain
+        id: stock
+        timeout-minutes: 4
+        run: |
+          foreach ($round in 1..3) {
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            Write-Host "STOCK START round=$round"
+            pnpm smoke:daemon-install-native
+            $code = $LASTEXITCODE
+            Write-Host "STOCK EXIT round=$round code=$code elapsed_ms=$($timer.ElapsedMilliseconds)"
+            if ($code -ne 0) { exit $code }
+          }
+      - name: Trace process boundaries in the same chain
+        if: ${{ !cancelled() && steps.stock.outcome != 'skipped' }}
+        timeout-minutes: 4
+        run: |
+          $env:NODE_OPTIONS = '--require="' + (Resolve-Path .github/windows-responsive-trace.cjs).Path + '"'
+          foreach ($round in 1..3) {
+            $env:RESPONSIVE_TRACE = Join-Path $env:RUNNER_TEMP "responsive-$round.jsonl"
+            Write-Host "TRACE START round=$round"
+            pnpm smoke:daemon-install-native
+            $code = $LASTEXITCODE
+            Write-Host "TRACE EXIT round=$round code=$code"
+            if ($code -ne 0) { exit $code }
+          }
+      - name: Print child start, skip and exit events
+        if: always() && steps.stock.outcome != 'skipped'
+        run: |
+          Get-ChildItem $env:RUNNER_TEMP -Filter 'responsive-*.jsonl' | ForEach-Object {
+            Write-Host $_.Name
+            Get-Content $_.FullName
+          }
+      - name: Assert one skip and exit zero for each direct tsx control
+        timeout-minutes: 3
+        run: |
+          $expected = 'COTAL_SMOKE_SENTINEL skipped=daemon ownership responsiveness: recording Linux supervisor required'
+          foreach ($round in 1..3) {
+            foreach ($mode in 'plain', '--retry', '--pending') {
+              $modeArgs = @(if ($mode -ne 'plain') { $mode })
+              Write-Host "CONTROL START round=$round mode=$mode"
+              $lines = @(pnpm exec tsx bin/smoke/daemon-ownership-responsive.smoke.ts @modeArgs)
+              $code = $LASTEXITCODE
+              $lines | Write-Host
+              Write-Host "CONTROL EXIT round=$round mode=$mode code=$code"
+              if ($code -ne 0 -or $lines.Count -ne 1 -or $lines[0] -cne $expected) { exit 1 }
+            }
+          }
