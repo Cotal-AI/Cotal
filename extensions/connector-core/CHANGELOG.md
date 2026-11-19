@@ -1,5 +1,13 @@
 # @cotal-ai/connector-core
 
+## 0.171.1
+
+### Patch Changes
+
+- 0eed499: When an update replaces the connector's docs files under a running session, `cotal_docs` still refuses to serve another release's docs, and the refusal now names the release the session loaded and says to restart the session to read the docs of the installed version.
+- a9ac959: A message that waits in a connector's queue past its acknowledgement wait is no longer shown as a broker redelivery with an unknown prior handoff. The connector records the first copy it received and the first copy it handed to its host. A message it never handed over carries no redelivery label. One it handed over without an acknowledgement says that an earlier handoff in this session was not confirmed. A first copy that was already a redelivery, as after a restart, still labels the prior model handoff unknown.
+- 1a98542: User-mode manager calls now report a refused bearer exchange as permission denied and confirm that the request did not run.
+
 ## 0.171.0
 
 ### Minor Changes
