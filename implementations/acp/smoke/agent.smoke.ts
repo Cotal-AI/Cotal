@@ -34,7 +34,7 @@ symlinkSync(dir, link);
 
 const CATALOGS: AgentCatalog[] = [
   { agent: "hermes", available: true, eventPlane: false, models: [] },
-  { agent: "claude", available: true, eventPlane: true, models: [{ id: "opus", variants: ["high", "low"] }, { id: "haiku", variants: [] }] },
+  { agent: "claude", available: true, eventPlane: true, models: [{ id: "opus", variants: ["high", "low"] }, { id: "sonnet", variants: ["low"] }, { id: "haiku", variants: [] }] },
   { agent: "pi", available: true, eventPlane: true, models: [] },
 ];
 
@@ -148,8 +148,11 @@ const set = (configId: string, value: string) => agent.request(methods.agent.ses
 let opts = (await set("model", "claude/opus")).configOptions;
 check("a model with variants offers the variant option", opts.some((o) => o.id === "variant"), opts.map((o) => o.id));
 await set("variant", "high");
+opts = (await set("model", "claude/sonnet")).configOptions;
+const variant = opts.find((o) => o.id === "variant") as { currentValue?: string } | undefined;
+check("a variant does not carry to a model that lacks it", variant?.currentValue === "default", variant);
 opts = (await set("model", "claude/haiku")).configOptions;
-check("a variant does not carry to a model without it", !opts.some((o) => o.id === "variant"), opts);
+check("a model without variants offers no variant option", !opts.some((o) => o.id === "variant"), opts);
 const bad = await errorOf(set("model", "hermes/default"));
 check("an application without an event plane is refused as invalid params", bad?.code === -32602 && bad.message?.includes("event plane") === true, bad);
 opts = (await set("model", "claude/my-custom")).configOptions;
