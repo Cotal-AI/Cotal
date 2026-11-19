@@ -321,6 +321,9 @@ const composed: Command = { ...command, async run(args) {
       if (reply.result.update.automatic && typeof reply.result.update.nextAttempt === "string") return undefined;
       return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
     } catch (error) {
+      if (error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER") {
+        return `Could not check the automatic update schedule: ${error.message}.`;
+      }
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
         return "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
       }
