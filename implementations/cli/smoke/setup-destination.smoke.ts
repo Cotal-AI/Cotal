@@ -327,8 +327,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const startedRoot = project("started-here");
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const started = await json(FULL("startedspace", startedRoot));
-  check("a space started here before is reported as started, and its next command is spawn",
-    started.status === 0 && started.env?.result.spaceState === "started" && started.env.result.next.command === `${commandPrefix} spawn --space startedspace` && findPreparedSpace("startedspace") === undefined, shown(started));
+  check("a past local registration with an offline broker is reported as stopped and kept",
+    started.status === 0 && started.env?.result.spaceState === "stopped" && started.env.result.next.command === `${commandPrefix} up` && started.env.result.next.cwd === startedRoot && findPreparedSpace("startedspace") === undefined, shown(started));
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
@@ -442,8 +442,16 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   writeFileSync(file, JSON.stringify(bundle));
   const wrongName = await json(hosted("other", userRoot, ["--connection-file", file]));
   check("a connection file for another space is CONFLICT", refused(wrongName, 2, "CONFLICT") && /"hosted"/.test(wrongName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(wrongName));
-  const added = await json(hosted("hosted", userRoot, ["--connection-file", file]));
-  check("a connection file registers the space with the project as its root",
+  const help = await run(["setup", "--help"]);
+  check("setup help labels the self-hosted connection-file example as prompting in a terminal",
+    help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
+  const docs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
+  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(docs)?.[0];
+  check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
+  const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
+  const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);
+  const added = await json(exampleArgs);
+  check("the documented self-hosted example runs without a terminal and registers the space with the project as its root",
     added.status === 0 && added.env?.result.spaceState === "added" && findMesh("hosted")?.root === userRoot && findMesh("hosted")?.mode === "user" && added.env.result.written.some((w: { what: string }) => w.what === "space registration"), shown(added));
   check("and its persona lands where spawn reads for that space", existsSync(join(resolveMeshTarget(home, { space: "hosted" }).personaRoot, "default.md")));
   const again = await json(hosted("hosted", userRoot, ["--connection-file", file]));
@@ -687,6 +695,23 @@ if (process.platform !== "win32") {
   check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
   const none = await json(FULL("rt", dir));
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
+}
+
+if (process.platform !== "win32") {
+  const oldBin = project("old-bin");
+  const probed = join(oldBin, "nats-server.probed");
+  writeFileSync(join(oldBin, "nats-server"), `#!/bin/sh\nif [ "$1" != --version ]; then exit 1; fi\necho probed > "$0.probed"\necho 'nats-server: v2.9.0'\n`, { mode: 0o755 });
+  const path = { PATH: [oldBin, env.PATH].join(delimiter) };
+  const dir = project("brokerless");
+  const prepared = await json([...FULL("brokerless", dir), "--configure-only", "--yes"], dir, path);
+  check("configure-only saves the default persona without probing the old broker",
+    prepared.status === 0 && prepared.env?.result?.startup?.state === "not-requested" && !existsSync(probed)
+      && existsSync(join(dir, ".cotal", "agents", "default.md")), shown(prepared));
+  const startDir = project("broker-required");
+  const started = await json([...FULL("broker-required", startDir), "--start", "--detach", "--yes"], startDir, path);
+  check("explicit startup still refuses the old broker before writing the project",
+    refused(started, 2, "DEPENDENCY_UNAVAILABLE") && /reports version 2\.9\.0/.test(started.env?.error?.message ?? "")
+      && existsSync(probed) && !existsSync(join(startDir, ".cotal")), shown(started));
 }
 
 finish();

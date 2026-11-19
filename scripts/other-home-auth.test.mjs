@@ -3,13 +3,13 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { otherHomeNotice, verifyOtherHomeAuthEvidence } from './other-home-auth-evidence.mjs';
 import { planRelease, verifyResults } from './upgrade-matrix-plan.mjs';
-function fixture() {
+function fixture(nodePath = process.execPath) {
   const cell = { otherHomeAuth: true, platform: 'linux', sourceVersion: '0.166.3' };
   const home = '/private/b', project = home + '/project', installedRoot = '/private/prefix/lib/node_modules/cotal-ai';
-  const before = { pid: 123, birth: '456', instanceId: 'instance', root: project, cwd: project, loadedRoot: installedRoot, reportedVersion: cell.sourceVersion, loadedVersion: cell.sourceVersion, argv: [process.execPath, '--max-semi-space-size=1', installedRoot + '/dist/cotal.js', '--no-color', '__service-manager'], graph: ['package.json', 'dist/cotal-program.js', 'node_modules/core/index.js'].map(path => ({ path, sha256: 'a'.repeat(64) })) };
+  const before = { pid: 123, birth: '456', instanceId: 'instance', root: project, cwd: project, loadedRoot: installedRoot, reportedVersion: cell.sourceVersion, loadedVersion: cell.sourceVersion, argv: [nodePath, '--max-semi-space-size=1', installedRoot + '/dist/cotal.js', '--no-color', '__service-manager'], graph: ['package.json', 'dist/cotal-program.js', 'node_modules/core/index.js'].map(path => ({ path, sha256: 'a'.repeat(64) })) };
   const connectorRoot = '/private/b/extensions';
   Object.assign(before, { connectorRoot, connectorGraph: ['extensions.json', 'node_modules/connector/index.js'].map(path => ({ path, sha256: 'b'.repeat(64) })) });
-  const e = { connectorRoot, mode: 'second-private-home-static-auth', space: 'other-home-proof', home, project, updaterHome: '/private/a', installedRoot, sourceVersion: cell.sourceVersion, before, after: structuredClone(before), descriptorBefore: false };
+  const e = { connectorRoot, mode: 'second-private-home-static-auth', space: 'other-home-proof', home, project, updaterHome: '/private/a', installedRoot, sourceVersion: cell.sourceVersion, nodePath, before, after: structuredClone(before), descriptorBefore: false };
   const command = (label, argv, home, n, stdout = '') => ({ label, argv, home, exit: 0, signal: null, timeout: false, stdout, stderr: '', startedAt: new Date(n * 1000).toISOString(), finishedAt: new Date(n * 1000 + 100).toISOString() });
   const auth = command('other home original continuity read', ['--input-type=module', '-e', 'readManagerContinuity'], e.updaterHome, 2, JSON.stringify({ refused: true, code: 'AUTH_REQUIRED', nativeCode: 'CREDENTIALS_MISSING' }));
   e.authRead = structuredClone(auth);
@@ -17,6 +17,23 @@ function fixture() {
   report.calls.push(...[1, 4].map(n => command('other home loaded version', ['--input-type=module', '-e', 'managerStatus'], home, n, JSON.stringify({ instanceId: before.instanceId, version: cell.sourceVersion }))));
   return { report, cell };
 }
+test('summary accepts the Node path recorded by a different runner', () => {
+  const cellNodePath = '/opt/hostedtoolcache/node/24.22.2/x64/bin/node';
+  const nodePath = cellNodePath === process.execPath ? '/opt/hostedtoolcache/node/24.22.3/x64/bin/node' : cellNodePath;
+  assert(Object.values(verifyOtherHomeAuthEvidence(fixture(nodePath))).every(Boolean));
+});
+test('summary requires the recorded Node path to match Manager argv', () => {
+  const input = fixture();
+  input.report.otherHomeAuth.nodePath = `${process.execPath}.other`;
+  assert.throws(() => verifyOtherHomeAuthEvidence(input), { code: 'ERR_ASSERTION' });
+  delete input.report.otherHomeAuth.nodePath;
+  assert.throws(() => verifyOtherHomeAuthEvidence(input), /recorded Node path missing/);
+});
+test('cell verification requires the recorded Node path to match the local executable', () => {
+  const options = { requireCleanup: false, expectedNodePath: process.execPath };
+  assert.equal(verifyOtherHomeAuthEvidence({ ...fixture(), ...options })['other-home-manager-preserved'], true);
+  assert.throws(() => verifyOtherHomeAuthEvidence({ ...fixture(`${process.execPath}.other`), ...options }), { code: 'ERR_ASSERTION' });
+});
 test('strict other-home evidence accepts complete observations and rejects weakened identity, auth, graph, notice, timing or cleanup', () => {
   assert(Object.values(verifyOtherHomeAuthEvidence(fixture())).every(Boolean));
   const corruptions = [

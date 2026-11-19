@@ -21,7 +21,7 @@
  * Run: pnpm smoke:operation-space
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
@@ -254,6 +254,15 @@ check("spawn --dry-run of a missing name is TARGET_NOT_FOUND, naming the catalog
 const noFile = cotal("spawn", "--file", "missing.md", "--dry-run", "--json");
 check("spawn --dry-run of a missing --file names the file it checked",
   noFile.status === 2 && noFile.envelope?.error?.code === "TARGET_NOT_FOUND" && noFile.envelope.error.message === `no persona "missing.md": ${join(root, "missing.md")} was not found`, shown(noFile));
+const prefix = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
+mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
+const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
+  const source = join(import.meta.dirname, "..", "..", "..", "extensions", pkg);
+  symlinkSync(source, join(prefix, "node_modules", "@cotal-ai", pkg), "dir");
+  const name = pkg === "connector-claude-code" ? "claude" : "opencode";
+  return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
+});
+writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
 const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona previews the shipped default without writing it",
   noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));
@@ -299,7 +308,7 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string }
+interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -334,8 +343,8 @@ check("a direct preview refuses a case-mismatched harness without normalizing it
   uppercase.status === 2 && uppercase.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && uppercase.envelope.error.message === 'no connector "OPENCODE" is installed', shown(uppercase));
 const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "--dry-run", "--json");
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
-check("a known harness still previews the file's source without warnings or importing its connector",
-  knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && same(knownPreview.warnings, []), shown(knownDirect));
+check("an installed harness validates and previews the file's source without warnings",
+  knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && knownPreview.result.connectorArgumentValidation === "checked" && same(knownPreview.warnings, []), shown(knownDirect));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.

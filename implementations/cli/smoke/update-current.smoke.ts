@@ -63,7 +63,7 @@ if (process.platform !== "win32") {
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
     });
     assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.stdout}\n${result.stderr}`);
-    assert.doesNotMatch(result.stdout + result.stderr, /this folder no longer exists|release is not ready|registry cannot be reached/i,
+    assert.doesNotMatch(result.stdout + result.stderr, /this folder no longer exists|update preflight failed|registry cannot be reached/i,
       "removed cwd does not refuse update or masquerade as unavailable registry metadata");
     assert.match(result.stdout, /Registry latest:/, "the actual updater completed its registry check");
     mkdirSync(join(home, ".cotal"));
@@ -89,7 +89,7 @@ if (process.platform !== "win32") {
     });
     assert.equal(during.removed, true, `remove the original folder after plain update begins: ${during.output}`);
     assert.equal(during.status, 0, during.output);
-    assert.doesNotMatch(during.output, /this folder no longer exists|release is not ready|registry cannot be reached/i);
+    assert.doesNotMatch(during.output, /this folder no longer exists|update preflight failed|registry cannot be reached/i);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

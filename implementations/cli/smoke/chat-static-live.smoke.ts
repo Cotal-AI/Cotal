@@ -4,7 +4,8 @@
  *
  *  1. `chat general --plain` opens a session on #general.
  *  2. `/leave general` leaves it and `/join general` returns to it: the named channel is the
- *     session's read list, and leaving does not change what the session may read.
+ *     session's read list, and leaving does not change what the session may read. Leaving while
+ *     delivery is live retires the earlier durable membership and its backstop stays off until rejoin.
  *  3. `/leave` of a channel the session never joined says it was not on it, and picking one outside
  *     its post grant names the step that opens a session on it.
  *  4. `/reconnect` reconnects and reports the one outage it causes once.
@@ -57,6 +58,7 @@ try {
     if (!answered) await sleep(2000);
   }
   check("the detached manager answers", answered);
+  check("general starts durable with replay off", cli("channel", "set", "general", "--delivery", "durable", "--no-replay").status === 0);
 
   const chat = spawn(TSX, [CLI, "chat", "general", "--plain", "--name", "static-chat"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "";
@@ -73,10 +75,31 @@ try {
   try {
     for (let i = 0; i < 150 && !prompted.test(out); i++) await sleep(200);
     check("chat general --plain opens a session the manager admits", prompted.test(out), plain(out));
+    const readMembers = () => {
+      const members = cli("channel", "members", "general", "--json");
+      return members.status === 0 ? (JSON.parse(members.stdout) as { result: { members: { name: string | null; durable: boolean }[] } }).result.members : undefined;
+    };
+    const membersUntil = async (test: (members: NonNullable<ReturnType<typeof readMembers>>) => boolean) => {
+      for (const end = Date.now() + 30_000; Date.now() < end; await sleep(200)) {
+        const members = readMembers();
+        if (members && test(members)) return true;
+      }
+      return false;
+    };
+    check("the chat establishes a durable membership", await membersUntil((members) => members.some((m) => m.name === "static-chat" && m.durable)));
+    check("general switches to live", cli("channel", "set", "general", "--delivery", "live").status === 0);
     const left = await say("/leave general");
     check("/leave of its own channel leaves it", left.includes("left #general"), left);
+    check("general switches back to durable", cli("channel", "set", "general", "--delivery", "durable").status === 0);
+    check("leaving while live retires the earlier durable membership", await membersUntil((members) => !members.some((m) => m.name === "static-chat")));
+    const gap = "post during the leave gap";
+    check("a post is accepted while chat has left", cli("send", "-c", "general", gap).status === 0);
     const back = await say("/join general");
     check("/join returns to the channel it left", back.includes("joined #general") && !back.includes("denied"), back);
+    const fresh = "fresh post after rejoin";
+    check("a fresh post is accepted after rejoin", cli("send", "-c", "general", fresh).status === 0);
+    for (let i = 0; i < 150 && !out.includes(fresh); i++) await sleep(200);
+    check("chat receives only the fresh post after rejoin", out.includes(fresh) && !out.includes(gap), plain(out.slice(-600)));
     const ops = await say("/leave ops");
     check("/leave of a channel it never joined says it was not on it", ops.includes("not on #ops"), ops);
     const pickOps = await say(":to #ops");

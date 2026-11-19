@@ -29,7 +29,7 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
 const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts");
-const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8");
+const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "goal-writer.ts"), "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
 const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
@@ -42,7 +42,7 @@ console.log("\n── the span this suite reads, asserted rather than assumed �
 // Every cell below is a count over this text. A file that moved, or an anchor that was renamed,
 // would make the counts trivially zero and several claims vacuously true.
 c("manager.ts is readable and is the file carrying the serve wiring",
-  src.length > 10_000 && count("private async reconcileGoalIndex") === 1 && count("serveSpawnGoal") > 0,
+  src.length > 10_000 && count("async reconcileGoalIndex") === 1 && count("serveSpawnGoal") > 0,
   { bytes: src.length });
 
 console.log("\n── WRONG-TODAY (1/2): both action commands are served by the Model-B goal path ──");
@@ -108,7 +108,7 @@ console.log("\n── THE MECHANISM THAT MUST LIVE — read this before deleting
 // `"provisioner"` appeared exactly once in `manager.ts`; it appears six times, all legitimate, and
 // the cell failed on a claim that was simply false rather than on the property it names. Slicing
 // the method body ties the credential to THIS sweep, which is what the assertion was always about.
-const sweepStart = src.indexOf("private async reconcileGoalIndex");
+const sweepStart = src.indexOf("async reconcileGoalIndex");
 const sweepBody = sweepStart < 0 ? "" : src.slice(sweepStart, src.indexOf("\n  private ", sweepStart + 1));
 c("the sweep body was located and is non-trivial (so the cell below reads something)",
   sweepBody.length > 500, { bytes: sweepBody.length });

@@ -45,6 +45,9 @@ A managed launch can also ask for its working folder when its host differs from 
 Use `--on` and `-C` to make those choices explicit in scripts.
 Closing a direct foreground terminal may end its agent.
 Use `--dry-run` to preview a launch without allocating an agent, provisioning credentials, or starting the application.
+For a direct launch, the preview checks launch arguments if the installed connector supports preview
+validation. It creates no launch files.
+A managed preview leaves execution-host checks to the selected manager.
 
 ### Choose the persona
 
@@ -165,7 +168,10 @@ A connector that was available at boot keeps its recorded paths even if PATH lat
 Since 0.167.1, a detached launch that no manager can take reports the installed connectors' unavailable reasons, including missing executables.
 Install or repair those applications on the named manager hosts and make them available on the PATH used to start the managers.
 The refusal suggests adding a connector only on managers whose connector inventory is empty.
-For a stack started with `cotal up`, stop its manager with `cotal manager stop --yes` from the project folder, then run `cotal up` with the repaired PATH.
+If the manager needs a different PATH, restart it under its own supervisor. For a saved manager
+service, use `cotal service restart <name> --yes`. For a foreground `cotal up` stack, run
+`cotal down --yes` from its project folder or press Ctrl-C in its terminal. This stops the broker
+and hosted workflow runs and can stop agents. Repeat the original foreground start with the updated PATH.
 A connector registered after startup has no recorded row, so launch, resume, and model lookup check PATH when called.
 
 ## Manage local personas [#personas-from-the-cli]

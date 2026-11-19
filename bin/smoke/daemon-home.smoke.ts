@@ -258,11 +258,16 @@ try {
   });
 
   await cell("G2 failure documents retain their selected operation", async () => {
+    const expected = "start it with `cotal daemon serve --daemon-home '" + managed.replaceAll("'", "'\\''") + "'`";
     const absent = await cli(["status", "--daemon-home", managed, "--json"]);
     check("G2 absent status retains its mode and null local target", absent.status === 2 && absent.doc.command === "daemon status" && absent.doc.target === null, absent.doc);
+    check("G2 stopped explicit status names a shell-quoted foreground start", absent.doc.error?.cause?.code === "NOT_RUNNING" && absent.doc.error.remedy === expected, absent.doc);
+    const defaultStatus = await cli(["status", "--json"]);
+    check("G2 stopped default status keeps the bare foreground start", defaultStatus.status === 2 && defaultStatus.doc.error?.cause?.code === "NOT_RUNNING" && defaultStatus.doc.error.remedy === "start it with `cotal daemon serve`", defaultStatus.doc);
     for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status", "setup"]) {
       const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
       check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
+      if (mode === "service-connect") check("G2 stopped service-connect names the same quoted foreground start", result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
     }
     for (const mode of ["login", "setup"]) {
       for (const idp of ["http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "http://127.0.0.1/api/auth?PRIVATE_MARKER=1", "http://127.0.0.1/api/auth#PRIVATE_MARKER", "http://provider.example/api/auth", "https://"]) {

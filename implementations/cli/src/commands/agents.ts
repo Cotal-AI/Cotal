@@ -25,6 +25,8 @@ import {
   recordOperationSpace,
   resolveControlTarget,
   resolveMeshTarget,
+  spaceRootTarget,
+  workspaceErrorParts,
   connectOrThrow,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
@@ -39,6 +41,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
+import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
@@ -274,11 +277,11 @@ const inputText = (text: string): string[] => text.startsWith("-") ? ["--text", 
 
 /** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
  *  `rest` is the positionals after the agent name that a remedy has to repeat. */
-async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest: readonly string[] = [], onRefusal?: "throw"): Promise<ManagerPin> {
+async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest: readonly string[] = [], options: { openMesh?: boolean; onRefusal?: "throw" } = {}): Promise<ManagerPin> {
   const named = onRemedyVerb(verb, v, rest);
   const on = await managerPin(v, named);
   if (on !== undefined) return { instanceId: on };
-  const loc = await locateSeat(cliControl, v, String(v.name), { onRefusal });
+  const loc = await locateSeat(cliControl, v, String(v.name), { onRefusal: options.onRefusal });
   if (loc.kind === "pin") return { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat };
   if (loc.kind === "unpinned") return {};
   // Refused before anything is sent, as `ps` refuses, rather than after a describe no manager can answer.
@@ -292,7 +295,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest:
   if (loc.space !== undefined) recordOperationSpace(loc.space);
   const agent = String(v.name), message = seatMissRefusal(agent, named, loc);
   if (loc.kind === "absent" && verb === "cotal status" && loc.instances.includes(agent))
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent) });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent, options.openMesh === true) });
   if (loc.kind === "absent")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run `cotal ps` to see the agents each manager runs" });
   const shown = oneLine(agent);
@@ -585,11 +588,21 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
   refuseControlCreds(v.creds, v.space);
-  const on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
+  let on: string | undefined;
   let census: SeatCensus;
   try {
+    on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
     census = await readSeats(v, command, on);
   } catch (e) {
+    const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
+    if (parts?.restartRoot !== undefined) {
+      const block = channelSeedRestartBlock(parts.restartRoot);
+      if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. Restart blocked: ${block.message}`, {
+        target: isConnectRefusal(e) ? e.target : isWorkspaceTargetError(e) ? spaceRootTarget(e.details) : undefined,
+        native: isConnectRefusal(e) ? e.native : undefined,
+        remedy: block.remedy,
+      });
+    }
     // On a user-auth mesh where no manager of yours answers, or none is live, your agents are read
     // from presence instead. Static slots are a manager's own records, so `--slots` keeps the refusal.
     const failure = isCommandFailure(e) ? e : isConnectRefusal(e) ? e.failure() : undefined;
@@ -654,9 +667,10 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
 async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): Promise<SeatCensus> {
   refuseControlCreds(values.creds, values.space);
   const on = await managerPin(values, onRemedyVerb("cotal status", { ...values, name }));
-  if (name === "manager" || (await connectOrThrow(values, "observer", { readOnly: true })).mode === "user")
-    return readSeats(values, "ps", on);
-  const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status") : { instanceId: on };
+  if (name === "manager") return readSeats(values, "ps", on);
+  const { mode } = await connectOrThrow(values, "observer", { readOnly: true });
+  if (mode === "user") return readSeats(values, "ps", on);
+  const pin = on === undefined ? await pinForTarget({ ...values, name } as never, "cotal status", [], { openMesh: mode === "open" }) : { instanceId: on };
   const t = await resolveControlTarget(values, "control-caller-privileged", pin.instanceId, { onRefusal: "throw" });
   recordOperationSpace(t.space);
   const target = { space: t.space, scope: "agent", managerInstanceId: pin.instanceId ?? null };
@@ -668,8 +682,9 @@ async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): 
 }
 
 /** Where the state of an answering manager, rather than one of its agents, is read. */
-function managerItselfRemedy(name: string): string {
-  return `${name} is this space's manager, which is answering, not an agent it runs; \`cotal status\` shows the manager's state, and \`cotal endpoint describe manager\` reads its commands`;
+function managerItselfRemedy(name: string, openMesh: boolean): string {
+  const status = `${name} is this space's manager, which is answering, not an agent it runs. \`cotal status\` shows the manager's state.`;
+  return openMesh ? status : status + " `cotal endpoint describe manager` reads its commands.";
 }
 
 /** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
@@ -690,7 +705,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
   // `manager` and an answering manager's instance id name the manager itself, which runs no row of
   // its own, so the refusal says where its state is read.
   const managerItself = name === "manager" || census.managers.some((manager) => manager.state === "answered" && manager.instanceId === name);
-  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: managerItselfRemedy(name) } : {}) });
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: managerItselfRemedy(name, census.mode === "open") } : {}) });
   const item = matches[0] ?? null;
   const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
   let managerHint = "";
@@ -810,7 +825,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
       throw managerReadFailure(reply, target, command, t.auth.bearer !== undefined);
     }
     const items = (reply.data as unknown[]) ?? [];
-    return { target, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [], warnings: [], rowsOf: new Map() };
+    return { target, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [], warnings: [], rowsOf: new Map(), mode: t.mode };
   }
 
   // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds the
@@ -1036,7 +1051,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   refuseControlCreds(v.creds, v.space);
-  const pin = await pinForTarget(v as never, "cotal input", inputText(v.text), "throw");
+  const pin = await pinForTarget(v as never, "cotal input", inputText(v.text), { onRefusal: "throw" });
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {

@@ -48,6 +48,7 @@ import {
   type MaintenanceLock,
   type OutputWarning,
   type Report,
+  type SeatCap,
   type ServiceDefinitionInput,
   type UserAuthInfo,
   unparsableDaemonCreds,
@@ -95,9 +96,9 @@ function websocketPortTaken(error: unknown, wsPort: number, logFile: string | un
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { creds: string; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { mintProvisioner(): Promise<string>; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
   /** Recreation options are accepted only on a fresh broker before space services start. */
-  initializeStreams(server: string, space: string, setup: { creds: string } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
+  initializeStreams(server: string, space: string, setup: { mintProvisioner(): Promise<string> } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
    *  as after `cotal space delete`, and say whether it did. */
   recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: StackMode; channels?: string; seed?: unknown }): Promise<boolean>;
@@ -167,6 +168,7 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
@@ -890,7 +892,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (request.presentation !== "json" && !(current[0] && observeServiceProcess(current[0].record.value) === "running"))
       process.stderr.write(`Starting ${definition.name}; waiting up to ${Math.round(definition.record.value.readiness.timeoutMs / 1000)}s for its readiness check\n`);
     // A redefined member starts its replacement under the IDs the journal already names.
-    const started = await startProcessService(definition, replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {});
+    const started = await startProcessService(definition, {
+      ...(replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {}),
+      ...(role === "manager" && request.managerSeatCap !== undefined ? { managerSeatCap: request.managerSeatCap } : {}),
+    });
     mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined, process: started.instance.record.value.process });
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;

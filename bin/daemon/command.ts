@@ -130,11 +130,13 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
-function asFailure(e: unknown): unknown {
+function asFailure(e: unknown, home?: string): unknown {
   if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
-  const remedy = e.remedy ?? r.remedy;
+  const remedy = e.remedy ?? (e.code === "NOT_RUNNING" && home !== undefined
+    ? `start it with ${codeSpan(daemonCommandCopy("serve", home))}`
+    : r.remedy);
   return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
 }
 
@@ -183,7 +185,7 @@ async function status(args: ParsedArgs): Promise<void> {
         native: { code: e.code },
       });
     }
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
   const result = space ? { ...reply.result, agents: reply.result.agents?.filter(row => row.space === space), managers: [await managerViaDaemon({ paths, peerUid, peerPid }, { op: "manager-status", space }) as import("./protocol.js").HostedManager] } : reply.result;
@@ -324,12 +326,12 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${op} needs --space <s>`);
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await serviceViaDaemon({ paths, peerUid, peerPid, space, op });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;

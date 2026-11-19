@@ -116,7 +116,7 @@ takes it as `cotal up --log-file` does: a relative path is made absolute against
 runs in, and the file need not exist yet. A missing required option is refused with each one named,
 and the refusal prints the command line with them. That line also names each option whose default
 the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
-broker, so it works as printed.
+broker, and keeps an explicit `--space` so the retry saves in the same space.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.

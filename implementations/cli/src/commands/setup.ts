@@ -9,6 +9,7 @@ import {
   isCommandFailure,
   renderReport,
   assertPreferencesFolderProtected,
+  brokerCheck,
   canonicalRoot,
   checkUserBundle,
   isCotalCloudIdp,
@@ -181,7 +182,7 @@ interface SetupResult {
   /** The project folder: the space's root, whose `.cotal/agents` holds its personas. */
   readonly project: string;
   /** How setup found the space: prepared or registered by this run, or already in place. */
-  readonly spaceState: LocalSpaceState | "added" | "bound" | "registered";
+  readonly spaceState: LocalSetupState | "added" | "bound" | "registered";
   readonly harness: {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
@@ -193,7 +194,7 @@ interface SetupResult {
   readonly actions: readonly ActionRun[];
   /** Every runtime setup offers: `pty`, the official ones and each installed third-party one. */
   readonly runtimes: readonly RuntimeSetup[];
-  /** Every file or folder setup wrote, in order. Empty when a rerun changed nothing. */
+  /** Files and folders setup recorded writing. Empty when a rerun changed nothing. */
   readonly written: readonly Written[];
   readonly startup: SetupStartup;
   /** The command that comes next, and the folder to run it in when that matters. */
@@ -263,7 +264,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   const inputs = interactive ? await askInputs(values, runtimes) : scriptedInputs(values, runtimes);
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
-  const plan = await planSetup(inputs, runtimes);
+  const plan = await planSetup(inputs, runtimes, values.start === true);
   await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
@@ -525,12 +526,15 @@ function bundleSpace(file: string): string {
   return check.value.space;
 }
 
-/** The applications setup can set up: every installed connector. With none installed, reject an
- *  unknown harness and name a recovery that also restores deliberately removed connectors.
- *  A source checkout needs an installed CLI or an explicit sandboxed seed opt-in. */
+/** The applications setup can set up: every installed connector. For an explicitly named
+ *  built-in that is absent, point to its package without reinstalling removed connectors. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
-  if (candidates.length > 0) return candidates;
+  if (candidates.length > 0) {
+    if (harness !== undefined && Object.hasOwn(OFFICIAL_CONNECTORS, harness) && !candidates.some((candidate) => candidate.value === harness))
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the "${harness}" connector is not installed`, { remedy: `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\`` });
+    return candidates;
+  }
   if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
@@ -563,17 +567,19 @@ function runtimeFlags(names: readonly string[], choices: readonly RuntimeChoice[
   return [...new Set(names)].filter((name) => name !== "pty");
 }
 
+type LocalSetupState = LocalSpaceState | "stopped" | "not-answering";
+
 interface SetupPlan {
   readonly inputs: SetupInputs;
   readonly runtimes: readonly RuntimeChoice[];
   readonly candidate: SetupConnectorCandidate;
-  readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
+  readonly space: { readonly kind: "local"; readonly state: LocalSetupState } | SelfHostedSpace;
 }
 
 /** Every check setup makes before it writes: the space name, the application, the preferences
- *  folder it saves the harness in, the space at the destination, and for a local space the NATS
- *  server `cotal up` will run. */
-async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]): Promise<SetupPlan> {
+ *  folder it saves the harness in, the space at the destination, and the NATS server if the
+ *  invocation explicitly requests local startup. */
+async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
   // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
@@ -585,12 +591,22 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
-  const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);
-  try {
-    await resolveNatsServer();
-  } catch (e) {
-    if (e instanceof CommandFailure) throw e;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
+  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  if (state === "started") {
+    const registered = findMesh(inputs.space);
+    const broker = registered?.origin === "up" && canonicalRoot(registered.root) === canonicalRoot(inputs.project)
+      ? await brokerCheck(registered.server, registered.tlsRequired)
+      : undefined;
+    if (broker === "slow-link") state = "not-answering";
+    else if (broker !== "reachable") state = "stopped";
+  }
+  if (start) {
+    try {
+      await resolveNatsServer();
+    } catch (e) {
+      if (e instanceof CommandFailure) throw e;
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
+    }
   }
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
@@ -663,7 +679,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     const provider = await connectorSetupProvider(candidate.connector);
     const entry = findMesh(inputs.space);
     const signedIn = provider?.connector && entry?.mode === "user" ? await signedInSpace(entry) : undefined;
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), ...(signedIn ? { signedIn } : {}) }, provider));
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), wrote, ...(signedIn ? { signedIn } : {}) }, provider));
     // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
     const share = await connectorSetupProvider(candidate.connector);
     if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));
@@ -877,6 +893,8 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
   created: "prepared by this setup",
   prepared: "already prepared",
   started: "already started here",
+  stopped: "stopped",
+  "not-answering": "broker not answering",
   added: "registered by this setup",
   bound: "project bound by this setup",
   registered: "already registered",
