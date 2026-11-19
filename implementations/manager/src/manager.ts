@@ -5,14 +5,10 @@ import { drainAndClose } from "@cotal-ai/core";
 import { hostname } from "node:os";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
 import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
-  canonicalJson,
   copyPersonaEndpoints,
-  lowerPersonaEndpoints,
-  parsePersonaEndpoints,
   accountFromCreds,
   credsClaims,
   DEFAULT_SERVER,
@@ -21,7 +17,6 @@ import {
   STANDING_RENEWABLE_TTL_SEC,
   discardLaunchArtifacts,
   injectedSecretStoreIdentity,
-  agentFilePath,
   dialerFor,
   connectorServers,
   spawnEnvAllow,
@@ -29,11 +24,7 @@ import {
   idFromCreds,
   identityFromCreds,
   inspectCredHealth,
-  composeWirePersona,
   loadAgentFile,
-  listPersonaCatalog,
-  personaCatalogDescription,
-  personaCatalogReadable,
   loadCotalConfig,
   type CotalConfig,
   mintCreds,
@@ -49,13 +40,11 @@ import {
   probeConnect,
   registry,
   resolveAuthProvider,
-  saveAgentFile,
-  capabilityWithin,
 } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, EpErrorCode, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, AttachSession, Connector, ConnectorModelCatalog, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -86,16 +75,19 @@ import { SessionRecovery } from "./session-recovery.js";
 import { SeatCustody, watchConnectorHolder } from "./seat-custody.js";
 import { GoalWriter } from "./goal-writer.js";
 import { DEPROVISION_TIMEOUT_MS, SeatStop } from "./seat-stop.js";
+import { CommandDispatch, participantKey } from "./command-dispatch.js";
+import { SpawnGoal } from "./spawn-goal.js";
+import { PersonaCatalog } from "./persona-catalog.js";
 import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
-import { SeatLaunch, foreignEventChannels, userMeshEndpointsRefusal, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
+import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
-import { RunHosting, servedRequestSubject } from "./run-hosting.js";
+import { RunHosting } from "./run-hosting.js";
 import { rejectionText, attemptCleanup, type CleanupFailure } from "@cotal-ai/core";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readReleasedSeatReference, readSeatRecord, writeReleasedSeatReference, writeSeatRecord, type SeatRecord } from "./resume.js";
-import { TranscriptReceiver, type TranscriptReceiveInput } from "./transcript-receive.js";
+import { TranscriptReceiver } from "./transcript-receive.js";
 // The static §13.1 lifecycle executor: the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -108,9 +100,8 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, bindGoal, createGoal, commitGoalResult, goalAlreadyTerminal, settleGoalUncertain, readGoalResult, readGoalSpec, recordGoalIndex, readGoalIndex, clearGoalIndex, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, goalRefOf, turnNoticeSubject, submissionFingerprint, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpCommandDef, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
-import { MANAGER_ENDPOINT, managerCommandDefs, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
-import { measureManagerVitals } from "./vitals.js";
+import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
 import {
@@ -118,11 +109,6 @@ import {
   recordSlotCredential,
   appendStaticCredentialRow,
   ownedBySibling,
-  observeStaticSlot,
-  listStaticSlotObservations,
-  renderStaticSlotObservation,
-  StaticSlotReadError,
-  STATIC_SLOT_READ_FAILED_DETAIL,
 } from "./static-lifecycle.js";
 
 // Capture the loaded package version before an installation can replace its files.
@@ -229,23 +215,6 @@ function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
     { blockedOp: blocked.blockedOp, gateState: blocked.gateState, ...(blocked.opId !== undefined ? { opId: blocked.opId } : {}) }, envelope.outcome);
 }
 
-/** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
- *  `commitGoalResult` refuses a payload that is not interchangeable JSON, and this terminal must commit
- *  whatever failed, so a lone surrogate in the text becomes U+FFFD and details it cannot read or carry
- *  (a Proxy's throwing getter, an accessor, a cycle) are dropped. A Proxy can answer the check and the
- *  serializer differently, so the detached copy is checked again before it commits. */
-function failedTerminal(error: string, source: { details?: unknown } | undefined): { error: string; details?: EpEnvelopeError["details"] } {
-  const text = error.replace(/\p{Cs}/gu, "\uFFFD");
-  try {
-    const details = source?.details;
-    if (details) {
-      const copy = JSON.parse(canonicalJson(details));
-      canonicalJson(copy);
-      return { error: text, details: copy };
-    }
-  } catch { /* unreadable or not interchangeable */ }
-  return { error: text };
-}
 
 /** The start of every agent's bearer command: node, its loader flags and this manager's entry,
  *  resolved through every symlink. The agent runs that command for each renewal for as long as it
@@ -659,9 +628,6 @@ interface PersonalTurnParticipant {
   expiresAt: number;
 }
 
-function participantKey(owner: string, actor: string, uid: string): string {
-  return `${owner}.${actor}.${uid}`;
-}
 
 /** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
  *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
@@ -1281,6 +1247,109 @@ export class Manager {
     releaseLifecycle: (...args) => this.releaseLifecycle(...args),
     shredUserSecrets: (...args) => this.shredUserSecrets(...args),
     trackDeprovision: (...args) => this.trackDeprovision(...args),
+  });
+
+  /** The typed command table and its admission. Every dependency reads through at its use. */
+  private readonly commandDispatch = new CommandDispatch({
+    agents: () => this.agents,
+    auth: () => this.auth,
+    execution: () => this.execution,
+    goalWriter: () => this.goalWriter,
+    managerInstanceId: () => this.managerInstanceId,
+    participants: () => this.participants,
+    remoteAuthority: () => this.remoteAuthority,
+    resumeRequired: () => this.resumeRequired,
+    runHosting: () => this.runHosting,
+    space: () => this.space,
+    transcripts: () => this.transcripts,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    attachAuthorized: (...args) => this.attachAuthorized(...args),
+    authorizeNamed: (...args) => this.authorizeNamed(...args),
+    authorizeRunAmend: (...args) => this.authorizeRunAmend(...args),
+    authorizeRunAnswer: (...args) => this.authorizeRunAnswer(...args),
+    beginLifecycle: (...args) => this.beginLifecycle(...args),
+    despawnAuthorized: (...args) => this.despawnAuthorized(...args),
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    findManagedByTarget: (...args) => this.findManagedByTarget(...args),
+    inputAuthorized: (...args) => this.inputAuthorized(...args),
+    lifecycleMembershipRefusal: (...args) => this.lifecycleMembershipRefusal(...args),
+    list: (...args) => this.list(...args),
+    listSpawnDirectory: (...args) => this.listSpawnDirectory(...args),
+    loggedSpawnRefusal: (ctx, fn) => this.loggedSpawnRefusal(ctx, fn),
+    maintenanceError: (...args) => this.maintenanceError(...args),
+    managedPrincipal: (...args) => this.managedPrincipal(...args),
+    managerStatusData: (...args) => this.managerStatusData(...args),
+    opCommitResume: (...args) => this.opCommitResume(...args),
+    opDefinePersona: (...args) => this.opDefinePersona(...args),
+    opFinalizeResume: (...args) => this.opFinalizeResume(...args),
+    opLaunch: (...args) => this.opLaunch(...args),
+    opListPersonas: (...args) => this.opListPersonas(...args),
+    opModels: (...args) => this.opModels(...args),
+    opPreservationCtl: (...args) => this.opPreservationCtl(...args),
+    opPurge: (...args) => this.opPurge(...args),
+    opRemovePersona: (...args) => this.opRemovePersona(...args),
+    opResumePreserved: (...args) => this.opResumePreserved(...args),
+    opShowPersona: (...args) => this.opShowPersona(...args),
+    opStart: (...args) => this.opStart(...args),
+    openStaticChatSession: (...args) => this.openStaticChatSession(...args),
+    psOwnerFilter: (...args) => this.psOwnerFilter(...args),
+    resolveSpawnCwd: (...args) => this.resolveSpawnCwd(...args),
+    retireStaticChatSession: (...args) => this.retireStaticChatSession(...args),
+    runAnswerer: (...args) => this.runAnswerer(...args),
+    runHost: (...args) => this.runHost(...args),
+    serveGated: (ctx, fn) => this.serveGated(ctx, fn),
+    serveObservation: (ctx, fn) => this.serveObservation(ctx, fn),
+    serveSpawnGoal: (...args) => this.serveSpawnGoal(...args),
+    serveTurnCancel: (...args) => this.serveTurnCancel(...args),
+    serveTurnGoal: (...args) => this.serveTurnGoal(...args),
+    serveTurnParticipation: (...args) => this.serveTurnParticipation(...args),
+    serveTurnUnconfirmed: (...args) => this.serveTurnUnconfirmed(...args),
+    serveTurnYield: (...args) => this.serveTurnYield(...args),
+    spawnPersona: (...args) => this.spawnPersona(...args),
+    stopHandle: (...args) => this.stopHandle(...args),
+    stopWindowsSeat: (...args) => this.stopWindowsSeat(...args),
+    trackStoppedHandle: (...args) => this.trackStoppedHandle(...args),
+    turnPendingFor: (...args) => this.turnPendingFor(...args),
+    turnTarget: (...args) => this.turnTarget(...args),
+  });
+
+  /** The spawn and launch goal path. Every dependency reads through at its use. */
+  private readonly spawnGoalComponent = new SpawnGoal({
+    agentGoals: () => this.agentGoals,
+    execution: () => this.execution,
+    goalAcceptanceRetentionMs: () => this.goalAcceptanceRetentionMs,
+    goalAcceptances: () => this.goalAcceptances,
+    goalReconcileDone: () => this.goalReconcileDone,
+    goalWriter: () => this.goalWriter,
+    managerInstanceId: () => this.managerInstanceId,
+    onceWatched: () => this.onceWatched,
+    readinessTimeoutMs: () => this.readinessTimeoutMs,
+    serviceServe: () => this.serviceServe,
+    userMode: () => this.userMode,
+    acceptOnceTurn: (...args) => this.acceptOnceTurn(...args),
+    assertGoalWriterEpochCurrent: (...args) => this.assertGoalWriterEpochCurrent(...args),
+    commitOnceCancel: (...args) => this.commitOnceCancel(...args),
+    emitGoalProgress: (...args) => this.emitGoalProgress(...args),
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    settleOnceTurn: (...args) => this.settleOnceTurn(...args),
+  });
+
+  /** The persona catalog doors. Every dependency reads through at its use. */
+  private readonly personaCatalogComponent = new PersonaCatalog({
+    agents: () => this.agents,
+    execution: () => this.execution,
+    meshMode: () => this.meshMode,
+    remoteAuthority: () => this.remoteAuthority,
+    space: () => this.space,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    managedPrincipal: (...args) => this.managedPrincipal(...args),
+    nameError: (...args) => this.nameError(...args),
+    spawnBoundRefusal: (...args) => this.spawnBoundRefusal(...args),
+    spawnRun: (...args) => this.spawnRun(...args),
+    staticSpawnBound: (...args) => this.staticSpawnBound(...args),
   });
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
@@ -3121,26 +3190,8 @@ export class Manager {
     }
   }
 
-  /** The ONE shared control-admission chokepoint BOTH dispatch doors
-   *  run — the v0.3 `ctl` door ({@link handle}) and the v0.4 `ep` service handlers
-   *  ({@link serveGated}): the maintenance/resume fence (`beginLifecycle`: a resume-pending or
-   *  non-active manager accepts no ordinary control work) and then the membership gate
-   *  ({@link lifecycleMembershipRefusal}: a retiring/terminalizing/retired managed incarnation's
-   *  AUTHENTICATED principal holds no control authority even with a valid JWT). Refusal carries
-   *  WHICH fence refused so the ep door can map onto the §13.3 catalog; admission returns the
-   *  accepted-work release. Never re-implemented per door — a fence on one door is a bypass. */
-  private admitControl(caller: string):
-    | { refusal: string; fence: "maintenance" | "membership"; release?: undefined }
-    | { refusal?: undefined; release: () => void } {
-    const release = this.beginLifecycle();
-    if (!release) return { refusal: this.maintenanceError(), fence: "maintenance" };
-    const membership = this.lifecycleMembershipRefusal(caller);
-    if (membership) {
-      release();
-      return { refusal: membership, fence: "membership" };
-    }
-    return { release };
-  }
+  /** {@link CommandDispatch.admitControl}. */
+  private admitControl(...args: Parameters<CommandDispatch["admitControl"]>): ReturnType<CommandDispatch["admitControl"]> { return this.commandDispatch.admitControl(...args); }
 
   /** Run one v0.4 service-command handler through the SHARED admission chokepoint
    *  ({@link admitControl}) on the broker-authenticated caller principal, mapping the two fences
@@ -3180,52 +3231,9 @@ export class Manager {
     }
   }
 
-  /** The ep door's ADMIN flag for a caller. Static mesh: `true` — the
-   *  admin-grade rows (any-mode despawn/attach, the `manager.admin` family, `launch`) are minted
-   *  only into operator instruments (§13.2: `any` is operator-policy-mintable; the agent/spawn
-   *  rollups never carry them), so REACHING the handler is holding the admin tier, exactly as
-   *  holding `ctl.<admin>` is today. User mesh: the caller's CURRENT ledger scope must carry
-   *  `admin`. A local-host manager reads its own ledger fresh. A remote-authority manager relays the
-   *  subject-parsed caller tuple to its host-owned authorization callback, with no participant-ledger
-   *  fallback. The same fresh authority drives {@link psOwnerFilter}, so a revoked scope demotes the
-   *  very next call even on a still-valid bearer. Local ledger read failures authorize nothing;
-   *  remote host-state faults throw and fail the operation closed.
-   *  NAMED RESIDUAL: the static `true` has no serve-time re-check — a LEAKED static admin
-   *  instrument keeps its reach until the credential's bounded
-   *  TTL (the one-shot 5-minute profile), the same static-revoke≠reconnect-death class ruled
-   *  across this campaign; static revocation is the TTL, not a ledger. */
-  private async epAdminReach(caller: EpCaller): Promise<boolean> {
-    if (!this.userMode) return true;
-    if (this.remoteAuthority) {
-      // A hosted run's own caller is derived from its id and holds no ledger row: it acts for the
-      // caller its run was admitted for, so that caller's current grant decides, and a revoked
-      // login demotes the run's next spawn.
-      const asked = this.runHosting?.admittedCaller(caller) ?? caller;
-      return this.remoteAuthority.authorizeAdmin({ owner: asked.owner, actor: asked.actor, lifecycleUid: asked.uid });
-    }
-    try {
-      const scope = await resolveAuthProvider().actorScope({
-        dir: userAuthStateDir(this.workspaceRoot, this.space),
-        owner: caller.owner,
-        actor: caller.actor,
-      });
-      return scope?.includes("admin") === true;
-    } catch {
-      return false;
-    }
-  }
+  /** {@link CommandDispatch.epAdminReach}. */
+  private epAdminReach(...args: Parameters<CommandDispatch["epAdminReach"]>): ReturnType<CommandDispatch["epAdminReach"]> { return this.commandDispatch.epAdminReach(...args); }
 
-  /** A targeted request's admin flag: mode `any` (the operator instrument's cross-agent form,
-   *  rev 3) resolves through {@link epAdminReach}; a user-mode any-mode caller whose CURRENT
-   *  ledger row lost `admin` since its rows were minted refuses loud rather than silently
-   *  downgrading to the owner path (the request's declared mode is honored or denied, never
-   *  reinterpreted). Owner mode is always the privileged (own-domain) path. */
-  private async epAnyModeAdmin(ctx: EpServeContext): Promise<boolean> {
-    if (ctx.subject.target?.mode !== "any") return false;
-    if (!(await this.epAdminReach(ctx.subject.caller)))
-      throw new EpEnvelopeError("permission-denied", `an any-mode ${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`);
-    return true;
-  }
 
   /** The run host, or one of three refusals. A remote-authority manager holds no space signer, so
    *  it cannot mint the per-run driver credential SPEC 14.6 requires without all four closed
@@ -3362,294 +3370,8 @@ export class Manager {
       throw new EpEnvelopeError("permission-denied", `run-answer amend is allowed to ${agent.name} only for an answer recorded under its own name; this step's accepted answer is ${JSON.stringify(accepted.by)}'s`);
   }
 
-  /** The v0.4 typed command table: every ordinary handler runs the SHARED
-   *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
-   *  door dispatches (one core, two thin doors). The resume/preservation family
-   *  deliberately BYPASSES serveGated — exactly as it sits before {@link admitControl} on the ctl
-   *  door (those ops must run while `resumeRequired` fences ordinary work) — riding its own state
-   *  fences; its ep gate is the admin-grade `manager.admin` capability grant (static
-   *  admin-class commands are capability-gated + untargeted, never a fabricated ledger mode).
-   *
-   *  TIER SEMANTICS on the ep door: the tier lives in the CALLER'S
-   *  GRANT, refined per-op exactly as the ctl doors refine their subject tier. Owner-mode
-   *  `despawn`/`attach` keep the privileged semantics (`admin=false`, own-domain via
-   *  {@link authorizeNamed}) — every spawn-capable agent holds those rows. ANY-mode requests are
-   *  the operator instrument's cross-agent reach (rev 3): the any-mode subject row is mintable
-   *  only under operator policy (§13.2), so on a static mesh holding it IS the admin tier, and in
-   *  user mode the caller's CURRENT ledger scope must still carry `admin`
-   *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). The
-   *  `manager.admin` family (purge + the resume/preservation ops) is capability-gated at mint AND
-   *  re-checked at serve time via {@link epAdminReach} (the `adminGated` wrapper) so a user's
-   *  revoked scope demotes the next call. `launch` is OWNER-EQUALITY on this door for everyone:
-   *  the deploy path is its only consumer and stamps the caller's own owner,
-   *  so cross-owner launch was a ctl-tier incidental never exercised, and keying it on the actor's
-   *  ledger scope broke the deployer-view attenuation - uniform owner-equality is the safe tier.
-   *  TWO DELIBERATE NARROWINGS vs the ctl doors (NOT bit-exact parity): (1)
-   *  `define-persona` is `admin=false` for everyone (own-persona discipline; no ep consumer needs
-   *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
-   *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
-   *  Both are least-privilege reductions, never widenings. */
-  private managerServiceDefs(): EpCommandDef[] {
-    const args = (ctx: EpServeContext): Record<string, unknown> => (ctx.request.args ?? {}) as Record<string, unknown>;
-    const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
-    // A ctl-core failure reply becomes the §13.3 structured error the serve boundary publishes.
-    // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
-    // only — the action model gives failures a typed channel.
-    const unwrap = (r: ControlReply): unknown => {
-      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, r.outcome);
-      return r.data;
-    };
-    // The admin-family serve gate: every `manager.admin`-class
-    // command re-checks operator reach AT SERVE TIME - static: true (the mint boundary already
-    // gates the rows to instruments); user mesh: the caller's CURRENT ledger scope must still
-    // carry `admin` ({@link epAdminReach}'s fresh read), so a revoked scope demotes the very next
-    // call instead of riding the bearer's remaining JWT-row lifetime. The resume family keeps its
-    // serveGated BYPASS (those ops must run while the maintenance fence holds) but not the gate.
-    const adminGated = async <T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> => {
-      if (!(await this.epAdminReach(ctx.subject.caller)))
-        throw new EpEnvelopeError("permission-denied", `${ctx.subject.command} is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2)`, undefined, "not-executed");
-      return fn();
-    };
-    const targetAgent = (ctx: EpServeContext): ManagedAgent => {
-      if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-      const t = ctx.request.target!; // targeted commands only: the serve boundary enforced body-target presence + fresh currency
-      const a = this.findManagedByTarget(t);
-      if (!a) throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is not a live managed agent of this manager`, undefined, "not-executed");
-      return a;
-    };
-    return managerCommandDefs({
-      vitals: (ctx) => this.serveGated(ctx, () => measureManagerVitals()),
-      // A remote Manager files every seat under its own owner, so only a user mesh's shared local
-      // Manager narrows the count, and status never waits on a remote admin check.
-      status: (ctx) => this.serveObservation(ctx, async () => {
-        const ownerFilter = this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false);
-        // The daemon's status deadline is shorter than an install. Report the current inventory
-        // without waiting for the install, which has its own lifecycle admission below.
-        return this.managerStatusData(ownerFilter, !this.resumeRequired);
-      }),
-      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
-      inspect: (ctx) => this.serveGated(ctx, async () => {
-        const name = String(args(ctx).name ?? "").trim();
-        const row = this.list(await this.psOwnerFilter(ctx.subject.caller, false)).find((x) => x.name === name);
-        if (!row) {
-          // The live hit above stays entirely local. Only a miss widens into durable static state,
-          // where `not-found` is honest only after the slot read itself succeeds and returns absent.
-          // User-mode lifecycles have no manager-local mgrslot row; their per-name projection remains
-          // the live map until the auth service exposes an equivalent mediated reader.
-          if (this.auth && !this.userMode) {
-            const recordsKv = this.goalWriter?.ctx.kv;
-            if (!recordsKv)
-              throw new EpEnvelopeError("unavailable", `the durable static slot store is not ready while inspecting "${name}"`, [
-                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: "slot", operation: "read" },
-              ]);
-            let observed;
-            try {
-              observed = await observeStaticSlot(recordsKv, DEV_OWNER, name, this.managerInstanceId);
-            } catch (error) {
-              throw new EpEnvelopeError("unavailable", `the durable static slot state for "${name}" could not be read: ${rejectionText(error)}`, [
-                { kind: STATIC_SLOT_READ_FAILED_DETAIL, name, record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "read" },
-              ]);
-            }
-            // A retired row affirms that no agent exists now, so it keeps the old `not-found`
-            // result. The changed refusal is reserved for durable NONTERMINAL state that contradicts
-            // the live-map miss and needs operator attention.
-            //
-            // A sibling's nonterminal row is not a contradiction: the name belongs to another
-            // manager instance in this space. In a multi-manager space the class queue hands this
-            // read to either instance, so a plain `not-found` here read the same as a name that
-            // exists nowhere and a caller had no way to tell the two apart (#443).
-            if (observed?.ownerInstanceId !== undefined)
-              throw new EpEnvelopeError("failed-precondition", `the durable slot for "${name}" belongs to manager instance ${observed.ownerInstanceId}, not ${this.managerInstanceId} which answered; only that instance can act on it ${renderStaticSlotObservation(observed)}`, [observed]);
-            if (observed !== undefined && observed.slotPhase !== "retired")
-              throw new EpEnvelopeError("failed-precondition", `no live agent "${name}"; durable state contradicts absence ${renderStaticSlotObservation(observed)}`, [observed]);
-          }
-          throw new EpEnvelopeError("not-found", `no agent "${name}"`, undefined, "not-executed");
-        }
-        return row;
-      }),
-      slots: (ctx) => this.serveGated(ctx, async () => {
-        // No manager-local durable static slot store exists for a user-mode or open manager: an
-        // empty list here would claim nothing is stranded from a store that was never consulted,
-        // the very ambiguity #1274 is about.
-        if (!this.auth || this.userMode)
-          throw new EpEnvelopeError("failed-precondition", "user-mode and open managers own no durable static slot rows; the projection is static-manager local");
-        const recordsKv = this.goalWriter?.ctx.kv;
-        if (!recordsKv)
-          throw new EpEnvelopeError("unavailable", "the durable static slot store is not ready", [
-            { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: "slot", operation: "scan" },
-          ]);
-        let observed;
-        try {
-          const query = args(ctx);
-          observed = await listStaticSlotObservations(recordsKv, DEV_OWNER, this.managerInstanceId, {
-            ...(query.names === undefined ? {} : { names: query.names as string[] }),
-            ...(query.includeRetired === true ? { includeRetired: true } : {}),
-          });
-        } catch (error) {
-          throw new EpEnvelopeError("unavailable", `the durable static slot state could not be scanned: ${rejectionText(error)}`, [
-            { kind: STATIC_SLOT_READ_FAILED_DETAIL, name: "*", record: error instanceof StaticSlotReadError ? error.record : "slot-or-head", operation: "scan" },
-          ]);
-        }
-        return observed.map(({ kind: _kind, ...detail }) => ({
-          ...detail,
-          live: this.agents.has(detail.name),
-          managerInstanceId: this.managerInstanceId,
-        }));
-      }),
-      models: (ctx) => this.serveGated(ctx, async () => {
-        const data = unwrap(await this.opModels(args(ctx)));
-        return { catalogs: Array.isArray(data) ? data : [data] };
-      }),
-      goalResult: (ctx) => this.serveGated(ctx, async () => {
-        const gw = this.goalWriter;
-        if (!gw || gw.nc.isClosed()) throw new EpEnvelopeError("unavailable", "the manager goal-reader connection is not standing; the accepted goal is unaffected");
-        const goalId = args(ctx).goalId as string;
-        // Only the broker-authenticated caller's full incarnation can name this read. The
-        // trusted goal-writer keeps the raw EPF authority; serveEndpoint derives the reply rail.
-        const result = await readGoalResult(gw.ctx, goalRefOf(ctx.subject, goalId));
-        return { goalId, ...(result === undefined ? {} : { result }) };
-      }),
-      listDir: (ctx) => this.serveGated(ctx, () => this.listSpawnDirectory(args(ctx))),
-      resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
-      resolveAgent: (ctx) => this.serveGated(ctx, async () => {
-        if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-        const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
-        if ("error" in persona) throw new EpEnvelopeError(persona.code ?? (persona.error.startsWith("no persona") ? "not-found" : "failed-precondition"), persona.error);
-        return { agent: persona.agent };
-      }),
-      // `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
-      // progress + terminal off-handler (no ~30s block). The blocking reply path is gone.
-      // #373: arming the event plane (events: true, or the omission that arms it by default)
-      // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
-      // the residual cross-owner case; opStart decides before connector resolution or grant
-      // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.space, ctx))))),
-      despawn: (ctx) => this.serveGated(ctx, async () => {
-        const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        return unwrap(await this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
-      }),
-      attach: (ctx) => this.serveGated(ctx, async () => {
-        const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
-      }),
-      // C3 `input`: the SAME authorization as `attach`, deliberately written out rather than
-      // factored with it - the two share a policy, not a body, and a shared wrapper would be a
-      // place for one of them to quietly acquire a condition the other does not have.
-      input: (ctx) => this.serveGated(ctx, async () => {
-        const a = targetAgent(ctx);
-        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-        if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        return this.inputAuthorized(a, args(ctx));
-      }),
-      // The turn relay (§8 durable actions): `turn` shares despawn/input's reach policy — the
-      // caller must hold owner-equality or admin over the TARGET seat — written out for the same
-      // reason `input` is (a shared policy, not a shared body).
-      turn: (ctx) => this.serveGated(ctx, async () => {
-        const target = this.turnTarget(ctx);
-        if (target.kind === "managed") {
-          const denied = await this.authorizeNamed(target.agent, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
-          if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        } else {
-          const admitted = this.runHosting?.admittedCaller(ctx.subject.caller);
-          if (!admitted || admitted.owner !== target.participant.owner || admitted.actor !== target.participant.actor || admitted.uid !== target.participant.uid)
-            throw new EpEnvelopeError("permission-denied", "a personal participant may be turned only by the workflow run admitted for that exact owner, actor and lifecycle", undefined, "not-executed");
-          if (!this.remoteAuthority?.authorizeParticipation)
-            throw new EpEnvelopeError("unimplemented", "the issuing host supplies no closed personal participation authorization", undefined, "not-executed");
-          const authorized = await this.remoteAuthority.authorizeParticipation({
-            owner: target.participant.owner,
-            actor: target.participant.actor,
-            lifecycleUid: target.participant.uid,
-          });
-          if (!authorized) {
-            this.participants.delete(participantKey(target.participant.owner, target.participant.actor, target.participant.uid));
-            throw new EpEnvelopeError("permission-denied", "the exact personal lifecycle is no longer foreground-authorized with run scope", undefined, "not-executed");
-          }
-        }
-        return this.serveTurnGoal(ctx, target);
-      }),
-      // A personal native lifecycle must opt in explicitly. The command is self-targeted and returns
-      // only a finite relay lease. It never inserts a ManagedAgent or grants stop/attach/input custody.
-      turnParticipate: (ctx) => this.serveGated(ctx, () => this.serveTurnParticipation(ctx.subject.caller)),
-      // The seat's own half of the relay (`manager.self`, stop-self's tier): a seat pulls the
-      // turns addressed to ITS incarnation and yields them; no reach beyond itself exists here.
-      turnPending: (ctx) => this.serveGated(ctx, () => this.turnPendingFor(ctx.subject.caller)),
-      turnYield: (ctx) => this.serveGated(ctx, () => this.serveTurnYield(ctx.subject.caller, args(ctx))),
-      turnUnconfirmed: (ctx) => this.serveGated(ctx, () => this.serveTurnUnconfirmed(ctx.subject.caller, args(ctx))),
-      // The reserved goal cancel (SPEC 13.6 item 4), served for the relay: the goal ref is the
-      // authenticated caller's own, so a run withdraws only the turns it submitted.
-      cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
-      stopSelf: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opStopSelf(callerOf(ctx), args(ctx)))),
-      definePersona: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller))),
-      removePersona: (ctx) => this.serveGated(ctx, () => {
-        const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
-        if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, "not-executed");
-        return r.data;
-      }),
-      // Reach is the broker's: only operator instruments carry these rows. The serve gate is the
-      // maintenance fence, so neither runs while a shutdown or resume holds control.
-      chatSessionOpen: (ctx) => this.serveGated(ctx, () => this.openStaticChatSession(args(ctx))),
-      chatSessionRetire: (ctx) => this.serveGated(ctx, () => this.retireStaticChatSession(args(ctx))),
-      listPersonas: (ctx) => this.serveGated(ctx, () => unwrap(this.opListPersonas(callerOf(ctx), false))),
-      showPersona: (ctx) => this.serveGated(ctx, () => {
-        const r = this.opShowPersona(args(ctx), callerOf(ctx), false);
-        if (!r.ok) {
-          const msg = r.error ?? "not found";
-          if (msg.startsWith("no persona")) throw new EpEnvelopeError("not-found", msg);
-          throw new EpEnvelopeError("failed-precondition", msg);
-        }
-        return r.data;
-      }),
-      purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
-      // launch is OWNER-EQUALITY on the ep door for every caller: the deploy
-      // path is the only launch consumer and its spec stamps the CALLER's own owner, so
-      // owner-equality always holds for a legitimate deploy; cross-owner launch was a ctl
-      // admin-tier INCIDENTAL never exercised by a real flow (static is single-owner, so the flag
-      // is a no-op there). Keying admin on epAdminReach read the ACTOR's ledger scope, which does
-      // NOT reflect the deployer VIEW's privileged-tier attenuation - an admin user's stolen
-      // deployer bearer would then bypass owner-equality (operator launch) despite the view holding
-      // no admin rows. Uniform owner-equality removes that divergence in the least-privilege
-      // direction.
-      // Manifest `launch` is an ACTION through the SAME chokepoint as spawn -
-      // the manifest resolve + owner-equality authz run in opLaunch's accept path, then the goal
-      // drives progress + terminal. The acceptance floor is the allocated identity + goal coords.
-      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),
-      resumePreserved: (ctx) => adminGated(ctx, async () => unwrap(await this.opResumePreserved(args(ctx)))),
-      commitResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opCommitResume(args(ctx)))),
-      finalizeResume: (ctx) => adminGated(ctx, async () => unwrap(await this.opFinalizeResume(args(ctx)))),
-      // The workflow-run family (SPEC 14.3): the manager hosts the driver. Reach is the broker's
-      // (`run` capability / privileged instrument rows); the serve gate is the maintenance fence.
-      runStart: (ctx) => this.serveGated(ctx, () => this.runHost().start(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
-      runStartKeyed: (ctx) => this.serveGated(ctx, () => this.runHost().startKeyed(ctx, args(ctx) as { source: string; file?: string; timeout?: string })),
-      runSubmissionStatus: (ctx) => this.serveGated(ctx, () => this.runHost().submissionStatus(ctx, String(args(ctx).submissionId))),
-      runResume: (ctx) => this.serveGated(ctx, () => this.runHost().resume(args(ctx) as { runId: string; timeout?: string }, ctx)),
-      runCancel: (ctx) => {
-        const host = this.runHost();
-        host.validateCancellation(ctx, args(ctx));
-        return this.serveGated(ctx, () => host.cancel(ctx, args(ctx)));
-      },
-      runAnswer: (ctx) => this.serveGated(ctx, () => {
-        const input = args(ctx) as { runId: string; endpoint?: string; stepKey: string; value?: unknown; artifact?: string; amend?: boolean };
-        if (input.amend === true)
-          return this.runHost().amend(input, this.runAnswerer(ctx), (accepted) => this.authorizeRunAmend(ctx, accepted), ctx);
-        return this.runHost().answer(input, this.runAnswerer(ctx), (open) => this.authorizeRunAnswer(ctx, input, open), ctx);
-      }),
-      runStatus: (ctx) => this.serveGated(ctx, () => this.runHost().status(args(ctx) as { runId: string; endpoint?: string; journal?: { offset: number } }, ctx)),
-      runPs: (ctx) => this.serveGated(ctx, () => this.runHost().list(args(ctx) as { endpoint?: string; page?: { limit?: number; cursor?: string } }, ctx)),
-      preparePreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("preparePreservation", args(ctx)))),
-      commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
-      abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
-      transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
-        if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-        if (!this.transcripts)
-          throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (its remote authority issues no transfer reader)");
-        return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
-      })),
-    });
-  }
+  /** {@link CommandDispatch.managerServiceDefs}. */
+  private managerServiceDefs(...args: Parameters<CommandDispatch["managerServiceDefs"]>): ReturnType<CommandDispatch["managerServiceDefs"]> { return this.commandDispatch.managerServiceDefs(...args); }
 
   private async commitResumeActivation(attemptId: string): Promise<ControlReply> {
     if (!this.resumeAwaitingCommit || !this.resumeResult?.ok)
@@ -3772,23 +3494,8 @@ export class Manager {
     return inactive;
   }
 
-  /** Self-despawn (P2b): stop the managed agent whose id == the authenticated caller. The
-   *  no-name self-op can only ever resolve to the caller's OWN managed entry (ids are unique
-   *  per spawn + non-forgeable in auth mode), never a peer — so it's structurally incapable of
-   *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
-   *  no match and get a loud error, not a silent no-op. */
-  private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply | Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-    const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
-    if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
-    const graceful = args.graceful !== false;
-    if (process.platform === "win32" && target.handle.kind === "pty") {
-      return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
-    }
-    this.stopHandle(target, graceful, { kind: "stopped-self" });
-    this.trackStoppedHandle(target, true, { kind: "stopped-self" });
-    return { ok: true, data: { name: target.name, stopped: true, graceful } };
-  }
+  /** {@link CommandDispatch.opStopSelf}. */
+  opStopSelf(...args: Parameters<CommandDispatch["opStopSelf"]>): ReturnType<CommandDispatch["opStopSelf"]> { return this.commandDispatch.opStopSelf(...args); }
 
   // Plane-3 durable join/leave/list ops moved OFF the manager onto the server-side delivery daemon's
   // `ctl.delivery` control service (endpoint.startPlane3 → handleDeliveryControl). The manager is
@@ -5587,306 +5294,16 @@ export class Manager {
   /** {@link GoalWriter.assertGoalWriterEpochCurrent}. */
   private assertGoalWriterEpochCurrent(...args: Parameters<GoalWriter["assertGoalWriterEpochCurrent"]>): ReturnType<GoalWriter["assertGoalWriterEpochCurrent"]> { return this.goalWriterComponent.assertGoalWriterEpochCurrent(...args); }
 
-  /** A spawn's refusal reaches only its caller's terminal, so the manager also writes one line for it
-   *  to its own log, naming the request ID the caller printed, the persona and the reason. */
-  private async loggedSpawnRefusal<T>(ctx: EpServeContext, serve: () => Promise<T>): Promise<T> {
-    try { return await serve(); }
-    catch (e) {
-      const persona = (ctx.request.args as { name?: unknown } | undefined)?.name;
-      console.error(oneLine(`! spawn request ${ctx.request.id} for persona "${String(persona ?? "")}" refused (${e instanceof EpEnvelopeError ? e.code : "error"}): ${rejectionText(e)}`));
-      throw e;
-    }
-  }
+  /** {@link SpawnGoal.loggedSpawnRefusal}. */
+  private loggedSpawnRefusal<T>(ctx: EpServeContext, serve: () => Promise<T>): Promise<T> { return this.spawnGoalComponent.loggedSpawnRefusal(ctx, serve); }
 
-  /** Serve `spawn`/`launch` as an ACTION. Authz already ran in {@link serveGated}. The
-   *  accept path runs INLINE on the handler ({@link startAgent} with hooks): the goal binds + the
-   *  acceptance replies the moment the identity is minted, BEFORE any provision, or on the
-   *  hosted enrollment arm once the host has enrolled the agent; progress and the terminal are driven
-   *  OFF-handler, so the ~30s readiness wait no longer blocks the reply.
-   *  Returns the acceptance floor payload {name, owner, actor, uid, goalId, fingerprint, executor}
-   *  (the ALLOCATED identity). goalId = the request id (env.id). */
-  private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
-    // These four refuse before anything is accepted or allocated, so they state it (SPEC 13.3).
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
-    const gw = this.goalWriter;
-    if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)", undefined, "not-executed");
-    // Refuse to accept until the boot reconcile of inherited goals completes, so a fresh
-    // acceptance never races the sweep (settling a live goal mid-flight would steal its real terminal).
-    if (!this.goalReconcileDone)
-      throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)", undefined, "not-executed");
-    const goalId = ctx.request.id;
-    const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
-    const ref = goalRefOf(ctx.subject, goalId);
-    const key = goalKey(ref);
-    const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
-    const epoch = executor.epoch;
-    const acceptedAt = Date.now();
+  /** {@link SpawnGoal.serveSpawnGoal}. */
+  private serveSpawnGoal(...args: Parameters<SpawnGoal["serveSpawnGoal"]>): ReturnType<SpawnGoal["serveSpawnGoal"]> { return this.spawnGoalComponent.serveSpawnGoal(...args); }
 
-    // Idempotent same-goalId retry (a client re-send): serve the IDENTICAL acceptance without
-    // re-running the accept path — so a HARD-PINNED retry does not trip the same-name refuse and no
-    // name is re-allocated. Same-incarnation rides the live map; the create-only bindGoal in onAccepted
-    // still fences a CONCURRENT same-goalId race (the loser aborts and serves the winner's acceptance).
-    const prior = this.goalAcceptances.get(key);
-    // A goal that already ENDED is answered from its committed terminal and never accepted again.
-    // Running the accept for it allocates a fresh name and identity, then refuses at the index
-    // CAS, because the entry its terminal cleared cannot be created twice, and that refusal tells
-    // the caller to reconcile the store. A retry that outlived its entry above must not reach it.
-    const ended = prior === undefined ? await readGoalResult(gw.ctx, ref) : undefined;
-    const accepted = prior ?? ended;
-    if (accepted !== undefined) {
-      if (accepted.fingerprint !== fingerprint)
-        throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`, undefined, "not-executed");
-      return prior ?? this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
-    }
 
-    let resolveAccept!: (a: SpawnAcceptance) => void;
-    let rejectAccept!: (e: unknown) => void;
-    const acceptP = new Promise<SpawnAcceptance>((res, rej) => { resolveAccept = res; rejectAccept = rej; });
-    let acceptance: SpawnAcceptance | undefined;
-    let readinessTimeoutMs = this.readinessTimeoutMs;
-    // H1: set the instant the terminal path is ENTERED, not when it succeeds — the post-accept
-    // fallback below must fire only when `onOutcome` never ran at all, never as a second attempt
-    // behind a commit that threw.
-    let terminalEntered = false;
-    // TWO DIFFERENT QUESTIONS, DELIBERATELY NOT ONE FLAG.
-    //
-    //   `terminalEntered`  HAS this goal already been settled (or claimed) by someone?
-    //   `ownsGoal`         MAY THIS ATTEMPT settle it at all?
-    //
-    // The second is the authority, and it is default-CLOSED: an attempt earns it by WINNING the
-    // create-only `bindGoal` CAS below, and nothing else grants it. That matters because the
-    // post-accept fallback exists to settle a goal nobody answered, so every new way of leaving
-    // this function is opted INTO committing a terminal unless something stops it. Deriving the
-    // right from the claim instead of from a running record means a losing attempt CANNOT commit
-    // down any unwind path, including ones added later that never thought about this. Collapsing
-    // the two into one boolean is what let a duplicate-goal loser steal the winner's terminal
-    // (#357): it had entered no terminal, so the fallback wrote one for it, using its own abort
-    // message as the caller-visible outcome.
-    let ownsGoal = false;
-    // Set by onEffect. A refusal that arrives with it still false changed nothing.
-    let effectStarted = false;
-    // Set by onUndone: the host's code for a later refusal that left nothing behind.
-    let undone: EpErrorCode | undefined;
-    // The task of a once spawn, once accepted.
-    let onceRef: GoalRef | undefined;
 
-    // The terminal commits OFF-handler on the goal-writer connection (manager-only authority; a
-    // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): (a) reads THIS
-    // incarnation's OWN gate epoch and REFUSES a superseded commit (the currency belt), and (b)
-    // barrier-revoke evicts this connection on takeover. The terminal lands on the ONE subject
-    // SPEC §13.2 (reserved subjects) reserves; first-terminal-fact-wins is global, so a committed outcome is visible
-    // to every reader in every incarnation. On success the reconcile-index entry is cleared.
-    //
-    // Named rather than inlined into the hooks below so the H1 post-accept fallback drives THIS
-    // path — one commit site, so the progress event, the index clear and the `agentGoals` cleanup
-    // cannot drift between a normal outcome and a recovered one.
-    const onOutcome = async (o: { kind: "succeeded" | "failed" | "uncertain"; data?: unknown }): Promise<boolean> => {
-      // THE AUTHORITY CHECK, and the only one. An attempt that never won the bind provisioned
-      // nothing and has no outcome to report: the goal belongs to whoever won it, in this
-      // incarnation or a sibling. Refusing here rather than at each unwind site is the point --
-      // there is exactly one commit path, so this fences every route into it, present and future.
-      if (!ownsGoal) return false;
-      terminalEntered = true; // entered, not succeeded — see the catch below
-      // A once spawn that did not succeed never served its task (delivery opens only with a
-      // succeeded verdict), so the task is cancelled now rather than at the seat's exit. A launched
-      // seat's debt is still settled by its exit, which proves the seat gone first; a spawn that
-      // never launched one owes nothing more.
-      if (o.kind !== "succeeded" && onceRef !== undefined) {
-        const reason = o.kind === "uncertain" ? "readiness-timeout" : "launch-failed";
-        if (this.onceWatched.has(goalKey(onceRef))) void this.commitOnceCancel(onceRef, reason).catch((e: unknown) => console.error(`! once task ${onceRef!.goalId} (${reason}): ${rejectionText(e)}; its seat's exit cancels it`));
-        else void this.settleOnceTurn(onceRef, reason);
-      }
-      try {
-        await this.assertGoalWriterEpochCurrent(epoch); // a superseded corpse never commits
-        let fact;
-        if (o.kind === "succeeded") {
-          this.emitGoalProgress(ref, epoch, { phase: "presence" });
-          ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "succeeded", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
-        } else if (o.kind === "failed") {
-          ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
-        } else {
-          // Forward the readiness detail as the terminal's reason: this manager owns the deadline,
-          // so it owns what elapsing it MEANS. Absent, core commits its own generic line (#605).
-          const { reason: why, running } = (o.data ?? {}) as { reason?: unknown; running?: unknown };
-          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}), ...(running === true ? { running: true } : {}) }));
-        }
-        this.expireGoalAcceptance(ref);
-        this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
-        await clearGoalIndex(gw.ctx, ref); // terminal reached - the successor never reconciles it
-        if (acceptance) this.agentGoals.delete(acceptance.name); // goal terminal - no cancel path left
-        return true;
-      } catch (e) {
-        // THE NARROWER LEG, LEFT OPEN DELIBERATELY. If the COMMIT ITSELF throws (the currency belt
-        // refused a superseded commit, or the broker failed) there is genuinely no terminal, and the
-        // H1 fallback must NOT retry it: a retry either loses the same way or overwrites a real
-        // supersession refusal with a manufactured outcome. That is why `terminalEntered` is set on
-        // ENTRY. This leg is infrastructure-class and converges through the reconcile index at the
-        // next boot, which is why the index is NOT cleared above on this path. Do not "close" it
-        // here with a retry loop.
-        console.error(`! goal terminal commit for ${goalId} failed: ${rejectionText(e)}`);
-        return false;
-      }
-    };
-
-    const bg = run({
-      onAccepted: async ({ name, agentTriple }) => {
-        // Record the goal in the reconcile index BEFORE the bind (index-CAS-before-bind),
-        // so a successor incarnation finds + settles this goal if we crash before its terminal. A
-        // crash between this write and the bind leaves an index entry whose goal status is absent —
-        // the sweep clears it as a no-goal; a crash before it leaves no entry (never durable). A
-        // Carry THIS incarnation's instanceId (the executor coord) so a multi-instance sweep can skip a live sibling's goal.
-        //
-        // H2, THE ACCEPTANCE FLOOR: the allocated identity is written HERE, before the bind and so
-        // before the acceptance is acked, because this entry is the only durable record of it that
-        // exists that early — the goal spec does not carry it and the terminal does not exist yet.
-        // A same-goalId attempt that loses the bind while the winner is still in flight can then
-        // serve what the winner actually allocated instead of inventing an empty identity.
-        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, readinessDeadlineMs: readinessTimeoutMs });
-        // A create loss is an idempotent retry ONLY for the same incarnation. A FOREIGN iid means a
-        // sibling instance accepted this goalId (the live vector is a client retry over ANYCAST, not
-        // a journal consumer): this attempt provisions nothing and answers with the winner's floor,
-        // or refuses if that instance never persisted one.
-        if (!idx.recorded && idx.existing.iid !== executor.lifecycleUid) {
-          acceptance = await this.acceptanceFromIndex(idx.existing, ref, goalId, fingerprint, executor);
-          resolveAccept(acceptance);
-          // No claim needed here: `ownsGoal` is still false, so the commit path refuses this attempt.
-          throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
-        }
-        // Bind AFTER the accept-path checks (name/capacity/persona) + identity mint, BEFORE any provision:
-        // a create-only CAS per goalId (a refused accept above left zero bind, zero reserve).
-        const b = await bindGoal(gw.ctx, ref, fingerprint);
-        if (!b.bound) {
-          if (b.existing.fingerprint !== fingerprint)
-            throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound to a different submission; one goalId never carries two specs (SPEC 13.6)`);
-          // Lost a concurrent same-goalId race: serve the winner's acceptance and abort THIS provision
-          // (no second spawn). The throw unwinds to the finally, which releases this attempt's reserve.
-          acceptance = this.goalAcceptances.get(key) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
-          resolveAccept(acceptance);
-          // No claim needed here either. This attempt lost the CAS, so `ownsGoal` is still false and
-          // the single check in `onOutcome` refuses it. Before that check existed this site had to
-          // remember to claim the terminal by hand, and the one place that forgot is how a loser
-          // came to commit `failed` on the winner's goal, using its own abort text as the outcome.
-          // Unwind the provision (the acceptance is already served); the code is discarded by the
-          // caller (acceptance !== undefined), so it just aborts this attempt's side-effects.
-          throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already accepted; the cached acceptance is served`);
-        }
-        // WON the claim: this attempt, and only this attempt, may settle this goal.
-        ownsGoal = true;
-        await createGoal(gw.ctx, ref, {
-          fingerprint,
-          command: ctx.subject.command,
-          caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
-          // The ACCEPTING incarnation's epoch: half of the terminal's attribution pair (§13.6).
-          acceptedEpoch: epoch,
-          requestId: goalId,
-          sourceSeq: 0,
-          acceptedAt,
-          readinessDeadlineMs: readinessTimeoutMs,
-        });
-        acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, readinessDeadlineMs: readinessTimeoutMs, executor };
-        this.goalAcceptances.set(key, acceptance);
-        this.agentGoals.set(name, ref); // A despawn of this name mid-goal drives the cancel path
-        resolveAccept(acceptance);
-        this.emitGoalProgress(ref, epoch, { phase: "handoff" });
-      },
-      onLaunched: () => this.emitGoalProgress(ref, epoch, { phase: "launched" }),
-      onReadinessWindow: (value) => { readinessTimeoutMs = value; },
-      onOutcome,
-      // Claim the terminal WITHOUT committing one: the despawn/stop that ended this launch owns
-      // it and commits `cancel`. This only stops the non-ok reply below from manufacturing a
-      // `failed` that would race that `cancel` (first-terminal-fact-wins).
-      onTerminalDeferred: () => { terminalEntered = true; },
-      onEffect: () => { effectStarted = true; },
-      onUndone: (code) => { undone = code; },
-      onOnce: async (task) => {
-        try {
-          const accepted = await this.acceptOnceTurn({ spawnRef: ref, fingerprint, command: ctx.subject.command, executor, acceptedAt, ...task });
-          onceRef = accepted.ref;
-          return accepted;
-        } catch (e) {
-          // The spawn goal is already bound, so its refusal is a terminal: nothing has launched.
-          await onOutcome({ kind: "failed", data: { error: `the once task was not accepted: ${rejectionText(e)}` } });
-          throw e;
-        }
-      },
-    });
-    bg.then((reply) => {
-      // Refused BEFORE onAccepted (hard-pin collision, capacity, persona-not-found) — no goal bound.
-      // Only a refusal before the first effect, or one whose effects were all removed, states
-      // `not-executed`; a later one, such as the alias gate that re-drives a teardown, leaves the
-      // outcome unknown.
-      if (acceptance === undefined) {
-        const details = reply.details;
-        const code = undone ?? reply.code ?? "failed-precondition";
-        rejectAccept(new EpEnvelopeError(code as EpErrorCode, reply.error ?? "spawn refused at accept", details, effectStarted && undone === undefined ? undefined : "not-executed"));
-        return;
-      }
-      // H1: `run` CATCHES its own body (a throw in buildLaunch/runtime.spawn) and RESOLVES `{ok:false}`
-      // rather than rejecting, so a post-accept failure arrives here, not in the catch below, and
-      // reaches none of the onOutcome sites. Without this the goal stays accepted-but-unanswered:
-      // the caller follows epe to a terminal that never comes, and the reconcile index that would
-      // settle it is only swept at BOOT, so a manager that stays up never converges it.
-      if (reply.ok === false && !terminalEntered)
-        return onOutcome({ kind: "failed", data: failedTerminal(reply.error ?? "spawn failed after accept", reply) });
-    }).catch((e) => {
-      if (acceptance === undefined) { rejectAccept(e); return; }
-      // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
-      if (!terminalEntered)
-        return onOutcome({ kind: "failed", data: failedTerminal(rejectionText(e), caughtEnvelope(e)) });
-      console.error(`! spawn-as-action async body for ${goalId}: ${rejectionText(e)}`);
-    }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${rejectionText(e)}`));
-    return acceptP;
-  }
-
-  /** H2: an acceptance served from a WINNER'S durable acceptance floor (the goal-index entry it
-   *  wrote before its own ack). Refuses `unavailable` rather than inventing one — see
-   *  {@link cachedSpawnAcceptance} for why an empty identity is never an acceptable answer. */
-  private async acceptanceFromIndex(entry: GoalIndexEntry, ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
-    if (entry.allocated?.owner === undefined)
-      throw new EpEnvelopeError("unavailable", `goal "${goalId}" was accepted by instance "${entry.iid}", which persisted no acceptance floor naming its owner; its allocated identity is not readable from here (SPEC 13.6)`);
-    const readinessDeadlineMs = entry.allocated.readinessDeadlineMs ?? (await readGoalSpec(this.goalWriter!.ctx, ref))?.value.readinessDeadlineMs;
-    if (readinessDeadlineMs === undefined)
-      throw new EpEnvelopeError("unavailable", `goal "${goalId}" is accepted but its readiness deadline is not readable; a synchronous follower cannot bound its wait honestly (SPEC 13.6)`);
-    return { name: entry.allocated.name, owner: entry.allocated.owner, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, readinessDeadlineMs, executor };
-  }
-
-  /** Reconstruct a cached acceptance for a same-goalId retry NOT in the live map (a prior incarnation
-   *  accepted it, or a concurrent winner whose map write this reader has not yet observed).
-   *
-   *  H2 — WHY THIS PREFERS THE INDEX OVER THE TERMINAL. It used to read only the committed terminal
-   *  and fall back to `{name:"", actor:"", uid:""}` when there was none. That is the common case,
-   *  not a corner: a client retry over ANYCAST reaches a sibling while the winner is still
-   *  provisioning, so no terminal exists yet, and the caller was handed an ACCEPTED reply naming an
-   *  empty agent it can never address. The acceptance floor in the goal index exists from the moment
-   *  of acceptance, so it answers precisely the window the terminal cannot. Where neither is
-   *  readable the honest answer is a REFUSAL: an accepted goal whose identity nobody can name is
-   *  `unavailable` while it runs and its cached outcome once it has ended, never a hollow success. */
-  private async cachedSpawnAcceptance(ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
-    const entry = await readGoalIndex(this.goalWriter!.ctx, ref);
-    if (entry?.allocated !== undefined) return this.acceptanceFromIndex(entry, ref, goalId, fingerprint, executor);
-    // The index is CLEARED at terminal, so a settled goal legitimately has no entry: fall back to
-    // the terminal's data, which carries the same identity for exactly that case.
-    const result = await readGoalResult(this.goalWriter!.ctx, ref);
-    const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
-    const spec = await readGoalSpec(this.goalWriter!.ctx, ref);
-    const readinessDeadlineMs = spec?.value.readinessDeadlineMs;
-    // The terminal names the agent by its slot id: the `owner.actor` principal in user mode, the
-    // bare nkey under DEV_OWNER on a static mesh.
-    const principal = typeof d.id !== "string" || d.id.length === 0 ? null : this.userMode ? parsePrincipalKey(d.id) : { owner: DEV_OWNER, actor: d.id };
-    if (typeof d.name === "string" && d.name.length > 0 && principal !== null && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
-      return { name: d.name, owner: principal.owner, actor: principal.actor, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
-    // Only a `succeeded` terminal names the agent. Any other ended goal has its outcome as its
-    // whole durable answer, and no retry will make an identity readable (SPEC 13.6 item 5).
-    if (result !== undefined) throw goalAlreadyTerminal(goalId, result);
-    throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
-  }
-
-  /** Drop a goal's acceptance {@link goalAcceptanceRetentionMs} after its terminal committed. A
-   *  retry after that reads the terminal, so only a goal that has one may be passed here. */
-  private expireGoalAcceptance(ref: GoalRef): void {
-    const key = goalKey(ref);
-    setTimeout(() => this.goalAcceptances.delete(key), this.goalAcceptanceRetentionMs).unref?.();
-  }
+  /** {@link SpawnGoal.expireGoalAcceptance}. */
+  private expireGoalAcceptance(...args: Parameters<SpawnGoal["expireGoalAcceptance"]>): ReturnType<SpawnGoal["expireGoalAcceptance"]> { return this.spawnGoalComponent.expireGoalAcceptance(...args); }
 
   // ---- the turn relay (§8 durable actions) ------------------------------------------------------
   //
@@ -6210,276 +5627,24 @@ export class Manager {
   /** {@link SeatStop.opPurge}. */
   private opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }
 
-  /** Persist a peer-defined persona as config. After this, `start name` auto-discovers
-   *  .cotal/agents/<name>.md and the connector applies its persona/model at spawn.
-   *
-   *  CONTENT vs POLICY: `owner` has no slot, so a peer cannot claim ownership, and the
-   *  capabilities the written persona carries, a saved list a redefine keeps included, are bounded
-   *  against the definer before the write, so a peer can put only what it holds into a persona that
-   *  a wider spawner might later launch. Channel grants, role, and agent are content: they may
-   *  arrive as explicit arguments or as a leading frontmatter block inside `persona`. A prompt
-   *  that starts with `---` is parsed and merged (explicit args win) so the written file has one
-   *  frontmatter block; a malformed block is refused by name rather than wrapped. A fresh name is
-   *  created with the owner {@link personaOwner} records. Redefining an EXISTING file is allowed on
-   *  the privileged tier only if `file.owner == caller`, else admin is required. Fail-closed: an
-   *  ownerless file (legacy / operator-written) is admin-only. */
-  private async opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-    const name = String(args.name ?? "").trim();
-    if (!name) return { ok: false, error: "name required" };
-    const nameErr = this.nameError(name);
-    if (nameErr) return { ok: false, error: nameErr };
-    const persona = String(args.persona ?? "").trim();
-    if (!persona) return { ok: false, error: "persona required" };
-    const path = agentFilePath(this.workspaceRoot, name);
-    const strList = (v: unknown): string[] | undefined => {
-      if (v === undefined || v === null) return undefined;
-      return (Array.isArray(v) ? v : [v]).map((x) => String(x));
-    };
-    const capabilities = strList(args.capabilities);
-    let endpointArg: PersonaEndpoint[] | undefined;
-    try {
-      endpointArg = parsePersonaEndpoints(args.endpoints, "define-persona");
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
-    }
-    // Read, authorize and compose against the catalog as it is now. Nothing yields between this and
-    // the write, so no other call in this manager can change the file in between. The handler does
-    // not serialize with other processes; their writes are outside this single-manager guarantee.
-    const compose = (): { def: AgentDef } | { reply: ControlReply } => {
-      let existing: AgentDef | undefined;
-      if (existsSync(path)) {
-        try {
-          existing = loadAgentFile(path);
-        } catch (e) {
-          return { reply: { ok: false, error: rejectionText(e) } };
-        }
-        if (!admin && existing.owner !== caller) {
-          const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
-          return { reply: {
-            ok: false, code: "permission-denied", outcome: "not-executed",
-            error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can`,
-            details: [{ kind: "ai.cotal.persona-ownership-refused", operatorOwned: existing.owner === undefined }],
-          } };
-        }
-      }
-      try {
-        return {
-          def: composeWirePersona(
-            {
-              name,
-              owner: this.personaOwner(caller),
-              prompt: persona,
-              model: args.model as string | undefined,
-              role: args.role as string | undefined,
-              agent: args.agent as string | undefined,
-              subscribe: strList(args.subscribe),
-              allowSubscribe: strList(args.allowSubscribe),
-              allowPublish: strList(args.allowPublish),
-              capabilities,
-              endpoints: copyPersonaEndpoints(endpointArg),
-            },
-            existing,
-          ),
-        };
-      } catch (e) {
-        return { reply: { ok: false, error: rejectionText(e) } };
-      }
-    };
-    let composed = compose();
-    if ("reply" in composed) return composed.reply;
-    // The bound reads the persona as written, so a redefine that omits `capabilities` or `endpoints`
-    // has the list it keeps checked too. Resolving the definer's grant yields, so the catalog is read
-    // again after it.
-    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {
-      const refusal = await this.definerGrantRefusal(caller, authenticated);
-      composed = compose();
-      if ("reply" in composed) return composed.reply;
-      const kept = composed.def.capabilities ?? [];
-      const keptEndpoints = lowerPersonaEndpoints(composed.def.endpoints);
-      // A user-auth persona may not name the field at all; elsewhere `[]` hands on nothing to bound.
-      const namesEndpoints = composed.def.endpoints !== undefined;
-      const refused = kept.length || keptEndpoints.length || (namesEndpoints && this.meshMode === "user")
-        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints })
-        : undefined;
-      if (refused) {
-        const fromSaved = [
-          ...(capabilities === undefined && kept.length ? ["capabilities"] : []),
-          ...(endpointArg === undefined && composed.def.endpoints?.length ? ["endpoints"] : []),
-        ];
-        return {
-          ok: false,
-          code: "permission-denied",
-          error: fromSaved.length
-            ? `${refused} ${fromSaved.map((f) => `\`${f}\``).join(" and ")} come${fromSaved.length === 1 ? "s" : ""} from the saved persona, which a redefine that omits ${fromSaved.length === 1 ? "it keeps" : "them keeps"}; pass what the definer holds, or [] to clear ${fromSaved.length === 1 ? "it" : "them"}.`
-            : refused,
-        };
-      }
-    }
-    try {
-      saveAgentFile(path, composed.def);
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
-    }
-    return { ok: true, data: { name, path } };
-  }
+  /** {@link PersonaCatalog.opDefinePersona}. */
+  private opDefinePersona(...args: Parameters<PersonaCatalog["opDefinePersona"]>): ReturnType<PersonaCatalog["opDefinePersona"]> { return this.personaCatalogComponent.opDefinePersona(...args); }
 
-  /** Resolve what a persona's definer may put into it, as a check that returns the refusal for
-   *  capabilities or endpoint commands it does not hold, or `undefined` when it holds them all. The
-   *  check itself does not yield. An open mesh mints no credential, so nothing is bounded there. A
-   *  static definer is bounded by its issued evidence, as a spawner is; a user-auth definer by its
-   *  own ledger row's scope, under the ledger's token rule, with `admin` exempt. A user-auth persona
-   *  cannot name `endpoints` at all, `[]` included (SPEC 13.15). A hosted manager reads no ledger, so
-   *  it refuses. A later spawn of the persona is bounded again against its own spawner. */
-  private async definerGrantRefusal(caller: string, authenticated: EpCaller | undefined): Promise<(grant: { capabilities: string[]; endpoints: EpCapability[]; namesEndpoints: boolean }) => string | undefined> {
-    if (this.meshMode === "open") return () => undefined;
-    if (this.meshMode === "static") {
-      const run = await this.spawnRun(authenticated, undefined);
-      const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
-      return ({ capabilities, endpoints }) => this.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
-    }
-    if (this.remoteAuthority)
-      return ({ capabilities, namesEndpoints }) => namesEndpoints
-        ? userMeshEndpointsRefusal("define-persona")
-        : capabilities.length ? "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities." : undefined;
-    const p = parsePrincipalKey(caller);
-    const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: p.owner, actor: p.actor }) : undefined;
-    return ({ capabilities, namesEndpoints }) => {
-      if (namesEndpoints) return userMeshEndpointsRefusal("define-persona");
-      if (scope?.includes("admin")) return undefined;
-      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));
-      if (!over.length) return undefined;
-      return scope === undefined
-        ? `define-persona: the definer ${caller} has no grant in this space, so its persona can grant nothing. This persona asks for capabilities ${over.join(", ")}.`
-        : `define-persona: this persona grants more than the definer holds: capabilities ${over.join(", ")} beyond [${scope.join(", ") || "none"}]. Drop these from the persona, or have the operator widen the definer's grant.`;
-    };
-  }
 
-  /** Remove one machine-local persona definition without touching any running lifecycle that was
-   *  launched from it. Removal accepts the catalog's safe filename alphabet without applying the
-   *  current spawn-name length or user-mode actor rules, so an obsolete invalid-name entry remains
-   *  repairable. Ownership matches redefine: the recorded owner, or admin for an ownerless file. */
-  private opRemovePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
-    const name = String(args.name ?? "").trim();
-    if (!name) return { ok: false, code: "bad-request", error: "name required" };
-    if (!/^[A-Za-z0-9_-]+$/.test(name))
-      return { ok: false, code: "bad-request", error: `unsafe persona name ${JSON.stringify(name)} (allowed: letters, digits, _ -)` };
-    const path = agentFilePath(this.workspaceRoot, name);
-    if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
-    let owner: string | undefined;
-    try {
-      owner = loadAgentFile(path).owner;
-    } catch {
-      // A catalog entry may be invalid for launch solely because an older release admitted a name
-      // above today's identity limit. Read only its frontmatter owner without asking the launch
-      // parser to accept the identity. This does not make the file spawnable or readable.
-      try {
-        const source = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
-        const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(source);
-        if (!match) throw new Error("missing frontmatter");
-        const frontmatter: unknown = parseYaml(match[1]);
-        if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) throw new Error("frontmatter is not a mapping");
-        const fields = frontmatter as Record<string, unknown>;
-        if (String(fields.name ?? "") !== name) throw new Error("frontmatter name differs from the catalog entry");
-        if (fields.owner !== undefined && typeof fields.owner !== "string") throw new Error("owner is not a string");
-        owner = fields.owner;
-      } catch {
-        return { ok: false, code: "not-found", error: `no persona "${name}"` };
-      }
-    }
-    if (!admin && owner !== caller) {
-      const heldBy = owner ? `owned by ${owner}` : "operator-owned (legacy file - no agent owner)";
-      return { ok: false, code: "permission-denied", error: `not authorized to remove ${name}: ${heldBy}; only its owner or an operator can` };
-    }
-    try {
-      rmSync(path);
-    } catch (e) {
-      if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
-      return { ok: false, error: rejectionText(e) };
-    }
-    return { ok: true, data: { name } };
-  }
+  /** {@link PersonaCatalog.opRemovePersona}. */
+  private opRemovePersona(...args: Parameters<PersonaCatalog["opRemovePersona"]>): ReturnType<PersonaCatalog["opRemovePersona"]> { return this.personaCatalogComponent.opRemovePersona(...args); }
 
-  /** The owner a fresh wire-defined persona records. A user-auth caller's principal is stable, and
-   *  so is one of this manager's own seats for its life. Any other static caller, such as the CLI's
-   *  operator instrument minted for one call, would leave an owner no later call matches, so it
-   *  records none and the file is operator-owned, as a local `persona create` writes it. A peer
-   *  joined with its own credential is such a caller too. */
-  private personaOwner(caller: string): string | undefined {
-    if (this.userMode) return caller;
-    for (const a of this.agents.values()) if (this.managedPrincipal(a) === caller) return caller;
-    return undefined;
-  }
+  /** {@link PersonaCatalog.personaOwner}. */
+  private personaOwner(...args: Parameters<PersonaCatalog["personaOwner"]>): ReturnType<PersonaCatalog["personaOwner"]> { return this.personaCatalogComponent.personaOwner(...args); }
 
-  /** Whether this caller may READ a catalog card's details (role/model/description/body). Same
-   *  ownership rule as redefine: owner == caller, or admin. Ownerless / operator-written files are
-   *  admin-only. Names of parseable files still appear on the list so a definer can see a taken
-   *  spawn name; details stay off the wire unless this is true. */
-  private canReadPersona(owner: string | undefined, caller: string, admin: boolean): boolean {
-    return personaCatalogReadable(owner, caller, admin);
-  }
+  /** {@link PersonaCatalog.canReadPersona}. */
+  private canReadPersona(...args: Parameters<PersonaCatalog["canReadPersona"]>): ReturnType<PersonaCatalog["canReadPersona"]> { return this.personaCatalogComponent.canReadPersona(...args); }
 
-  /** Mesh-side catalog list (#402). Every parseable name is returned so a definer can see a taken
-   *  spawn name. Role / model / description / owner ride only when the caller could redefine the
-   *  file (same ownership as `definePersona`); other cards are name-only, so a peer cannot read a
-   *  prompt it does not own. Unparseable files are omitted for non-admin (no existence leak of a
-   *  broken card). */
-  private opListPersonas(caller: string, admin: boolean): ControlReply {
-    const personas = [];
-    for (const e of listPersonaCatalog(this.workspaceRoot)) {
-      if (e.error) {
-        if (!admin) continue;
-        personas.push({ name: e.name, error: "unparseable" });
-        continue;
-      }
-      const def = e.def!;
-      if (!this.canReadPersona(def.owner, caller, admin)) {
-        personas.push({ name: e.name });
-        continue;
-      }
-      const description = personaCatalogDescription(def);
-      personas.push({
-        name: e.name,
-        ...(def.role ? { role: def.role } : {}),
-        ...(def.model ? { model: def.model } : {}),
-        ...(description ? { description } : {}),
-        ...(def.owner ? { owner: def.owner } : {}),
-      });
-    }
-    return { ok: true, data: { personas } };
-  }
+  /** {@link PersonaCatalog.opListPersonas}. */
+  private opListPersonas(...args: Parameters<PersonaCatalog["opListPersonas"]>): ReturnType<PersonaCatalog["opListPersonas"]> { return this.personaCatalogComponent.opListPersonas(...args); }
 
-  /** Mesh-side catalog show (#402). Same ownership as list. Unknown, unauthorized, or unparseable
-   *  names are not-found (no existence or parser-diagnostic leak). The body is included so a peer can
-   *  inspect a prompt it owns before spawn; policy fields stay off the wire. */
-  private opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
-    const name = String(args.name ?? "").trim();
-    if (!name) return { ok: false, error: "name required" };
-    const nameErr = this.nameError(name);
-    if (nameErr) return { ok: false, error: nameErr };
-    const path = agentFilePath(this.workspaceRoot, name);
-    if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
-    let def;
-    try {
-      def = loadAgentFile(path);
-    } catch {
-      return { ok: false, error: `no persona "${name}"` };
-    }
-    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona "${name}"` };
-    const description = personaCatalogDescription(def);
-    return {
-      ok: true,
-      data: {
-        name,
-        ...(def.role ? { role: def.role } : {}),
-        ...(def.model ? { model: def.model } : {}),
-        ...(description ? { description } : {}),
-        ...(def.owner ? { owner: def.owner } : {}),
-        ...(def.persona ? { persona: def.persona } : {}),
-      },
-    };
-  }
+  /** {@link PersonaCatalog.opShowPersona}. */
+  private opShowPersona(...args: Parameters<PersonaCatalog["opShowPersona"]>): ReturnType<PersonaCatalog["opShowPersona"]> { return this.personaCatalogComponent.opShowPersona(...args); }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
    *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,

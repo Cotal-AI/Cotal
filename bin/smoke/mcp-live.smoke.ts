@@ -1,17 +1,20 @@
 /** Drive the shipped stdio MCP command against private static and open brokers. No native host needed. */
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 import type { IssuedAuthorityRef } from "@cotal-ai/core";
 
 const { check, finish } = createSuite();
 const scratch = mkdtempSync(join(tmpdir(), "cotal-mcp-live-"));
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
+  !entry[0].startsWith("COTAL_") && entry[1] !== undefined));
 for (const [key, folder] of Object.entries({ HOME: "home", XDG_CONFIG_HOME: "config", XDG_RUNTIME_DIR: "run", COTAL_HOME: "cotal", TMPDIR: "tmp" })) {
   env[key] = join(scratch, folder);
   mkdirSync(env[key]!, { recursive: true, mode: 0o700 });
@@ -221,6 +224,26 @@ try {
   check("disconnect revokes the broker-side issuance", retired.state === "revoked");
   check("a disconnected handle cannot be reused", Boolean((await rpc.call("cotal_roster", { connection_id: handle })).result?.isError));
   await rpc.end();
+
+  const client = new Client({ name: "mcp-live", version: "1" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [bin, "mcp", "--space", staticSpace], cwd: scratch, env });
+  try {
+    await client.connect(transport);
+    // The SDK does not expose the exit status. Observe the child without changing how close signals it.
+    const child = (transport as unknown as { _process: ChildProcess })._process;
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null; identities: number }>((resolveExit) => {
+      child.once("exit", (code, signal) => resolveExit({ code, signal, identities: identities().length }));
+    });
+    const reply = await client.callTool({ name: "cotal_connect", arguments: { name: "sdk_close" } });
+    assert.ok(!reply.isError, JSON.stringify(reply));
+    assert.equal(identities().length, 1);
+    await client.close();
+    const exit = await exited;
+    assert.deepEqual(exit, { code: 0, signal: null, identities: 0 });
+    check("TypeScript SDK close exits normally with the static identity retired", true);
+  } finally {
+    await client.close();
+  }
 
   for (const signal of [undefined, "SIGINT", "SIGTERM"] as const) {
     const server = new Rpc(staticSpace, `exit-${signal ?? "eof"}`);

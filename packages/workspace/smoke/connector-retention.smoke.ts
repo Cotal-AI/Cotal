@@ -100,6 +100,68 @@ console.log('PASS');
     assert.equal(result.status, 0, `${scenario}: ${result.stdout}${result.stderr}`);
     passed++;
   }
+  rmSync(join(installed, "desktop-runtime.json"), { force: true });
+  for (const source of ["canonical", "retained", "linked-retained"] as const) {
+    const config = join(root, `update-${source}`);
+    mkdirSync(join(config, "cotal/seed"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(config, "cotal/extensions"), { mode: 0o700 });
+    if (source === "linked-retained") {
+      renameSync(config, `${config}-physical`);
+      symlinkSync(`${config}-physical`, config);
+    }
+    const childScript = `
+import assert from 'node:assert/strict';
+import {readFileSync,mkdirSync} from 'node:fs';
+import {join,dirname} from 'node:path';
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
+const {connectorConfigDir,inheritConnectorConfig}=await import(${JSON.stringify(module)});
+assert.equal(connectorConfigDir(),process.env.SNAPSHOT,'reconciliation reads the updater snapshot, not the stale target');
+const configHome=process.env.XDG_CONFIG_HOME;
+const stage=join(dirname(process.env.STALE),'.extensions.stage-fixture','config');
+mkdirSync(join(stage,'cotal/extensions'),{recursive:true,mode:0o700});
+process.env.XDG_CONFIG_HOME=stage;
+assert.equal(connectorConfigDir(),join(stage,'cotal'),'extension validation must keep its private stage');
+process.env.XDG_CONFIG_HOME=configHome;
+inheritConnectorConfig();
+const selected=connectorConfigDir();
+assert.notEqual(selected,process.env.STALE);
+assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),'tmux added; pi removed');
+assert.equal(readFileSync(join(process.env.STALE,'extensions/state'),'utf8'),'pi installed');
+inheritConnectorConfig();
+assert.equal(connectorConfigDir(),selected,'one transaction inherits only once');
+`;
+    const script = `
+import assert from 'node:assert/strict';
+import {cpSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync} from 'node:fs';
+import {join,dirname} from 'node:path';
+import {spawnSync} from 'node:child_process';
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
+const {retainConnectorConfig,connectorConfigDir}=await import(${JSON.stringify(module)});
+const {claimUpdateClosureAccess,updateClosureChildEnv,updateClosureOwner}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/update-closure.ts")).href)});
+const {writeUpdateRecovery,clearUpdateRecovery}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/updates.ts")).href)});
+const metadata=${JSON.stringify(join(installed, "package.json"))};
+writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));
+const stale=retainConnectorConfig();
+writeFileSync(join(stale,'extensions/state'),'pi installed');
+const current=${source === "canonical" ? JSON.stringify(join(config, "cotal")) : "stale"};
+const snapshot=mkdtempSync(join(current,'.update-snapshot-'));
+cpSync(join(current,'extensions'),join(snapshot,'extensions'),{recursive:true});
+writeFileSync(join(snapshot,'extensions/state'),'tmux added; pi removed');
+const release=claimUpdateClosureAccess();
+try {
+writeUpdateRecovery({previous:'0.166.0',target:'0.165.4',installed:'0.166.0',phase:'replacing',reason:'test update',owner:updateClosureOwner(),snapshot});
+const child=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',${JSON.stringify(childScript)}],{env:{...updateClosureChildEnv(process.env),COTAL_UPDATE_PARENT:String(process.pid),SNAPSHOT:snapshot,STALE:stale},encoding:'utf8'});
+assert.equal(child.status,0,child.stdout+child.stderr);
+clearUpdateRecovery();
+const selected=connectorConfigDir();
+assert.notEqual(selected,stale,'completed update keeps its new selection');
+assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),'tmux added; pi removed');
+} finally { release(); }
+`;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...childEnv, XDG_CONFIG_HOME: config, COTAL_HOME: join(config, "home") }, encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.status, 0, `update-${source}: ${result.stdout}${result.stderr}`);
+    passed++;
+  }
   console.log("connector retention: original graph preserved, selected copy isolated, unsupported and forged state refused");
   emitSentinel({ passed, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }

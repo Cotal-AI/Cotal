@@ -37,7 +37,7 @@
  * Run: pnpm smoke:spawn-foreground-events
  */
 import { spawn as spawnProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "../../manager/smoke/_free-port.js";
@@ -243,6 +243,32 @@ try {
     // this cell an edit that passed it only under `--events` would leave the suite green and move
     // both of those homes back to whatever directory the operator happened to be standing in.
     check("a default-armed foreground launch carries the mesh root", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
+    check("a foreground launch without --cwd leaves the connector's managed cwd unset", r.opts !== undefined && r.opts.cwd === undefined);
+  }
+
+  {
+    const work = join(root, "work");
+    const link = join(root, "work-link");
+    mkdirSync(work);
+    symlinkSync(work, link, "junction");
+    const receipt = join(root, "child-cwd.txt");
+    const cwdProbe: Connector = {
+      ...liveProbe,
+      name: "fg-probe-cwd",
+      buildLaunch: (o: LaunchOpts): LaunchSpec => {
+        captured.push(o);
+        return {
+          command: process.execPath,
+          args: ["-e", 'require("node:fs").writeFileSync(process.argv[1], process.cwd())', receipt],
+          env: {},
+        };
+      },
+    };
+    registry.register(cwdProbe);
+    const r = await openRun(["--agent", "fg-probe-cwd", "--cwd", link]);
+    const childCwd = existsSync(receipt) ? readFileSync(receipt, "utf8") : undefined;
+    check("foreground --cwd runs the child in the canonical directory without a managed connector cwd",
+      childCwd === realpathSync(work) && r.opts !== undefined && r.opts.cwd === undefined, { childCwd, ...r });
   }
 
   for (const field of ["role: two words", "launchOptions: null"]) {
@@ -390,7 +416,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 28;
+const EXPECTED = 30;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -17,7 +17,8 @@
  *     none, and `up` starts again. `reset space` is offered, its preview opens with the offered verdict and
  *     names the store contents
  *     that go with the identity as `reset store`'s does, and it removes the identity, keeping the
- *     prepared record and the stack journal, and `up` starts again with a new account. It clears
+ *     prepared record and the stack journal, and `up` starts again with a new account. After
+ *     either reset, `status` exits 0 and neither it nor `up` warns STORE_MISSING. It clears
  *     the credentialRef of a saved service whose credential the removed account issued, names it,
  *     and keeps any other.
  *  5. A forgotten name starts elsewhere. After `down --yes`, `space forget` removes the stack
@@ -218,8 +219,12 @@ try {
     check("reset store --dry-run after down offers the apply, names the workflow runs it removes and says why the down listed none", storeStopped.status === 0 && storeStopped.env?.result?.applyVerdict?.offered === true && contents?.removed?.includes("workflow runs and their journals") === true && contents.listed === false && contents.runsAtLastDown?.read === false && contents.runsAtLastDown.reason === "the stack's manager was not running", shown(storeStopped));
     const storeApplied = cli(root, "reset", "store", space, "--yes", "--json");
     check("reset store --yes removes the stopped store and names the workflow runs that went with it", storeApplied.status === 0 && storeApplied.env?.result?.selectedBy === "stopped-stack" && Array.isArray(storeApplied.env.result.removedPaths) && (storeApplied.env.result.removedPaths as unknown[]).length > 0 && (storeApplied.env.result.removedContents as string[] | undefined)?.includes("workflow runs and their journals") === true, shown(storeApplied));
+    // The reset leaves the store as a fresh up prepares it, so nothing reports it lost.
+    const missing = (run: Run) => Boolean(run.env?.warnings?.some((warning) => warning.code === "STORE_MISSING"));
+    const statusAfterStore = cli(root, "status", "--json");
+    check("status after reset store exits 0 without a missing-store warning", statusAfterStore.status === 0 && !missing(statusAfterStore), shown(statusAfterStore));
     const restarted = cli(root, "up", "--json");
-    check("bare up starts the stack again on an empty store", restarted.status === 0, shown(restarted));
+    check("bare up starts the stack again on an empty store, without a missing-store warning", restarted.status === 0 && !missing(restarted), shown(restarted));
     // A saved service naming a credential this account issued would hand its child a credential the
     // next identity rejects; one naming any other file is not attributed to it.
     const keys = folder("keys");
@@ -259,8 +264,10 @@ try {
       JSON.stringify(spaceApplied.env?.result?.clearedCredentialRefs) === issuedRefs && shownMinted.status === 0 && !shownMinted.stdout.includes('"credentialRef"') && shownForeign.stdout.includes(JSON.stringify(foreign)),
       { cleared: spaceApplied.env?.result?.clearedCredentialRefs, minted: shown(shownMinted), foreign: shown(shownForeign) });
     check("the prepared record and the stack journal stay", findPreparedSpace(space) !== undefined && existsSync(journalOf(root)));
+    const statusAfterSpace = cli(root, "status", "--json");
+    check("status after reset space exits 0 without a missing-store warning", statusAfterSpace.status === 0 && !missing(statusAfterSpace), shown(statusAfterSpace));
     const fresh = cli(root, "up", "--json");
-    check("bare up starts it again", fresh.status === 0, shown(fresh));
+    check("bare up starts it again, without a missing-store warning", fresh.status === 0 && !missing(fresh), shown(fresh));
     check("with a new account identity", accountDigest(root) !== before && accountDigest(root) !== "absent", { before, after: accountDigest(root) });
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));

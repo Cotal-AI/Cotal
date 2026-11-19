@@ -68,6 +68,7 @@ The install id is a persistent identifier for the settings file. The `account` f
 machines without sending those raw identifiers. The daemon, manager,
 connectors and workflow runtime send nothing; neither do internal
 entries, hidden daemon runners, `agent-bearer` and `cotal telemetry` itself.
+The standalone `cotal --version` and `cotal -V` flags send no events.
 
 The intake receives the request's IP address even though the CLI does not put it in the
 JSON body. The [website API description](https://cotal.ai/openapi.json) says accepted
