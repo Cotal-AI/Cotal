@@ -495,10 +495,20 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["spawn", "dev", "--foreground", "--on", "a".repeat(30)], /^✗ a spawn in this terminal takes no structured receipt, manager credential or manager pin\n {2}add -d to launch it through a manager/],
     [["attach"], /^✗ name the agent to attach without an interactive terminal\n {2}run `cotal ps`, then `cotal attach <name>`/],
     [["run", "show"], /^✗ run show takes one identifier\n {2}`cotal run` lists the runs; run `cotal run show <run-id>`/],
-    [["run", "yield"], /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns; run `cotal run yield <turn-id>`/],
   ] as const) {
     const r = cotal([...argv], undefined, noSeed);
     check(`${argv.join(" ")} refuses with its fix and no help`, r.status === 1 && said.test(r.stderr) && !r.stderr.includes("Usage"), shown(r));
+  }
+  const missingTurn = cotal(["run", "yield"], undefined, noSeed);
+  const yieldForm = /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns\. Run `(cotal run yield <turn-id> --status <done\|blocked\|handoff>)`\. For a handoff, add `(--to <agent>)`\./.exec(missingTurn.stderr);
+  check("run yield without an id names the required status and handoff destination without printing help",
+    missingTurn.status === 1 && !!yieldForm && !missingTurn.stderr.includes("Usage"), shown(missingTurn));
+  if (yieldForm) for (const status of ["done", "blocked", "handoff"]) {
+    const command = yieldForm[1]!.replace("<turn-id>", "example-turn").replace("<done|blocked|handoff>", status);
+    const destination = status === "handoff" ? ` ${yieldForm[2]!.replace("<agent>", "example-agent")}` : "";
+    const copied = cotal((command + destination).split(" ").slice(1), undefined, noSeed);
+    check(`the printed run yield form for ${status} passes usage validation`,
+      copied.status === 2 && copied.stderr.includes("require a manager-launched seat's own shell"), shown(copied));
   }
   // An editor setting that is the path of an existing file runs as that program, spaces and all.
   const spacedDir = mkdtempSync(join(tmpdir(), "cotal entry editor "));

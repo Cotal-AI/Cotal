@@ -401,7 +401,13 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     if (previous !== undefined && cmd.flags?.some((flag) => flag.type === "string" && (previous === `--${flag.name}` || previous === `-${flag.short}`))) continue;
     const short = /^-([^-=])=(.*)$/su.exec(word);
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
-    if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
+    if (short && flag) {
+      const value = short[2]!;
+      const quoted = shellWord(value);
+      const long = `--${flag.name}=${quoted}`;
+      const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
+      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+    }
     const typed = typographicOption(word, names, shorts);
     if (typed) return typed;
   }
@@ -427,7 +433,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const value = at < 0 ? undefined : rest[at + 1];
     if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
       return missingValue(flag);
-    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${value}` };
+    if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
   }
   return { message };
 }
