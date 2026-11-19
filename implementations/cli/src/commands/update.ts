@@ -568,19 +568,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
-    if (latest.ok && rt.isCurrent?.()) {
-      try {
-        const custody = await rt.reportRunningManager(target);
-        rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
-        if (custody === "legacy") rt.out("A later update will require stopping the agents listed above before replacing packages.");
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
-        reportVersion(current, latest.version, rt, false);
-        return 0;
-      } catch (error) {
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
-        rt.err(c.red(`✗ running manager continuity check: ${refusal(error)}`));
-        return 1;
-      }
+    if (rt.isCurrent?.()) {
+      rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
+      reportVersion(current, latest.version, rt, false);
+      return 0;
     }
 
     return reconcileCurrent(current, rt, target, (reconciled, deferred) => {
