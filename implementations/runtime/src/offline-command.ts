@@ -133,10 +133,10 @@ function turnResultProblem(result: unknown): string | undefined {
   return undefined;
 }
 
-/** A static call-site inventory. It makes no claim about branch choices, effect order or loop counts. */
-function callSites(ast: unknown, source: string): { call: string; line: number }[] {
+/** A static call-site inventory over the validator's AST, which includes parser locations. */
+function callSites(ast: ReturnType<typeof validate>["ast"]): { call: string; line: number }[] {
   const pending: unknown[] = [ast];
-  const sites: { call: string; offset: number }[] = [];
+  const sites: { call: string; offset: number; line: number }[] = [];
   while (pending.length) {
     const value = pending.pop();
     if (!value || typeof value !== "object") continue;
@@ -148,17 +148,13 @@ function callSites(ast: unknown, source: string): { call: string; line: number }
       const object = callee.object as Record<string, unknown> | undefined;
       const property = callee.property as Record<string, unknown> | undefined;
       const call = typeof simple === "string" ? simple : object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string" ? `${object.name}.${property.name}` : "derived call";
-      const offset = typeof node.start === "number" ? node.start : 0;
-      sites.push({ call, offset });
+      const { start, loc } = node as typeof ast;
+      if (!loc) throw new Error("validated call is missing its source location");
+      sites.push({ call, offset: start, line: loc.start.line });
     }
     for (const item of Object.values(node)) if (item && typeof item === "object") pending.push(item);
   }
-  let line = 1;
-  let position = 0;
-  return sites.sort((a, b) => a.offset - b.offset).map((site) => {
-    while (position < site.offset) if (source[position++] === "\n") line++;
-    return { call: site.call, line };
-  });
+  return sites.sort((a, b) => a.offset - b.offset).map(({ call, line }) => ({ call, line }));
 }
 
 /** A language error's message as its paragraphs: the first is its code and title, the second its
@@ -235,7 +231,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     return;
   }
   if (mode === "plan") {
-    const calls = callSites(checked.ast, source);
+    const calls = callSites(checked.ast);
     writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-plan", scope: "validated static call sites", calls }, warnings }, (result): Report => ({ sections: [
       { title: "Workflow plan", blocks: [{ kind: "fields", rows: [["File", file], ["Scope", result.scope]] }, result.calls.length ? { kind: "table", columns: [{ key: "line", label: "Line" }, { key: "call", label: "Call" }], rows: result.calls.map((item) => ({ line: String(item.line), call: { text: item.call, tone: "command" } })) } : { kind: "lines", lines: ["No call sites in this program."] }, { kind: "lines", lines: [{ text: "Source order, not an execution schedule. Branches, loop counts and runtime outcomes were not evaluated. No broker was contacted.", tone: "hint" }] }] },
     ] }));
