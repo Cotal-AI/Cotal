@@ -365,8 +365,8 @@ refusal on those paths then leaves none of them behind.
 
 ### An npx run offers a global install
 
-For ergonomics only, an npx run with no global `cotal` offers to run `npm i -g cotal-ai`
-(`offerGlobalInstall`), pinned to the running version. The offer is gated on `isNpx()` and a PATH
+For ergonomics only, an `npx` or `pnpm dlx` run with no global `cotal` offers to run `npm i -g cotal-ai`
+(`offerGlobalInstall`), pinned to the running version. The offer is gated on `isNpx()` or `isPnpmDlx()` and a PATH
 scan (`cotalOnPath()`). `displayCmd()` runs the same scan for every user-facing hint, so the scan
 resolves files and never runs them. The `cotal --version` exec probe stays in
 `verifiedCotalExecutables()`. The refusal of an older cotal
@@ -377,7 +377,7 @@ default. A failed install does not fail setup. Setup warns and prints the manual
 appears only in the rich presentation, so `--json` and `--plain` keep stdout for the result.
 
 The same `self-exec.ts` exposes `displayCmd()`. It returns the prefix that setup's next command
-uses, which is `cotal`, `npx cotal-ai`, or `pnpm cotal`, so the command matches how you ran setup.
+uses, which is `cotal`, `npx cotal-ai`, `pnpm dlx cotal-ai`, or `pnpm cotal`, so the command matches how you ran setup.
 
 ## Built-in connectors are seeded extensions
 

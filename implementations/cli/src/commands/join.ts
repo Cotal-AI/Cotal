@@ -12,6 +12,8 @@ import {
   partsToText,
   peerLabel,
   isConsumerNotFound,
+  DmDurableMissingError,
+  isPublishPermissionDenied,
   credsClaims,
   idFromCreds,
   DEV_OWNER,
@@ -22,6 +24,7 @@ import {
   chatSubject,
   importNativeSubjectPermissions,
   issuedPermitsPattern,
+  issuedPermitsSubject,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -31,6 +34,7 @@ import {
 } from "@cotal-ai/core";
 import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
@@ -47,15 +51,16 @@ export function joinPeerLabel(card: { name: string; id?: string; role?: string }
 // Unexpected failures still propagate unchanged.
 function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): CommandFailure | undefined {
   const msg = (e as Error)?.message ?? String(e);
+  const missingInbox = e instanceof DmDurableMissingError || /consumer not found|no responders|not provisioned/i.test(msg);
   if (msg === "server does not support 'tls'")
     return new CommandFailure("refused", "UNSUPPORTED", `TLS is required to join ${space}, but this server does not support TLS`, { remedy: "ask the mesh operator for its TLS-enabled broker address" });
   // A --creds join binds the inbox its lifecycle was provisioned with. A credential minted without
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
-  if (credsLifecycle !== undefined && /consumer not found|no responders|not provisioned/i.test(msg))
+  if (credsLifecycle !== undefined && missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it`, {
       remedy: "ask the space's owner to mint the credential with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports",
     });
-  if (/consumer not found|no responders|not provisioned/i.test(msg))
+  if (missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
   if (/authoriz|permission|not authorized/i.test(msg)) {
     // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
@@ -154,6 +159,21 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // self-mints). Only WITH --creds is either read, as the launcher's pairing.
   if (flagUid !== undefined && !values.creds)
     throw new CommandFailure("refused", "USAGE_INVALID", "--lifecycle-uid applies only to an explicit --creds join - an open/token/link/bare join self-mints a fresh per-session lifecycle", { remedy: "drop the flag, or pass --creds", selfContained: true });
+  if (auth.creds !== undefined) {
+    let profile: string | undefined;
+    try { profile = credsClaims(auth.creds).name; } catch { /* leave undecodable credentials to preflight */ }
+    if (profile === "observer" || profile === "admin") {
+      const ch = shellWord(channel);
+      throw new CommandFailure(
+        "refused",
+        "PERMISSION_DENIED",
+        `an ${profile}-profile credential cannot join as a mesh participant: \`cotal join\` requires a provisioned agent credential`,
+        {
+          remedy: `mint an agent credential with \`cotal auth mint <name> --provision --allow-subscribe ${ch} --out <file>\`, then join with the --lifecycle-uid that mint reports; add --allow-publish ${ch} if you also need to post`,
+        },
+      );
+    }
+  }
   let lifecycleUid: string | undefined = values.creds ? (flagUid ?? envUid) : undefined;
   if (lifecycleUid !== undefined) {
     try {
@@ -320,6 +340,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     },
   });
   const me = ep.card.id;
+  const publishClaims = auth.creds === undefined ? undefined : credsClaims(auth.creds).nats?.pub;
+  const publishPermission = auth.creds === undefined ? undefined
+    : importNativeSubjectPermissions(publishClaims === undefined ? {} : { pub: publishClaims }).publish;
+  const canBroadcast = publishPermission === undefined || issuedPermitsSubject(publishPermission, chatSubject(space, ep.card.owner!, ep.card.actor!, channel));
+  const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
+    (userConnection
+      ? `ask the space's owner to grant this identity permission to post to #${channel}`
+      : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
   // Interactive only when attached to a real terminal; headless when spawned
   // detached (manager) — then we just hold presence and log mesh events.
@@ -399,27 +427,58 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // bearer renewal reports a changed trust, so it keeps re-establishing.
   const credential: Connection | undefined = auth.creds === undefined ? undefined
     : { server, space, tls: auth.tls, creds: auth.creds, ...(mintedFrom ? { auth: mintedFrom } : {}) };
-  let started = false, connected = false, checking = false;
+  let started = false, connected = false, checking = false, leaving = false;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
+  let finishSession!: () => void;
+  const sessionFinished = new Promise<void>((resolve) => { finishSession = resolve; });
   let lose!: (failure: Error) => void;
   const lost = new Promise<Error>((resolve) => { lose = resolve; });
+  const shutdown = async (code = 0) => {
+    if (leaving) return;
+    leaving = true;
+    if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
+    print(c.dim("leaving…"));
+    rl?.close();
+    try { await ep.stop(); } catch { /* closing */ }
+    await leaveSeat();
+    if (code === 0) {
+      finishSession();
+      return;
+    }
+    process.exit(code);
+  };
   const checkCredential = () => {
-    if (!started || checking || credential === undefined) return;
+    if (!started || leaving || checking || credential === undefined) return;
     checking = true;
     void credentialEnded(credential).catch(() => undefined).then((refusal) => {
       checking = false;
-      if (refusal) lose(refusal);
+      if (leaving || !refusal) return;
+      if (mintedFrom !== undefined && expiresAt !== undefined && Date.now() >= expiresAt * 1000 && refusal.code === "AUTH_REQUIRED") {
+        void shutdown(0);
+        return;
+      }
+      lose(refusal);
     });
   };
   ep.on("connection", ({ connected: up }: { connected: boolean }) => {
     connected = up;
-    if (!up) checkCredential();
+    if (!up && !leaving) {
+      if (mintedFrom !== undefined && expiresAt !== undefined && Date.now() >= expiresAt * 1000) void shutdown(0);
+      else checkCredential();
+    }
   });
   ep.on("error", (e: Error) => {
+    if (leaving) return;
+    if (mintedFrom !== undefined && expiresAt !== undefined && Date.now() >= expiresAt * 1000 && /authentication expired|credential expired/i.test(e.message)) {
+      void shutdown(0);
+      return;
+    }
     print(c.red(`! ${e.message}`));
     checkCredential();
   });
   ep.on("warning", (e: Error) => {
-    if (started && !connected && !userConnection && isConsumerNotFound(e))
+    if (leaving) return;
+    if (started && !connected && !userConnection && (isConsumerNotFound(e) || e instanceof DmDurableMissingError))
       return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
         target: { space },
         remedy: values.creds
@@ -431,6 +490,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   /** Leave once the session is lost: stop the endpoint and end with its refusal. */
   const whenLost = async (): Promise<never> => {
     const failure = await lost;
+    leaving = true;
+    if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
     rl?.close();
     try { await ep.stop(); } catch { /* it ends either way */ }
     await leaveSeat();
@@ -446,15 +507,18 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
   }
   started = true;
+  if (mintedFrom !== undefined && expiresAt !== undefined) {
+    const endAtLifetime = () => {
+      if (leaving) return;
+      const remaining = expiresAt * 1000 - Date.now();
+      if (remaining <= 0) return void shutdown(0);
+      lifetimeTimer = setTimeout(endAtLifetime, Math.min(remaining, 2_147_483_647));
+      lifetimeTimer.unref();
+    };
+    endAtLifetime();
+  }
 
-  // `/quit` leaves with 0; a signal leaves the same way and exits with its code.
-  const shutdown = async (code = 0) => {
-    print(c.dim("leaving…"));
-    rl?.close();
-    await ep.stop();
-    await leaveSeat();
-    process.exit(code);
-  };
+  // `/quit` and a requested session lifetime leave with 0; a signal leaves the same way and exits with its code.
   process.on("SIGINT", () => void shutdown(130));
   process.on("SIGTERM", () => void shutdown(143));
 
@@ -462,7 +526,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     console.log(
       c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
     );
-    return whenLost(); // park; event handlers do the work
+    return Promise.race([whenLost(), sessionFinished]); // park; event handlers do the work
   }
 
   console.log(
@@ -470,7 +534,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   );
   console.log(
     c.dim(
-      "Type to broadcast. Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n",
+      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n`,
     ),
   );
   setTimeout(() => {
@@ -550,13 +614,21 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           print(`${c.yellow("(@" + service + ")")} ${c.dim("you →")} ${text}`);
         }
       } else {
-        await ep.multicast(line, { channel });
-        print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
+        if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
+        else {
+          try {
+            await ep.multicast(line, { channel });
+            print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
+          } catch (e) {
+            if (!isPublishPermissionDenied(e)) throw e;
+            print(c.red(`! ${broadcastDenied()}`));
+          }
+        }
       }
     } catch (e) {
       print(c.red(`! ${(e as Error).message}`));
     }
     rl.prompt();
   });
-  await whenLost();
+  await Promise.race([whenLost(), sessionFinished]);
 }

@@ -134,14 +134,7 @@ export class ServePlane {
       // command names; the trusted per-caller `view(caller)` scoping joins the user-mode
       // registration follow-up (where actorScope is the trusted source). Every ordinary handler
       // runs the SHARED admission chokepoint ({@link serveGated}).
-      handle = serveEndpoint(nc, this.space, state.grant, this.deps.managerServiceDefs(), { public: true }, {
-        // The FRESH target resolver (§13.3) for the targeted commands (`despawn`/`attach`): the
-        // manager's live managed set IS the current-mapping authority for its own agents (the
-        // durable slot rows mirror it). Static mode carries no mapping-revision dimension, so
-        // the revision is the constant 0 - a caller that pins a revision pins 0.
-        resolveTarget: (t) => this.deps.resolveTarget(t),
-        ...(this.deps.omitClassCommands() ? { omitClassCommands: this.deps.omitClassCommands() } : {}),
-      });
+      handle = this.serveOnConnection(nc, state.grant);
       // A subscribed replacement must be visible to the broker before the old rails retire.
       if (deadline === undefined) await nc.flush();
       else await this.deps.withTimeout(nc.flush(), this.deps.remoteStandingTimeLeft(deadline),
@@ -156,6 +149,24 @@ export class ServePlane {
       if (this.serviceServe?.nc === nc) void this.onServeConnectionClosed(err ?? undefined, nc);
     });
     return { nc, handle };
+  }
+
+  private serveOnConnection(nc: NatsConnection, grant: EpServeGrant): EpServeHandle {
+    return serveEndpoint(nc, this.space, grant, this.deps.managerServiceDefs(), { public: true }, {
+      resolveTarget: (t) => this.deps.resolveTarget(t),
+      omitClassCommands: this.deps.omitClassCommands(),
+    });
+  }
+
+  /** Add the class spawn rails when the first application becomes available, without redialing. */
+  enableClassSpawn(): void {
+    const serving = this.serviceServe;
+    if (!serving || this.leaseStopping) return;
+    const replacement = this.serveOnConnection(serving.nc, serving.grant);
+    // Reusing the incarnation queues keeps overlap single-delivery. Do not await the old
+    // handlers here: the status or launch that discovered the application can be one of them.
+    const drained = serving.handle.stop();
+    serving.handle = { stop: async () => { await Promise.all([replacement.stop(), drained]); } };
   }
 
   /** #2073: re-mint the SAME `endpoint-serve` identity through the SAME scoped one-shot executor and

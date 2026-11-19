@@ -17,6 +17,11 @@ For another application, see [Connectors](connectors.mdx).
 Use one connection path per conversation. The Desktop app's Code tab and its ordinary chat
 are different hosts.
 
+If a Cotal server on this computer can join the intended space, use it unless you ask for hosted
+access. When a session has both the `cotal` plugin server and the Desktop chat server, use the
+plugin for a signed-in space. Use the hosted connector only when no local server can join that
+space, or when you choose it explicitly.
+
 | Where you use Claude | Connection path | How the space is chosen |
 | --- | --- | --- |
 | A Code session started by Cotal | Keep the connection supplied by `cotal spawn` | The spawn's target space |
@@ -88,6 +93,13 @@ Carried session resumes have [stricter authentication requirements](#resume-a-se
 </Step>
 <Step>
 ### Install the plugin
+
+On a computer connected through the machine daemon, the hosted Manager installs the plugin and
+registers the user-scope `cotal` MCP entry when it starts and finds `claude` on its `PATH`. You do
+not need to prepare a local space. If registration fails, correct the reported cause, let any
+seats on that Manager stop, and rerun `cotal daemon setup --space <space>` on that computer.
+
+For a computer where you prepare the space yourself, run:
 
 ```bash
 cotal setup --configure-only
@@ -392,7 +404,8 @@ See [Event plane](claude-connector-reference.mdx#event-plane) for grants, privac
 ### Plugin tools are missing
 
 Run `cotal status` and follow the plugin row's remedy.
-Run setup for a missing installation, then reopen Claude or reload its plugins.
+On a daemon-connected computer, use the daemon setup command above for a missing wake entry.
+Otherwise, run setup for a missing installation, then reopen Claude or reload its plugins.
 An update refreshes existing plugins but preserves disabled ones.
 
 ### A launch stalls at startup

@@ -162,6 +162,25 @@ const composed: Command = { ...command, async run(args) {
   const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()), { retainGraph: true });
+  /** Target admission covers the daemon and the Managers it hosts. Every other local Manager keeps
+   *  the generation it loaded, so it is named here and a failed read never refuses the update. */
+  const nameRetainedManagers = async (flags: Record<string, unknown>): Promise<void> => {
+    if (typeof flags.creds === "string") return;
+    try {
+      const hosted = new Set<string | undefined>();
+      if (targetReceipt?.daemon) {
+        const daemon = await queryDaemon({ paths: daemonPaths() });
+        if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
+        for (const manager of daemon.result.managers ?? []) hosted.add(manager.instanceId);
+      }
+      for (const manager of localUpdateManagers(flags, logicalExecutionEntry())) {
+        if (manager.ownership !== "foreign" && hosted.has(manager.instanceId)) continue;
+        await readUpdateManagerContinuity(manager, flags, retainedReads, { retainGraph: true });
+      }
+    } catch (error) {
+      console.log(`Managers outside the machine daemon were not all read (${error instanceof Error ? error.message : String(error)}); each keeps running the version it loaded`);
+    }
+  };
   try {
   if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
@@ -352,7 +371,10 @@ const composed: Command = { ...command, async run(args) {
   }, reportRunningManager: (flags: Record<string, unknown>) => withRemoteExchangeRetry(async () => {
     if (admission) {
       await consumeAdmission(flags);
+      if (targetReceipt) await nameRetainedManagers(flags);
       if (admission.disposition === "deferred" || targetReceipt) return "none";
+      // No daemon runs: nothing is hosted, so there is no fence to confirm.
+      if (!await observeUpdateDaemon()) return "none";
       const observed = await queryDaemon({ paths: daemonPaths() });
       const evidence = observed.ok ? observed.result.update?.restartEvidence : undefined;
       if (!evidence?.prepared || evidence.managers.some(row => !row.fenced || row.seats !== 0)) throw new Error("target-authorized restart is no longer fenced and empty");

@@ -29,8 +29,9 @@ try {
   assert.equal(accepted.status, 0, accepted.stderr);
   const receipt = JSON.parse(accepted.stdout.trim().slice("COTAL_PREINSTALL_RESULT ".length));
   assert.equal(receipt.nonce, request.nonce);
-  assert.equal(receipt.occupied, null);
-  assert.equal(receipt.admission.disposition, "deferred");
+  assert.equal(receipt.occupied, 0);
+  assert.equal(receipt.daemon, undefined);
+  assert.deepEqual(receipt.admission, { disposition: "restart-empty", occupied: 0, hostedSpaces: [] }, "no daemon runs, so nothing is hosted and activation is not deferred");
   assert.deepEqual(receipt.hostedSpaces, []);
   assert.equal(inventory(root), before);
   mkdirSync(join(root, "cotal/daemon"), { mode: 0o700 });
@@ -40,7 +41,8 @@ try {
   assert.equal(deferred.status, 0, deferred.stderr);
   const decision = JSON.parse(deferred.stdout.trim().slice("COTAL_PREINSTALL_RESULT ".length));
   assert.equal(decision.admission.disposition, "deferred");
-  assert.equal(decision.occupied, null, "unreadable custody is not zero work");
+  assert.equal(decision.admission.occupied, null, "unreadable custody is not zero work");
+  assert.equal(decision.occupied, 0, "released updaters refuse a receipt whose occupied is not a non-negative integer");
   assert.match(decision.admission.reason, /no installed unit/);
   assert.equal(inventory(root), damaged);
   const invalid = run({ ...request, nonce: "unbound" });
@@ -53,5 +55,5 @@ try {
   assert.match(refused.stderr, /identity is unreadable/);
   assert.ok(!refused.stdout.includes("COTAL_PREINSTALL_RESULT"));
   assert.equal(inventory(root), unsafe);
-  console.log("execution preinstall: real read-only target defers unknown native custody without inventing zero work, refuses unreadable lifetime/request, and writes nothing");
+  console.log("execution preinstall: real read-only target admits an absent daemon, defers unknown native custody without inventing zero work, refuses unreadable lifetime/request, and writes nothing");
 } finally { rmSync(root, { recursive: true, force: true }); }

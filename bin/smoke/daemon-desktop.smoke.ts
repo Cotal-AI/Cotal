@@ -13,6 +13,7 @@ import { daemonPaths } from "../daemon/endpoint.js";
 import { parseDesktopRequest, readDesktopRequest } from "../daemon/desktop.js";
 import { serveDaemon, type RunningDaemon } from "../daemon/server.js";
 import { parseRequest } from "../daemon/protocol.js";
+import { desktopNativeFixture } from "./fixtures/daemon-desktop-native.js";
 
 if (process.platform !== "linux") skipSuite("daemon-desktop: live Linux control only; native macOS/Windows acceptance is separate");
 let checks = 0;
@@ -35,14 +36,20 @@ for (const name of ["home", "runtime", "config", "data", "cache"]) mkdirSync(joi
 Object.assign(process.env, { HOME: join(root, "home"), XDG_RUNTIME_DIR: join(root, "runtime"), XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), DO_NOT_TRACK: "1" });
 process.env.COTAL_HOME = join(root, "home", ".cotal");
 const paths = daemonPaths();
+const native = desktopNativeFixture(root);
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 let daemon: RunningDaemon | undefined;
 async function request(value: unknown, opts: { runtime?: boolean | string; daemonHome?: string; cli?: string[]; exit?: number } = {}): Promise<Record<string, any>> {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
+  const env: NodeJS.ProcessEnv = {
+    HOME: process.env.HOME, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, XDG_DATA_HOME: process.env.XDG_DATA_HOME, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    TMPDIR: root, DO_NOT_TRACK: "1", POSIXLY_CORRECT: process.env.POSIXLY_CORRECT,
+    ...native.env,
+  };
   if (opts.runtime === false) delete env.XDG_RUNTIME_DIR;
   else if (typeof opts.runtime === "string") env.XDG_RUNTIME_DIR = opts.runtime;
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), join(repo, "bin/cotal.ts"), "daemon", ...(opts.cli ?? ["desktop"]), ...(opts.daemonHome ? ["--daemon-home", opts.daemonHome] : [])], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--import", native.preload, "--import", import.meta.resolve("tsx"), join(repo, "bin/cotal.ts"), "daemon", ...(opts.cli ?? ["desktop"]), ...(opts.daemonHome ? ["--daemon-home", opts.daemonHome] : [])], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     const deadline = setTimeout(() => { child.kill("SIGKILL"); }, 30_000);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); if (stdout.length > 256 * 1024) child.kill("SIGKILL"); });
@@ -77,6 +84,28 @@ try {
   check("malformed input is framed before daemon-path resolution", malformed.ok === false && malformed.error.code === "BAD_REQUEST" && !JSON.stringify(malformed).includes("PRIVATE_PATH_MARKER"));
   check("metadata and path refusals created no daemon state", !existsSync(paths.socket) && !existsSync(paths.state));
   const absent = await request({ op: "status" });
+  const emptyLog = await request({ op: "log" });
+  check("missing log is an explicit empty result without starting the service", emptyLog.ok === true && emptyLog.result.text === "" && !existsSync(paths.socket));
+  mkdirSync(paths.state, { recursive: true, mode: 0o700 });
+  const logFile = join(paths.state, "daemon.log");
+  writeFileSync(logFile, `earlier output\n${"x".repeat(9000)}\ndaemon startup refused: test reason\neyJtest.token.signature\n`, { mode: 0o600 });
+  const recentLog = await request({ op: "log" });
+  check("recent log is bounded and preserves the service reason", recentLog.ok === true && recentLog.result.truncated === true && recentLog.result.text.includes("daemon startup refused: test reason") && !recentLog.result.text.includes("earlier output") && !recentLog.result.text.includes("eyJtest"));
+  const foreignLog = await request({ op: "log", path: logFile });
+  check("log never accepts a renderer path", foreignLog.ok === false && foreignLog.error.code === "BAD_REQUEST");
+  writeFileSync(logFile, `${"x".repeat(5 * 1024 * 1024)}\nlarge log final reason\n`, { mode: 0o600 });
+  const largeLog = await request({ op: "log" });
+  check("large native logs return only their recent tail", largeLog.ok === true && largeLog.result.truncated === true && largeLog.result.text.endsWith("large log final reason\n") && Buffer.byteLength(largeLog.result.text) <= 8192);
+  writeFileSync(logFile, "service is writing\n", { mode: 0o600 });
+  const writer = spawn(process.execPath, ["--input-type=module", "-e", 'import { appendFileSync } from "node:fs"; const file = process.argv[1]; setInterval(() => appendFileSync(file, "concurrent service output\\n".repeat(200)), 1);', logFile], { stdio: "ignore" });
+  try {
+    for (let i = 0; i < 4; i++) {
+      const growing = await request({ op: "log" });
+      check("a writing service does not conflict with its bounded log view", growing.ok === true && growing.result.text.includes("concurrent service output") && Buffer.byteLength(growing.result.text) <= 8192);
+    }
+  } finally { writer.kill(); await new Promise(resolve => writer.once("exit", resolve)); }
+  rmSync(logFile);
+
   check("missing daemon is not reported connected", absent.ok === false);
   daemon = await serveDaemon({ paths, version, peerUid: (sock) => peerCredentials(sock).uid });
   const status = await request({ op: "status" });
@@ -132,9 +161,12 @@ try {
     check("unsupported registry name remains refused by the daemon protocol", !parseRequest(JSON.stringify({ v: 1, id: "test", op: "connect-check", space })).ok);
   }
   check("listing leaves unsupported and damaged records unchanged", records.every((file, i) => readFileSync(file, "utf8") === beforeRecords[i]) && readFileSync(broken, "utf8") === "{");
+  const callsBeforeInstall = native.operations().length;
   const foreignInstall = await request({ op: "install" });
-  check("an answering daemon without an owned install receipt is not adopted", foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
-  check("refused adoption creates no service receipt", !existsSync(join(paths.state, "service-unit.json")));
+  check(`an answering daemon without an installed service is not adopted (got ${foreignInstall.error?.code ?? foreignInstall.ok})`, foreignInstall.ok === false && foreignInstall.error.code === "CONFLICT");
+  check("the conflict identifies the unowned daemon", foreignInstall.error.message === "an unowned daemon is already running; no service was installed");
+  check("refused adoption creates neither a service receipt nor a unit", !existsSync(join(paths.state, "service-unit.json")) && !existsSync(native.unitPath));
+  assert.deepEqual(native.operations().slice(callsBeforeInstall), ["directory-read"], "refused adoption reads only the native unit directory"); checks++;
   const before = daemon.counters.framesDecoded;
   const bad = await request({ op: "install", command: "foreign" });
   check("extra fields are refused before daemon effects", bad.ok === false && bad.error.code === "BAD_REQUEST" && daemon.counters.framesDecoded === before);

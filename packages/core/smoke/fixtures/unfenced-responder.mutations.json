@@ -3,21 +3,21 @@
   "mutations": [
     {
       "name": "PREDICTED KILLED (2 red, corrected from 4) - the allowlist gate removed, so the caller re-issues against a responder that already ran the command",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "          if (!isRepeatSafeCommand(endpoint, command)) throw e;\n",
       "replace": "",
       "expectRed": "EXACTLY ONE ATTEMPT REACHED THE RESPONDER: the caller did not re-issue"
     },
     {
       "name": "PREDICTED KILLED (3 red) - a failed re-issue surfaces the resolve's own timeout again, discarding the refusal",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "          } catch (reissue) {\n            throw new EpEnvelopeError(\n              refusalCode,",
       "replace": "          } catch (reissue) {\n            if (reissue) throw reissue;\n            throw new EpEnvelopeError(\n              refusalCode,",
       "expectRed": "it still states the command was not run"
     },
     {
       "name": "PREDICTED KILLED (3 red) - the wrapped refusal falls into the unmarked re-resolve below and makes a THIRD attempt",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "        if (respondedButUnbound(e)) {",
       "replace": "        if (respondedButUnbound(e) || (e instanceof EpEnvelopeError && e.code === \"failed-precondition\")) {",
       "expectRed": "it still states the command was not run"

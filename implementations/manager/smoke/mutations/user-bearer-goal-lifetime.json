@@ -23,7 +23,7 @@
     },
     {
       "name": "M2 invoke an unsupported manager without the compatibility gate",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "      const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;",
       "replace": "      const unfollowable = false && opts.follow ? goalFollowRefusal(service) : undefined;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
@@ -77,7 +77,7 @@
     },
     {
       "name": "M8 lose the original refusal when the refreshed manager is unsupported",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "            const unfollowable = opts.follow ? goalFollowRefusal(reissueTarget) : undefined;",
       "replace": "            const unfollowable = false && opts.follow ? goalFollowRefusal(reissueTarget) : undefined;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

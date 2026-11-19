@@ -3,18 +3,28 @@
  *
  * The agent runtime runs a hook on a lifecycle event and pipes the event JSON (which
  * includes `hook_event_name`) on stdin. We forward it to this session's connector over
- * its local control socket and print the reply for the runtime to apply. It must NEVER
+ * its local control socket and print the reply for the runtime to apply, but only once the
+ * connector has proved it holds the endpoint's key and the reply's MAC verifies (the control
+ * exchange in `@cotal-ai/core/control-exchange`). The key itself is never sent. It must NEVER
  * block the session: any error → exit 0, no output. The Claude Code hook
  * entry points are one-liners over {@link runHookRelay}.
  */
 import { connect } from "node:net";
+import { checkControlSocketDir, clientExchange, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
 import { controlFromEnv, hasIdentity } from "./session-env.js";
-import { HANDOFF_RECEIPT } from "./control.js";
 
 /** Re-exported for a plugin process that must stay off the barrel, as a hook does. */
 export { hasIdentity };
 
 const TIMEOUT_MS = 2000;
+/** The most reply JSON a hook takes, in bytes. A reply is the hook's output for its runtime, and the
+ *  largest today is the Claude Code hook's, whose injected context is capped at 9,000 characters:
+ *  under 64 KiB as JSON even if every character were escaped. 1 MiB, the request cap, leaves room for
+ *  that to grow and still bounds what a proven but runaway server can make a hook hold. */
+const MAX_HOOK_REPLY_BYTES = 1 << 20;
+const MAY_HAVE_BEEN_HANDLED =
+  "this session's control endpoint proved it holds the session's key and was sent the event, " +
+  "but no proven reply came back, so the event may have been handled. No reply was used.";
 /** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
  * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
 const CONNECT_RETRY_INITIAL_MS = 25;
@@ -128,18 +138,18 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
   if (local) return done(JSON.stringify(local));
   try { await observe?.(event, { managed }); } catch { /* observation cannot block a native hook */ }
   if (!managed) return done(""); // plain session, not a managed one — no connector to relay to
-  // The socket path comes from the launch env; the token comes from the launch-material file that
-  // env points at (the same file the in-agent server reads), never recomputed from public identity.
-  // A malformed or missing material file THROWS from controlFromEnv, and a hook that throws is a
-  // hook that blocked the session, so it is caught here and treated as "no control session": fail
-  // open is this relay's whole contract.
-  let control: { path: string; token: string } | undefined;
+  // The socket path comes from the launch env; the key and version come from the launch-material
+  // file that env points at (the same file the in-agent server reads), never recomputed from public
+  // identity. A malformed or missing material file, or a version this build does not speak, THROWS
+  // from controlFromEnv, and a hook that throws is a hook that blocked the session, so it is caught
+  // here and treated as "no control session": fail open is this relay's whole contract.
+  let control: ControlEndpoint | undefined;
   try {
     control = controlFromEnv();
   } catch {
     warnOnce(
       "this session's control endpoint could not be resolved: the launch material is missing, " +
-        "unreadable, readable beyond its owner, malformed, or contradicted by direct COTAL_ variables. " +
+        "unreadable, readable beyond its owner, malformed, from another release, or contradicted by direct COTAL_ variables. " +
         "Lifecycle relays are disabled for this session, so presence will not advance and queued peer " +
         "messages will not be injected. Check COTAL_LAUNCH_MATERIAL and COTAL_CONTROL_SOCKET.",
     );
@@ -149,7 +159,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
   // and names the missing pair, and warning here would repeat it on every hook and teach the
   // operator to ignore the channel.
   if (!control) return done("");
-  const { path, token } = control;
+  const endpoint = control;
   const startupCritical = isSessionStart(event);
   let sock: ReturnType<typeof connect> | undefined;
   let settled = false;
@@ -172,14 +182,15 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
     drop();
     done(out);
   };
-  /** Got a reply: keep the socket until stdout has flushed, then send the receipt down it. Anything
-   *  that kills us first (the 1s backstop, the runtime SIGKILLing the hook) closes the socket with
-   *  no receipt, which is exactly the signal the connector needs to NOT commit the batch. */
-  const finishWithReceipt = (out: string, candidate: ReturnType<typeof connect>): void => {
+  /** Got a proven reply: keep the socket until stdout has flushed, then send its receipt (a MAC over
+   *  this connection's nonces and the reply) down it. Anything that kills us first (the 1s backstop,
+   *  the runtime SIGKILLing the hook) closes the socket with no receipt, which is exactly the signal
+   *  the connector needs to NOT commit the batch. */
+  const finishWithReceipt = (out: string, receipt: string, candidate: ReturnType<typeof connect>): void => {
     if (!settle()) return;
     done(out, (then) => {
       try {
-        candidate.write(HANDOFF_RECEIPT, () => {
+        candidate.write(receipt, () => {
           drop(candidate);
           then();
         });
@@ -188,7 +199,16 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       }
     });
   };
-  const timer = setTimeout(() => finish(""), TIMEOUT_MS);
+  // Set once the event has been written to a proven server. Past that point every way of ending
+  // without a proven reply (the deadline, a socket error, the exchange refusing) says the event may
+  // have been handled, and nothing is retried.
+  let requestSent = false;
+  const unanswered = (): void => {
+    if (settled) return;
+    if (requestSent) warnOnce(MAY_HAVE_BEEN_HANDLED);
+    finish("");
+  };
+  const timer = setTimeout(unanswered, TIMEOUT_MS);
 
   const retryLater = (): void => {
     const wait = retryDelayMs;
@@ -197,27 +217,50 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
   };
   const dial = (): void => {
     if (settled) return;
-    const candidate = connect(path);
+    // Off Windows the socket must sit in a directory only this user can enter, checked right before
+    // each dial. A directory that is missing reads like a connector that is not up yet; one that
+    // exists and is not private counts as no endpoint, so nothing is sent and nothing is printed.
+    const dir = checkControlSocketDir(endpoint.path);
+    if (!dir.ok) {
+      if (dir.absent && startupCritical) return retryLater();
+      if (!dir.absent)
+        warnOnce(
+          "this session's control socket is not in a directory private to this user, so the hook " +
+            "connected to nothing. Lifecycle relays are disabled until the connector is relaunched.",
+        );
+      return finish("");
+    }
+    const candidate = connect(endpoint.path);
     sock = candidate;
     let connected = false;
-    let reply = "";
-    candidate.setEncoding("utf8");
     // `handoff` opts into the confirmed-delivery protocol: the connector holds the connection open
     // and treats our receipt, not its own socket write, as proof the reply reached the runtime.
     candidate.on("connect", () => {
       if (settled || sock !== candidate) return;
       connected = true;
       try {
-        candidate.write(JSON.stringify({ token, event, handoff: true }) + "\n");
+        clientExchange(
+          candidate,
+          endpoint,
+          { event, handoff: true },
+          (result) => {
+            if (settled || sock !== candidate) return;
+            if (result.ok) return finishWithReceipt(result.reply, result.receipt, candidate);
+            // Once the request has been written the server may have handled it, so say so rather
+            // than claim nothing happened. Either way nothing is retried and no reply is used.
+            if (result.requestSent) return unanswered();
+            // A stand-in on a dead server's name, or a connector from another release, both end here.
+            warnOnce(
+              "this session's control endpoint did not prove it holds the session's key, so nothing was " +
+                "relayed and no reply was used. A connector from another release looks the same as a stand-in.",
+            );
+            finish("");
+          },
+          { maxReplyBytes: MAX_HOOK_REPLY_BYTES, onRequestSent: () => (requestSent = true) },
+        );
       } catch {
         finish("");
       }
-    });
-    candidate.on("data", (d) => {
-      if (settled || sock !== candidate) return;
-      reply += d;
-      const nl = reply.indexOf("\n");
-      if (nl >= 0) finishWithReceipt(reply.slice(0, nl), candidate);
     });
     candidate.on("error", (error) => {
       if (settled || sock !== candidate) return;
@@ -229,11 +272,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       // Only SessionStart may outpace creation of the connector process. Later hooks must preserve
       // immediate fail-open, and once the frame may have reached a connector any retry could deliver
       // one lifecycle event twice.
-      finish("");
-    });
-    candidate.on("end", () => {
-      if (settled || sock !== candidate) return;
-      finish(reply);
+      unanswered();
     });
   };
 
