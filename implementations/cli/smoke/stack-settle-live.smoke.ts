@@ -502,7 +502,7 @@ try {
     check("down --yes prints one receipt: the mesh once, members in stop order with results, and cotal up as the Next",
       finalDown.stdout.startsWith(`Mesh: ${space}\n`) && finalDown.stdout.split("Mesh: ").length === 2 && !/stop plan|stop impact|stop scope/.test(finalDown.stdout)
         && JSON.stringify(rows.map((row) => [row[0], row.slice(2).join(" ")])) === JSON.stringify([["manager", "stopped"], ["delivery", "already stopped"], ["broker", "stopped"]])
-        && finalDown.stdout.trimEnd().endsWith("Next\n  cotal up  Start the stack again from its journal and saved definitions"), finalDown.stdout);
+        && /\nNext\n  (?:pnpm )?cotal up  Start the stack again from its journal and saved definitions$/.test(finalDown.stdout.trimEnd()), finalDown.stdout);
   }
 
   // 2b. A ps while an up is still starting the manager. Delivery is frozen once pinned, so the up
