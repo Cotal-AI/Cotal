@@ -147,6 +147,7 @@ It takes no `--all`, `--components`, `--wide` or `--verbose`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status` and
 `cotal endpoint describe manager`.
+Passing an answering manager's own instance ID gives the same guidance on static and open spaces.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager
 row marks a roster observation exact only when its principal and lifecycle UID
@@ -199,8 +200,11 @@ or refused summary after boot is not a reason to boot again. A summary records t
 `up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
 path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
 refuses it with CONFLICT, naming the folder it was recorded at.
-The inventory's `completeness` stays `partial` because older fresh boots may have no summary. The
-terminal lists up to 100 records; JSON retains all readable records. Its Next column
+The inventory's `completeness` stays `partial` because older fresh boots may have no summary.
+That historical caveat does not change the exit status. If a local deployment record cannot be
+read or validated, `team` keeps the readable records, warns, and exits 4. Its JSON reports
+`outcome: partial` and includes a `DEPLOYMENT_RECORD_UNREADABLE` warning with the path.
+The terminal lists up to 100 records; JSON retains all readable records. Its Next column
 says inspect the stack for a fresh record or review the native scoped teardown plan for an
 additive ledger; neither row grants permission to stop anything. A fresh summary is
 not an additive ownership ledger or evidence that an agent joined, and it does not establish

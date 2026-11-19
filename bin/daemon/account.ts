@@ -8,7 +8,8 @@ import type { AccountComputerStatus } from "./account-state.js";
 import type { createAccountReconciler } from "./account-reconcile.js";
 
 /** Poll account intent without interpreting transport failure as an empty desired set. */
-export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>) {
+export function createAccountComputer(home: string, version: string, reconciler: ReturnType<typeof createAccountReconciler>, onChange?: () => void) {
+  const notify = () => { try { onChange?.(); } catch {} };
   let vitals: ComputerVitals | undefined;
   let vitalsError: string | undefined;
   let sampling: Promise<void> | undefined;
@@ -42,7 +43,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
       contexts.set(account.ownerKey, context);
       state = context.state;
       if (context.work || context.state.mode === "per-space" || context.state.mode === "sign-in-required") return;
-      context.work = poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
+      context.work = poll().catch((error: unknown) => { context.state.message = error instanceof Error && error.message.startsWith("invalid computer") ? error.message : "account computer request failed; existing connections are unchanged"; }).finally(() => { tasks.delete(context.work!); context.work = undefined; notify(); if (!stopped && pendingNames.delete(account.ownerKey)) void tick().catch(() => {}); });
       tasks.add(context.work);
       async function poll() {
     const state = context.state;
@@ -95,6 +96,7 @@ export function createAccountComputer(home: string, version: string, reconciler:
     if (stopped || work) return;
     work = tick().catch(() => { if (!stopped) { state.message = "account computer request failed; existing connections are unchanged"; } }).finally(() => {
       work = undefined;
+      notify();
       if (!stopped) { timer = setTimeout(run, 5000); timer.unref(); }
     });
   };
@@ -158,10 +160,11 @@ export function createAccountComputer(home: string, version: string, reconciler:
         context.lastHeartbeat = 0; context.state.computer = name;
       }
       // Polling owns network work. Saving a local preference never waits for a host.
+      notify();
       void tick().catch(() => { state.message = "account computer request failed; existing connections are unchanged"; });
       return name;
     },
-    signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); run(); },
+    signedIn() { for (const context of contexts.values()) context.abort.abort(); contexts.clear(); if (timer) clearTimeout(timer); notify(); run(); },
     status: (): AccountComputerStatus => {
       const ordered = [...contexts.values()].sort((a, b) => Number(b.state.hostSupport === "supported") - Number(a.state.hostSupport === "supported") || (a.state.idpUrl ?? "").localeCompare(b.state.idpUrl ?? "") || (a.state.sub ?? "").localeCompare(b.state.sub ?? ""));
       const computers = new Map<string | undefined, typeof ordered[number]>();

@@ -5,6 +5,7 @@ import {
   findMesh,
   isCommandFailure,
   isConnectRefusal,
+  isWorkspaceTargetError,
   jsonFlag,
   localStackRoot,
   oneLine,
@@ -39,6 +40,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
+import { rootStoreProblem } from "../lib/store-dir.js";
 import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
@@ -290,6 +292,8 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest:
   // or found on none that answered, is a choice among those managers only, which a terminal is asked.
   if (loc.space !== undefined) recordOperationSpace(loc.space);
   const agent = String(v.name), message = seatMissRefusal(agent, named, loc);
+  if (loc.kind === "absent" && verb === "cotal status" && loc.instances.includes(agent))
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent) });
   if (loc.kind === "absent")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run `cotal ps` to see the agents each manager runs" });
   const shown = oneLine(agent);
@@ -582,7 +586,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const command = slots ? "slots" : "ps";
   const kind = slots ? "slots" : "seats";
   refuseControlCreds(v.creds, v.space);
-  const on = await managerPin(v, onRerun(`cotal ${command}`, v));
+  const on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
   let census: SeatCensus;
   try {
     census = await readSeats(v, command, on);
@@ -664,6 +668,11 @@ async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): 
   return { target: { ...target, managerInstanceId: instanceId }, items: [reply.data], managers: [{ instanceId, state: "answered" }], warnings: [], rowsOf: new Map([[instanceId, [reply.data]]]) };
 }
 
+/** Where the state of an answering manager, rather than one of its agents, is read. */
+function managerItselfRemedy(name: string): string {
+  return `${name} is this space's manager, which is answering, not an agent it runs; \`cotal status\` shows the manager's state, and \`cotal endpoint describe manager\` reads its commands`;
+}
+
 /** A named-agent detail uses its holding manager's inspect read and checks the selected lifecycle. */
 export async function agentStatus(args: ParsedArgs): Promise<void> {
   const name = args.positionals[0]!;
@@ -682,7 +691,7 @@ export async function agentStatus(args: ParsedArgs): Promise<void> {
   // `manager` and an answering manager's instance id name the manager itself, which runs no row of
   // its own, so the refusal says where its state is read.
   const managerItself = name === "manager" || census.managers.some((manager) => manager.state === "answered" && manager.instanceId === name);
-  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: `${name} is this space's manager, which is answering, not an agent it runs; \`cotal status\` shows the manager's state, and \`cotal endpoint describe manager\` reads its commands` } : {}) });
+  if (!matches.length && !census.partial) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { ...census.target, name }, ...(managerItself ? { remedy: managerItselfRemedy(name) } : {}) });
   const item = matches[0] ?? null;
   const managerInstanceId = item ? [...census.rowsOf].find(([, rows]) => rows.includes(item))?.[0] ?? census.target.managerInstanceId ?? item.instanceId ?? null : null;
   let managerHint = "";
@@ -756,6 +765,18 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   try {
     t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   } catch (e) {
+    // A stopped local stack cannot restart until its store is writable. Keep an explicit server
+    // override's own refusal, since it need not be the broker this root started.
+    if (v.server === undefined && isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
+      const store = rootStoreProblem(e.details.root);
+      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: { space: e.details.space ?? null, root: e.details.root }, remedy: store.remedy });
+    }
+    if (v.server === undefined && isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && typeof e.target?.root === "string") {
+      const entry = typeof e.target.space === "string" ? findMesh(e.target.space) : undefined;
+      const stopped = isWorkspaceTargetError(e.cause) && e.cause.code === "not-started";
+      const store = stopped || entry?.origin === "up" ? rootStoreProblem(e.target.root) : undefined;
+      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
+    }
     // The exchange refused to pick one of your several live managers and named them, so each is
     // read. That is the whole set it counts, not a fallback after a failed read.
     const managers = on === undefined ? await refusedManagers(cliControl, e, v) : undefined;

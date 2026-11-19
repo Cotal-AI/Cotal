@@ -26,7 +26,7 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -151,10 +151,20 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   let loginActive = false;
   let logoutActive = false;
+  interface StatusWatcher {
+    id: string;
+    sock: Socket;
+    write: (r: DaemonResponse) => Promise<void>;
+    lastKey: string;
+  }
+  const watchers = new Set<StatusWatcher>();
+  let watchNotifying = false;
+  let watchNotifyQueued = false;
+  let notifyStatusWatchers = (): void => {};
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
   const reconciler = createAccountReconciler(machineHome, services, managers);
-  const account = createAccountComputer(machineHome, opts.version, reconciler);
+  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
@@ -173,6 +183,61 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     ...(opts.updateStatus ? { update: opts.updateStatus() } : {}),
     ...(generation ? { generation } : {}),
   });
+  const statusWatchKey = (s: DaemonStatus): string => {
+    const normAccount = (a: DaemonStatus["account"]) => a ? {
+      ...a,
+      lastRegistration: Boolean(a.lastRegistration),
+      accounts: a.accounts?.map(item => ({ ...item, lastRegistration: Boolean(item.lastRegistration) })),
+    } : undefined;
+    return JSON.stringify({
+      computer: s.computer,
+      computerNameWarning: s.computerNameWarning,
+      state: s.state,
+      protocol: s.protocol,
+      version: s.version,
+      pid: s.pid,
+      startedAt: s.startedAt,
+      managers: s.managers?.map(({ observedAt: _o, ...m }) => m),
+      account: normAccount(s.account),
+      agents: s.agents?.map(({ observedAt: _o, ...a }) => a),
+      update: s.update,
+      generation: s.generation,
+    });
+  };
+  const snapshotStatus = async (cachedAgents: boolean): Promise<DaemonStatus> => {
+    if (!cachedAgents) await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
+    const result = { ...status(), agents: await managers.agents(cachedAgents) };
+    if (!result.update) return result;
+    // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
+    // answers, and an updater that needs the evidence refuses without it.
+    let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
+    try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
+    return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
+  };
+  notifyStatusWatchers = (): void => {
+    if (watchers.size === 0) return;
+    if (watchNotifying) { watchNotifyQueued = true; return; }
+    watchNotifying = true;
+    void (async () => {
+      try {
+        do {
+          watchNotifyQueued = false;
+          if (watchers.size === 0) break;
+          const snap = await snapshotStatus(true);
+          const key = statusWatchKey(snap);
+          await Promise.all([...watchers].map(async (w) => {
+            if (w.sock.destroyed || !w.sock.writable) { watchers.delete(w); return; }
+            if (w.lastKey === key) return;
+            w.lastKey = key;
+            await w.write({ v: DAEMON_PROTOCOL_VERSION, id: w.id, ok: true, event: "status", result: snap });
+          }));
+        } while (watchNotifyQueued && watchers.size > 0);
+      } catch {
+      } finally {
+        watchNotifying = false;
+      }
+    })();
+  };
 
   const sockets = new Set<Socket>();
   const track = (sock: Socket): void => {
@@ -256,7 +321,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
-        replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
+        replyTask(Promise.resolve().then(run).then((result) => {
+          if (req.op !== "status") notifyStatusWatchers();
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+        }, (error: unknown) => {
           counters.requestsRefused++;
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
@@ -283,16 +351,19 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(async () => {
-          await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
-          const result = { ...status(), agents: await managers.agents() };
-          if (!result.update) return result;
-          // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
-          // answers, and an updater that needs the evidence refuses without it.
-          let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
-          try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
-          return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
-        });
+        managerResult(() => snapshotStatus(false));
+        return;
+      }
+      if (req.op === "status-watch") {
+        counters.statusAnswered++;
+        const watcher: StatusWatcher = { id: req.id, sock, write, lastKey: "" };
+        watchers.add(watcher);
+        sock.once("close", () => watchers.delete(watcher));
+        replyTask(snapshotStatus(true).then((initial) => {
+          if (!watchers.has(watcher)) return;
+          watcher.lastKey = statusWatchKey(initial);
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "status", result: initial });
+        }).catch(() => { watchers.delete(watcher); }));
         return;
       }
       if (req.op === "update-settings" || req.op === "update-check") {
@@ -341,6 +412,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
           .then((result) => {
             counters.registersAnswered++;
+            notifyStatusWatchers();
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
           }));
         return;
@@ -348,6 +420,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
+            if (req.op === "service-connect" && !findMesh(req.space)) return {
+              space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
+              remedy: "Check the space name or run `cotal space` to list registered spaces.",
+            };
             // Disconnect retires local authority even when sign-in or the account host is gone.
             // The local removal revision fences account reconciliation until a fresh enable.
             if (req.op === "service-connect" && await account.intent(req.space, true)) return services.status(req.space);
@@ -368,6 +444,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
+          if (req.op === "service-connect" && result.state === "not-registered") return result;
           return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
         });
         return;
@@ -555,8 +632,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
 
   return { paths, counters, dirOutcome, status, close, stopped,
     generationSeats: () => managers.generationSeats(),
-    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
-    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner) };
+    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; notifyStatusWatchers(); },
+    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); notifyStatusWatchers(); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner).finally(() => notifyStatusWatchers()) };
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */

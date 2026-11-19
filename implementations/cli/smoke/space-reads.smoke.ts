@@ -172,7 +172,7 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
 // ── show ─────────────────────────────────────────────────────────────────────────────────────────────
 {
   const bare = json(["space", "show"]);
-  check("bare show shows the selected space", bare.status === 0 && bare.env?.result.kind === "space" && bare.env.result.space === "alpha" && bare.env.result.current === true && bare.env.target?.space === "alpha", shown(bare));
+  check("bare show outside a project shows the selected space", bare.status === 0 && bare.env?.result.kind === "space" && bare.env.result.space === "alpha" && bare.env.result.current === true && bare.env.target?.space === "alpha", shown(bare));
   const beta = json(["space", "show", "beta"]);
   check("show reports an unreachable broker and the recorded TLS requirement", beta.status === 0 && beta.env?.result.check === "unreachable" && beta.env.result.tlsRequired === true && beta.env.result.origin === "manual", shown(beta));
   const dialsBefore = catalogDials;
@@ -252,7 +252,11 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
 // ── help and completion ──────────────────────────────────────────────────────────────────────────────
 {
   const help = run(["help", "space"]);
-  check("help space lists show and its structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /Structured output: json, plain/.test(help.stdout), shown(help));
+  check("help space lists show with folder-first precedence and structured output", help.status === 0 && /^\s+show\s/m.test(help.stdout) && /show this folder's space if it has one,\s+otherwise the selected space/.test(help.stdout) && /Structured output: json, plain/.test(help.stdout), shown(help));
+  const showHelp = run(["help", "space", "show"]);
+  check("help space show gives folder-first and explicit-name examples", showHelp.status === 0 &&
+    /cotal space show\s+show this folder's space,\s+or the selected one/.test(showHelp.stdout) &&
+    /cotal space show alpha\s+show alpha from any folder/.test(showHelp.stdout), shown(showHelp));
   const useHelp = run(["help", "use"]);
   check("help use gives the optional space and --clear", useHelp.status === 0 && /cotal use \[<space> \| --clear\]/.test(useHelp.stdout), shown(useHelp));
   const subs = run(["__complete", "space", ""]);
@@ -286,6 +290,11 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const prepared = run(["space", "create", "hint-live"], {}, project);
   check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
   try {
+    setCurrent("alpha");
+    const bare = run(["space", "show", "--plain"], {}, project);
+    check("bare show prefers the prepared project space to the selection", bare.status === 0 && /^space:\s+hint-live$/m.test(bare.stdout), shown(bare));
+    const named = run(["space", "show", "alpha", "--plain"], {}, project);
+    check("a name lets show inspect another space from a prepared project", named.status === 0 && /^ *space:\s+alpha \(selected\)$/m.test(named.stdout), shown(named));
     const list = run(["space", "--plain"], {}, project);
     check("a prepared root offers another folder, not creation in this folder", list.status === 0 && otherHint.test(list.stdout) && !localHint.test(list.stdout), shown(list));
     const started = run(["up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], {}, project);

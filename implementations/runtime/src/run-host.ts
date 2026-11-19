@@ -59,10 +59,11 @@ import { listRunPage } from "./run-list-page.js";
 import { PermissionViolationError } from "@nats-io/transport-node";
 import { logLineText } from "./log-line.js";
 
-function outcomeOf(out: DriveOutcome): RunHostOutcome {
+function outcomeOf(out: DriveOutcome): Awaited<RunHostDrive["done"]> {
   if (out.status === "completed")
     return { status: "completed", steps: out.result.steps, ...(out.result.value !== undefined ? { value: out.result.value } : {}) };
-  return { status: "released", reason: { name: out.reason.name, message: out.reason.message } };
+  return { status: "released", reason: { name: out.reason.name, message: out.reason.message },
+    ...(out.brokerInterrupted ? { brokerInterrupted: true } : {}) };
 }
 
 function failureOf(e: unknown): RunHostOutcome {

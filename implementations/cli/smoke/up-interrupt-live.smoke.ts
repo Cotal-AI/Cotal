@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { assertRecordIdentity, canonicalLocalProcessPath, MANAGER_PIDFILE, readPidfile } from "@cotal-ai/workspace";
+import { assertRecordIdentity, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readPidfile, verifyIdentityPin } from "@cotal-ai/workspace";
 import { serviceInstances } from "../src/lib/service-instances.js";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -253,6 +253,92 @@ for (const [name, signal, code, format, noManager] of [
     const until = Date.now() + 10_000;
     while (await listening(port) && Date.now() < until) await sleep(100);
     assert.equal(await listening(port), false, "legacy broker still listens after cleanup");
+  }
+}
+
+if (process.platform !== "win32") {
+  for (const phase of ["connector seed", "manager startup"] as const) {
+    const home = mkdtempSync(join(base, "legacy-start-home-"));
+    const root = mkdtempSync(join(base, "legacy-start-root-"));
+    const config = join(home, "xdg");
+    mkdirSync(config, { mode: 0o700 });
+    mkdirSync(join(root, ".cotal"), { mode: 0o700 });
+    const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
+    const env = { ...inherited, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: config,
+      COTAL_SKIP_CONNECTOR_SEED: phase === "connector seed" ? "0" : "1", COTAL_ALLOW_CHECKOUT_SEED: "1", NO_COLOR: "1" };
+    const bin = join(repo, "bin/dist/cotal.js");
+    const start = (args: string[]) => {
+      const options = { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] as const };
+      assertSmokeSandboxDown(sandbox, args, options);
+      const child = spawn(process.execPath, [bin, ...args], { ...options, stdio: [...options.stdio] });
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      const exited = new Promise<number | null>((done) => child.once("close", done));
+      return { child, exited, output: () => output };
+    };
+    const port = await freePort();
+    const space = phase === "connector seed" ? "legacy-seed-race" : "legacy-manager-race";
+    const context = { root, space };
+    const brokerPath = join(root, ".cotal", "nats.pid");
+    const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, context);
+    const capability = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, context);
+    const deliveryPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, context);
+    const upArgs = ["up", "--foreground", "--space", space, "--server", `nats://127.0.0.1:${port}`, ...(phase === "connector seed" ? ["--open"] : [])];
+    let up = start(upArgs), manager: ReturnType<typeof verifyIdentityPin> | undefined;
+    const until = async (ready: () => boolean) => {
+      const deadline = Date.now() + 120_000;
+      while (!ready()) {
+        assert.equal(up.child.exitCode, null, up.output());
+        assert.ok(Date.now() < deadline, `startup did not reach ${phase}`);
+        await sleep(10);
+      }
+    };
+    try {
+      if (phase === "connector seed") {
+        await until(() => up.output().includes("Reconciling built-in"));
+        assert.equal(up.child.kill("SIGSTOP"), true);
+        assert.equal(existsSync(brokerPath), false, up.output());
+        const down = start(["down", "--yes"]);
+        assert.equal(await down.exited, 2, down.output());
+        assert.match(down.output(), /still starting this stack/);
+        assert.match(down.output(), /Ctrl-C.*cotal down --yes/);
+        assert.equal(existsSync(brokerPath), false);
+        up.child.kill("SIGCONT");
+        await until(() => existsSync(capability));
+      } else {
+        await until(() => existsSync(capability));
+        assert.equal(await start(["down", "--yes"]).exited, 0);
+        await up.exited;
+        up = start(upArgs);
+        await until(() => (manager = verifyIdentityPin(managerPath)).kind === "match");
+        assert.equal(manager?.kind, "match");
+        if (manager?.kind !== "match") throw new Error("manager start identity was not recorded");
+        process.kill(manager.record.pid, "SIGSTOP");
+        assert.equal(existsSync(capability), false, "manager had already published readiness");
+        const delivery = verifyIdentityPin(deliveryPath);
+        assert.equal(delivery.kind, "match");
+        const down = start(["down", "--yes"]);
+        await sleep(13_000);
+        assert.equal(down.child.exitCode, null, down.output());
+        assert.deepEqual(verifyIdentityPin(deliveryPath), delivery, "delivery was not stopped while manager startup was pending");
+        process.kill(manager.record.pid, "SIGCONT");
+        manager = undefined;
+        assert.equal(await down.exited, 0, down.output());
+        assert.doesNotMatch(down.output(), /with-agents|could not list managed agents/);
+      }
+      if (phase === "connector seed") assert.equal(await start(["down", "--yes"]).exited, 0);
+      await up.exited;
+      assert.equal(await listening(port), false);
+      console.log(`PASS legacy down during ${phase}`);
+    } finally {
+      if (manager?.kind === "match" && assertRecordIdentity(manager.record).kind === "match") process.kill(manager.record.pid, "SIGCONT");
+      up.child.kill("SIGCONT");
+      if (up.child.exitCode === null && up.child.signalCode === null) {
+        up.child.kill("SIGTERM");
+        await start(["down", "--yes"]).exited;
+      }
+    }
   }
 }
 assert.deepEqual(failures, [], "interrupted up regressions");
