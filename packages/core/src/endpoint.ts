@@ -2492,7 +2492,6 @@ export class CotalEndpoint extends EventEmitter {
     return this.messaging.multicast(text, opts);
   }
 
-
   /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
    *  caller's own payload.
    *
@@ -2507,7 +2506,6 @@ export class CotalEndpoint extends EventEmitter {
   get maxPayload(): number {
     return this.messaging.maxPayload;
   }
-
 
   /**
    * Verify the PRECONDITION {@link multicastExpecting} depends on: that the chat stream evaluates
@@ -2535,7 +2533,6 @@ export class CotalEndpoint extends EventEmitter {
   async assertExpectationSemantics(): Promise<void> {
     return this.messaging.assertExpectationSemantics();
   }
-
 
   /**
    * The bytes this frame will ACTUALLY put on the wire, to compare against {@link maxPayload}.
@@ -2569,7 +2566,6 @@ export class CotalEndpoint extends EventEmitter {
   }): number {
     return this.messaging.encodedSize(opts);
   }
-
 
   /**
    * Multicast with an OPTIMISTIC-CONCURRENCY expectation and a caller-chosen dedup id, returning
@@ -2610,18 +2606,15 @@ export class CotalEndpoint extends EventEmitter {
     return this.messaging.multicastExpecting(opts);
   }
 
-
   /** Publish a payload frame on this principal's forge-locked sibling event rail. */
   async publishEventPayload(opts: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
     return this.messaging.publishEventPayload(opts);
   }
 
-
   /** Read payload history through a single native-filtered consumer, never through CHAT. */
   async eventPayloadHistory(owner: string, actor: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
     return this.messaging.eventPayloadHistory(owner, actor, opts);
   }
-
 
   /** Verify the sibling stream and learn its actual message ceiling. A pre-upgrade space without
    *  the stream or its info-read permission returns null and emits a warning. Other authorization,
@@ -2629,7 +2622,6 @@ export class CotalEndpoint extends EventEmitter {
   async eventPayloadLimit(): Promise<number | null> {
     return this.messaging.eventPayloadLimit();
   }
-
 
   /** Unicast: direct message to one specific instance. */
   async unicast(
@@ -2639,7 +2631,6 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<CotalMessage> {
     return this.messaging.unicast(instanceId, text, opts);
   }
-
 
   /** Unicast, returning the JetStream publish ack alongside the message: the only truthful proof
    *  a sender has is that the broker stored the message at a sequence, never that anyone read it. */
@@ -2651,7 +2642,6 @@ export class CotalEndpoint extends EventEmitter {
     return this.messaging.unicastAttributed(instanceId, text, opts);
   }
 
-
   /** Anycast: deliver to ANY one instance of a service (role) — queue-group load balancing. */
   async anycast(
     service: string,
@@ -2660,7 +2650,6 @@ export class CotalEndpoint extends EventEmitter {
   ): Promise<CotalMessage> {
     return this.messaging.anycast(service, text, opts);
   }
-
 
   /** Anycast, returning the JetStream publish ack alongside the message: the broker stored the
    *  request on the role's work queue at a sequence, which proves neither a holder nor a read. */
