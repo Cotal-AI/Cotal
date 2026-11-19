@@ -5668,7 +5668,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (servedStack(r.folder",
+      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (servedStack(r",
       "class": "non-render/control",
       "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
     },
