@@ -259,9 +259,9 @@ if (!brokerDisplayOnly) {
     // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
     const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
     const [command, description] = firstCommand(next);
-    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of ps and the store reset",
+    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of who and the store reset",
       /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
-        && next.includes("cotal ps") && next.indexOf("cotal up") < next.indexOf("cotal ps") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+        && next.includes("cotal who") && next.indexOf("cotal up") < next.indexOf("cotal who") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
   }
   for (const [label, next] of [
     ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
@@ -349,7 +349,7 @@ if (!brokerDisplayOnly) {
     const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
     const rendered = renderReport(statusView(held as unknown as Parameters<typeof statusView>[0]), "plain");
     const actions = rendered.split("\nNext\n")[1] ?? "";
-    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
+    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|who|ps)\b/.test(actions), rendered);
   }
   for (const state of ["ready", "commit-intent", "active"]) {
     const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };

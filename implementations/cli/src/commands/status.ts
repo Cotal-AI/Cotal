@@ -364,6 +364,8 @@ export interface StatusResult {
   /** One probe of the selected space's running stack manager's own endpoint. Its process record alone
    *  stays `running` while it hangs; absent when no stack manager runs, and older inputs may omit it. */
   stackManager?: { instanceId: string; pid: number; endpoint: ManagerEndpoint };
+  /** The selected space's manager endpoint when this stack intentionally omitted its manager. */
+  outsideStackManager?: ManagerObservation;
   hints: string[];
 }
 
@@ -538,8 +540,12 @@ export async function status(args: ParsedArgs): Promise<void> {
   const full = selected.ok && target.resolved && target.storedBytes !== null && logged?.state !== "write-failed" ? storeFull(selected.target.root, selected.target.space, target.storedBytes) : undefined;
   const store = full ?? logged;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
+  const outsideStackManager = selected.ok && target.resolved && servedStack(folder, target) && folder.noManager && !folder.managerService && !stackManager
+    && (target.connection === "ok" || target.connection === "reachable")
+    ? await managerEndpoint(selected.target)
+    : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: [...new Set(hints)] };
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), ...(outsideStackManager ? { outsideStackManager } : {}), hints: [...new Set(hints)] };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   // An unreadable preferences file is already a gap, so the variables are checked without it.
@@ -1189,13 +1195,14 @@ async function managerProcess(target: MeshTarget | undefined, state: PidfileStat
   const localId = target.mode === "user" ? localManagerInstanceId(target.root, space) : undefined;
   // A live pid whose instance is not on this root must not take an unpinned answer.
   if (target.mode === "user" && localId === undefined) return running("service unchecked");
-  const endpoint = await managerEndpoint(target, localId);
+  const { endpoint } = await managerEndpoint(target, localId);
   if (endpoint === "not-answering")
     return { name: "manager", state: "not-serving", pid: state.pid ?? null, detail: ["service endpoint not answering", ...details.filter((d) => d.startsWith("delivery-aware marker unreadable"))].join(" · ") };
   return running(endpoint === "unchecked" ? "service unchecked" : undefined);
 }
 
 type ManagerEndpoint = "answered" | "not-answering" | "unchecked";
+type ManagerObservation = { endpoint: ManagerEndpoint; instanceId?: string };
 
 /** The instance id this workspace root persisted for `space`. That is the id the manager's
  *  own status reports. Absent when this root has never registered a manager. A malformed
@@ -1267,19 +1274,20 @@ export function managerNoService(e: unknown): boolean {
  *  failed probe never reads as a dead rail. The operator's credential calls the class rail, so with
  *  `instanceId` an answer from another manager instance is `unchecked` too. Omitting
  *  `instanceId` leaves the answer unpinned, for a probe that is not attributing a local process. */
-async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerEndpoint> {
+async function managerEndpoint(target: MeshTarget, instanceId?: string): Promise<ManagerObservation> {
   try {
     let status: ManagerServiceStatus;
     if (target.mode === "user") {
       const credential = await componentCredential(target);
-      if (credential.kind !== "user") return "unchecked";
+      if (credential.kind !== "user") return { endpoint: "unchecked" };
       status = await userManagerStatus(target, instanceId);
     } else {
       status = await managerServiceHealth(target, await staticServiceAuth(target.auth));
     }
-    return instanceId === undefined || status.instanceId === instanceId ? "answered" : "unchecked";
+    if (instanceId !== undefined && status.instanceId !== instanceId) return { endpoint: "unchecked" };
+    return { endpoint: "answered", ...(typeof status.instanceId === "string" && status.instanceId ? { instanceId: status.instanceId } : {}) };
   } catch (e) {
-    return managerNoService(e) ? "not-answering" : "unchecked";
+    return { endpoint: managerNoService(e) ? "not-answering" : "unchecked" };
   }
 }
 
@@ -1291,7 +1299,8 @@ async function readStackManager(target: MeshTarget, services: OwnedServiceStatus
   if (!row?.pid) return undefined;
   const pin = target.mode === "user" ? localManagerInstanceId(target.root, target.space) : row.nativeEndpoint?.instanceId;
   if (target.mode === "user" && pin === undefined) return { instanceId: row.instanceId, pid: row.pid, endpoint: "unchecked" };
-  return { instanceId: row.instanceId, pid: row.pid, endpoint: await managerEndpoint(target, pin) };
+  const { endpoint } = await managerEndpoint(target, pin);
+  return { instanceId: row.instanceId, pid: row.pid, endpoint };
 }
 
 /** The delivery row's responder detail (#1576). An unbound responder is not a footnote about a
@@ -2109,11 +2118,14 @@ function selectedOverview(r: StatusResult): Section | undefined {
     }
   }
   if (s.snapshot.state === "unavailable") rows.push(["Live details", stateCell(`unavailable · ${s.snapshot.reason}`, "waiting")]);
-  if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack && r.folder.noManager) {
+  if (servedStack(r.folder, s) && r.folder.noManager && !r.stackManager) {
     const service = r.folder.managerService;
+    const outside = r.outsideStackManager;
     rows.push(["Manager", service
       ? stateCell(`the ${service.definition} service · instance ${service.instanceId} · outside this stack, which was started with --no-manager`, "ok")
-      : stateCell("none · this stack was started with --no-manager; bare `cotal up` adds it", "hint")]);
+      : outside?.endpoint === "answered"
+        ? stateCell(`answering${outside.instanceId ? ` · instance ${outside.instanceId}` : ""} · outside this stack, which was started with --no-manager`, "ok")
+        : stateCell(`${outside?.endpoint === "not-answering" ? "no manager answered" : "endpoint not checked"} · this stack was started with --no-manager`, "hint")]);
   }
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
@@ -2188,7 +2200,9 @@ function nextActions(r: StatusResult): Section {
     else if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
     else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
     else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
-    items.push({ command: `${cmd} ps`, description: "See the agent roster" });
+    items.push({ command: `${cmd} who`, description: "See the live roster" });
+    if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
+      items.push({ command: `${cmd} ps`, description: "List managed agents" });
   } else if (noApplication) items.push({ command: `${cmd} setup`, description: r.selected.code === "not-started" ? "Set up an agent application" : "Set up an agent application and a space" });
   if (r.selected.resolved || !noApplication) {
     items.push({ command: `${cmd} use`, description: "Choose another space" });

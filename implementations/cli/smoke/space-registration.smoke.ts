@@ -760,8 +760,50 @@ if (process.platform === "linux") {
   const created = await json(["space", "create", "pinned"], pinned);
   const sandbox = recordSmokeSandbox({ root: pinned, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const started = await json(["up", "--detach", "--open", "--no-manager", "--server", server], pinned);
-  assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
-  const stopped = await run(["down", "--yes"], {}, pinned);
+  const runtimeDir = join(pinned, "runtime");
+  mkdirSync(runtimeDir, { mode: 0o700 });
+  const fixtureEnv = { ...runEnv, XDG_RUNTIME_DIR: runtimeDir };
+  const startForeground = (args: string[]) => {
+    const child = spawn(process.execPath, [BIN, ...args], { cwd: pinned, env: fixtureEnv, stdio: "ignore" });
+    teardownOnSignal(child);
+    return { child, closed: new Promise<void>((resolve) => child.once("close", () => resolve())) };
+  };
+  let peer: ReturnType<typeof startForeground> | undefined;
+  let manager: ReturnType<typeof startForeground> | undefined;
+  let stopped: Awaited<ReturnType<typeof run>>;
+  try {
+    peer = startForeground(["join", "--name", "roster-peer", "--channel", "general"]);
+    let roster = await run(["who", "--plain"], {}, pinned);
+    for (let i = 0; i < 20 && !roster.stdout.includes("roster-peer") && peer.child.exitCode === null; i++)
+      roster = await run(["who", "--plain"], {}, pinned);
+    const brokerOnly = await run(["status", "--plain"], {}, pinned);
+    const absent = await json(["ps"], pinned);
+    check("broker-only status points to the live roster, not the unavailable managed-agent list",
+      brokerOnly.status === 0 && /cotal who\s+See the live roster/.test(brokerOnly.stdout) && !/^\s*(?:pnpm )?cotal ps\s/m.test(brokerOnly.stdout)
+        && roster.status === 0 && /^\s*roster-peer.*\bno\b/m.test(roster.stdout) && refused(absent, 2, "TARGET_UNAVAILABLE"),
+      { status: brokerOnly, who: roster, ps: shown(absent) });
+
+    manager = startForeground(["supervise", "--space", "pinned", "--server", server, "--console-port", String(await freePort())]);
+    let ps = await run(["ps", "--plain"], {}, pinned);
+    for (let i = 0; i < 20 && ps.status !== 0 && manager.child.exitCode === null; i++) ps = await run(["ps", "--plain"], {}, pinned);
+    const instanceId = /^\s*instance:\s+(\S+)/m.exec(ps.stdout)?.[1];
+    const outside = await run(["status", "--plain"], {}, pinned);
+    const observation = (await json(["status"], pinned)).env?.result?.outsideStackManager;
+    check("status identifies the answering manager outside a broker-only stack",
+      ps.status === 0 && instanceId !== undefined && outside.status === 0
+        && outside.stdout.includes(`answering - instance ${instanceId} - outside this stack`)
+        && !outside.stdout.includes("bare `cotal up` adds it") && /cotal ps\s+List managed agents/.test(outside.stdout)
+        && observation?.endpoint === "answered" && observation.instanceId === instanceId,
+      { status: outside, ps, observation });
+  } finally {
+    for (const child of [manager, peer]) {
+      if (!child) continue;
+      child.child.kill();
+      await child.closed;
+    }
+    assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: pinned, env: runEnv });
+    stopped = await run(["down", "--yes"], {}, pinned);
+  }
   check("a stack is started and stopped at a fresh root", created.status === 0 && started.status === 0 && stopped.status === 0, { created: shown(created), started: shown(started), stopped: shown(stopped) });
   const journalPath = stackJournalPath(pinned);
   const journal = JSON.parse(readFileSync(journalPath, "utf8"));
