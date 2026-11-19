@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -238,6 +238,35 @@ try {
     symlinkSync(root, route);
     assert.equal(selectExecutionProgram(root).root, root, "recreated route has a different incarnation even when its target is the same");
     rmSync(route); writeExecutionDescriptor(root, descriptor);
+  });
+  check("npm reinstall with a pinned Node launcher runs the replacement instead of the retained generation", () => {
+    const entry = join(scratch, "prefix/bin/cotal"), manifest = join(root, "package.json");
+    const direct = "../lib/node_modules/cotal-ai/dist/cotal.js", wrapper = "../lib/node_modules/cotal-ai/dist/cotal-npm";
+    const postinstall = join(root, "scripts/pin-npm-node.mjs");
+    mkdirSync(join(scratch, "prefix/bin")); mkdirSync(join(root, "scripts"));
+    chmodSync(join(root, "dist/cotal.js"), 0o755);
+    cpSync(join(repo, "bin/scripts/pin-npm-node.mjs"), postinstall);
+    symlinkSync(direct, entry);
+    const launch = () => spawnSync(entry, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    writeExecutionDescriptor(root, { ...descriptor, launch: executionLaunchBinding(root, entry) });
+    assert.equal(launch().stdout.trim(), "retained generation selected");
+
+    const script = spawnSync(process.execPath, [postinstall], { encoding: "utf8", timeout: 10_000 });
+    assert.equal(script.status, 0, script.stderr);
+    assert.equal(readlinkSync(entry), wrapper);
+    assert.equal(launch().stdout.trim(), "retained generation selected", "the wrapper alone does not retire an unchanged package");
+
+    // Keep the same manifest bytes and bootstrap hash. Only the installed package's incarnation changes.
+    cpSync(manifest, `${manifest}.new`); renameSync(`${manifest}.new`, manifest);
+    const result = launch();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "initial generation");
+
+    rmSync(entry); symlinkSync(join(source, "dist/cotal-npm"), entry);
+    writeFileSync(join(source, "dist/cotal-npm"), "foreign launcher");
+    assert.throws(() => selectExecutionProgram(root), /execution launch route does not resolve to this bootstrap/);
+    rmSync(entry); rmSync(join(source, "dist/cotal-npm"));
+    writeExecutionDescriptor(root, descriptor);
   });
   check("a bootstrap bound to a different artifact runs the installed tree without writing", () => {
     const stale = { ...descriptor, binding: { ...descriptor.binding, bootstrapSha256: "0".repeat(64) } };
