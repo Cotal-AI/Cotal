@@ -23,6 +23,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { readManagerSeatCap } from "@cotal-ai/workspace";
 
 const WT = join(import.meta.dirname, "..", "..");
 const TSX_LOADER = import.meta.resolve("tsx");
@@ -232,8 +233,31 @@ try {
     const savedPreview = cotal(preview);
     check("a saved manager preview refuses the same unsupported new instance", savedPreview.status === 2 && out(savedPreview).includes("UNSUPPORTED"), out(savedPreview));
 
+    const showManager = () => cotal(["service", "show", "manager", "--space", SPACE, "--json"]);
+    const stoppedManager = () => {
+      const status = cotal(["manager", "status", "--space", SPACE, "--json"]);
+      const { instanceId, revision, recordedState } = JSON.parse(status.stdout).result ?? {};
+      return { status: status.status, instanceId, revision, recordedState };
+    };
+    const saved = showManager(), stoppedBefore = stoppedManager();
+    const invalidHost = cotal(["manager", "start", "--space", SPACE, "--console-host", "127.0.0.1 junk", "--plain"]);
+    check("an invalid console host is refused without saving a replacement",
+      invalidHost.status === 1 && out(invalidHost).includes("USAGE_INVALID") && out(invalidHost).includes("--console-host contains whitespace or controls") && !out(invalidHost).includes("saved manager again"), out(invalidHost));
+    const kept = showManager(), stoppedAfter = stoppedManager();
+    check("the refused override leaves the definition and stopped instance unchanged",
+      saved.status === 0 && kept.status === 0 && saved.stdout === kept.stdout
+      && stoppedBefore.status === 0 && stoppedAfter.status === 0 && stoppedBefore.recordedState === "stopped"
+      && typeof stoppedBefore.instanceId === "string" && typeof stoppedBefore.revision === "string" && JSON.stringify(stoppedBefore) === JSON.stringify(stoppedAfter),
+      { saved: out(saved), kept: out(kept), before: stoppedBefore, after: stoppedAfter });
+    const retry = cotal(["manager", "start", "--space", SPACE, "--plain"]);
+    managerUp = retry.status === 0;
+    check("a start without the refused override still starts the manager", managerUp && inventory().running.includes("manager"), out(retry));
+    const stopRetry = cotal(["manager", "stop", "--space", SPACE, "--yes"]);
+    managerUp = stopRetry.status !== 0;
+    check("the manager started by the retry stops normally", !managerUp, out(stopRetry));
+
     // ---- The manager a plain cotal up starts: logs reads it, stop and install still refuse -------
-    const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER]);
+    const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER, "--seat-cap", "3"]);
     upStackUp = plainUp.status === 0;
     check("a plain cotal up starts a stack with its manager", upStackUp, out(plainUp));
     const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
@@ -241,6 +265,8 @@ try {
     for (let i = 0; i < 30 && !out(upLogs).includes("manager up"); i++) { await sleep(500); upLogs = upCotal(["manager", "logs"]); }
     check("cotal manager logs reads the log of the manager up started, exit 0",
       upLogs.status === 0 && out(upLogs).includes("Manager log tail") && out(upLogs).includes("manager up") && !out(upLogs).includes("UNSUPPORTED"), out(upLogs));
+    const cap = readManagerSeatCap({ root: upProject, space: UP_SPACE });
+    check("the retained launcher records the cap after its manager starts", cap === 3, cap);
     type LogsEnvelope = { outcome?: string; result?: { kind?: string; lines?: string[]; path?: string; recordedProcess?: { savedService?: boolean; state?: string } } };
     const envelope = (run: ReturnType<typeof cotal>): LogsEnvelope => { try { return JSON.parse(run.stdout) as LogsEnvelope; } catch { return {}; } };
     const json = envelope(upCotal(["manager", "logs", "--json", "--tail", "5"]));

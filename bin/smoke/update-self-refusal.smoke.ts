@@ -35,6 +35,8 @@ try {
     // Registry unavailability returns success without replacement, after real destination preflight.
     const repaired = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
     check.equal(repaired.status, 0, repaired.stderr);
+    check.equal(repaired.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+    check.equal(existsSync(join(cotal, "update-recovery.json")), false, "offline update leaves an absent recovery file absent");
     check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
     for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
     const release = claimGlobalNpmUpdateLock(join(prefix, "lib/node_modules"));

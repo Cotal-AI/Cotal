@@ -78,9 +78,9 @@ import {
   readManagerName,
   readManagerSeatCap,
   recordManagerName,
-  recordManagerSeatCap,
   parseSeatCapFlag,
   seatCapText,
+  type SeatCap,
   CommandFailure,
   codeSpan,
   commandFailureReport,
@@ -374,8 +374,8 @@ export const upFlags: FlagSpec[] = [
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "log-file", type: "string", value: "<path>", description: "nats-server log file path; recorded and reused by later starts" },
-  { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file" },
-  { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file" },
+  { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file or broker.logFile in a manifest" },
+  { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file or broker.logFile in a manifest" },
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
   { name: "max-payload", type: "string", value: "<bytes>", description: "broker-wide message size limit in bytes (default: nats-server's 1048576). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next `up`" },
   { name: "account-resolver", type: "string", value: "<memory|full>", description: "how the broker resolves space accounts: memory (default) knows only the accounts its configuration lists, so adding one means a reload; full also keeps pushed account claims in .cotal/account-jwts, so a host can add and retire accounts on the running broker without a reload. Fixed at broker start and recorded for the next `up`" },
@@ -439,6 +439,8 @@ function assertIssuedBackupDirArgument(raw: string): void {
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  if (args.values.restore === "")
+    throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
   const linked = args.values.root === undefined ? linkedCotalRefusal("up") : undefined;
   if (linked) throw linked;
@@ -485,6 +487,9 @@ export function validateUpArguments(args: ParsedArgs): void {
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);
   parseSeatCapFlag("--seat-cap", args.values["seat-cap"] as string | undefined);
   parseMaxFileStore(args.values["max-file-store"] as string | undefined);
+  const logFile = args.values["log-file"] as string | undefined;
+  if (logFile !== undefined && (!logFile.trim() || /[\u0000-\u001f\u007f]/u.test(logFile)))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--log-file must be a non-empty file path without control characters");
   // The timeout belongs to the auth callout, which only a user-auth space has. A manifest or a
   // restore starts the broker its own record describes, so neither takes it.
   if (parseAuthTimeout(args.values["auth-timeout"] as string | undefined) !== undefined) {
@@ -935,7 +940,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
     // The recursive restore/resume re-entries inherit absolute paths and the same absolute root.
-    const paths = root ? Object.fromEntries(["file", "restore", "channels", "tls-cert", "tls-key", "store-dir"].filter((key) => typeof args.values[key] === "string" && args.values[key] !== "").map((key) => [key, resolve(String(args.values[key]))])) : {};
+    const paths = root ? Object.fromEntries(["file", "restore", "channels", "tls-cert", "tls-key", "store-dir", "log-file"].filter((key) => typeof args.values[key] === "string" && args.values[key] !== "").map((key) => [key, resolve(String(args.values[key]))])) : {};
     // The receipt's Next must run from the folder up was invoked in, which a re-entry inherits.
     const invokedRoot = root && args.values.__invokedRoot === undefined ? { __invokedRoot: canonicalRoot(cotalRoot()) } : {};
     const invocation: ParsedArgs = { ...args, values: { ...args.values, ...paths, ...(root ? { root } : {}), ...invokedRoot, detach: args.values.foreground !== true } };
@@ -999,7 +1004,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `space create` and `down` refuse a root other local accounts can write, so `up` refuses it too,
   // before anything is written: a stack started there could not be stopped from it.
   protectedLocalDirectory(canonicalRoot(cotalRoot()), "the project root");
-  if (values.restore) {
+  if (values.restore !== undefined) {
     if (values.file || values.channels)
       throw new Error("--restore cannot be combined with --file/-f or --channels");
     // A restore REINSTATES a trust root from an artifact; a rotation SUPERSEDES the one on disk.
@@ -1426,12 +1431,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const publicExchange = [...publicExchangeArgs(values, wantUser), ...serviceEndpointsArgs(values, wantUser)];
   const maxSessions = parsePositiveIntegerFlag("--max-sessions", values["max-sessions"]);
   const maxFileStore = parseMaxFileStore(values["max-file-store"]);
-  if (values["log-file"] !== undefined && (!values["log-file"].trim() || /[\u0000-\u001f\u007f]/u.test(values["log-file"])))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--log-file must be a non-empty file path without control characters");
   const logFile = values["log-file"] === undefined ? undefined : resolve(values["log-file"]);
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", values["logfile-size-limit"]);
   const logfileMaxNum = parsePositiveIntegerFlag("--logfile-max-num", values["logfile-max-num"]);
-  if (logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined))
+  if (!values.file && logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
   const authTimeout = parseAuthTimeout(values["auth-timeout"]);
   const maxPayload = parseMaxPayload(values["max-payload"]);
@@ -1486,17 +1489,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       if (!values["dry-run"]) recordManagerName(named, name);
     }
   }
-  // `--seat-cap` is recorded the same way, and read by the manager at each start, so a repair, a
-  // resume or a bare `up` after `down` keeps a ceiling the operator set instead of reopening the
-  // host to one owner. A running manager keeps the cap it started with.
-  if (values["seat-cap"] !== undefined) {
-    const cap = parseSeatCapFlag("--seat-cap", values["seat-cap"])!;
+  // The manager records this cap once it serves. A running manager keeps the cap it started with.
+  const managerSeatCap = parseSeatCapFlag("--seat-cap", values["seat-cap"]);
+  if (managerSeatCap !== undefined) {
     const capped = { root: cotalRoot(), space: values.space ?? folderSpace() };
-    if (readManagerSeatCap(capped) !== cap) {
-      if (managerRecordState(capped.space, capped.root).state === "alive")
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with \`cotal down\`, then run \`cotal up --seat-cap ${seatCapText(cap)}\`` });
-      if (!values["dry-run"]) recordManagerSeatCap(capped, cap);
-    }
+    if (readManagerSeatCap(capped) !== managerSeatCap && managerRecordState(capped.space, capped.root).state === "alive")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with \`cotal down\`, then run \`cotal up --seat-cap ${seatCapText(managerSeatCap)}\`` });
   }
 
   // THE TRANSPORT IS DECIDED HERE, ABOVE EVERY BRANCH, AND THIS POSITION IS THE FIX.
@@ -1585,7 +1583,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -2181,6 +2179,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         runtime: values.runtime,
         attachHost: attachHostFor(held.space, values.host),
         maxSessions: maxSessionsFor(held.space, maxSessions),
+        managerSeatCap,
         noManager,
       }, startAuth);
       if (!controlPlane) process.exitCode = 1;
@@ -2288,6 +2287,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       host: values.host,
       runtime: values.runtime,
       maxSessions,
+      managerSeatCap,
       noManager,
       resumeAttempt,
       resumeCommit: commitTokenHandoff(cotalRoot(), (restored?.managerCommit ?? ordinaryAttempt?.managerCommit) !== undefined, startupLock),
@@ -2559,6 +2559,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       host: values.host,
       maxSessions,
+      managerSeatCap,
       maxFileStore,
       publicExchange,
       resumeAttempt,
@@ -3637,6 +3638,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // broker + launch all agree on the same values.
   const { prepared: eff, hostSource, serverSource } = applyUpOverrides(prepared, opts);
   const m = eff.manifest;
+  if (m.broker?.logFile === undefined && (opts.logfileSizeLimit !== undefined || opts.logfileMaxNum !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file or broker.logFile in the manifest", { remedy: "pass --log-file <path>, set broker.logFile in the manifest, or omit the rotation flags" });
   const host = m.broker?.host ?? "127.0.0.1";
   // Same bind-vs-probe reconciliation as the flag path: a manifest that sets `broker.host` without
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
@@ -3672,7 +3675,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // against a manifest declaring agents asks for a boot that cannot deliver its own plan. Refused
   // before the dry-run print and before anything boots.
   if (opts.noManager && eff.agents.length)
-    throw new Error(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits). Drop --no-manager, or use a broker-only manifest with no agents.`);
+    throw new FlagValueRefusal(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits)`, "drop --no-manager, or use a broker-only manifest with no agents");
   const effectiveNoManager = Boolean(opts.noManager);
   // The open-mesh refusal must be RE-STATED here, not only against the CLI `--open` flag: on this
   // path openness comes from the MANIFEST (`broker.auth: false`), which the flag-level guard cannot
@@ -3980,6 +3983,7 @@ async function startDeliveryWithBroker(
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
     maxSessions?: number;
+    managerSeatCap?: SeatCap;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
     noManager?: boolean;
     /** The mesh is open, so no delivery daemon starts, whatever accounts the root holds. */
@@ -4133,6 +4137,7 @@ async function serveReadyListener(l: {
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
   maxSessions?: number;
+  managerSeatCap?: SeatCap;
   maxFileStore?: number;
   publicExchange?: string[];
   resumeAttempt?: string;
@@ -4206,6 +4211,7 @@ async function serveReadyListener(l: {
     // is never a side effect of anything but the operator binding the mesh somewhere reachable.
     attachHost,
     maxSessions,
+    managerSeatCap: l.managerSeatCap,
     noManager: l.noManager,
     resumeAttempt: l.resumeAttempt,
     resumeCommit: l.resumeCommit,
@@ -4276,6 +4282,7 @@ export interface DetachOpts {
   resumeAttempt?: string;
   resumeCommit?: { path: string; sha256: string };
   maxSessions?: number;
+  managerSeatCap?: SeatCap;
   /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
    *  the flag boots the broker + channels and launches NO agents from this host — a manifest's
    *  agents are booted by its manager, so a launch spec under `--no-manager` would promise a boot
@@ -4392,6 +4399,7 @@ export async function startMeshDetached(
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
+    managerSeatCap: opts.managerSeatCap,
     maxFileStore: opts.maxFileStore,
     publicExchange: opts.publicExchange,
     resumeAttempt: opts.resumeAttempt,

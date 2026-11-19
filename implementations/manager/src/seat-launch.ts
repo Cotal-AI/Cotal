@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, sep } from "node:path";
 import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
@@ -240,7 +240,7 @@ export class SeatLaunch {
     });
   }
 
-  /** The realpath + directory checks a placed spawn directory must pass on this manager's host,
+  /** The realpath, directory and search-permission checks a placed spawn directory must pass on this manager's host,
    * shared by the served `resolve-cwd` command and the `spawn` admission check (#385 item 2): one
    * function, so the two doors never drift. Creates nothing and never substitutes the workspace root. */
   checkSpawnCwd(resolved: string): { cwd: string; host: string } | { refusal: string } {
@@ -252,6 +252,7 @@ export class SeatLaunch {
     }
     try {
       if (!statSync(cwd).isDirectory()) return { refusal: "path is not a directory" };
+      if (process.platform !== "win32") accessSync(cwd, constants.X_OK);
     } catch (error) {
       return { refusal: rejectionText(error) };
     }

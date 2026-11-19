@@ -16,7 +16,8 @@
  *   - only the remote subset is offered, and the orientation card says so; the docs it points to
  *     are offered and answer; connect names the connection's own access;
  *   - cotal_wait returns a message as soon as it arrives, at once when one is waiting, and after its
- *     bound with none; it follows attention, counts a focus @mention that landed between waits,
+ *     bound with none, saying when it could only read the local buffer because the broker is
+ *     unreachable; it follows attention, counts a focus @mention that landed between waits,
  *     ignores a run turn the gateway cannot surface, ends when its connection closes, and leaves
  *     no listener behind; a wait or read whose client is gone clears nothing; every other tool
  *     says when messages are waiting;
@@ -663,6 +664,16 @@ try {
   await killAndAwaitExit(severedSrv);
   for (let i = 0; i < 50 && severedAgent.transportConnected; i++) await sleep(100);
   check("the stopped broker takes that connection's transport down", !severedAgent.transportConnected);
+  // An empty wait that cannot hear from the broker only read the local buffer, and says so as
+  // cotal_inbox does. A connected one keeps the plain reply.
+  const severedQuiet = await call(a, "cotal_wait", { connection_id: severedSeat, seconds: 1 });
+  check(
+    "an empty wait on a connection whose transport is down says it only read the local buffer",
+    !severedQuiet.isError && severedQuiet.text.startsWith("Mesh connection is not ready") &&
+      severedQuiet.text.includes("an empty buffer does not mean no new mesh messages") &&
+      severedQuiet.text.endsWith("Nothing new reached the local buffer in 1 second. Call cotal_wait again to keep listening."),
+    severedQuiet,
+  );
   const severedWait = call(a, "cotal_wait", { connection_id: severedSeat });
   await sleep(500);
   const severedAt = Date.now();

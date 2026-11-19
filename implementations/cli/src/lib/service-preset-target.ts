@@ -7,7 +7,7 @@ import { resolveServiceAdapter } from "./service-adapters.js";
 import { findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
-import { addedDefinitionStep, STACK_DEFINITION } from "./stack-journal.js";
+import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
 
 /** A preset name a service command resolved to the definition it acts on. `saved` says what this
@@ -168,6 +168,11 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);
+  // The manager adapter also checks this before launching. Reject an invalid override before
+  // replacing the saved definition or retiring its stopped instance.
+  const consoleHost = merged["console-host"];
+  if (launch.adapter === STACK_ADAPTER.manager && changed.includes("console-host") && typeof consoleHost === "string" && /[\u0000- \u007f]/u.test(consoleHost))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; nothing was changed", { target: { space, name: row.name }, selfContained: true });
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   let retired: string[] = [];

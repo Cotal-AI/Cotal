@@ -253,15 +253,18 @@ try {
   })();
   // The list was given --space, so its Next names it too (#7642).
   check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
+  const selected = cotal(["use", SPACE, "--json"]);
+  check("the calling project has selected the other space", selected.status === 0, out(selected));
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
-  check("a broker add missing its options names --server too, and prints a line with all three",
+  check("a broker add missing its options prints all three options and keeps the explicit space",
     unready.status === 1 && out(unready).includes("the broker preset needs --config, --binary, which have no default, and --server, since space servicecommandsprep has no registered broker; nothing was saved or started")
-      && printed === "cotal service add b0 --preset broker --config <file> --binary <file> --server <url>", out(unready));
+      && printed === `cotal service add b0 --preset broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, out(unready));
   const fills: Record<string, string> = { "--config": config, "--binary": binary, "--server": `nats://127.0.0.1:${await freePort()}` };
   const tokens = printed.split(" ").slice(1);
-  const followed = cotal([...tokens.map((word, index) => /^<[a-z]+>$/.test(word) ? fills[tokens[index - 1]!] ?? word : word), "--space", PREPARED]);
-  check("  and that line, with each placeholder filled in, saves the broker the first time it runs", followed.status === 0 && out(followed).includes("Service definition saved"), out(followed));
+  const followed = cotal(tokens.map((word, index) => /^<[a-z]+>$/.test(word) ? fills[tokens[index - 1]!] ?? word : word));
+  check("  filling only its placeholders saves the broker in the requested space, not the selected space",
+    followed.status === 0 && serviceDefinitionStore(PREPARED).read("b0") !== undefined && serviceDefinitionStore(SPACE).read("b0") === undefined, out(followed));
 
   const brokerHelp = out(cotal(["service", "add", "b1", "--preset", "broker", "--space", PREPARED, "--help"]));
   check("broker preset help shows --log-file as a path, as `cotal up` does, described for a preset add", /--log-file <path> +the nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);

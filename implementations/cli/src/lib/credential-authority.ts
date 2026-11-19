@@ -9,7 +9,9 @@ export function resolveMintTarget(values: { space?: string; server?: string }, a
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true, allowStoppedLocal }); }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    const { remedy } = workspaceErrorParts({ kind: "target", error });
+    const remedy = error.code === "no-meshes"
+      ? "start a local static-auth space with `cotal up` in its project folder and retry there, or use `--space <name>` to select a static-auth space with signing trust on this machine"
+      : workspaceErrorParts({ kind: "target", error }).remedy;
     throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen", remedy === undefined ? {} : { remedy });
   }
 }
