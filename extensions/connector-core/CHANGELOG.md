@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.171.2
+
+### Patch Changes
+
+- da8cb2b: Claude Code and Pi seats return to `idle` after their user interrupts a turn, and the run ends as an interrupt on the event plane. Claude Code fires no hook on an interrupt, so the connector now watches the open turn's transcript for the interrupt record Claude Code writes. That record sets presence to `idle`, clears any approval or input condition, and closes the run with `RUN_FINISHED` carrying an `interrupt` outcome. A Pi turn without a Cotal batch now publishes `idle` when it ends after an abort or an error. An aborted Pi turn, including one stopped during a tool call, ends with an `interrupt` outcome instead of `RUN_ERROR`.
+- 549b02c: An empty `cotal_wait` on a connection that cannot hear from the broker no longer returns the plain "No new messages" reply. It opens with the connection warning `cotal_inbox` gives and says only the local buffer was read. A connected wait keeps the plain reply.
+
 ## 0.171.1
 
 ### Patch Changes

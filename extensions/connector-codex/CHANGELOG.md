@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.171.2
+
+### Patch Changes
+
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+
 ## 0.171.1
 
 No changes in this release.
