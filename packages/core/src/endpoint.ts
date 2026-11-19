@@ -23,14 +23,10 @@ import {
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
 import {
-  parseLivenessAnswer,
   responderFromLease,
   responderFromProbe,
-  isLivenessPlane,
-  LIVENESS_PLANES,
   type LivenessAnswer,
   type LivenessPlane,
-  type ProbeOutcome,
   type ResponderState,
 } from "./liveness.js";
 import { EndpointPresence, type PresenceView } from "./endpoint-presence.js";
@@ -119,6 +115,7 @@ import { EndpointMessaging, assertPartsSerializable } from "./endpoint-messaging
 import { EndpointDurableBackstop } from "./endpoint-durable-backstop.js";
 import { EndpointSubscriptions, membershipConsumerReleased, type MembershipFeedWatch } from "./endpoint-subscriptions.js";
 import { EndpointChannelDiscovery } from "./endpoint-channel-discovery.js";
+import { EndpointLiveness } from "./endpoint-liveness.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import {
   openChannelRegistry,
@@ -146,8 +143,6 @@ import {
   chatStream,
   chatSubject,
   controlServiceSubject,
-  livenessSubject,
-  livenessServeFilter,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
   dmStream,
@@ -4438,6 +4433,22 @@ export class CotalEndpoint extends EventEmitter {
 
   // ---- the peer-readable liveness surface (#1577) --------------------------
 
+  /** The peer-readable liveness responders and the probe, of this endpoint. Every dependency is read
+   *  when it is used, so a field assigned after construction is seen. */
+  private readonly liveness = new EndpointLiveness({
+    nc: () => this.nc,
+    space: () => this.space,
+    owner: () => this.owner,
+    actor: () => this.actor,
+    subs: () => this.subs,
+    livenessResponders: () => this.livenessResponders,
+    notLiveMsg: () => this.notLiveMsg(),
+    requestBoundReply: (nc, subject, body, reply, timeoutMs) => this.requestBoundReply(nc, subject, body, reply, timeoutMs),
+    isNoResponders: (e) => this.isNoResponders(e),
+    emitRecoverable: (err) => this.emitRecoverable(err),
+    emit: (event, ...args) => this.emit(event, ...args),
+  });
+
   /** Bind this endpoint as the liveness RESPONDER for one plane, answering presence and nothing
    *  else to any credentialed peer that asks (`live.<plane>.<owner>.<actor>`).
    *
@@ -4480,80 +4491,12 @@ export class CotalEndpoint extends EventEmitter {
    *  the plane answered by the broker's no-responders status while this endpoint is serving. A second
    *  call for the same plane replaces the first. */
   serveLiveness(plane: LivenessPlane, readState: () => Promise<ResponderState> | ResponderState): void {
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    const held = this.livenessResponders.get(plane);
-    if (held) held.readState = readState;
-    else this.livenessResponders.set(plane, { readState });
-    this.bindLiveness(plane);
+    return this.liveness.serveLiveness(plane, readState);
   }
 
-  /** (Re)bind one plane's liveness responder on the CURRENT connection, dropping the stale sub first
-   *  as {@link armDeliveryControl} does. */
+  /** Forwards to the liveness component's {@link EndpointLiveness.bindLiveness}. */
   private bindLiveness(plane: LivenessPlane): void {
-    const held = this.livenessResponders.get(plane);
-    if (!held || !this.nc) return;
-    if (held.sub) {
-      try { held.sub.unsubscribe(); } catch { /* dead with the old connection */ }
-      const i = this.subs.indexOf(held.sub);
-      if (i >= 0) this.subs.splice(i, 1);
-    }
-    const { readState } = held;
-    const sub = this.nc.subscribe(livenessServeFilter(this.space, plane), { queue: `live.${plane}` });
-    held.sub = sub;
-    this.subs.push(sub);
-    // The responder token this bind answers under: AN OPAQUE VALUE MINTED HERE, and deliberately
-    // not any name this process already has. It is what makes "which responder answered" askable
-    // without making "who is this responder" answerable — the two properties the surface has to
-    // hold at once. The endpoint's own `card.id` would be its principal, the lease row's
-    // `instanceId` is a field of a bucket an agent holds no grant on, and either would turn a
-    // presence probe into an identity read for every credentialed peer in the space. A fresh
-    // random token correlates with nothing but this plane's other answers, which is the whole job:
-    // two answers carrying two different tokens came from two different responders.
-    //
-    // Per BIND rather than per process, so a responder that goes away and comes back answers under
-    // a new token. That is the honest reading: a caller comparing answers across a restart is
-    // comparing two different incarnations, and a token that survived the restart would say
-    // otherwise. A re-bind after a reconnect is such a return: the plane had no responder here for
-    // the gap.
-    const instance = randomUUID();
-    void (async () => {
-      for await (const m of sub) {
-        // Sender-bound reply guard. Drop silently rather than publishing somewhere else: a reply
-        // aimed outside the sender's own subtree is not a request we can answer safely.
-        //
-        // REPORTED ON `warning`, NOT ON `error`, AND THAT IS A SAFETY PROPERTY RATHER THAN A CHOICE
-        // OF CHANNEL. A rejected probe is a condition this responder is already surviving: it drops
-        // the frame and keeps serving. `error` cannot carry such a notice on this class, because
-        // Node's `EventEmitter` RETHROWS an `error` emit that has no listener attached, so the
-        // notice would end the process of any embedder that had not attached one — and the plane
-        // would then genuinely be unbound, which a peer's next probe reports as `unbound`. The
-        // condition would have manufactured the state it described. `warning` is observable and
-        // never fatal without a listener (see {@link emitRecoverable} and #891, where retry notices
-        // on `error` killed hosts the endpoint intended to keep running).
-        //
-        // Since ANY credentialed peer may publish a probe, and the reply target inside it is chosen
-        // by that peer and not permission-checked by the broker, reaching this branch is a peer's
-        // decision, not an operator's. Safety here must therefore hold with no listener attached,
-        // which is what CELL F1 runs.
-        if (!m.reply || !m.reply.startsWith(`${m.subject}.reply.`)) {
-          this.emitRecoverable(new Error(`rejected liveness probe on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
-          continue;
-        }
-        let responder: ResponderState;
-        try {
-          responder = await readState();
-        } catch {
-          responder = "unknown";
-        }
-        const answer: LivenessAnswer = { plane, responder, instance };
-        try { m.respond(JSON.stringify(answer)); } catch { /* the requester is gone */ }
-      }
-      // The loop itself ends only on a SUBSCRIPTION-level fault (the connection went away), which
-      // is not something a peer's probe can cause: the guard above `continue`s, `readState` is
-      // caught, and the respond is caught. So this arm stays on `error` — it reports that this
-      // responder has stopped answering at all, which is a fault an embedder should not be able to
-      // miss, and no credentialed peer can reach it.
-    })().catch((e) => this.emit("error", e as Error));
+    return this.liveness.bindLiveness(plane);
   }
 
   /** Bind the liveness responder for the DELIVERY plane, grading itself from its own shard-0 lease
@@ -4586,48 +4529,7 @@ export class CotalEndpoint extends EventEmitter {
    *  The reply rides `<request>.reply.<uuid>`, the sender's own subtree, so the responder's bound
    *  reply guard accepts it and the responder needs no broad inbox-publish grant to answer. */
   async probeLiveness(plane: string, timeoutMs = 2_000): Promise<LivenessAnswer> {
-    if (!isLivenessPlane(plane))
-      // A closed set, refused loudly. Answering an unknown plane at all would make this a probe
-      // that returns something for every input, which is indistinguishable from one that is not
-      // measuring anything.
-      throw new Error(`liveness: "${plane}" is not a plane this surface answers for (${[...LIVENESS_PLANES].join(", ")})`);
-    if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = livenessSubject(this.space, plane, this.owner, this.actor);
-    const reply = `${reqSubject}.reply.${randomUUID()}`;
-    let outcome: ProbeOutcome;
-    let answered: ResponderState | undefined;
-    let instance: string | undefined;
-    try {
-      const m = await this.requestBoundReply(this.nc, reqSubject, "", reply, timeoutMs);
-      let body: unknown;
-      try { body = m.json(); } catch { body = undefined; }
-      const parsed = parseLivenessAnswer(body, plane);
-      // A reply we cannot read is `malformed`, which grades `unknown`. It is NOT promoted to
-      // `bound` on the strength of having replied at all: that promotion is the `pgrep` error,
-      // where evidence a process exists was read as evidence it works.
-      outcome = parsed ? "replied" : "malformed";
-      answered = parsed?.responder;
-      instance = parsed?.instance;
-    } catch (e) {
-      outcome = this.isNoResponders(e) ? "noResponders" : this.probeFailureOutcome(e);
-    }
-    // `instance` rides ONLY a reply that was read. Every other outcome means no responder answered,
-    // so there is no responder to name, and a token attached to an `unbound` or an `unknown` would
-    // claim one had. It stays absent on those arms by construction: nothing assigns it.
-    const verdict: LivenessAnswer = { plane, responder: responderFromProbe(outcome, answered) };
-    return instance === undefined ? verdict : { ...verdict, instance };
-  }
-
-  /** Grade a failed probe that was NOT a no-responders answer. Both arms return an outcome that
-   *  maps to `unknown`; they are told apart so the distinction stays legible at the call site and so
-   *  a future caller can render the two differently (a refusal is about YOUR credential, a timeout
-   *  is about something being wedged). Neither may ever mean health. */
-  private probeFailureOutcome(e: unknown): ProbeOutcome {
-    if (e instanceof AuthorizationError || e instanceof PermissionViolationError) return "refused";
-    if (e instanceof TimeoutError) return "timeout";
-    // Anything else is a transport or client failure: it says something about our link, not about
-    // the plane, so it is graded like a refusal rather than guessed at.
-    return "refused";
+    return this.liveness.probeLiveness(plane, timeoutMs);
   }
 
   /**
