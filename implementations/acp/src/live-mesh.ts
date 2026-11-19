@@ -1,7 +1,6 @@
 /**
  * {@link Mesh} over a real space, built from the surfaces the terminal app uses: an admin observer
- * that reads every channel and the roster, the manager control calls, and a chat session under the
- * operator's own identity for direct messages.
+ * that reads every channel and the roster, and the manager control calls.
  */
 import { hostname } from "node:os";
 import {
@@ -17,7 +16,6 @@ import {
   type CotalMessage,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, userViewAuth, type MeshTarget } from "@cotal-ai/workspace";
-import { openChatSession, resolveChatName, USER_CHAT_TTL_SEC, type AdmittedChatSession, type ChatAdmission } from "@cotal-ai/workspace/chat";
 import { askManager, control, controlPs, liveManagerIds, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
@@ -61,15 +59,6 @@ export function frameOf(msg: CotalMessage): SeatFrame | undefined {
   };
 }
 
-/** The admission the bridge's chat session asks for: direct messages only. The observer reads
- *  every channel, so the session reads none. */
-function admission(mode: MeshTarget["mode"], label: string): ChatAdmission {
-  if (mode === "open") return { mode, label, channels: [] };
-  if (mode === "auth") return { mode, label, subscribe: [], allowPublish: [] };
-  if (mode === "user") return { mode, label, channels: [], read: [], post: [], ttlSec: USER_CHAT_TTL_SEC };
-  throw new Error(`no chat admission for a space recorded in "${String(mode)}" mode`);
-}
-
 /** A workspace failure as one plain error, or {@link SignInRequired} when the client's sign-in fixes
  *  it: the space needs a login, or this machine records no space for `cotal setup` to fill. */
 function plain(e: unknown): Error {
@@ -107,15 +96,9 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", timeoutMs, instanceId ? { instanceId } : undefined);
   };
 
-  let chat: Promise<AdmittedChatSession> | undefined;
-  const session = (): Promise<AdmittedChatSession> => {
-    chat ??= (async () => {
-      const name = await resolveChatName(target, { remedy: "set a name with `cotal config set name <name>`" });
-      return openChatSession(target, admission(target.mode, name.name), { words: { reopen: () => "", answerOne: "" }, control: client });
-    })();
-    chat.catch(() => (chat = undefined));
-    return chat;
-  };
+  /** The incarnation a seat command must reach. A manager names an open- or static-mode seat by its
+   *  bare actor and a user-mode seat by its principal. */
+  const expected = (seat: SeatRef) => ({ id: target.mode === "user" ? principalKey(seat.owner, seat.actor).key : seat.actor, lifecycleUid: seat.lifecycleUid });
 
   const defaultPersona = resolvePreference("persona", { space: target.space }).value;
   const defaultAgent = resolvePreference("harness", { space: target.space }).value;
@@ -196,24 +179,18 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     },
 
     async despawn(seat: SeatRef) {
-      // A manager names an open- or static-mode seat by its bare actor; a user-mode seat by its principal.
-      const id = target.mode === "user" ? principalKey(seat.owner, seat.actor).key : seat.actor;
-      const reply = await control(client, ctx, "stop", { name: seat.name, graceful: true }, { expectedTarget: { id, lifecycleUid: seat.lifecycleUid } });
+      const reply = await control(client, ctx, "stop", { name: seat.name, graceful: true }, { expectedTarget: expected(seat) });
       if (!reply.ok) throw failure(reply, `${seat.name} did not stop`);
     },
 
     async interrupt(seat: SeatRef) {
-      const id = target.mode === "user" ? principalKey(seat.owner, seat.actor).key : seat.actor;
-      const reply = await control(client, ctx, "interrupt", { name: seat.name }, { expectedTarget: { id, lifecycleUid: seat.lifecycleUid } });
+      const reply = await control(client, ctx, "interrupt", { name: seat.name }, { expectedTarget: expected(seat) });
       if (!reply.ok) throw failure(reply, `${seat.name} was not interrupted`);
     },
 
-    async dm(seat: SeatRef, text: string) {
-      const s = await session();
-      const storedAt = Date.now();
-      const result = await s.dm({ principal: principalKey(seat.owner, seat.actor).key }, text);
-      if (result.outcome !== "stored") throw new Error(`the message to ${seat.name} was not stored: ${result.message}`);
-      return { storedAt };
+    async input(seat: SeatRef, text: string) {
+      const reply = await control(client, ctx, "input", { name: seat.name, text, enter: true }, { expectedTarget: expected(seat) });
+      if (!reply.ok) throw failure(reply, `${seat.name} did not get the prompt`);
     },
 
     followFrames(onFrame) {
@@ -248,8 +225,6 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     },
 
     async close() {
-      const s = await chat?.catch(() => undefined);
-      await s?.close().catch(() => undefined);
       await observer.stop();
     },
   };

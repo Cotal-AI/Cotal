@@ -62,13 +62,13 @@ To work in two spaces, add two instances, one per space.
 | --- | --- |
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
 | The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The thread's id is the agent's name. The turn ends when that first task's run ends. |
-| A later prompt | Reaches the agent as a direct message from you. The turn ends once the agent has started working and stopped again. |
+| A later prompt | Is typed into the agent's terminal through its manager, so it reaches the agent as your own words. The turn ends once the agent has started working and stopped again. |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
 
 If the agent does not start working on a later prompt within 30 seconds, the turn ends with a note saying so.
-The agent still has the message, and answers it when it gets to it.
+The agent still has the prompt, and answers it when it gets to it.
 
 A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls by name and status.
 Tool arguments and results stay off the ordinary event channel, so the client does not show them.
@@ -105,8 +105,10 @@ When this machine records no space at all, it runs `cotal setup` instead.
 
 ## Limits [#limits]
 
-- Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped and the turn keeps running.
+- Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
+- When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
 - A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
+- A later prompt needs an agent on the built-in `pty` runtime, because the manager types it into the agent's terminal. An agent on tmux, cmux, Orca or Herdr refuses it, and so does a Claude Code agent showing a selection menu. The turn then fails with the manager's reason.
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
 - An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
 - An agent on another machine's manager starts in the thread's folder, so that folder must exist on that machine. Otherwise the spawn is refused.

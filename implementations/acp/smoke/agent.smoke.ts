@@ -56,9 +56,11 @@ class FakeMesh implements Mesh {
   history = new Map<string, SeatFrame[]>();
   /** Presence status by actor. */
   present = new Map<string, string>();
-  dms: { seat: string; text: string }[] = [];
-  /** What a seat does when a direct message reaches it. */
-  onDm: (seat: SeatRef) => void = () => {};
+  typed: { seat: string; text: string }[] = [];
+  /** What a seat does when its manager types a prompt into it. A throw is the manager's refusal. */
+  onInput: (seat: SeatRef) => void = () => {};
+  /** How long the manager takes to answer an input request. */
+  inputDelay = 0;
   interrupted: string[] = [];
   /** What a seat does when its manager writes the interrupt key. A throw is the manager's refusal. */
   onInterrupt: (seat: SeatRef) => void = () => {};
@@ -91,11 +93,10 @@ class FakeMesh implements Mesh {
   async seats() { return this.rows; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
-  async dm(seat: SeatRef, text: string): Promise<{ storedAt: number }> {
-    this.dms.push({ seat: seat.name, text });
-    const storedAt = Date.now();
-    this.onDm(seat);
-    return { storedAt };
+  async input(seat: SeatRef, text: string) {
+    this.onInput(seat);
+    if (this.inputDelay) await tick(this.inputDelay);
+    this.typed.push({ seat: seat.name, text });
   }
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
@@ -226,7 +227,7 @@ check("/channels lists the space's channels", updates.some((u) => JSON.stringify
 const actor = `actor-${sid}`;
 const after = (ms: number, f: () => void) => void setTimeout(f, ms);
 mesh.present.set(actor, "idle");
-mesh.onDm = (seat) => {
+mesh.onInput = (seat) => {
   after(20, () => { mesh.present.set(actor, "working"); mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r2" }, { type: "TEXT_MESSAGE_START", messageId: "a", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "on it" }], "r2"); });
   // Presence reports idle well before the run's last frame arrives: longer than the settle wait plus
   // a watch tick, so a prompt that ignored the open run would answer before that frame.
@@ -236,17 +237,30 @@ mesh.onDm = (seat) => {
 updates.length = 0;
 const later = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "and again" }] }));
 const laterSeen = updates.filter((u) => u.sessionId === sid).map((u) => JSON.stringify(u.update)).join("\n");
-check("a later prompt goes to the seat as a direct message", mesh.dms.length === 1 && mesh.dms[0]!.seat === sid && mesh.dms[0]!.text === "and again", mesh.dms);
+check("a later prompt is typed into the seat", mesh.typed.length === 1 && mesh.typed[0]!.seat === sid && mesh.typed[0]!.text === "and again", mesh.typed);
 check("a later prompt answers end_turn once the seat stopped working", later?.stopReason === "end_turn", later);
 check("a later prompt answers only after the runs it started ended", laterSeen.includes(" and done"), laterSeen);
-mesh.onDm = () => {};
+mesh.onInput = () => {};
 updates.length = 0;
 const ignored = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "anyone?" }] }));
 check("a later prompt the seat does not start on answers, and says so", ignored?.stopReason === "end_turn" && updates.some((u) => JSON.stringify(u.update).includes("has not started on it")), { ignored, updates });
-mesh.onDm = (seat) => after(20, () => mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r3" }, { type: "RUN_ERROR", message: "out of credit" }], "r3"));
+mesh.onInput = (seat) => after(20, () => mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r3" }, { type: "RUN_ERROR", message: "out of credit" }], "r3"));
 const laterFailed = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "once more" }] })));
 check("a failed run after a later prompt fails it with the seat's message", laterFailed?.code === -32603 && laterFailed.message?.includes("out of credit") === true, laterFailed);
-mesh.onDm = () => {};
+// The seat answers and finishes before the manager's input reply arrives.
+mesh.inputDelay = 200;
+mesh.onInput = (seat) => mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r4" }, { type: "TEXT_MESSAGE_START", messageId: "q", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "q", delta: "quick" }, { type: "TEXT_MESSAGE_END", messageId: "q" }, { type: "RUN_FINISHED", runId: "r4" }], "r4");
+updates.length = 0;
+const quick = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "quick one" }] }));
+check("a run that ends before the input reply still answers the later prompt", quick?.stopReason === "end_turn" && !updates.some((u) => JSON.stringify(u.update).includes("has not started on it")), { quick, updates });
+mesh.inputDelay = 0;
+mesh.onInput = () => { throw new Error(`${sid} did not get the prompt: input is not supported by runtime tmux`); };
+const typedBefore = mesh.typed.length;
+const inputRefused = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "type this" }] })));
+check("a prompt the manager refuses to type fails with its reason", inputRefused?.code === -32603 && inputRefused.message?.includes("not supported by runtime tmux") === true && mesh.typed.length === typedBefore, inputRefused);
+mesh.onInput = () => {};
+const afterRefusal = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "/channels" }] }));
+check("a refused prompt leaves the session free for the next one", afterRefusal?.stopReason === "end_turn", afterRefusal);
 
 // list and delete
 mesh.rows = [
@@ -298,7 +312,6 @@ check("its open tool call is closed as failed", updates.some((u) => u.update.ses
 
 // cancel
 const cancel = (sessionId: string) => conn.agent.notify(methods.agent.session.cancel, { sessionId });
-const seatOf = (name: string): SeatRef => ({ name, owner: "local", actor: `actor-${name}`, lifecycleUid: `life-${name}` });
 const settled = (p: Promise<{ stopReason: string } | undefined>) => p.catch((e: Error) => ({ stopReason: `error: ${e.message}` }));
 const go = (sessionId: string) => settled(within(agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text: "count" }] })));
 
@@ -332,8 +345,8 @@ await tick(50);
 await cancel(c3.sessionId);
 await tick(50);
 check("a refused interrupt is said in the thread", updates.some((u) => u.sessionId === c3.sessionId && JSON.stringify(u.update).includes("Could not stop") && JSON.stringify(u.update).includes("connector codex")), updates);
-mesh.emit(seatOf(c3.sessionId), [{ type: "RUN_FINISHED", runId: "r1" }], "r1");
-check("after a refused interrupt the turn keeps running and ends as usual", (await p3)?.stopReason === "end_turn");
+const r3 = await p3;
+check("a refused interrupt still answers the prompt cancelled", r3?.stopReason === "cancelled", r3);
 
 const c4 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
 mesh.spawnDelay = 150;
@@ -345,6 +358,16 @@ const r4 = await p4;
 check("a cancel that beats the spawn reply interrupts once the seat exists", mesh.interrupted.includes(c4.sessionId) && r4?.stopReason === "cancelled", { r4, interrupted: mesh.interrupted });
 mesh.spawnDelay = 0;
 mesh.onInterrupt = () => {};
+
+// A delete while a prompt runs answers it and leaves the seat alone.
+const c5 = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+mesh.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [] };
+const interruptsBefore = mesh.interrupted.length;
+const p5 = go(c5.sessionId);
+await tick(50);
+await agent.request(methods.agent.session.delete, { sessionId: c5.sessionId });
+const r5 = await p5;
+check("deleting a session answers its running prompt cancelled and leaves the seat running", r5?.stopReason === "cancelled" && mesh.interrupted.length === interruptsBefore && !mesh.despawned.includes(c5.sessionId), r5);
 
 let threw = false;
 try { promptText([{ type: "image", data: "", mimeType: "image/png" }]); } catch { threw = true; }

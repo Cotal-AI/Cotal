@@ -32,6 +32,8 @@ const OPS = {
   models: { profile: "control-caller-privileged", targeted: false },
   purge: { profile: "control-caller-admin", targeted: false },
   stop: { profile: "control-caller-admin", targeted: true },
+  // Types text into the seat's terminal and presses Enter: an operator-only seat write.
+  input: { profile: "control-caller-admin", targeted: true },
   // Writes the connector's interrupt key into the seat: an operator-only seat write, like `input`.
   interrupt: { profile: "control-caller-admin", targeted: true },
 } as const;

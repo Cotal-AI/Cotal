@@ -6,9 +6,12 @@
  * with that prompt as its kickoff, in the session's folder, through the session's manager. The seat
  * belongs to the manager and outlives this process.
  *
- * A later prompt is a direct message from the operator. Cotal does not tie a message to the run it
- * starts, so that prompt answers when the seat stops working: its presence is no longer `working` and
- * no run that started after the message is open. A seat that does not start working soon after the message ends the prompt too.
+ * A later prompt is typed into the seat's terminal through its manager's `input` command, so it
+ * arrives as the operator's own words, as the first prompt does. Cotal does not tie typed text to the
+ * run it starts, so that prompt answers when the seat stops working: its presence is no longer
+ * `working` and no run that started after the text was typed is open. A seat that does not start
+ * working soon after ends the prompt too. A manager that refuses the text fails the prompt with its
+ * reason.
  *
  * Every update of a turn is sent before the prompt answers. A client may drop updates that arrive
  * after a prompt settled, so nothing is left to send afterwards.
@@ -74,7 +77,8 @@ interface Turn {
   started: boolean;
   /** Since when the seat has been stopped with no run open. */
   quietSince?: number;
-  /** A cancel arrived: `requested` until the interrupt key is written, then when it was. */
+  /** A cancel arrived: `requested` until the interrupt key is written, then when it was or when the
+   *  manager refused it. */
   cancelled?: "requested" | number;
   /** Interrupt the seat for a `session/cancel`. */
   readonly cancel: () => void;
@@ -197,6 +201,11 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   };
 
   const unbind = (session: Session): void => {
+    // A deleted or replaced session's running prompt answers cancelled. Its seat keeps working.
+    if (session.turn) {
+      session.turn.cancelled = Date.now();
+      session.turn.stop("cancelled");
+    }
     if (session.seat) byPrincipal.delete(principal(session.seat));
     session.seat = undefined;
     session.mapper = new FrameMapper();
@@ -225,9 +234,9 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   };
 
   /** Run one turn to its end. Every update is sent before this resolves. A `run` prompt belongs to the
-   *  seat's first run. An `idle` prompt's runs are the ones that start at or after the time `start`
-   *  resolves with. */
-  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: () => Promise<number | void>): Promise<StopReason> =>
+   *  seat's first run. An `idle` prompt's runs are the ones that start once `start` is called, so a
+   *  run that starts and ends before `start` resolves still counts. */
+  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: () => Promise<void>): Promise<StopReason> =>
     new Promise<StopReason>((resolve, reject) => {
       let settled = false;
       const finish = (close: "completed" | "failed", then: () => void) => {
@@ -239,7 +248,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         void Promise.allSettled(closes).then(then);
       };
       // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
-      let after = until === "run" ? 0 : Infinity;
+      const after = until === "run" ? 0 : Date.now();
       let begun = false;
       const interrupt = (): void => {
         const seat = session.seat;
@@ -247,15 +256,18 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         m.interrupt(seat).then(() => {
           if (turn.cancelled === "requested") turn.cancelled = Date.now();
         }, (e: Error) => {
-          turn.cancelled = undefined;
+          // A cancelled prompt answers cancelled even when the seat cannot be stopped (ACP v1).
           options.log(`session ${session.id}: interrupt refused: ${e.message}`);
-          void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Could not stop ${seat.name}: ${e.message}. The turn keeps running.` } });
+          void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `Could not stop ${seat.name}: ${e.message}. It keeps working on the mesh.` } })
+            .catch((err: Error) => options.log(`session ${session.id}: update not sent: ${err.message}`));
+          turn.cancelled = Date.now();
+          turn.stop("cancelled");
         });
       };
       // After a cancel, the prompt answers `cancelled` however the turn ends.
       const turn: Turn = {
         until,
-        get after() { return after; },
+        after,
         runs: new Set(),
         started: false,
         lastSeen: Date.now(),
@@ -264,7 +276,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         cancel: () => {
           if (turn.cancelled !== undefined) return;
           turn.cancelled = "requested";
-          // A cancel that beats the spawn reply or the stored message interrupts once that lands.
+          // A cancel that beats the spawn reply or the typed prompt interrupts once that lands.
           if (begun) interrupt();
         },
       };
@@ -285,12 +297,13 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
           return;
         }
         turn.lastSeen = now;
-        if (until !== "idle" || after === Infinity) return;
+        // Settle only once the prompt was typed, so a refusal still fails the prompt.
+        if (until !== "idle" || !begun) return;
         if (status === "working") turn.started = true;
         if (!turn.started) {
           if (now - after > startMs) {
             clearInterval(turn.timer);
-            const line = `${session.seat.name} has the message but has not started on it yet.`;
+            const line = `${session.seat.name} has the prompt but has not started on it yet.`;
             void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).finally(() => turn.stop("end_turn"));
           }
           return;
@@ -299,17 +312,9 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         if (status === "working" || running) turn.quietSince = undefined;
         else if (now - (turn.quietSince ??= now) >= settleMs) turn.stop("end_turn");
       }, WATCH_MS);
-      start().then((at) => {
+      start().then(() => {
         begun = true;
         if (turn.cancelled === "requested") interrupt();
-        if (at === undefined) return;
-        after = at;
-        // A run may have started while the message was being stored.
-        for (const [runId, ts] of session.open) {
-          if (ts < at) continue;
-          turn.runs.add(runId);
-          turn.started = true;
-        }
       }, (e: Error) => turn.fail(e));
     });
 
@@ -396,7 +401,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       if (!text) throw RequestError.invalidParams(undefined, "the prompt is empty");
       const running = session.seat;
       if (running) {
-        const stopReason = await runTurn(session, m, "idle", async () => (await m.dm(running, text)).storedAt);
+        const stopReason = await runTurn(session, m, "idle", () => m.input(running, text));
         return { stopReason };
       }
       const { agent: harness, model } = parseModel(session.selection.model);
