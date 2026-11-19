@@ -1022,9 +1022,10 @@ seats stay running. Third-party connectors keep their own versions.
 This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.
-On Linux without `XDG_RUNTIME_DIR`, update checks the existing private `/run/user/<effective uid>`
-for the default daemon endpoint. If that runtime directory is absent, it continues with the ordinary
-Manager continuity and installation checks.
+On Linux without `XDG_RUNTIME_DIR`, `cotal update` and `cotal update --self` use the existing
+`/run/user/<effective uid>` for the default daemon endpoint and native user-service tools.
+The directory must be real, owned by that user and mode 0700. Update never creates or repairs it.
+If it is absent, the ordinary Manager continuity and installation checks still apply.
 Update reports and skips hosted records with no live child, including stopped or refused Managers.
 A live child whose custody cannot be confirmed still blocks update and names service-disconnect
 for that space before retrying.

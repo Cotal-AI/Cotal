@@ -10,7 +10,7 @@ import { update, updateRuntime, installedCliVersion, localUpdateManagers, readMa
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
-import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
+import { daemonPaths, EndpointRefusal, prepareDaemonRuntimeEnvironment, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
@@ -200,6 +200,7 @@ const composed: Command = { ...command, async run(args) {
     }
   };
   try {
+  if (args.values.check !== true && !args.values.auto && !args.values.notify) prepareDaemonRuntimeEnvironment();
   if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();

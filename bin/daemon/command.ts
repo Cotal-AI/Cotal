@@ -29,7 +29,7 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, prepareDaemonRuntimeEnvironment, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
@@ -103,8 +103,7 @@ function target(args: ParsedArgs, recoverMissingHome = false): Target {
 function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
   try {
     const resolved = target(args, recoverMissingHome);
-    // Native user-service tools need the same validated runtime as the socket client.
-    if (process.platform === "linux" && !process.env.XDG_RUNTIME_DIR) process.env.XDG_RUNTIME_DIR = `/run/user/${process.geteuid!()}`;
+    prepareDaemonRuntimeEnvironment();
     return resolved;
   }
   catch (e) {

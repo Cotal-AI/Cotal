@@ -3,7 +3,7 @@ import { withIdpSessionDir } from "@cotal-ai/auth";
 import { homeCotalDir, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { queryDaemon } from "./client.js";
-import { daemonPaths } from "./endpoint.js";
+import { daemonPaths, prepareDaemonRuntimeEnvironment } from "./endpoint.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "./install.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { processBirth } from "./lifetime.js";
@@ -22,6 +22,7 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
   let admission: UpdateAdmission;
   const deferred = (reason: string): UpdateAdmission => ({ disposition: "deferred", occupied: null, hostedSpaces: [], reason: reason.slice(0, 2000) });
   try {
+    prepareDaemonRuntimeEnvironment();
     const paths = daemonPaths();
     const recorded = existsSync(unitReceiptFile(paths)) && preflightInstalledDaemon(paths, undefined, request.daemonArgv);
     const same = recorded && installedDaemonIdentity(paths, undefined, request.daemonArgv).same;
