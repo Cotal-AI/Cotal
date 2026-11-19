@@ -163,6 +163,28 @@ regressions() {
     echo VERDICT=ok
   '
 
+  regression path-block-inert node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester
+    q=$(printf "\047")
+    cat >/tmp/expected-rc <<EOF
+: <<\DOC
+# cotal
+case ":\$PATH:" in *:${q}/home/tester/.local/bin${q}:*) ;; *) export PATH=${q}/home/tester/.local/bin${q}:"\$PATH" ;; esac
+DOC
+EOF
+    cat /tmp/expected-rc >/home/tester/.bashrc
+    cat /tmp/expected-rc >/home/tester/.profile
+    su tester -c "SHELL=/bin/bash sh /install.sh --no-setup" >/tmp/o 2>&1 || { cat /tmp/o; exit 1; }
+    cmp -s /tmp/expected-rc /home/tester/.bashrc && cmp -s /tmp/expected-rc /home/tester/.profile || exit 1
+    if grep -qF "~/.local/bin is on your PATH" /tmp/o; then cat /tmp/o; exit 1; fi
+    grep -qF "Found matching Cotal PATH lines in ~/.bashrc, ~/.profile." /tmp/o || { cat /tmp/o; exit 1; }
+    line="export PATH=${q}/home/tester/.local/bin${q}:\"\$PATH\""
+    grep -qxF "    $line" /tmp/o || { cat /tmp/o; exit 1; }
+    su tester -c ". \"\$HOME/.profile\" && ! command -v cotal && $line &&
+      test \"\$(command -v cotal)\" = \"\$HOME/.local/bin/cotal\" && cotal --version" || exit 1
+    echo VERDICT=ok
+  '
+
   # A $HOME containing a space used to word-split the bash rc candidate list, so the
   # fallback named a TRUNCATED path outside the home directory and the PATH block was
   # appended there. Containment is the claim; this is the case that broke it.

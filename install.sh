@@ -842,10 +842,11 @@ EOF
 # PATH
 # ---------------------------------------------------------------------------------------
 
-PATH_STATE="" # already | added | manual
+PATH_STATE="" # already | added | manual | unverified
 PATH_RC=""
 PATH_UPDATED=""
 PATH_MANUAL=""
+PATH_UNVERIFIED=""
 
 on_path() {
   case ":$PATH:" in
@@ -917,7 +918,7 @@ setup_path() {
   elif [ -n "$PATH_UPDATED" ]; then
     PATH_STATE="added"
   else
-    PATH_STATE="already"
+    PATH_STATE="unverified"
   fi
   if [ -n "$PATH_UPDATED" ]; then
     PATH="$BIN_DIR:$PATH"
@@ -1001,6 +1002,7 @@ write_path_block() {
     case "$_nl$_rc_contents$_nl" in
       *"$_nl$_marker$_nl$_line$_nl"* | *"$_nl$_marker$_nl$_path_command$_nl"*)
         rmdir "$_lock" 2>/dev/null || true
+        PATH_UNVERIFIED="${PATH_UNVERIFIED:+$PATH_UNVERIFIED, }$(tildify "$PATH_RC")"
         return 0
         ;;
     esac
@@ -1011,6 +1013,25 @@ write_path_block() {
   fi
   rmdir "$_lock" 2>/dev/null || true
   PATH_UPDATED="${PATH_UPDATED:+$PATH_UPDATED, }$(tildify "$PATH_RC")"
+}
+
+report_path_setup() {
+  case "$PATH_STATE" in
+    already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
+    added) ok_line "Added $(tildify "$BIN_DIR") to your shell's PATH configuration" ;;
+    manual) warn_line "PATH setup for $(tildify "$BIN_DIR") needs a manual step" ;;
+  esac
+  if [ -n "$PATH_UNVERIFIED" ]; then
+    dim_line "Found matching Cotal PATH lines in $PATH_UNVERIFIED. The installer does not run startup files."
+  fi
+  if [ "$PATH_STATE" = manual ]; then
+    dim_line "To set PATH in your current shell, run:"
+  elif [ -n "$PATH_UNVERIFIED" ]; then
+    dim_line "If a new shell cannot find cotal, run:"
+  else
+    return 0
+  fi
+  dim_line "  export PATH=$(shquote "$BIN_DIR"):\"\$PATH\""
 }
 
 # The child shell can inspect PATH, but cannot clear its parent's command cache or aliases.
@@ -1114,17 +1135,17 @@ next_steps() {
       printf '    %s%s%s   %sreload your shell, once%s\n' "$C_BRAND" "$_reload" "$C_OFF" "$C_DIM" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       ;;
-    manual)
-      printf '    %s%s%s\n' "$C_BRAND" "export PATH=$(shquote "$BIN_DIR"):\"\$PATH\"" "$C_OFF"
+    manual | unverified)
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
-      blank
       if [ -n "$PATH_MANUAL" ]; then
+        blank
         dim_line "Add that export to: $PATH_MANUAL"
-      else
+      elif [ "$PATH_STATE" = manual ]; then
+        blank
         dim_line "Add that export to your shell rc to make it permanent."
       fi
       ;;
-    *)
+    already)
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal setup" "$C_OFF" "$C_DIM" "get your machine ready" "$C_OFF"
       printf '    %s%s%s     %s%s%s\n' "$C_BRAND" "$_cotal up --detach" "$C_OFF" "$C_DIM" "start your mesh" "$C_OFF"
       printf '    %s%s%s          %s%s%s\n' "$C_BRAND" "$_cotal spawn" "$C_OFF" "$C_DIM" "put an agent on it" "$C_OFF"
@@ -1283,12 +1304,7 @@ main() {
     fi
   fi
   setup_path
-  case "$PATH_STATE" in
-    already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;
-    added) ok_line "Added $(tildify "$BIN_DIR") to your shell's PATH configuration" ;;
-    manual) warn_line "PATH setup for $(tildify "$BIN_DIR") needs a manual step" ;;
-  esac
-
+  report_path_setup
   report_path_selection
   ELAPSED=$(($(date +%s) - _t0))
 
