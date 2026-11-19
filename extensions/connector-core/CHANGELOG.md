@@ -1,5 +1,13 @@
 # @cotal-ai/connector-core
 
+## 0.171.3
+
+### Patch Changes
+
+- 0c4b5c0: Fix `cotal mcp` shutdown so closing a stdio client retires its local identity without waiting for another CLI process or expired shutdown timers.
+- 03af687: The uninstall instructions now show where Cotal keeps settings and connectors and when it is safe to remove them.
+- 14ee1ad: A Claude Code seat whose connector started more than two seconds after the session no longer publishes nothing on the event plane for its whole session. The `SessionStart` hook at launch now keeps dialing the connector's control socket for up to 30 seconds, the time Claude gives an MCP server to connect, instead of giving up at two seconds and losing the only event that says where the transcript starts. A clear or a compaction keeps the two-second budget, and later hooks still fail open at once.
+
 ## 0.171.2
 
 ### Patch Changes
