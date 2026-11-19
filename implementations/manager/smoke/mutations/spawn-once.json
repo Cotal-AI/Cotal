@@ -64,7 +64,7 @@
     },
     {
       "name": "S6 a seat that never joined is left running",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n",
       "replace": "",
       "expectRed": "...and the seat is stopped, never left running with nothing to do"
@@ -78,7 +78,7 @@
     },
     {
       "name": "S8 the readiness stop waits for the spawn's terminal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n",
       "replace": "        await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail, ...(readiness.running ? { running: true } : {}) } });\n        if (managed.once) {\n          this.endOnceBeforeServe(managed, \"readiness-timeout\");\n        }\n",
       "expectRed": "a seat that never joins is stopped while its spawn's terminal cannot be published"
@@ -134,21 +134,21 @@
     },
     {
       "name": "S16 a startup that skipped the prompt serves the task",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "        if (startup !== \"confirmed\") {\n",
       "replace": "        if (startup !== \"confirmed\" && startup !== \"ready\") {\n",
       "expectRed": "a startup that opened its input screen without the prompt fails, saying why"
     },
     {
       "name": "S17 the readiness verdict does not wait for the startup outcome",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "        const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);\n",
       "replace": "        const startup = \"confirmed\" as StartupOutcome;\n",
       "expectRed": "while the notice is awaited the seat has joined, but its pull finds no task"
     },
     {
       "name": "S18 the task is served before its spawn's succeeded terminal is written",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      if (onceTask && committed === true) this.openOnceDelivery(onceTask.ref);\n      else if (onceTask) {\n",
       "replace": "      if (onceTask) this.openOnceDelivery(onceTask.ref);\n      if (onceTask && committed !== true) {\n",
       "expectRed": "a confirmed spawn whose succeeded terminal cannot be written never serves its task: its seat is stopped"
