@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
+import { isExactOidcIssuer, validOidcClientId } from "./idp-url.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 
 export { homeCotalDir, userCotalDir } from "./cotal-home.js";
@@ -150,8 +151,8 @@ export interface MeshEntry {
 export interface UserAuthInfo {
   /** The registered auth provider's name (registry key, e.g. `"cotal"`). */
   provider: string;
-  /** The pinned IdP: the login target (`cotal login --idp <url>`) + exact issuer/audience pins. */
-  idp: { url: string; issuer: string; audience: string };
+  /** The pinned IdP, with explicit login mode when the provider uses OIDC device authorization. */
+  idp: { url: string; issuer: string; audience: string; loginMode?: "oidc" };
   /** The auth service's exchange/JWKS base URL. For a LOCAL entry this is convenience, not trust
    *  (the service re-records it on every `up`). For a REMOTE entry ({@link UserAuthInfo.remote})
    *  it is a STATED TRUST POSITION: the operator pinned it at registration — there is no local
@@ -183,6 +184,10 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
   if (o.idp === null || typeof o.idp !== "object" || typeof o.idp.url !== "string" || !o.idp.url ||
       typeof o.idp.issuer !== "string" || !o.idp.issuer || typeof o.idp.audience !== "string" || !o.idp.audience)
     throw new Error("auth provider publicAuth: idp { url, issuer, audience } trust pins are required");
+  if (o.idp.loginMode !== undefined && o.idp.loginMode !== "oidc")
+    throw new Error("auth provider publicAuth: unsupported IdP login mode");
+  if (o.idp.loginMode === "oidc" && (!isExactOidcIssuer(o.idp.issuer) || !validOidcClientId(o.idp.audience)))
+    throw new Error("auth provider publicAuth: OIDC login requires an exact issuer and valid client ID");
   if (o.endpoints !== undefined && (o.endpoints === null || typeof o.endpoints !== "object" ||
       (o.endpoints.url !== undefined && typeof o.endpoints.url !== "string") ||
       (o.endpoints.agentProvisioningUrl !== undefined && typeof o.endpoints.agentProvisioningUrl !== "string") ||
@@ -197,7 +202,7 @@ export function assertUserAuthInfo(v: unknown): UserAuthInfo {
   // must fail here rather than at the first connect.
   if (o.remote === true && !o.endpoints?.url)
     throw new Error("auth provider publicAuth: a remote entry requires a pinned endpoints.url (the exchange base verified at registration)");
-  return { provider: o.provider, idp: { url: o.idp.url, issuer: o.idp.issuer, audience: o.idp.audience },
+  return { provider: o.provider, idp: { url: o.idp.url, issuer: o.idp.issuer, audience: o.idp.audience, ...(o.idp.loginMode ? { loginMode: o.idp.loginMode } : {}) },
     ...(o.endpoints ? { endpoints: {
       ...(o.endpoints.url ? { url: o.endpoints.url } : {}),
       ...(o.endpoints.agentProvisioningUrl ? { agentProvisioningUrl: o.endpoints.agentProvisioningUrl } : {}),

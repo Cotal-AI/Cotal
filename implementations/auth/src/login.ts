@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createLocalJWKSet, decodeJwt, type JWK } from "jose";
 import { acquireLockAsync, isCredentialTransportUrl, liveLockOwnerPid, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl, shellPath } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, oidcLoginCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl, isExactOidcIssuer, validOidcClientId } from "@cotal-ai/workspace";
 import { pinnedJwksResolver } from "./issuer.js";
 import { verifyIdpToken } from "./idp.js";
 
@@ -266,8 +266,7 @@ export function oidcEndpoint(value: unknown, name: string): string {
 /** An OIDC issuer is compared as written, even when its cache key is normalized. */
 export function normalizeOidcIssuer(issuer: string): string {
   const base = normalizeIdpUrl(issuer);
-  const parsed = new URL(issuer);
-  if (issuer.includes("?") || issuer.includes("#") || (parsed.href !== issuer && parsed.origin !== issuer))
+  if (!isExactOidcIssuer(issuer))
     throw new IdpConfigurationError("use the exact OIDC issuer URL without a query or fragment");
   return base;
 }
@@ -314,15 +313,7 @@ function opaqueRefreshToken(value: unknown): value is string {
   return text(value) && value === value.trim() && !looksLikeJwt(value);
 }
 
-export function validOidcClientId(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && !/[\s\x00-\x1f\x7f]/.test(value);
-}
-
-function oidcLoginCommand(issuer: string, clientId: string): string {
-  return `cotal login --oidc --idp ${shellPath(issuer)} --client-id ${shellPath(clientId)}`;
-}
-
-async function exchangeOidcProof(session: Pick<OidcSession, "issuer" | "clientId" | "tokenEndpoint" | "jwksUri">, accessToken: string, signal?: AbortSignal) {
+async function exchangeOidcToken(session: Pick<OidcSession, "clientId" | "tokenEndpoint">, accessToken: string, signal?: AbortSignal): Promise<string> {
   const res = await oidcFetch(session.tokenEndpoint, signal, {
     grant_type: TOKEN_EXCHANGE, client_id: session.clientId,
     subject_token: accessToken, subject_token_type: ACCESS_TOKEN,
@@ -332,12 +323,17 @@ async function exchangeOidcProof(session: Pick<OidcSession, "issuer" | "clientId
   if (!res.ok) throw new Error(`OIDC token exchange failed (HTTP ${res.status})`);
   if (body?.issued_token_type !== ID_TOKEN || !text(body.access_token))
     throw new Error("OIDC token exchange did not return an ID token");
-  const proof = await verifyIdpToken(body.access_token, {
+  return body.access_token;
+}
+
+async function verifyOidcProof(session: Pick<OidcSession, "issuer" | "clientId" | "jwksUri">, jwt: string, signal?: AbortSignal) {
+  const proof = await verifyIdpToken(jwt, {
     issuer: session.issuer, audience: session.clientId, key: pinnedJwksResolver(session.jwksUri),
   });
   if (proof.exp * 1000 <= Date.now()) throw new Error("OIDC token exchange returned an expired ID token");
+  if (!text(proof.sub)) throw new Error("OIDC token exchange returned a blank subject");
   throwIfCancelled(signal);
-  return { jwt: body.access_token, sub: proof.sub };
+  return { jwt, sub: proof.sub };
 }
 
 /** Probe the pinned JWKS at first enable. Explicit OIDC trust requires a key the proof verifier
@@ -479,7 +475,8 @@ async function requestDeviceLogin(opts: DeviceLoginOpts): Promise<{ session: Bet
           throw new Error("OIDC device grant must return a bearer access token and an opaque refresh token");
         const session = { mode: "oidc" as const, id: randomUUID(), issuer: opts.idpUrl, clientId: opts.clientId,
           tokenEndpoint, jwksUri: oidc.jwksUri, refreshToken: tok.refresh_token, ...(oidc.revocationEndpoint ? { revocationEndpoint: oidc.revocationEndpoint } : {}) };
-        const { jwt, sub } = await exchangeOidcProof(session, tok.access_token, opts.signal);
+        const jwt = await exchangeOidcToken(session, tok.access_token, opts.signal);
+        const { sub } = await verifyOidcProof(session, jwt, opts.signal);
         return { session: { ...session, sub }, jwt };
       }
       const tok = await idpJson<{ access_token: string; expires_in: number }>(tokenEndpoint, poll, opts.signal);
@@ -630,7 +627,7 @@ function currentOidcSession(dir: string, session: OidcSession): OidcSession {
 }
 
 async function refreshOidcProof(dir: string, session: OidcSession, signal?: AbortSignal) {
-  const grant = await withAsyncSessionLock(dir, async () => {
+  const exchange = await withAsyncSessionLock(dir, async () => {
     const current = currentOidcSession(dir, session);
     throwIfCancelled(signal);
     const cached = oidcJwtCache.cached(oidcCacheKey(dir, current));
@@ -660,13 +657,13 @@ async function refreshOidcProof(dir: string, session: OidcSession, signal?: Abor
       saveIdpSessionLocked(dir, current.issuer, { ...current, refreshToken: body.refresh_token });
     if (!text(body?.access_token) || typeof body.token_type !== "string" || body.token_type.toLowerCase() !== "bearer")
       throw new Error("OIDC refresh did not return a bearer access token");
-    return { current, accessToken: body.access_token };
+    // A later refresh can invalidate this access token. Keep ownership until the provider has
+    // exchanged it, without holding the lock during JWKS lookup or verification of the ID token.
+    return { current, jwt: await exchangeOidcToken(current, body.access_token, signal) };
   }, signal);
-  if (grant.cached) return grant.cached;
-  // Exchange and JWKS lookup do not touch the rotating credential. Other processes can refresh
-  // while this proof is checked. The caller rechecks the session ID before returning the proof.
-  const proof = await exchangeOidcProof(grant.current, grant.accessToken, signal);
-  if (proof.sub !== grant.current.sub) throw new Error("OIDC token exchange returned a different subject than the cached sign-in");
+  if (exchange.cached) return exchange.cached;
+  const proof = await verifyOidcProof(exchange.current, exchange.jwt, signal);
+  if (proof.sub !== exchange.current.sub) throw new Error("OIDC token exchange returned a different subject than the cached sign-in");
   return proof;
 }
 
@@ -819,7 +816,7 @@ export function establishIdpSession(opts: EstablishOpts & { oidc?: false }): Pro
 export function establishIdpSession(opts: EstablishOpts): Promise<EstablishedSession>;
 export async function establishIdpSession(opts: EstablishOpts): Promise<EstablishedSession> {
   const candidate = await stageIdpSession(opts);
-  return opts.oidc ? withAsyncSessionLock(opts.dir, () => commitStagedLoginLocked(candidate)) : commitStagedIdpSession(candidate);
+  return opts.oidc ? withAsyncSessionLock(opts.dir, () => commitStagedLoginLocked(candidate), opts.signal) : commitStagedIdpSession(candidate);
 }
 
 function ownerKey(idpUrl: string, sub: string): string {
@@ -1290,10 +1287,10 @@ async function withAsyncSessionLock<T>(dir: string, run: () => T | Promise<T>, s
   throwIfCancelled(signal);
   const path = resolve(dir, "idp-sessions.lock");
   mkSecretDir(dir);
-  // The holder runs at most one timed provider request. Match that budget instead of rejecting
-  // normal contention early, but leave a stalled or sustained queue before it can wait forever.
+  // Budget for one refresh and token exchange under ownership. Waiters can still cancel, and a
+  // stalled or sustained queue returns a retry instead of waiting indefinitely.
   const lock = await acquireLockAsync(path, {
-    label: "IdP session cache", waitMs: idpTimeoutMs(), signal,
+    label: "IdP session cache", waitMs: 2 * idpTimeoutMs(), signal,
     onTimeout: () => new IdpUnreachableError("the OIDC session cache is busy; retry after the current provider request finishes"),
   }).catch((error: unknown) => { throwIfCancelled(signal); throw error; });
   try { return await run(); }

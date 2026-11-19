@@ -21,3 +21,14 @@ export function checkIdpUrl(value: string): IdpUrlCheck {
   if (url.username || url.password) return { ok: false, reason: "credentials", host: url.host };
   return { ok: true, url };
 }
+
+/** OIDC uses the issuer as written, including a trailing slash if the provider declares one. */
+export function isExactOidcIssuer(value: string): boolean {
+  const checked = checkIdpUrl(value);
+  return checked.ok && !/[?#]/.test(value) && (checked.url.href === value || checked.url.origin === value);
+}
+
+/** The same identifier is used in the provider grant and the pinned proof audience. */
+export function validOidcClientId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && !/[\s\p{Cc}]/u.test(value);
+}

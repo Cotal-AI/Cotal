@@ -8,9 +8,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { acquireLock, createSpaceAuth } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, checkUserBundle, recordMesh, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { cotalAuthProvider, deriveOwnerForIdpSubject, establishIdpSession, fetchIdpJwt, IdpLoginCancelled, IdpUnreachableError, loadIdpSession, loadPinnedIdp, pinnedJwksResolver, verifyIdpToken, verifyToolResultHumanProof } from "../src/index.js";
+import { composeUserBundle, cotalAuthProvider, deriveOwnerForIdpSubject, establishIdpSession, fetchIdpJwt, finalizeUserBundleEndpoint, grantActor, IdpLoginCancelled, IdpUnreachableError, loadIdpSession, loadOwnerSecret, loadPinnedIdp, pinnedJwksResolver, verifyIdpToken, verifyToolResultHumanProof } from "../src/index.js";
 
 const { check, finish } = createSuite();
 const here = join(import.meta.dirname, "..", "..", "..");
@@ -33,11 +33,12 @@ const owner = deriveOwnerForIdpSubject(new Uint8Array(32).fill(1), "fixture", su
 let meshProofs = 0;
 let meshRedirect = false;
 let approvalPending = false, discoveryRedirect = false, tokenRedirect = false, keysRedirect = false, wrongIssuer = false, multiAudience = false;
-let missingRefresh = false, omitRotation = false, rejectExchange = false, changeSubject = false, noRevocation = false;
-let refreshGeneration = 0, newestRefresh = 0, accessGeneration = 0, allowedAccess = new Set<number>();
+let missingRefresh = false, omitRotation = false, rejectExchange = false, changeSubject = false, blankSubject = false, noRevocation = false;
+let refreshGeneration = 0, newestRefresh = 0, accessGeneration = 0, activeAccess: string | undefined;
 let onRotation: (() => Promise<void>) | undefined;
-let tokenLatency = 0;
-let exchanging = 0, refreshWhileExchanging = false;
+let onKeys: (() => void) | undefined;
+let slowExchange = false;
+let supersededExchanges = 0;
 let jwks: object[] = [jwk];
 let deviceFragment = false;
 
@@ -51,7 +52,10 @@ const server = createServer(async (req, res) => {
       if (discoveryRedirect) return redirect();
       return send(200, { issuer: wrongIssuer ? `${issuer}wrong` : issuer, device_authorization_endpoint: `${origin}/oauth/device${deviceFragment ? "#" : ""}`, token_endpoint: `${origin}/oauth/token`, jwks_uri: keysUrl, ...(noRevocation ? {} : { revocation_endpoint: `${origin}/oauth/revoke` }) });
     }
-    if (route === "GET /oauth/keys") return keysRedirect ? redirect() : send(200, { keys: jwks });
+    if (route === "GET /oauth/keys") {
+      onKeys?.();
+      return keysRedirect ? redirect() : send(200, { keys: jwks });
+    }
     if (route === "POST /mesh/exchange") {
       let body = "";
       for await (const chunk of req) body += chunk;
@@ -75,23 +79,15 @@ const server = createServer(async (req, res) => {
       assert.equal(form.get("token_type_hint"), "refresh_token");
       if (form.get("token") !== `${refreshPrefix}${newestRefresh}`) return send(400, { error: "invalid_request" });
       revoked.push(newestRefresh);
-      allowedAccess = new Set();
+      activeAccess = undefined;
       newestRefresh = 0;
       return send(200, {});
     }
     if (route !== "POST /oauth/token") return send(404, {});
     if (tokenRedirect) return redirect();
     const grantType = form.get("grant_type");
-    if (tokenLatency) {
-      if (grantType === "refresh_token" && exchanging) refreshWhileExchanging = true;
-      if (grantType === exchangeGrant) exchanging++;
-      try { await delay(tokenLatency); }
-      finally { if (grantType === exchangeGrant) exchanging--; }
-    }
-    const access = () => {
-      allowedAccess.add(++accessGeneration);
-      return `${accessPrefix}${accessGeneration}`;
-    };
+    if (slowExchange && grantType === exchangeGrant) await delay(900);
+    const access = () => (activeAccess = `${accessPrefix}${++accessGeneration}`);
     switch (grantType) {
       case deviceGrant:
         assert.equal(form.get("device_code"), "device-fixture");
@@ -111,12 +107,13 @@ const server = createServer(async (req, res) => {
         assert.equal(form.get("audience"), clientId);
         assert.equal(form.get("scope"), "openid");
         const at = form.get("subject_token") ?? "";
-        if (rejectExchange || !at.startsWith(accessPrefix) || !allowedAccess.has(Number(at.slice(accessPrefix.length))))
+        if (at !== activeAccess) supersededExchanges++;
+        if (rejectExchange || at !== activeAccess)
           return send(400, { error: "invalid_grant", error_description: at });
         const jwt = await new SignJWT({ preferred_username: "oidc-human", amr: ["pwd"] })
           .setProtectedHeader({ alg: "EdDSA", kid: jwk.kid })
           .setIssuer(issuer).setAudience(multiAudience ? [clientId, "other-app"] : [clientId])
-          .setSubject(changeSubject ? "other-subject" : subject).setIssuedAt().setExpirationTime("5m").sign(key.privateKey);
+          .setSubject(blankSubject ? " \t" : changeSubject ? "other-subject" : subject).setIssuedAt().setExpirationTime("5m").sign(key.privateKey);
         return send(200, { token_type: "N_A", issued_token_type: idType, access_token: jwt });
       }
       default: return send(400, { error: "unsupported_grant_type" });
@@ -152,22 +149,25 @@ const assertNoTokens = (output: string) => {
   assert.equal(output.includes(accessPrefix) || output.includes(refreshPrefix) || output.includes("eyJ"), false, "a token reached operator output");
 };
 
-function registerRemote(home: string): string {
+function recordForHome(home: string, entry: Parameters<typeof recordMesh>[0]): void {
+  const before = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = home;
+  try { recordMesh(entry); }
+  finally {
+    if (before === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = before;
+  }
+}
+
+function registerRemote(home: string, idp: ReturnType<typeof assertUserAuthInfo>["idp"] = { url: issuer.slice(0, -1), issuer, audience: clientId }): string {
   const space = "oidc-remote";
   const project = mkdtempSync(join(root, "remote-"));
   const dir = userAuthStateDir(project, space);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const sentinelCredsPath = join(dir, "sentinel.creds");
   writeFileSync(sentinelCredsPath, "unused-by-whoami", { mode: 0o600 });
-  const before = process.env.COTAL_HOME;
-  process.env.COTAL_HOME = home;
-  try {
-    recordMesh({ space, root: project, server: "nats://127.0.0.1:1", ts: new Date().toISOString(), mode: "user", origin: "manual",
-      userAuth: { provider: "cotal", remote: true, idp: { url: issuer.slice(0, -1), issuer, audience: clientId }, endpoints: { url: `${origin}/mesh` }, sentinelCredsPath } });
-  } finally {
-    if (before === undefined) delete process.env.COTAL_HOME;
-    else process.env.COTAL_HOME = before;
-  }
+  recordForHome(home, { space, root: project, server: "nats://127.0.0.1:1", ts: new Date().toISOString(), mode: "user", origin: "manual",
+    userAuth: { provider: "cotal", remote: true, idp, endpoints: { url: `${origin}/mesh` }, sentinelCredsPath } });
   return project;
 }
 
@@ -186,13 +186,12 @@ try {
 
   const project = registerRemote(home);
   const whoami = () => cliAt(home, project, "whoami", "--space", "oidc-remote", "--plain");
-  tokenLatency = 900;
+  slowExchange = true;
   const countParallel = 6;
   const concurrent = await Promise.all(Array.from({ length: countParallel }, whoami));
-  tokenLatency = 0;
+  slowExchange = false;
   const expectedRotations = Array.from({ length: countParallel }, (_, i) => first + i);
-  check("six shipped whoami processes use successive rotations at 900 ms provider latency", concurrent.every(r => r.code === 0 && r.output.includes(`${owner}.cli`)) && meshProofs === countParallel && refreshed.join() === expectedRotations.join() && newestRefresh === first + countParallel, { codes: concurrent.map(r => r.code), successes: meshProofs, rotations: refreshed.length });
-  check("another process can refresh before proof exchange finishes", refreshWhileExchanging);
+  check("six shipped whoami processes succeed when refresh invalidates the previous access token", concurrent.every(r => r.code === 0 && r.output.includes(`${owner}.cli`)) && meshProofs === countParallel && refreshed.join() === expectedRotations.join() && newestRefresh === first + countParallel && supersededExchanges === 0, { codes: concurrent.map(r => r.code), successes: meshProofs, rotations: refreshed.length, supersededExchanges });
   concurrent.forEach(r => assertNoTokens(r.output));
 
   const jwt = await refreshLocal(home);
@@ -225,6 +224,7 @@ try {
     ["token redirect", (v: boolean) => { tokenRedirect = v; }, /redirects are refused/, 3],
     ["missing refresh token", (v: boolean) => { missingRefresh = v; }, /opaque refresh token/, 3],
     ["multi-audience proof", (v: boolean) => { multiAudience = v; }, /multi-audience session proof is rejected/, 5],
+    ["blank proof subject", (v: boolean) => { blankSubject = v; }, /subject|sub\b/, 5],
   ] as const) {
     const dir = newHome();
     requests.length = 0;
@@ -233,6 +233,25 @@ try {
     toggle(false);
     check(`${name} refuses without caching or trying a different provider protocol`, bad.code === 1 && expected.test(bad.output) && !existsSync(cache(dir)) && requests.length === hits && !requests.some(path => /redirect-target|\/device\/code/.test(path)));
     assertNoTokens(bad.output);
+  }
+
+  const queued = newHome();
+  const commitLock = acquireLock(join(queued, "idp-sessions.lock"));
+  const cancelCommit = new AbortController();
+  let keysReached!: () => void;
+  const proofInFlight = new Promise<void>(resolve => { keysReached = resolve; });
+  onKeys = keysReached;
+  const queuedLogin = establishIdpSession({ dir: queued, idpUrl: issuer, clientId, oidc: true, signal: cancelCommit.signal, onPrompt() {} }).catch((error: unknown) => error);
+  try {
+    assert.equal(await Promise.race([proofInFlight.then(() => true), queuedLogin.then(() => false)]), true);
+    await delay(150);
+    cancelCommit.abort();
+    const cancelled = await Promise.race([queuedLogin, delay(1000, undefined, { ref: false })]);
+    check("cancelled sign-in exits while its commit lock is still held and writes nothing", cancelled instanceof IdpLoginCancelled && !existsSync(cache(queued)));
+  } finally {
+    onKeys = undefined;
+    commitLock.release();
+    await queuedLogin;
   }
 
   const recover = newHome();
@@ -270,7 +289,7 @@ try {
   const recovered = await refreshChild(recover);
   check("cancelling an in-flight rotation keeps its replacement and omission does not erase it", recovered.code === 0 && refreshed.at(-1) === afterCancellation && newestRefresh === afterCancellation);
   omitRotation = false;
-  allowedAccess.clear();
+  activeAccess = undefined;
   newestRefresh = 0;
   const rejected = await refreshChild(recover);
   check("revoked refresh refuses with the explicit OIDC recovery command and no token", rejected.code === 1 && rejected.output.includes("cotal login --oidc") && !rejected.output.includes(refreshPrefix));
@@ -289,11 +308,12 @@ try {
   const up = (audience: string, ...flags: string[]) => cliAt(local, workspace, "up", "-f", manifest, "--dry-run", "--idp", issuer, "--idp-audience", audience, ...flags);
   const incomplete = await up(clientId);
   check("first-enable CLI refuses an incomplete explicit pin before contacting the provider", incomplete.code !== 0 && /--idp-jwks-uri/.test(incomplete.output) && !requests.length);
-  const invalidId = `${clientId} invalid`;
-  const badLogin = await cli(local, "login", "--oidc", "--idp", issuer, "--client-id", invalidId, "--no-browser");
-  const refusedAudience = await up(invalidId, "--idp-jwks-uri", keysUrl);
-  const audiencePaths = requests.splice(0);
-  check("login and first enable refuse the same invalid client ID before any provider request", badLogin.code === 1 && refusedAudience.code === 1 && !audiencePaths.length, { login: badLogin.code, up: refusedAudience.code, paths: audiencePaths });
+  for (const [name, invalidId] of [["space", `${clientId} invalid`], ["C1 control", `${clientId}\u0085invalid`]] as const) {
+    const badLogin = await cli(local, "login", "--oidc", "--idp", issuer, "--client-id", invalidId, "--no-browser");
+    const refusedAudience = await up(invalidId, "--idp-jwks-uri", keysUrl);
+    const audiencePaths = requests.splice(0);
+    check(`login and first enable refuse a client ID containing a ${name} before a provider request`, badLogin.code === 1 && refusedAudience.code === 1 && !audiencePaths.length, { login: badLogin.code, up: refusedAudience.code, paths: audiencePaths });
+  }
   const refusedFragment = await up(clientId, "--idp-jwks-uri", `${keysUrl}#`);
   const fragmentPaths = requests.splice(0);
   check("first enable refuses an empty explicit JWKS fragment before any provider request", refusedFragment.code === 1 && !fragmentPaths.length, { code: refusedFragment.code, paths: fragmentPaths });
@@ -320,8 +340,9 @@ try {
   const prepared = await cotalAuthProvider.prepareServer({ space, dir, store: workspaceSecretStore(workspace), operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed }, idpUrl: issuer, idpTrust });
   const url = issuer.slice(0, -1);
-  assert.deepEqual(loadPinnedIdp(dir), { url, issuer, ...idpTrust });
-  assert.deepEqual(prepared.publicAuth.idp, { url, issuer, audience: clientId });
+  assert.deepEqual(loadPinnedIdp(dir), { url, issuer, ...idpTrust, loginMode: "oidc" });
+  const publicAuth = assertUserAuthInfo(prepared.publicAuth);
+  assert.deepEqual(publicAuth.idp, { url, issuer, audience: clientId, loginMode: "oidc" });
   check("server preparation retains the exact issuer and explicit audience and JWKS", requests.splice(0).join() === "GET /oauth/keys");
   const preflight = cotalAuthProvider.preflightServer!;
   assert.deepEqual(await preflight({ space, dir }), { ok: true });
@@ -331,6 +352,30 @@ try {
     assert.ok(!verdict.ok && verdict.reason === "conflict");
   }
   check("existing pins refuse all explicit trust changes before doing any network work", requests.length === 0);
+
+  recordForHome(local, { space, root: workspace, server: "nats://127.0.0.1:1", ts: new Date().toISOString(), mode: "user", origin: "manual", userAuth: publicAuth });
+  const manager = () => cliAt(local, workspace, "manager", "start", "--space", space, "--plain");
+  const signedOutManager = await manager();
+  const oidcRemedy = `cotal login --oidc --idp '${issuer}' --client-id ${clientId}`;
+  check("manager start recovers a signed-out OIDC space using its exact issuer and client ID", signedOutManager.code === 2 && signedOutManager.output.includes("AUTH_REQUIRED") && signedOutManager.output.includes(oidcRemedy) && requests.length === 0, { code: signedOutManager.code, output: signedOutManager.output });
+  assert.equal((await login(local)).code, 0);
+  const ownerSecret = await loadOwnerSecret(workspaceSecretStore(workspace), space);
+  assert.ok(ownerSecret);
+  grantActor(dir, { owner: deriveOwnerForIdpSubject(ownerSecret, issuer, subject), actor: "cli", scope: [], allowSubscribe: ["general"], allowPublish: [] });
+  newestRefresh = 0;
+  requests.length = 0;
+  const revokedManager = await manager();
+  check("manager start recovers a revoked OIDC sign-in with the same command before launch", revokedManager.code === 2 && revokedManager.output.includes("AUTH_REQUIRED") && revokedManager.output.includes("expired or was revoked") && revokedManager.output.includes(oidcRemedy) && requests.join() === "POST /oauth/token", { code: revokedManager.code, output: revokedManager.output, requests });
+
+  const bundle = composeUserBundle({ space: "oidc-remote", server: "tls://127.0.0.1:1", idp: publicAuth.idp, sentinelCreds: "fixture" });
+  finalizeUserBundleEndpoint(bundle, `${origin}/mesh`);
+  const exported = checkUserBundle(JSON.stringify(bundle));
+  assert.ok(exported.ok);
+  assert.deepEqual(exported.value.userAuth.idp, publicAuth.idp);
+  const remoteHome = newHome();
+  const remoteRoot = registerRemote(remoteHome, exported.value.userAuth.idp);
+  const missingRemote = await cliAt(remoteHome, remoteRoot, "manager", "start", "--space", "oidc-remote", "--plain");
+  check("exported OIDC mode survives registration and gives a remote manager the same sign-in command", missingRemote.code === 2 && missingRemote.output.includes("AUTH_REQUIRED") && missingRemote.output.includes(oidcRemedy), { code: missingRemote.code, output: missingRemote.output });
 } finally {
   await new Promise<void>(resolve => server.close(() => resolve()));
 }

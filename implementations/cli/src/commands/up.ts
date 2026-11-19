@@ -112,6 +112,7 @@ import {
   findMesh,
   findPreparedSpace,
   homeCotalDir,
+  pinnedLoginCommand,
   legacyStackOtherHome,
   stackHomeRemedy,
   getCurrent,
@@ -3436,7 +3437,7 @@ async function startUserAuthService(
     const base = typeof raw.publicUrl === "string" ? raw.publicUrl : String(raw.url);
     const endpoints = { url: base, ...(typeof raw.publicUrl === "string" ? { managerAuthorityUrl: `${base.replace(/\/$/, "")}/manager-service-authority` } : {}) };
     const info = assertUserAuthInfo({ ...setup.prepared.publicAuth, endpoints });
-    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`cotal login --idp ${info.idp.url}\``));
+    if (!quietBoot) console.log(c.green("✓ user-auth service up") + c.dim(` - sign in with: \`${pinnedLoginCommand(info.idp)}\``));
     return { userAuth: info, ok: true };
   } catch (e) {
     // A typed refusal leads with its code and each detail's reason, e.g. a plane claim's

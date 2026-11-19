@@ -16,7 +16,7 @@
  *    reported as incomplete until the provider's readiness for the exact child process answers. */
 import { resolveAuthProvider, type AuthIdpInput, type AuthPrepared } from "@cotal-ai/core";
 import {
-  CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, findMesh, hasUserAuthState, userAuthStateDir,
+  CommandFailure, assertRecordIdentity, assertUserAuthInfo, CLI_USER_ACTOR, findMesh, hasUserAuthState, pinnedLoginCommand, userAuthStateDir,
   workspaceSecretStore, type UserAuthInfo,
 } from "@cotal-ai/workspace";
 import { serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -64,12 +64,11 @@ export async function preflightUserStack(root: string, space: string, idpUrl: st
 
 /** The existing local login and interactive grant for the CLI actor, read without any network.
  *  `ready` means a signed-in login whose locally readable ledger holds a granted CLI row. */
-export async function userLoginState(root: string, space: string): Promise<{ state: "ready" | "absent" | "not-granted"; idpUrl?: string } | { state: "unreadable" }> {
+export async function userLoginState(root: string, space: string): Promise<{ state: "ready" | "absent" | "not-granted"; loginCommand: string } | { state: "unreadable" }> {
   try {
     const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(root), dir: userAuthStateDir(root, space, { readOnly: true }), space, actor: CLI_USER_ACTOR });
-    if (!status.login) return { state: "absent", idpUrl: status.idpUrl };
-    if (!status.grant || status.grant === "not-granted") return { state: "not-granted", idpUrl: status.idpUrl };
-    return { state: "ready", idpUrl: status.idpUrl };
+    const loginCommand = status.loginCommand ?? `cotal login --idp ${status.idpUrl}`;
+    return { state: !status.login ? "absent" : !status.grant || status.grant === "not-granted" ? "not-granted" : "ready", loginCommand };
   } catch { return { state: "unreadable" }; }
 }
 
@@ -79,8 +78,7 @@ const MANAGER_NOT_ATTEMPTED = "the manager was not attempted";
 /** The refusal a user stack reports when the manager cannot be attempted for want of a login.
  *  `then` is the step after the sign-in: a bare `up` again, or the manager command that was refused.
  *  `undone` says what the refused command left undone. */
-export function userLoginRequired(space: string, login: Awaited<ReturnType<typeof userLoginState>> | { state: "rejected"; idpUrl?: string }, then = "run bare `cotal up` again", undone = MANAGER_NOT_ATTEMPTED): CommandFailure {
-  const idp = "idpUrl" in login && login.idpUrl ? ` --idp ${login.idpUrl}` : "";
+export function userLoginRequired(space: string, login: { state: "ready" | "absent" | "not-granted" | "unreadable" | "rejected"; loginCommand?: string }, then = "run bare `cotal up` again", undone = MANAGER_NOT_ATTEMPTED): CommandFailure {
   const reason = login.state === "not-granted"
     ? "the signed-in user has no granted interactive row for the CLI in this space"
     : login.state === "unreadable"
@@ -90,7 +88,7 @@ export function userLoginRequired(space: string, login: Awaited<ReturnType<typeo
         : "no user is signed in for this space";
   const remedy = login.state === "not-granted"
     ? `ask the space owner to grant the CLI actor, then ${then}`
-    : `cotal login${idp}, then ${then}`;
+    : `${login.loginCommand ?? "cotal login"}, then ${then}`;
   return new CommandFailure("refused", "AUTH_REQUIRED", `${reason}; ${undone}`, { target: { space }, remedy });
 }
 
@@ -106,19 +104,19 @@ export async function assertManagerLogin(root: string, space: string, then: stri
   const registered = findMesh(space)?.userAuth;
   // The IdP the remedy names. A stopped stack, such as one a team boot resumes, has no registration,
   // so the hosting folder's own pin comes first.
-  let idpUrl = registered?.idp.url;
+  let loginCommand = registered ? pinnedLoginCommand(registered.idp) : undefined;
   if (registered?.remote !== true) {
     if (!hasUserAuthState(root, space, { readOnly: true })) return;
     const login = await userLoginState(root, space);
     if (login.state !== "ready") throw userLoginRequired(space, login, then, undone);
-    idpUrl = login.idpUrl ?? idpUrl;
+    loginCommand = login.loginCommand;
   }
   const provider = resolveAuthProvider();
   if (!provider.confirmLogin) throw new CommandFailure("refused", "UNSUPPORTED", `the installed auth provider cannot confirm a login with its IdP; ${undone}`, { target: { space, provider: provider.name } });
   let answer: "confirmed" | "signed-out" | "rejected";
   try { answer = await provider.confirmLogin({ dir: userAuthStateDir(root, space, { readOnly: true }), space }); }
   catch { return; }
-  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", idpUrl }, then, undone);
+  if (answer !== "confirmed") throw userLoginRequired(space, { state: answer === "rejected" ? "rejected" : "absent", loginCommand }, then, undone);
 }
 
 /** The provisional registry metadata: the prepared trust pins only. No endpoint is copied from a

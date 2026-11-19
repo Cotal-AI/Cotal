@@ -17,7 +17,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { assertDerivedOwnerToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
-import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
+import { loginRecoveryCommand, pinnedLoginCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { AGENT_LIFECYCLE_HELD, AgentGrantConflictError, EP_ERROR_CODES, EpEnvelopeError, agentLifecycleHeld, type AgentLifecycleRelease, type EpEffectOutcome, type EpErrorCode } from "@cotal-ai/core";
@@ -190,7 +190,7 @@ export const cotalAuthProvider: AuthProvider = {
 
     const publicAuth: UserAuthInfo = assertUserAuthInfo({
       provider: AUTH_PROVIDER_NAME,
-      idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
+      idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience, ...(idp.loginMode ? { loginMode: idp.loginMode } : {}) },
     });
     return {
       extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
@@ -662,24 +662,24 @@ export const cotalAuthProvider: AuthProvider = {
    *  space was provisioned, and the renderer already says "grant not checkable on this machine
    *  (no local ledger)" for that shape. No entry either is the one state that stays a refusal. */
   async userStatus({ store, dir, space, actor }) {
-    const idp = loadPinnedIdp(dir);
-    const ua = idp ? undefined : remoteUserAuthEntry(dir, space);
-    if (!idp && !ua)
+    const local = loadPinnedIdp(dir);
+    const idp = local ?? remoteUserAuthEntry(dir, space)?.idp;
+    if (!idp)
       throw new Error(
         `space "${space}" has no user-auth material on this machine - user-mode status reads run where \`cotal up --user-auth\` provisioned the space, or where the discovered/registered entry for it lives`,
       );
-    const idpUrl = idp ? idp.url : ua!.idp.url;
-    const session = loadIdpSession(idpSessionDir(), idpUrl);
-    if (!session?.sub) return { idpUrl };
-    assertOidcSpacePin(session, idp ?? ua!.idp);
+    const status = { idpUrl: idp.url, ...(idp.loginMode ? { loginCommand: pinnedLoginCommand(idp) } : {}) };
+    const session = loadIdpSession(idpSessionDir(), idp.url);
+    if (!session?.sub) return status;
+    assertOidcSpacePin(session, idp);
     const login = { sub: session.sub, ...(session.expiresAt === undefined ? {} : { expiresAt: session.expiresAt }), ...(session.name ? { name: session.name } : {}) };
-    if (!idp) return { idpUrl, login };
+    if (!local) return { ...status, login };
     const secret = await loadOwnerSecret(store, space);
-    if (!secret) return { idpUrl, login };
+    if (!secret) return { ...status, login };
     const owner = deriveOwnerForIdpSubject(secret, idp.issuer, session.sub);
     const row = findInteractiveActor(dir, owner, actor);
     return {
-      idpUrl,
+      ...status,
       login,
       owner,
       grant: row

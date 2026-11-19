@@ -790,6 +790,8 @@ export interface ChatSessionRetireResult {
 export interface UserAuthStatus {
   /** The space's pinned IdP base URL (always known — it is part of the user-auth material). */
   idpUrl: string;
+  /** Provider-specific sign-in command for a space that does not use the default login flow. */
+  loginCommand?: string;
   /** This machine's cached login, absent if signed out. Expiry may be unknown and `name` is display only. */
   login?: { sub: string; expiresAt?: number; name?: string };
   /** The login's derived owner token (`u_…`) for this space. */

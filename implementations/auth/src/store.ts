@@ -44,9 +44,9 @@ import {
 } from "@cotal-ai/core";
 import { decode, encodeUser, Types, type Account, type ClaimsData, type User } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
+import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, validOidcClientId, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
-import { normalizeIdpUrl, normalizeOidcIssuer, oidcEndpoint, validOidcClientId } from "./login.js";
+import { normalizeIdpUrl, normalizeOidcIssuer, oidcEndpoint } from "./login.js";
 import {
   createUserTokenIssuer,
   exportSigningKey,
@@ -354,6 +354,8 @@ export interface PinnedIdp {
   issuer: string;
   /** Exact `aud` the IdP mints. */
   audience: string;
+  /** The explicit login protocol, independent of the verifier's trust pins. */
+  loginMode?: "oidc";
   /** The pinned JWKS URL keys resolve from — the ONLY key path. */
   jwksUri: string;
   /** The dedicated `aud` of `dm-reader` proofs (#4189), set only by editing the pin deliberately.
@@ -371,9 +373,12 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
   if (!f) return undefined;
   if (![f.url, f.issuer, f.audience, f.jwksUri].every(v => typeof v === "string" && v.length > 0))
     throw new Error(`${join(dir, IDP_FILE)}: malformed IdP pin - re-pin with \`cotal up --user-auth --idp <url>\``);
+  if (f.loginMode !== undefined && f.loginMode !== "oidc") throw new Error(`${join(dir, IDP_FILE)}: unsupported IdP login mode`);
+  if (f.loginMode === "oidc" && (normalizeOidcIssuer(f.issuer) !== f.url || !validOidcClientId(f.audience)))
+    throw new Error(`${join(dir, IDP_FILE)}: malformed OIDC issuer or client ID`);
   if (f.dmReaderAudience !== undefined && (typeof f.dmReaderAudience !== "string" || !f.dmReaderAudience || f.dmReaderAudience === f.audience))
     throw new Error(`${join(dir, IDP_FILE)}: dmReaderAudience must be a non-empty string that differs from audience`);
-  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri, ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}) };
+  return { url: f.url, issuer: f.issuer, audience: f.audience, jwksUri: f.jwksUri, ...(f.loginMode ? { loginMode: f.loginMode } : {}), ...(f.dmReaderAudience !== undefined ? { dmReaderAudience: f.dmReaderAudience } : {}) };
 }
 
 /** Pin-or-verify the space's IdP. First call REQUIRES a URL (there is no default IdP); later calls
@@ -409,7 +414,7 @@ function derivePinnedIdp(idpUrl: string | undefined, trust?: AuthIdpInput["idpTr
     if (!trust || typeof trust !== "object") throw new Error("explicit IdP trust requires an audience and a JWKS URL");
     if (!validOidcClientId(trust.audience))
       throw new Error("the pinned IdP audience must be a non-empty OIDC client ID without whitespace or control characters");
-    return { url: normalizeOidcIssuer(idpUrl), issuer: idpUrl, audience: trust.audience, jwksUri: oidcEndpoint(trust.jwksUri, "--idp-jwks-uri") };
+    return { url: normalizeOidcIssuer(idpUrl), issuer: idpUrl, audience: trust.audience, jwksUri: oidcEndpoint(trust.jwksUri, "--idp-jwks-uri"), loginMode: "oidc" };
   }
   const url = normalizeIdpUrl(idpUrl);
   const origin = new URL(url).origin;
@@ -433,8 +438,8 @@ function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefi
     );
   if (trust !== undefined) {
     const requested = derivePinnedIdp(idpUrl, trust);
-    if (requested.issuer !== pinned.issuer || requested.audience !== pinned.audience || requested.jwksUri !== pinned.jwksUri)
-      throw new Error("this space already pins the IdP issuer, audience and JWKS; changing any of them requires a deliberate migration");
+    if (requested.issuer !== pinned.issuer || requested.audience !== pinned.audience || requested.jwksUri !== pinned.jwksUri || requested.loginMode !== pinned.loginMode)
+      throw new Error("this space already pins the IdP issuer, audience, JWKS and login mode; changing any of them requires a deliberate migration");
   }
   return pinned;
 }

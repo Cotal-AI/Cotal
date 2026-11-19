@@ -976,6 +976,11 @@ holder asks again, so its ack wait can run out, and the broker then redelivers t
 
 ## 9. NATS + JetStream security and authorization
 
+An exported user-auth bundle or discovery document MAY carry `userAuth.idp.loginMode: "oidc"`.
+This tells a client to name the exact issuer and use the pinned audience as its public client ID
+when giving device sign-in instructions. It does not change the issuer, audience, key, algorithm,
+or freshness checks for a proof. Omitting the field preserves the existing sign-in instructions.
+
 **Login discovery names.** A provider's root `/.well-known/cotal-mesh` document MAY
 carry an optional top-level `discoveryNames` array of canonical lowercase DNS hostnames
 (without a scheme, port, path, IP literal or trailing dot). A client resolving a typed

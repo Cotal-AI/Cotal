@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { shellPath } from "./local-record-source.js";
 
 /** Hosted deployment auth base. Custom providers retain their own auth URLs. */
 export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
@@ -23,6 +24,16 @@ export function isCotalCloudIdp(url: string): boolean {
 /** The recovery command for a refused sign-in, without deployment details for Cloud. */
 export function loginRecoveryCommand(idpUrl: string): string {
   return cloudAuthUrl(idpUrl.replace(/\/$/, "")) === COTAL_CLOUD_IDP ? "cotal login" : `cotal login --idp ${idpUrl}`;
+}
+
+/** A copyable OIDC sign-in command. Its issuer is not the normalized account lookup URL. */
+export function oidcLoginCommand(issuer: string, clientId: string): string {
+  return `cotal login --oidc --idp ${shellPath(issuer)} --client-id ${shellPath(clientId)}`;
+}
+
+/** A space's sign-in command, selected only by its recorded mode. */
+export function pinnedLoginCommand(idp: { url: string; issuer: string; audience: string; loginMode?: "oidc" }): string {
+  return idp.loginMode === "oidc" ? oidcLoginCommand(idp.issuer, idp.audience) : `cotal login --idp ${idp.url}`;
 }
 
 /** Decide the native browser command without launching it, including for smoke assertions. */

@@ -194,7 +194,8 @@ function sameRegistrationTrust(entry: MeshEntry, bundle: UserBundle): boolean {
   return entry.mode === "user" && ua !== undefined &&
     entry.space === bundle.space && entry.server === bundle.server && (entry.tlsRequired === true) === bundle.tlsRequired &&
     ua.idp.url === bundle.userAuth.idp.url && ua.idp.issuer === bundle.userAuth.idp.issuer &&
-    ua.idp.audience === bundle.userAuth.idp.audience && ua.endpoints?.url === bundle.userAuth.endpoints.url;
+    ua.idp.audience === bundle.userAuth.idp.audience && ua.idp.loginMode === bundle.userAuth.idp.loginMode &&
+    ua.endpoints?.url === bundle.userAuth.endpoints.url;
 }
 
 /**
