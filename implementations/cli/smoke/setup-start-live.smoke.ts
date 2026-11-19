@@ -89,7 +89,7 @@ try {
         const confirm = run(root, "down", "--with-agents");
         const next = confirm.receipt?.error?.remedy ?? "";
         check("the controller requires confirmation and keeps with-agents in both suggestions",
-          confirm.status === 1 && confirm.receipt?.error?.code === "USAGE_INVALID" && next.includes("`cotal down --with-agents --yes`") && next.includes("`cotal down --with-agents --dry-run`"), shown(confirm));
+          confirm.status === 1 && confirm.receipt?.error?.code === "USAGE_INVALID" && ["cotal", "pnpm cotal"].some((prefix) => next.includes(`\`${prefix} down --with-agents --yes\``) && next.includes(`\`${prefix} down --with-agents --dry-run\``)), shown(confirm));
         const preview = run(root, "down", "--with-agents", "--dry-run");
         check("the suggested preview retains the agent policy without signalling the stack", preview.status === 0 && preview.receipt?.result?.withAgents === true && preview.receipt.result.signalled === false, shown(preview));
       }
@@ -119,7 +119,7 @@ try {
       const running = setup();
       check("a running local stack suggests spawn without starting anything", running.status === 0 && running.receipt?.result?.spaceState === "started" && running.receipt.result.next?.command.endsWith(` spawn --space ${space}`) === true && running.receipt.result.startup?.state === "not-requested", shown(running));
       const confirm = stop("--with-agents");
-      check("the retained stack's noninteractive confirmation keeps with-agents in both suggestions", confirm.status === 1 && confirm.stderr.includes("`cotal down --with-agents --yes`") && confirm.stderr.includes("`cotal down --with-agents --dry-run`"), confirm.stderr);
+      check("the retained stack's noninteractive confirmation keeps with-agents in both suggestions", confirm.status === 1 && ["cotal", "pnpm cotal"].some((prefix) => confirm.stderr.includes(`\`${prefix} down --with-agents --yes\``) && confirm.stderr.includes(`\`${prefix} down --with-agents --dry-run\``)), confirm.stderr);
       const stopped = stop("--yes");
       check("the retained local stack stops", stopped.status === 0, stopped.stderr);
       const configured = setup();
