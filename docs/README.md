@@ -117,7 +117,7 @@ Task dispatch:
 
 | Page | Covers |
 |---|---|
-| [Connector runtime reference](connector-runtime-reference.mdx) | Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, resume records, and the prompt desk. |
+| [Connector runtime reference](connector-runtime-reference.mdx) | Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, resume records, the agent endpoint, agent commands, and the prompt desk. |
 | [Claude connector reference](claude-connector-reference.mdx) | Binding, delivery, presence, event recording, and hosting contracts for the Claude Code connector. |
 | [OpenCode connector reference](opencode-connector-reference.mdx) | OpenCode version support, injected configuration, session delivery, and structured event limits. |
 | [Codex connector reference](codex-connector-reference.mdx) | Codex launch options, private credentials, delivery behavior, presence, and structured event limits. |
