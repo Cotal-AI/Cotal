@@ -442,8 +442,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     if (leaving) return;
     leaving = true;
     if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
-    print(c.dim("leaving…"));
     rl?.close();
+    print(c.dim("leaving…"));
     try { await ep.stop(); } catch { /* closing */ }
     await leaveSeat();
     if (code === 0) {
@@ -550,7 +550,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           others.map((p) => who(p.card) + " " + statusBadge(p.status) + presenceDetail(p)).join(c.dim(", ")),
       );
   }, 400);
-  rl.prompt();
+  if (!leaving && !rlClosed) rl.prompt();
 
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
@@ -560,6 +560,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   };
 
   rl.on("line", async (raw) => {
+    if (leaving || rlClosed) return;
     const line = raw.trim();
     if (!line) {
       rl.prompt();
@@ -631,9 +632,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         }
       }
     } catch (e) {
-      print(c.red(`! ${(e as Error).message}`));
+      if (!leaving) print(c.red(`! ${(e as Error).message}`));
     }
-    rl.prompt();
+    if (!leaving && !rlClosed) rl.prompt();
   });
   await Promise.race([whenLost(), sessionFinished]);
 }
