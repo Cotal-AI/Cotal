@@ -12,9 +12,10 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'orphan', 'pending', 'reconcile-killed', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'reconcile-killed', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
+  const closureNoSpace = scenario === 'closure-nospace';
   const offline = scenario.startsWith('offline-');
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
@@ -30,6 +31,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   const staged = scenario === 'staging-killed';
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
+  if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   for (const version of [previous, target]) {
     writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, ...(staged ? { cotalPreinstall: preinstall } : {}) }));
     const contention = scenario === 'concurrent'
@@ -145,10 +147,27 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       mkdirSync(configuredCache, { mode: 0o500 });
       writeFileSync(join(home, '.npmrc'), `cache=${configuredCache}\n`);
     }
-    if (scenario === 'cache' || closureKilled) {
+    if (scenario === 'cache' || closureKilled || closureNoSpace) {
       const extensions = join(root, 'config/cotal/extensions');
       mkdirSync(extensions, { recursive: true });
       writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: extension, version: previous, spec: `${extension}@${previous}`, provides: [], commands: [] }] }));
+    }
+    const originalPath = env.PATH;
+    if (closureNoSpace) {
+      const tools = join(root, 'tools');
+      mkdirSync(tools, { mode: 0o700 });
+      writeFileSync(join(tools, 'npm'), `#!/bin/sh
+set -eu
+export PATH="$COTAL_SMOKE_REAL_NPM_PATH"
+if [ "\${1:-}" = install ] && [ "\${2:-}" = --prefix ]; then
+  case "$3" in */cotal-closure-check-*)
+    exec unshare -Urm sh -ec 'mount -t tmpfs -o size=2m,mode=0700,nosuid,nodev tmpfs "$3"; exec npm "$@"' closure-check "$@"
+  ;; esac
+fi
+exec npm "$@"
+`, { mode: 0o700 });
+      env.COTAL_SMOKE_REAL_NPM_PATH = originalPath;
+      env.PATH = `${tools}:${originalPath}`;
     }
     const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
@@ -333,6 +352,11 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.match(update.output, /npm dependency check was terminated by SIGKILL/);
       assert.match(update.output, /No installed packages were replaced\. Run `cotal update --self` again\./);
       assert.doesNotMatch(update.output, /registry access failed|still reaching the registry|again in a few minutes/);
+    } else if (closureNoSpace) {
+      assert.equal(update.code, 1, update.output);
+      assert.match(update.output, /installed extension dependency closure is unavailable:[\s\S]*npm error code ENOSPC/);
+      assert.match(update.output, /No global install was attempted\. Free space on the temporary filesystem, then run `cotal update --self` again\./);
+      assert.doesNotMatch(update.output, /registry access|still reaching the registry|again in a few minutes/);
     } else if (scenario === 'closed-scope') {
       assert.equal(update.code, 1, update.output);
       assert.match(update.output, /metadata for @cotal-ai\/cli@99\.0\.0 is unavailable.*ECONNREFUSED/);
@@ -408,8 +432,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const recovery = join(root, 'cotal/update-recovery.json');
     assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
     let retry;
-    if (dateFiltered || closureKilled) {
+    if (dateFiltered || closureKilled || closureNoSpace) {
       if (dateFiltered) writeFileSync(join(home, '.npmrc'), '');
+      if (closureNoSpace) env.PATH = originalPath;
       retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
       assert.equal(retry.code, 0, retry.output);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
@@ -436,7 +461,12 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'staging-killed'] : [])];
+  const mountPoint = mkdtempSync(join(tmpdir(), 'closure-mount-probe-'));
+  let canMount;
+  try {
+    canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
+  } finally { rmSync(mountPoint, { recursive: true }); }
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'staging-killed'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

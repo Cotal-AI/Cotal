@@ -45,6 +45,7 @@ for (const [self, latest] of [[false, "0.13.2"], [true, "0.13.2"], [true, "0.13.
     } else {
       assert.deepEqual(effects, [], "continuity refusal leaves installation untouched");
       assert.ok(!out.join("\n").includes("cotal update --self"), "a refused update has no unusable upgrade suggestion");
+      assert.doesNotMatch(out.join("\n"), /standalone pi extension/);
       if (!self || latest === "0.13.1") assert.ok(out.join("\n").includes("CLI version"), "version information remains available");
       if (outcome === "classified") assert.equal(err[0], `✗ running manager continuity check: running agents block update\n\nNext\n  ${remedy}`);
       if (outcome === "error") assert.equal(err[0], "✗ running manager continuity check: status did not answer");

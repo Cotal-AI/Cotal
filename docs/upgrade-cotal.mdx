@@ -271,6 +271,8 @@ A self-update inherits the extension state captured by the updating CLI, includi
 and deliberate connector removals, even when that release has an older retained connector set.
 If the connector seed store is newer than the running CLI, reconciliation refuses before creating
 or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
+If you copied the standalone pi extension into your own host, Cotal leaves that copy unchanged.
+After the update succeeds, follow the [standalone pi instructions](connect-pi.mdx#load-the-extension-into-your-own-host) to reinstall and copy the matching version.
 If the machine daemon closes a status connection while restarting, reconciliation retries that
 status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
@@ -471,6 +473,10 @@ is listening there. The updater leaves both spaces' data and registrations untou
 checks for conflicting registrations.
 
 ## Recover an interrupted update
+
+If a recorded npm install child is still running, `cotal update --self` skips preliminary
+cleanup and can wait for the child to finish. Run the command again only if it stops and asks
+you to retry.
 
 `cotal update --self` restores an interrupted update when its snapshot is a valid directory of
 this installation. If the snapshot is absent, outside this configuration, or not a plain directory,

@@ -168,6 +168,8 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       try { release = claimGlobalNpmUpdateLock(modules); }
       catch (error) {
         if (inspectLock(join(modules, ".cotal-update.lock")).state === "active") return;
+        // Cleanup is optional. The update itself can wait for this child and owns any refusal.
+        if (error instanceof Error && /^global (?:install|reconcile) is still running \(pid \d+\) - retry once it finishes$/.test(error.message)) return;
         throw error;
       }
     }

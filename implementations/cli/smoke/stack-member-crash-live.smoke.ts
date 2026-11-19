@@ -26,7 +26,8 @@
  *  6. The delivery member is killed, and its record and pin then name a process the suite started,
  *     with the old start, as a reused pid does. The record fronts nothing: `down --dry-run` names it,
  *     `down stack-broker` and bare `down` are not refused by it, and bare `down` removes it with its
- *     pin and never signals that process. A record whose pin matches that live process refuses
+ *     pin and never signals that process. Planted again on the stopped stack, as after a reboot, `up`
+ *     removes it before it starts a member, names it, and never signals that process. A record whose pin matches that live process refuses
  *     `down stack-broker` and bare `down`, naming its path and pid in the message and the Next, and
  *     the `down stack-broker` dry run warns with that refusal. Once the process ends, `down
  *     stack-broker` refuses on the running manager and a service the user added, naming each exact
@@ -211,7 +212,8 @@ try {
   other = spawn("sleep", ["600"], { stdio: "ignore" });
   const held = other.pid!;
   check("the delivery member is killed", await crashDelivery());
-  pointAt(held, readFileSync(`${record}.identity`, "utf8").trim().split(" ")[1]!);
+  const crashedStart = readFileSync(`${record}.identity`, "utf8").trim().split(" ")[1]!;
+  pointAt(held, crashedStart);
   const stale = (verb: string, pid: number, why: string) => `${verb} the stale delivery record ${at}: ${why === "reused" ? `pid ${pid} was reused by another process` : `its process, pid ${pid}, is gone`}`;
   const preview = cli("down", "--dry-run", "--json");
   check("down --dry-run names the stale record the stop removes, and no refusal", preview.status === 0 && doc(preview)?.result?.blockedBy === null && doc(preview)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("the stop removes", held, "reused")) === true, preview.out);
@@ -222,8 +224,11 @@ try {
   check("...the record and its pin are gone", !existsSync(record) && !existsSync(`${record}.identity`));
   check("...and the process that holds the pid was never signalled", alive(held));
 
-  const restarted = cli("up");
-  check("up starts the stack again", restarted.status === 0, restarted.out);
+  // The stopped stack's record names that process again with the crashed start, as after a reboot.
+  pointAt(held, crashedStart);
+  const restarted = cli("up", "--json");
+  check("up removes that stale record before it starts the stack again, and names it", restarted.status === 0 && doc(restarted)?.warnings?.some((w) => w.code === "STALE_PROCESS_RECORD" && w.message === stale("removed", held, "reused")) === true, restarted.out);
+  check("...and the process that holds the pid was still never signalled", alive(held));
   check("the delivery member is killed again", await crashDelivery());
   const live = identityRecord(held);
   pointAt(held, "token" in live ? live.token : "");

@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { claimUpdateClosureAccess, clearUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { beginGlobalUpdateChild, claimUpdateClosureAccess, clearUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration } from "../execution-transaction.js";
@@ -109,6 +109,21 @@ if (["linux", "darwin"].includes(process.platform)) {
       const ended = new Promise<void>(resolve => child.once("exit", () => resolve()));
       child.stdin.end();
       await ended;
+    }
+    const worker = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "inherit"] });
+    const ended = new Promise<void>((resolve, reject) => { worker.once("error", reject); worker.once("exit", () => resolve()); });
+    const mutation = beginGlobalUpdateChild(dirname(installed), "install");
+    try {
+      assert(worker.pid);
+      mutation.markLive(worker.pid);
+      const beforeWarning = warnings.length;
+      clean();
+      assert.equal(warnings.length, beforeWarning, "optional cleanup does not tell the user to retry while the child is live");
+      assert(existsSync(join(store, ".installing-Lk1234")), "optional cleanup leaves staging alone while the child is live");
+    } finally {
+      worker.stdin.end();
+      await ended;
+      mutation.clear();
     }
     clean();
     assert.equal(existsSync(join(store, ".installing-Lk1234")), false);

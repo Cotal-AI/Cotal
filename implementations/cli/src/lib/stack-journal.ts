@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -898,10 +898,10 @@ export function localRecords(root: string, space: string): LocalRecord[] {
 /** How a refusal lists one record: `<name> at <path>, pid <pid>`. */
 export const localRecordLine = (row: LocalRecord): string => `${row.name} at ${row.path}, ${row.pid === undefined ? "unattributable record" : `pid ${row.pid}`}`;
 
-/** Legacy pidfile records under the root that may front a process, as `up` refuses them: every
- *  record whose process is not gone. */
+/** Legacy pidfile records under the root that may front a process, as `up` refuses them. A `gone` or
+ *  `reused` record fronts nothing, and `up` removes it instead. */
 export function foreignLocalProcesses(root: string, space: string): string[] {
-  return localRecords(root, space).filter((row) => row.state !== "gone").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
+  return localRecords(root, space).filter((row) => row.state === "live").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
 }
 
 /** The live records under the root whose process is a running service instance of the space outside
@@ -943,9 +943,14 @@ export function removeStaleLocalRecords(root: string, space: string): LocalRecor
   return stale;
 }
 
-/** What a stop says about a stale record it removed, or for a preview, one it would remove. */
+/** What a stop or a start says about a stale record it removed, or for a preview, one it would remove. */
 export const staleRecordNotice = (row: LocalRecord, preview = false): string =>
   `${preview ? "the stop removes" : "removed"} the stale ${row.name} record ${row.path}: ${row.state === "reused" ? `pid ${row.pid} was reused by another process` : `its process, pid ${row.pid}, is gone`}`;
+
+/** The warning for a stale record a stop or a start removed, or for a preview, one it would remove. */
+export function staleRecordWarning(root: string, row: LocalRecord, preview = false): OutputWarning {
+  return { code: "STALE_PROCESS_RECORD", target: { root, path: row.path, pid: row.pid, state: row.state }, message: staleRecordNotice(row, preview) };
+}
 
 /** A record under a root that may still front a process: whose descriptor names it, its path
  *  relative to the root, the pid it holds when one parses, and why it counts. */
