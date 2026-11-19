@@ -230,6 +230,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // After `--` every word is text, so `-h` there is not a help request.
   refused("-h after -- is a word, not a help request", cotal(["ext", "--", "-h"]), /cotal ext has no subcommand "-h"/);
   refused("ext seed -- -h is a usage error, not help", cotal(["ext", "seed", "--", "-h"]), /`cotal ext seed` does not take positional arguments/);
+  for (const [command, mode, flag] of [["ext", "root", "--frce"], ["ext", "list", "--reapir"], ["telemetry", "off", "--bogus"]] as const) {
+    const help = cotal([command, mode, "--help"]);
+    const unknown = cotal([command, mode, flag]);
+    check(`${command} ${mode} refuses ${flag} with scoped help and no invalid suggestion`,
+      help.status === 0 && unknown.status === 1 && unknown.stdout === "" && unknown.wrote.length === 0
+      && unknown.stderr === `✗ Unknown option '${flag}'\n${help.stdout}`, shown(unknown));
+    const operand = cotal([command, mode, "--", flag]);
+    check(`${command} ${mode} refuses the operand with scoped help`, operand.status === 1 && operand.stdout === ""
+      && operand.wrote.length === 0 && operand.stderr === `✗ \`cotal ${command} ${mode}\` does not take positional arguments\n${help.stdout}`, shown(operand));
+  }
 }
 
 // ── Version ────────────────────────────────────────────────────────────────────────────────────────

@@ -56,7 +56,8 @@ assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter
       [["ext", "seed", "--repair=unexpected"], /Option '--repair' does not take an argument/],
       [["ext", "seed", "connector"], /does not take positional arguments/],
       [["ext", "seed", "--", "-h"], /does not take positional arguments/],
-      [["x", "seed", "--json"], /--json and --plain are taken by the listing only/],
+      [["x", "seed", "--", "\u2013\u2013force"], /does not take positional arguments/],
+      [["x", "seed", "--json"], /ext seed takes neither --json nor --plain\. Omit both flags/],
       [["--no-input", "x", "seed", "--no-input"], /Option '--no-input' cannot be repeated/],
     ] as const) {
       const r = run([...args]);
@@ -66,11 +67,21 @@ assert.ok(existsSync(BIN), `built binary missing at ${BIN} - run \`pnpm --filter
       assert.match(r.stderr.slice(0, endOfReason), reason);
       assert.equal(r.stderr.slice(endOfReason + 1), help.stdout);
     }
-    const plain = run(["ext", "seed", "--plain"]);
-    assert.equal(plain.status, 1);
-    assert.equal(plain.stdout, "");
-    assert.match(plain.stderr, /--json and --plain are taken by the listing only/);
-    assert.ok(plain.stderr.endsWith(help.stdout));
+    for (const args of [["ext", "seed", "--plain"], ["--plain", "x", "--json", "seed"]]) {
+      const plain = run(args);
+      assert.equal(plain.status, 1);
+      assert.equal(plain.stdout, "");
+      assert.match(plain.stderr, /ext seed takes neither --json nor --plain\. Omit both flags/);
+      assert.doesNotMatch(plain.stderr, /pass --json for a document or --plain for text/);
+      assert.ok(plain.stderr.endsWith(help.stdout));
+    }
+    for (const args of [["x", "\u2013\u2013force", "seed"], ["x", "seed", "\u2013\u2013force"]]) {
+      const typo = run(args);
+      assert.equal(typo.status, 1);
+      assert.equal(typo.stdout, "");
+      assert.match(typo.stderr, /type the option with hyphens: --force/);
+      assert.ok(typo.stderr.endsWith(help.stdout));
+    }
 
     const valid = run(["x", "--repair", "seed"]);
     assert.equal(valid.status, 1);

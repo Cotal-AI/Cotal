@@ -49,13 +49,14 @@ function atThisVersion(spec: string): string {
 }
 
 export function validateExtArguments(args: ParsedArgs): void {
-  const [sub, ...rest] = args.positionals;
+  const [sub] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
-  presentationOf(v);
   if (sub === "seed") {
-    if (rest.length) throw usage("`cotal ext seed` does not take positional arguments");
-    if (v.json || v.plain) throw usage("ext seed: --json and --plain are taken by the listing only");
-  } else if (v.repair || v.reset || v.force) {
+    if (v.json || v.plain) throw usage("ext seed takes neither --json nor --plain. Omit both flags");
+    return;
+  }
+  presentationOf(v);
+  if (v.repair || v.reset || v.force) {
     const flag = v.repair ? "--repair" : v.reset ? "--reset" : "--force";
     throw usage(`${flag} belongs to \`cotal ext seed\``);
   }
@@ -81,7 +82,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   validateExtArguments(args);
   const [sub, ...rest] = args.positionals;
   const v = args.values as FlagValues<typeof extFlags>;
-  if (sub === "seed") {
+  if (sub === "seed" && !rest.length) {
     const { repair, reset, force } = v;
     return runSeed({ repair, reset, force });
   }

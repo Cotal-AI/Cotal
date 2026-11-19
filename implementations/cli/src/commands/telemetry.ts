@@ -1,6 +1,5 @@
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure,
   effectiveTelemetry,
   jsonFlag,
   plainFlag,
@@ -32,7 +31,6 @@ export interface TelemetryResult {
 
 export function validateTelemetryArguments(args: ParsedArgs): void {
   presentationOf(args.values);
-  if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "use telemetry [off|minimal|regular] [--json|--plain]");
 }
 
 /** `cotal telemetry [off|minimal|regular]`: show the level in force, or set the file's level. A level

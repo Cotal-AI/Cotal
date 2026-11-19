@@ -182,7 +182,8 @@ for (const [args, why] of [
   // their own exits.
   for (const args of [["ext", "root", "--json"], ["ext", "root", "--plain"], ["ext", "remove", "x", "--json"], ["ext", "seed", "--plain"]]) {
     const r = run(args);
-    check(`${args.join(" ")} is refused as text with no envelope, exit 1`, r.status === 1 && r.stdout === "" && /--json or --plain|taken by the listing only/.test(r.stderr), shown(r));
+    const reason = args[1] === "seed" ? /ext seed takes neither --json nor --plain\. Omit both flags/ : /--json or --plain|taken by the listing only/;
+    check(`${args.join(" ")} is refused as text with no envelope, exit 1`, r.status === 1 && r.stdout === "" && reason.test(r.stderr), shown(r));
   }
   const missing = run(["ext", "remove", "not-installed"]);
   check("a mode without structured output keeps its exit: removing a missing package exits 1", missing.status === 1 && /no installed extension "not-installed"/.test(missing.stderr), shown(missing));

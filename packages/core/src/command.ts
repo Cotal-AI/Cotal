@@ -76,6 +76,8 @@ export interface Subcommand {
   readonly subcommands?: readonly Subcommand[];
   /** Names from the command's shared flags to display in this mode's help. Omit to show all. */
   readonly flagNames?: readonly string[];
+  /** This mode takes no positional words after its name. Omit when the command validates its own operands. */
+  readonly operands?: false;
   readonly summary: string;
   /** An internal entry another process invokes: accepted, but never listed in help. */
   readonly hidden?: boolean;

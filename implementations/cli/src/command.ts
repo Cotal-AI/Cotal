@@ -79,10 +79,14 @@ import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./te
 const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
 const managerChoice = () => import("./lib/manager-choice.js");
 
-/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
-function asksForHelp(args: readonly string[]): boolean {
+/** The option words before any `--`, after which every word is text. */
+function optionWords(args: readonly string[]): readonly string[] {
   const end = args.indexOf("--");
-  const options = end === -1 ? args : args.slice(0, end);
+  return end === -1 ? args : args.slice(0, end);
+}
+
+function asksForHelp(args: readonly string[]): boolean {
+  const options = optionWords(args);
   return options.includes("--help") || options.includes("-h");
 }
 
@@ -103,7 +107,7 @@ function stripGlobalFlags(words: readonly string[], leading: ReadonlySet<string>
   const end = words.indexOf("--");
   const taken = new Set(leading);
   const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
-    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), words.includes("--plain"), undefined, words);
+    if (taken.has(word)) usageExit(`Option '${word}' cannot be repeated`, cmd, cmd !== undefined && asksForJson(cmd, words), optionWords(words).includes("--plain"), undefined, words);
     if (!takeGlobalFlag(word)) return true;
     taken.add(word);
     return false;
@@ -134,10 +138,9 @@ function structured(cmd: Command, first: string | undefined): boolean {
  *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
  *  is the first positional after skipping declared option values. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
+  if (!structured(cmd, invocationPositionals(cmd, args)[0]?.value)) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
-  const end = args.indexOf("--");
-  return (end === -1 ? args : args.slice(0, end)).some(
+  return optionWords(args).some(
     (word) => word === "--json" || word === "-j" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes("j") && [...word.slice(1)].every((ch) => booleans.has(ch))),
   );
 }
@@ -186,13 +189,6 @@ type ConfigFolderProblem = NonNullable<ReturnType<typeof globalConfigDirProblem>
 /** The refusal of a command that would read or write a config folder that is a file. */
 function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
   return new CommandFailure("refused", "SCHEMA_INVALID", `${problem.message}; Cotal keeps your preferences, config and extensions there, so the command did not run`, { remedy: problem.remedy });
-}
-
-/** The seed mode can be recognized from built-in metadata even when the extension manifest is corrupt. */
-function extSeedMode(cmd: Command, words: readonly string[]): Subcommand | undefined {
-  if (cmd.name !== "ext") return undefined;
-  const mode = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
-  return mode?.name === "seed" ? mode : undefined;
 }
 
 /**
@@ -351,7 +347,10 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true);
+  if (cmd && json) {
+    const path = [cmd.name, ...helpPath(cmd, words).path].join(" ");
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${path}\`` }), true);
+  }
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
@@ -359,20 +358,36 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
   process.exit(1);
 }
 
-/** The refusal for one of the option `names` or `shorts` typed with a typographic dash pasted from
- *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
-function typographicOption(word: string, names: ReadonlySet<string>, shorts: ReadonlySet<string> = new Set()): { message: string; remedy: string } | undefined {
+/** The recognized option name and its spelling with hyphens. */
+function typographicSpelling(word: string, names: ReadonlySet<string>, shorts?: ReadonlySet<string>): string | undefined {
   const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
-  if (!typed || !(names.has(typed[1]!) || shorts.has(typed[1]!))) return undefined;
-  return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
+  const name = typed?.[1];
+  if (name === undefined) return undefined;
+  return names.has(name) ? `--${name}` : shorts?.has(name) ? `-${name}` : undefined;
+}
+
+function typographicRefusal(word: string, spelling: string): { message: string; remedy: string } {
+  return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${spelling}` };
+}
+
+function typographicMatcher(flags: readonly FlagSpec[]): (word: string) => string | undefined {
+  const names = new Set<string>([...flags.map((flag) => flag.name), ...GLOBAL_FLAGS]);
+  const shorts = new Set(flags.flatMap((flag) => flag.short ? [flag.short] : []));
+  return (word) => typographicSpelling(word, names, shorts);
+}
+
+/** A mistyped flag still selects a usage scope. It is never corrected for execution. */
+function invocationPositionals(cmd: Command, words: readonly string[]) {
+  if (!cmd.subcommands?.length || takesWordsRaw(cmd)) return metadataPositionals(cmd, words).positionals;
+  const spelling = typographicMatcher(cmd.flags ?? []);
+  return metadataPositionals(cmd, words, { isMistypedOption: (word) => spelling(word) !== undefined }).positionals;
 }
 
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(flags: readonly FlagSpec[], rest: readonly string[]): { message: string; remedy: string } | undefined {
-  const names = new Set<string>([...flags.map((flag) => flag.name), ...GLOBAL_FLAGS]);
-  const shorts = new Set<string>(flags.flatMap((flag) => (flag.short ? [flag.short] : [])));
+function misspelledOption(flags: readonly FlagSpec[], rest: readonly string[], scopedNames?: readonly string[]): { message: string; remedy?: string } | undefined {
+  const spelling = typographicMatcher(flags);
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
     const previous = rest[index - 1];
@@ -380,8 +395,13 @@ function misspelledOption(flags: readonly FlagSpec[], rest: readonly string[]): 
     const short = /^-([^-=])=(.*)$/su.exec(word);
     const flag = short && flags.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
-    const typed = typographicOption(word, names, shorts);
-    if (typed) return typed;
+    const typed = spelling(word);
+    if (typed) {
+      const flag = flags.find((item) => typed === `--${item.name}` || (item.short && typed === `-${item.short}`));
+      return flag && scopedNames && !scopedNames.includes(flag.name)
+        ? { message: `Unknown option '${word}'` }
+        : typographicRefusal(word, typed);
+    }
   }
   return undefined;
 }
@@ -389,11 +409,12 @@ function misspelledOption(flags: readonly FlagSpec[], rest: readonly string[]): 
 /** A parse error as a refusal. Replace Node's hints with remedies for the selected command's
  *  grammar: a dash-leading operand goes after `--`, a dash-leading value is written `--name=value`,
  *  and an option missing a value is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, flags: readonly FlagSpec[], takesOperands: boolean, rest: readonly string[]): { message: string; remedy?: string } {
+function parseRefusal(error: Error & { code?: string }, flags: readonly FlagSpec[], takesOperands: boolean, rest: readonly string[], names?: readonly string[]): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument[\s\S]*$/, "'");
     const option = /^Unknown option '(--[^']+)'$/.exec(reason)?.[1];
-    const hint = option ? didYouMean(option, [...flags.map((flag) => `--${flag.name}`), "--no-color", "--no-input", "--help"]) : "";
+    const candidates = names ?? flags.map((flag) => flag.name);
+    const hint = option ? didYouMean(option, [...candidates.map((name) => `--${name}`), ...GLOBAL_FLAG_WORDS, "--help"]) : "";
     const message = hint ? `${reason} - ${hint}` : reason;
     return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
   }
@@ -417,18 +438,18 @@ function parseRefusal(error: Error & { code?: string }, flags: readonly FlagSpec
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
-  const plain = rest.includes("--plain");
-  const seed = extSeedMode(cmd, rest);
-  const names = seed?.flagNames;
-  const flags = names ? (cmd.flags ?? []).filter((flag) => names.includes(flag.name)) : cmd.flags ?? [];
-  const misspelled = cmd.rawArgs ? undefined : misspelledOption(flags, rest);
+  const plain = optionWords(rest).includes("--plain");
+  const { mode, path } = helpPath(cmd, rest);
+  const flags = cmd.flags ?? [];
+  const names = mode ? mode.flagNames : cmd.flagNames;
+  const misspelled = cmd.rawArgs ? undefined : misspelledOption(flags, rest, mode?.operands === false ? names : undefined);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, rest);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const refusal = parseRefusal(e as Error & { code?: string }, flags, !seed && cmd.positionals !== undefined, rest);
+      const refusal = parseRefusal(e as Error & { code?: string }, flags, cmd.positionals !== undefined && mode?.operands !== false, rest, names);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -437,6 +458,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // History also accepts a root channel positional; only its reserved clear token is a mode.
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
     usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
+  if (mode?.operands === false && parsed.positionals.length > path.length)
+    usageExit(`\`cotal ${[cmd.name, ...path].join(" ")}\` does not take positional arguments`, cmd, json, plain, undefined, rest);
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
@@ -521,19 +544,20 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
 
 /** The subcommand path the words in `rest` name under `cmd`, and the first word where a subcommand
  *  belongs that names none. Read from the declared specs, so a stub's help never imports its package. */
-function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
-  const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
+function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; mode?: Subcommand; unknown?: string } {
+  const words = invocationPositionals(cmd, rest);
   let surface: Pick<Command, "subcommands"> = cmd;
+  let mode: Subcommand | undefined;
   const path: string[] = [];
-  for (const word of words) {
+  for (const { value: word } of words) {
     const sub: Subcommand | undefined = findSubcommand(surface, word);
     // History's own first word may be a channel.
-    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, unknown: word };
+    if (!sub && surface.subcommands?.length && !(surface === cmd && cmd.name === "history")) return { path, mode, unknown: word };
     if (!sub || sub.hidden) break;
-    path.push(sub.name); surface = sub;
+    path.push(sub.name); mode = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
-  return { path };
+  return { path, mode };
 }
 
 /** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first
@@ -607,7 +631,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (opts.extensions && !updateCheck) {
     const words = argv.slice(1);
     // Validate seed before promotion recovery and run it before reading the manifest it can repair.
-    const seed = builtin && extSeedMode(builtin, words) ? builtin : undefined;
+    const seed = builtin?.name === "ext" && helpPath(builtin, words).mode?.name === "seed" ? builtin : undefined;
     if (seed && asksForHelp(words)) return printHelpFor(seed, words);
     const parsed = seed && parseOrExit(seed, ownWords(seed, words, leadingGlobals));
     if (seed && configFolder) failureExit(seed, configFolderRefusal(configFolder), false);
@@ -681,8 +705,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
   // A leading flag typed with a typographic dash is read as the command word, so it is refused as the
   // same word after the command word is.
-  const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))));
-  if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
+  const typed = cmd || awaitingSeed ? undefined : typographicSpelling(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))));
+  if (typed) {
+    const refusal = typographicRefusal(word, typed);
+    usageExit(refusal.message, undefined, false, false, refusal.remedy);
+  }
   if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only

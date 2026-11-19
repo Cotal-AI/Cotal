@@ -1,7 +1,8 @@
 import type { Command, FlagSpec } from "@cotal-ai/core";
 
-/** Read metadata paths without interpreting option values as command words or running a validator. */
-export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean } = {}) {
+/** Read metadata paths without interpreting option values as command words or running a validator.
+ *  The caller can also exclude recognized mistyped options before the separator. */
+export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean; isMistypedOption?: (word: string) => boolean } = {}) {
   const positionals: { value: string; index: number }[] = [];
   let valueFlag: FlagSpec | undefined;
   let optionsEnded = false;
@@ -26,7 +27,7 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
         }
         break;
       }
-    } else positionals.push({ value: word, index });
+    } else if (optionsEnded || !options.isMistypedOption?.(word)) positionals.push({ value: word, index });
   }
   return { positionals, valueFlag, optionsEnded };
 }
