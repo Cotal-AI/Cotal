@@ -78,8 +78,10 @@ A preferences folder another account could write is refused with `PERMISSION_DEN
 anything is written (see [Preferences](config.mdx#preferences)).
 When an application executable is missing, the next step is to install or repair it and rerun setup.
 Otherwise, the result names the next command: `cotal up` in the project for a local space, or
-`cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
-setup wrote.
+`cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists the setup
+writes Cotal records. For Codex, this includes the marketplace files and observed changes to the
+Codex configuration and cached plugin files. The receipt does not inventory every write made by
+programs that setup calls.
 
 Setup needs an installed connector. With none, a `--harness` that names no official connector is
 refused with `USAGE_INVALID`, exit 1, and otherwise setup refuses with `DEPENDENCY_UNAVAILABLE`,
