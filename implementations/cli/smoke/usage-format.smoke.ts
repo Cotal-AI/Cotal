@@ -15,7 +15,7 @@
  * anything runs. A removed working folder refuses every command but help, version, docs and
  * telemetry with its line and the `cd` remedy and no help, as a missing --yes does, `up`, `down` and
  * `backup create` included, which crashed with Node's stack trace. Help there says the folder no
- * longer exists.
+ * longer exists, even when PATH or the pnpm cache contains a relative path.
  *
  * Every command and subcommand `cotal help` lists shows one to three examples, each a whole command
  * with a note on what it does, which parses under the options its help lists. They come right after
@@ -54,7 +54,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { findCommand, findSubcommand, parseCommandArgs, registry, type Command, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -553,6 +553,8 @@ for (const [args, message] of [
   [["persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\? Or run `cotal help persona`/],
   [["help", "persona", "shwo"], /cotal persona has no subcommand "shwo" - did you mean show\?/],
   [["status", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
+  [["version", "--js.on"], /Unknown option '--js\.on' - did you mean --json\?/],
+  [["history", "general", "--gr.ep"], /Unknown option '--gr\.ep' - did you mean --grep\?/],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
@@ -601,12 +603,13 @@ check("control: a command without JSON output still refuses --json as an unknown
 
 if (process.platform !== "win32") {
   // The shell enters a folder and removes it, so the CLI starts with a working folder that is gone.
-  const fromRemoved = (args: string[]) => {
+  const fromRemoved = (args: string[], extra: Record<string, string> = {}) => {
     const gone = mkdtempSync(join(home, "gone-"));
+    const childEnv = { ...env, ...extra };
     // The guard reads the folder's marker, which the shell must find gone, so it goes after the check.
-    assertSmokeSandboxDown(recordSmokeSandbox({ root: gone, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }), args, { cwd: gone, env });
+    assertSmokeSandboxDown(recordSmokeSandbox({ root: gone, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }), args, { cwd: gone, env: childEnv });
     rmSync(join(gone, ".cotal"), { recursive: true });
-    const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+    const r = spawnSync("/bin/sh", ["-c", 'cd "$1" && command -p rmdir "$1" && shift && exec "$@"', "sh", gone, process.execPath, BIN, ...args], { cwd: neutral, env: childEnv, encoding: "utf8", timeout: 120_000 });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   };
   // Two lines and no help: the folder is not a grammar mistake, and the remedy is the whole fix.
@@ -629,14 +632,26 @@ if (process.platform !== "win32") {
   check("up --json from a removed folder is a USAGE_INVALID refusal", upJson.status === 1 && upEnvelope?.outcome === "refused" && upEnvelope.error?.code === "USAGE_INVALID", shown(upJson));
   const upHelp = fromRemoved(["up", "--help"]);
   check("up --help still answers from a removed folder", upHelp.status === 0 && /cotal up/.test(upHelp.stdout + upHelp.stderr), shown(upHelp));
-  // Help said the space or defaults could not be read, and docs and telemetry, which use no folder,
-  // refused.
-  // `cotal help` leads with the title line; the bare entry screen does not.
+  // An absolute PATH entry must still supply the command prefix when a relative entry is unusable.
+  const pathBin = mkdtempSync(join(home, "path-bin-"));
+  writeFileSync(join(pathBin, "cotal"), "#!/bin/sh\nexit 5\n", { mode: 0o700 });
+  const usage = "\n  cotal <command> [options]\n";
+  const notice = "This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.\n";
   for (const args of [["help"], []]) {
-    const r = fromRemoved(args);
-    const body = r.stdout.replace(/^cotal - lateral agent coordination over NATS\n\n/, "");
-    check(`${["cotal", ...args].join(" ")} from a removed folder says the folder no longer exists, exit 0`,
-      r.status === 0 && body.startsWith("This folder no longer exists, so commands that use a space refuse here. cd to an existing folder first.\n") && !/could not be read/.test(r.stdout), shown(r));
+    const form = ["cotal", ...args].join(" ");
+    const heading = args.length ? "cotal - lateral agent coordination over NATS\n\n" : "";
+    for (const [label, extra] of [
+      ["absolute PATH", { PATH: pathBin, npm_config_cache_dir: "" }],
+      ["relative PATH entry", { PATH: [".", pathBin].join(delimiter), npm_config_cache_dir: "" }],
+      ["relative pnpm cache", { PATH: pathBin, npm_config_cache_dir: "relative-cache" }],
+    ] as const) {
+      const r = fromRemoved(args, extra);
+      check(`${form} from a removed folder with ${label} prints the notice and uses the absolute executable, exit 0`,
+        r.status === 0 && r.stderr === "" && r.stdout.startsWith(heading + notice) && r.stdout.includes(usage), shown(r));
+    }
+    const r = run(args, { PATH: ".", npm_config_cache_dir: "" }, pathBin);
+    check(`${form} still finds a relative PATH executable from an existing folder`,
+      r.status === 0 && r.stderr === "" && r.stdout.includes(usage) && !r.stdout.includes(notice), shown(r));
   }
   const docs = fromRemoved(["docs", "--json"]);
   check("docs runs from a removed folder", docs.status === 0 && docs.stdout.includes('"outcome":"ok"'), shown(docs));

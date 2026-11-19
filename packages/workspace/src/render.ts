@@ -82,6 +82,11 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       return d.server !== undefined
         ? parts(`multiple spaces recorded at ${brokerAddressForDisplay(d.server) ?? "an invalid broker address"}: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` alongside --server, or remove --server after selecting a default with `cotal use <name>`")
         : parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
+    case "server-host-mismatch":
+      return parts(
+        `no space is registered at ${d.server ?? "the requested broker address"}. Possible local registrations: ${(d.available ?? []).join(", ")}`,
+        "use a listed address with `--server <url>`, or verify the requested broker and name its space with `--space <name>`",
+      );
     case "default-occupied":
       return parts(`another mesh ("${d.space}") is running at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid broker address"}`, `run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`);
     case "stale-auth-root":

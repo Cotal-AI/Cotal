@@ -1,6 +1,6 @@
 /** Silent listeners stay distinct from refused ports across the shipped CLI's space reports. */
 import assert from "node:assert/strict";
-import { emitSentinel, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { preflightTarget } from "@cotal-ai/workspace";
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -117,10 +117,12 @@ await scenario("refused", port, () => 0);
 {
   const home = join(root, "foreign");
   const project = join(home, "project");
-  mkdirSync(join(project, ".cotal"), { recursive: true });
   const env = { ...hostEnv, HOME: home, COTAL_HOME: join(home, "state"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   async function run(args: string[]) {
-    const child = spawn(process.execPath, [bin, ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+    const options = { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    assertSmokeSandboxDown(sandbox, args, options);
+    const child = spawn(process.execPath, [bin, ...args], options);
     let output = "";
     child.stdout.on("data", chunk => { output += chunk; });
     child.stderr.on("data", chunk => { output += chunk; });

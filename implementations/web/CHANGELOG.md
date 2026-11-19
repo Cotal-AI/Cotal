@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.171.2
+
+### Patch Changes
+
+- e9739e3: Move the dashboard's operator posting (the posting decision, the operator credential, the poster and `POST /api/send`) out of `web.ts` into its own module. No behaviour change.
+- f79bf2d: Move the dashboard's read paths (client assets, activity aggregation, the session feed and agent events) out of `web.ts` into their own module. No behaviour change.
+
 ## 0.171.1
 
 No changes in this release.

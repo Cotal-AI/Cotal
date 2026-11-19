@@ -5,23 +5,16 @@ import { nativeBindingAfter, nativeConnectionBinding, type NativeConnectionBindi
 import { EventEmitter } from "node:events";
 import { drainAndClose } from "./connection-cleanup.js";
 import { randomUUID } from "node:crypto";
-import { createConnection, isIP } from "node:net";
 import {
-  connect,
-  tokenAuthenticator,
   nanos,
-  AuthorizationError,
   PermissionViolationError,
-  UserAuthenticationExpiredError,
   NoRespondersError,
   RequestError,
   TimeoutError,
-  ConnectionError,
   type NatsConnection,
   type Msg,
   type Subscription,
 } from "@nats-io/transport-node";
-import { wsconnect } from "@nats-io/nats-core";
 import {
   responderFromLease,
   responderFromProbe,
@@ -32,11 +25,9 @@ import {
 import { EndpointPresence, type PresenceView } from "./endpoint-presence.js";
 export { PresenceWriteStuckError, type PresenceView } from "./endpoint-presence.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
-import { nativeCredsAuthenticator } from "./creds-authenticator.js";
-import { armRenewal, renewalDeadlineMs, jitteredBackoffMs } from "./renewal.js";
+import { armRenewal, jitteredBackoffMs } from "./renewal.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { withDeadline } from "./deadline.js";
-import { inspectCredHealth } from "./provision.js";
 import {
   type SecretStoreIdentity,
 } from "./secret-store.js";
@@ -47,7 +38,6 @@ import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./
 import { assertGeneration, assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
 import { servePrincipalRoute, describeContracts, type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
 import { epPrincipalCall } from "./endpoint-call.js";
-import type { ClusterDocument } from "./endpoint-cluster.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
@@ -61,7 +51,6 @@ import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { anycastStoreDefinition, taskDurableConfig, PRESENCE_STORAGE } from "./streams.js";
-import { DELIVERY_LIMIT_HEADER, PLANE3_MAX_MSGS_PER_SUBJECT } from "./backup-config.js";
 import {
   jetstream,
   jetstreamManager,
@@ -118,7 +107,7 @@ import { EndpointChannelDiscovery } from "./endpoint-channel-discovery.js";
 import { EndpointLiveness } from "./endpoint-liveness.js";
 import { EndpointProvisioning } from "./endpoint-provisioning.js";
 import { EndpointBootMemberships } from "./endpoint-boot-memberships.js";
-import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
+import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import {
   openChannelRegistry,
   effectiveReplay,
@@ -181,284 +170,73 @@ import {
 
 import { isPermissionDenied } from "./permission-denied.js";
 export { isPermissionDenied };
-
-export const DEFAULT_SERVER = "nats://127.0.0.1:4222";
-/** Takes a daemon answers at once; one more is refused as busy, so the holder keeps its copy and
- *  asks again rather than queueing work the daemon cannot bound. */
-const MAX_TAKES_IN_FLIGHT = 64;
-/** How often the daemon runs the anycast records maintenance pass. */
-const ANYCAST_SWEEP_MS = 10 * 60 * 1000;
-/** How long a holder waits for the daemon to answer a take. */
-const ANYCAST_TAKE_TIMEOUT_MS = 5_000;
-
-/** The DLV count a stored copy was written under, from its {@link DELIVERY_LIMIT_HEADER} (SPEC §8):
- *  a whole number of at least 1, null for `none`, and 1000 when the header is absent, since only a
- *  daemon from before the count was configurable writes a copy without it and its count was 1000.
- *  Throws on any other value. */
-export function deliveryLimitOf(value: string | undefined): number | null {
-  if (value === undefined || value === "") return PLANE3_MAX_MSGS_PER_SUBJECT;
-  if (value === "none") return null;
-  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`plane-3 delivery: ${DELIVERY_LIMIT_HEADER} ${JSON.stringify(value)} is not a count`);
-  return Number(value);
-}
-
-/** Space joined when none is given on the CLI (the `cotal-<space>` cmux tab, etc.). */
-export const DEFAULT_SPACE = "main";
-
-/** The longest delay `setTimeout` honors, 2^31-1 ms. */
-const MAX_TIMER_MS = 2_147_483_647;
-
-export interface EndpointOptions {
-  /** Trusted composition custody of each opened transport, including replacement epochs.
-   * Called before binding so the owner can await its terminal closed signal on bind failure. */
-  onConnection?: (nc: NatsConnection) => void;
-  /** A planned credential swap dials a second connection, calls {@link onConnection}, and flushes
-   *  before it reconnects the resident connection. The second connection closes after that
-   *  reconnect. `onConnection` must accept a connection that exists only for the swap. Serve
-   *  subscriptions that share an incarnation queue keep dispatch while the resident connection
-   *  is down. Without this option the resident connection reconnects in place. */
-  overlapOnConnectionRenewal?: boolean;
-  /** Await local admission checks before presence, consumers and the ready event on each bind. */
-  beforeBind?: () => Promise<void>;
-  /** The collaboration to join. */
-  space: string;
-  /** Identity. `id` is generated if omitted. */
-  card: Omit<AgentCard, "id"> & { id?: string };
-  /** Opaque presence label. Omitted reads COTAL_ENVIRONMENT; null omits the label without reading it. */
-  environment?: string | null;
-  /** This incarnation's lifecycle UID (SPEC §13.1), minted ONCE per lifecycle by the provisioning
-   *  authority (manager/CLI: `mintLifecycleUid()`) and PERSISTED with the agent — never re-minted per
-   *  process, or a supervised restart would abandon the durable inbox. REQUIRED to bind/create the
-   *  lifecycle-keyed messaging durables (`dm_…-<uid>`, `dlv_…-<uid>`, `chathist_…-<uid>`) — an
-   *  endpoint without one (a pure operator/daemon connection) can not consume DM/chat history. */
-  lifecycleUid?: string;
-  /** The CHAT stream sequence this incarnation had reached before its preservation cut (a supervised
-   *  preserve/resume, never a fresh join). The boot backfill reads only what came after it instead of
-   *  the whole retained window. Core reads no environment variable for this — the caller (a launcher)
-   *  resolves it and passes it explicitly. */
-  backfillFloor?: number;
-  /** The accepted-row token of this credential's issuance (SPEC 13.15). Set when the launcher
-   *  minted the credential as an issuance: after connecting, the endpoint reads the generation the
-   *  ISSUER bound under this token (a broker-enforced per-key read) and pins it into every caller
-   *  rail it forms. A token that resolves to no row, or to another incarnation's reference, fails
-   *  the connect: the rails would be refused at the broker anyway, and a silent legacy fallback is
-   *  exactly what the versioned rail exists to rule out. */
-  acceptedToken?: string;
-  servers?: string;
-  /** Connection token (soft-shared auth). Mutually exclusive with user/pass. */
-  token?: string;
-  /** Username/password auth (both required together). */
-  user?: string;
-  pass?: string;
-  /** NATS user creds file *content* (JWT + nkey seed), or a SOURCE that mints/reads a fresh copy.
-   *  When set, the endpoint authenticates as that user and adopts the creds' identity as its card.id.
-   *
-   *  A STRING is the ordinary static cred. A FUNCTION is the STANDING-RENEWAL seam for
-   *  bounded-lifetime standing creds: the endpoint fetches before the first connect, re-fetches at
-   *  75% of each JWT's lifetime (then swaps the connection onto the fresh cred with a controlled
-   *  reconnect) and on rebuilds, and every (re)connect attempt presents the freshest copy — the
-   *  broker's expiry-close is only the backstop for a missed swap.
-   *  The two source shapes are the renewal classes: a seed-holder self-remints (the manager's
-   *  supervisor), a seed-less daemon re-reads its manager-reminted creds file (delivery). A source
-   *  requires explicit `card.id` (the pinned identity); every fetched cred MUST carry that same nkey
-   *  or the endpoint fails loud — renewal may never silently swap identity. A fetch failure is
-   *  emitted as a "warning" event and retried; the connection stays up until its current JWT expires,
-   *  so a dead reminter is loud without instantly dropping the mesh. Node rethrows unhandled "error"
-   *  events, so a retry notice must not use that channel (#891). Once the cached cred expires,
-   *  the endpoint refuses to present it to the broker and keeps retrying the source with backoff. */
-  creds?: string | (() => Promise<string>);
-  /** USER-MODE auth: a validated Cotal user bearer (the JWT from `cotal login` → the IdP bridge), or a
-   *  SOURCE that mints a fresh one. When set, the endpoint connects through the auth callout — presenting
-   *  {@link sentinelCreds} + the bearer, the broker mints its scoped data-account JWT.
-   *
-   *  A STRING is a one-shot bearer for connection-lifetime ≤ bearer-lifetime callers (the CLI): the
-   *  owner+actor PRINCIPAL is derived from it (`sub`, `act.actor`), and the connection dies at the
-   *  bearer-bound JWT expiry. A FUNCTION is a bearer source for long-lived endpoints (spawned agents):
-   *  the endpoint fetches before the first connect, renews at a random point between 50% and 80% of
-   *  each token's lifetime (then swaps the connection onto it with a controlled reconnect) and on
-   *  rebuilds, and every (re)connect attempt presents the freshest unexpired token — so reconnects
-   *  outlive any single bearer, and none presents an expired one.
-   *  A source requires explicit `card.owner` + `card.actor` (there is no bearer to derive them from at
-   *  construction); every fetched bearer MUST carry that same principal or the endpoint fails loud.
-   *  A fetch failure is emitted as one "warning" event per run of failures and retried on a jittered,
-   *  capped backoff — the connection stays up until its current JWT expires, so a dead auth service
-   *  surfaces loudly without instantly dropping the mesh. A failure that carries a numeric
-   *  `retryAfterSeconds` is retried when those seconds have passed instead, not before.
-   *  Node rethrows unhandled "error" events, so a retry notice must not use that channel (#891).
-   *  Mutually exclusive with `creds`/`token`/`user`/`pass`; requires `sentinelCreds`. */
-  bearer?: string | (() => Promise<string>);
-  /** The shared, deny-all auth-account sentinel creds presented alongside {@link bearer} so the connect
-   *  lands in the callout account (`createCalloutAuth().sentinelCreds`). Powerless on its own. */
-  sentinelCreds?: string;
-  /** Require a TLS connection to the server. */
-  tls?: boolean;
-  /** Native NATS PING interval for this endpoint's resident connection, in milliseconds.
-   *  Defaults to 10 seconds. Pair with transportMaxPingOut. No probe connection. */
-  transportPingIntervalMs?: number;
-  /** Unanswered native PING count before the resident transport becomes stale. Defaults to 2.
-   *  Pair with transportPingIntervalMs for bounded silent loss. */
-  transportMaxPingOut?: number;
-  /** How long the first connect may take before it fails with the transport's TimeoutError, in
-   *  milliseconds. Omitted uses the transport's default. */
-  transportConnectTimeoutMs?: number;
-  /** Channels to subscribe to; the first concrete one is the default broadcast target. Omitted or
-   *  empty ⇒ NO channels: the endpoint joins nothing, and {@link CotalEndpoint.multicast} refuses
-   *  a call with no explicit channel rather than picking one. */
-  channels?: string[];
-  /** The credential's complete channel read ACL when the composition has it. An explicit empty list
-   * means provisioning omitted the DLV durable. When omitted, static credentials select the optional
-   * bind from their presented publish permissions; bearer callers need the resolved ACL. A denied
-   * bind still refuses startup. */
-  allowSubscribe?: string[];
-  /** Presence heartbeat interval (ms). */
-  heartbeatMs?: number;
-  /** Presence liveness window (ms); a peer is considered gone after this. */
-  ttlMs?: number;
-  /** Publish our own presence (default true). */
-  registerPresence?: boolean;
-  /** Track the roster of peers with a live watch (default true). Every watcher receives every
-   *  member's heartbeat, so a space of K watching members moves K² deliveries per heartbeat. An
-   *  endpoint that only needs the roster when it acts sets this false and calls
-   *  {@link CotalEndpoint.readPresence} instead (SPEC §6). */
-  watchPresence?: boolean;
-  /** Keep the channel registry cache (default true). An endpoint that watches presence watches the
-   *  registry; a consumer that reads presence on demand reads the registry on demand too
-   *  ({@link CotalEndpoint.readChannels}), and any other endpoint keeps no cache. A presence-only
-   *  supervisor sets this false to track the roster WITHOUT opening the channel-registry cache — so
-   *  its cred needs no channel-registry read grant (residual 2). A consumer always opens the
-   *  registry, because the join-time replay decision reads it. */
-  watchChannels?: boolean;
-  /** Read presence and the channel registry ONCE at start instead of watching them (default false),
-   *  for an endpoint that does one thing and stops (`cotal send`, a roster probe). Each read is a
-   *  batched Direct Get of every key's last record, so it binds no consumer. A watch's ordered consumer
-   *  outlives {@link CotalEndpoint.stop} by the broker's five-minute inactive threshold, because the
-   *  operator and agent profiles hold no CONSUMER.DELETE on these buckets (#691), and one per
-   *  short-lived process piles up until the broker refuses new consumers there (#4091). The roster
-   *  and the channel cache hold the state at start and never update, and no sweep runs. Requires
-   *  `consume` and `registerPresence` false. */
-  readOnce?: boolean;
-  /** Consume ONLY this endpoint's own existing DM durable, for a credential that can read nothing
-   *  else. The endpoint binds `dm_<owner>-<actor>-<uid>` and opens no channel registry, presence,
-   *  KV, channel subscription, `dlv_` durable, history reader or JetStream manager. It never creates
-   *  the durable: a missing one fails start with {@link DmDurableMissingError}, a refused bind with
-   *  {@link DmBindRefusedError}. Each authenticated DM goes to `handler`, one at a time; the next is
-   *  not read until the previous handler settles. The `message` event does not fire in this mode.
-   *  {@link CotalEndpoint.stop} resolves only after the connection is closed and the running handler
-   *  has settled; a rejecting handler still lets the connection close, and stop throws, keeping
-   *  custody, when closure or settlement within `settleTimeoutMs` (default 30000) is unproved.
-   *  A copy received after stop begins or after a reconnect replaces the connection is never
-   *  handed to the handler and stays unacked for broker redelivery; an ack, nak or in-progress
-   *  signal on a closed connection throws.
-   *  Requires static or sourced creds or a bearer, `consume` true, `registerPresence`,
-   *  `watchPresence` and `watchChannels` false, and no channels, role, `readOnce` or `acceptedToken`. */
-  dmOnly?: DmOnlyOptions;
-  /** Create inbound stream consumers (DM / chat / anycast). Default true; a pure observer sets false. */
-  consume?: boolean;
-  /** Initial per-channel attention overrides to publish in presence from the first heartbeat (the
-   *  connector's file-default seed). Mirror only — never read back into delivery. */
-  channelModes?: Record<string, ChannelMode>;
-  /** How long an unacked (un-surfaced) message waits before redelivery (ms). */
-  ackWaitMs?: number;
-  /** Retire this instance's durable consumers after it's been gone this long (ms). */
-  inactiveThresholdMs?: number;
-}
-
-/** A peer subscribed to a channel — broker truth (a chat-stream consumer) joined with
- *  presence for liveness. `live: false` is a stale ghost: the durable lingers (reconnect
- *  grace) but presence says the peer is gone/offline. */
-export interface ChannelMember {
-  id: string;
-  name: string;
-  role?: string;
-  live: boolean;
-}
-
-/** See {@link EndpointOptions.dmOnly}. */
-export interface DmOnlyOptions {
-  /** Receives each authenticated DM. A resolved promise does not ack: call `delivery.ack()`. A
-   *  rejection is emitted as `error` and leaves the copy unacked, so the broker redelivers it. */
-  handler: (msg: CotalMessage, delivery: Delivery, meta: MessageMeta) => void | Promise<void>;
-  /** How long {@link CotalEndpoint.stop} waits for a running handler, in milliseconds. */
-  settleTimeoutMs?: number;
-}
-
-/** This endpoint's own `dm_` durable does not exist. A DM-only endpoint, and any endpoint on an
- *  authenticated mesh, binds the durable its provisioner created and never creates one. */
-export class DmDurableMissingError extends Error {
-  readonly code = "dm-durable-missing" as const;
-  constructor(readonly stream: string, readonly durable: string) {
-    super(`dm-durable-missing: durable "${durable}" on stream "${stream}" does not exist; this endpoint binds an existing durable and never creates one`);
-    this.name = "DmDurableMissingError";
-  }
-}
-
-/** The broker refused a DM-only endpoint's bind of its own `dm_` durable. No other credential or
- *  read path is tried. */
-export class DmBindRefusedError extends Error {
-  readonly code = "dm-bind-refused" as const;
-  constructor(readonly stream: string, readonly durable: string, cause: unknown) {
-    super(`dm-bind-refused: binding durable "${durable}" on stream "${stream}" was refused (${cause instanceof Error ? cause.message : String(cause)})`, { cause });
-    this.name = "DmBindRefusedError";
-  }
-}
-
-/** Raw NATS transport liveness for the endpoint's CURRENT connection epoch. This is deliberately
- *  separate from the `connection` event, which means the full Cotal bind is ready. */
-export interface TransportState {
-  connected: boolean;
-  /** The server nats.js named for this edge. Omitted when the runtime supplied none. */
-  server?: string;
-}
-
-/**
- * Events: "message" (CotalMessage), "presence" (PresenceEvent), "roster" (Presence[]), "error" (Error),
- * "connection" ({ connected: boolean }) — true on every successful (re)bind (initial start, manual
- * reconnect, AND background self-heal), false the moment the connection drops (rebuild null window /
- * terminal close). Lets an in-process agent track connectedness off the endpoint's own (re)binds
- * instead of an imperative flag the self-heal path can't reach; "transport" ({ connected, server? })
- * is the lower-level NATS socket edge, true before the full bind finishes and false during an internal
- * nats.js reconnect without changing `connection` readiness. "stored-copies-full" ({ limit: number }): a
- * stored copy arrived with the store at the count the copy was written under ({@link deliveryLimitOf}),
- * so the store may have discarded older copies before this session read them; emitted for each such
- * copy. A lowering of the count or an age set on the store removes copies without this event.
- *
- * Callers MUST attach an "error" listener before `start()`: async faults (incl. NATS
- * permission denials, surfaced via `watchStatus`) are emitted as "error", and Node throws
- * synchronously on an unhandled "error" — a missing listener turns any such fault into a
- * process crash instead of a logged denial.
- */
-
-/** One page of a mediated history read: the newest `limit` messages, oldest-first WITHIN the page.
- *
- *  `complete` is the honest-truncation signal and the reason this is not just `CotalMessage[]`:
- *  `true` means the page reaches the start of the channel's RETAINED history (nothing older is on
- *  the stream to read), `false` means older messages exist behind it. A caller that cannot tell
- *  those apart renders "there is more" as "this is the beginning of the conversation". It says
- *  nothing about messages already aged out by retention — no reader can see those. */
-export type HistoryPage = { items: CotalMessage[]; complete: boolean };
-
-/** The NEWEST prefix-from-the-end of `items` whose serialized `readHistory` reply fits `budget`
- *  bytes, order preserved. Returns `[]` when not even the newest single message fits — the caller
- *  must refuse loudly there rather than serve an empty page, which would read as "no history".
- *
- *  The `ControlReply` around the items rides the same NATS message, so it is charged too: items
- *  that fit on their own can still make a reply the broker refuses.
- *
- *  Measured in ENCODED bytes, not `string.length`: a page of multi-byte text would otherwise be
- *  undercounted and still overflow the broker. Same discipline as `assertFactFits`. */
-export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMessage[] {
-  const enc = new TextEncoder();
-  // The reply with no items, at its longer `complete` value.
-  let used = enc.encode(JSON.stringify({ ok: true, data: { items: [], complete: false } satisfies HistoryPage })).length;
-  let first = items.length; // index of the oldest kept item
-  for (let i = items.length - 1; i >= 0; i--) {
-    const size = enc.encode(JSON.stringify(items[i])).length + 1; // + the `,` separator
-    if (used + size > budget) break;
-    used += size;
-    first = i;
-  }
-  return first === items.length ? [] : items.slice(first);
-}
+import {
+  DEFAULT_SERVER,
+  isPublishPermissionDenied,
+  dialerFor,
+  probeConnect,
+  isAuthRejection,
+  kvWatchConsumer,
+  decodeBearerPrincipal,
+  bearerExpiryMs,
+  bearerRenewalDeadlineMs,
+  bearerLifetimeMs,
+  retryAfterMs,
+  authOpts,
+  RepeatedRefusal,
+  describeStatusError,
+} from "./endpoint-dial.js";
+export {
+  DEFAULT_SERVER,
+  isPublishPermissionDenied,
+  wsServers,
+  defaultProbeTimeoutMs,
+  dialerFor,
+  isAuthRejection,
+  isReachable,
+  type ProbeResult,
+  probeConnect,
+} from "./endpoint-dial.js";
+import {
+  type PrincipalServeIntent,
+  type DmOnlyOptions,
+  type EndpointOptions,
+  type TransportState,
+  MAX_TIMER_MS,
+  type ChannelMember,
+  type HistoryPage,
+  ANYCAST_SWEEP_MS,
+  MAX_TAKES_IN_FLIGHT,
+  type PrincipalServe,
+  ANYCAST_TAKE_TIMEOUT_MS,
+  DmDurableMissingError,
+  DmBindRefusedError,
+} from "./endpoint-options.js";
+export {
+  deliveryLimitOf,
+  DEFAULT_SPACE,
+  type EndpointOptions,
+  type ChannelMember,
+  type DmOnlyOptions,
+  DmDurableMissingError,
+  DmBindRefusedError,
+  type TransportState,
+  type HistoryPage,
+  fitHistoryPage,
+  type PrincipalServe,
+} from "./endpoint-options.js";
+import {
+  historyMessageFromDelivery,
+  isUsableMessageId,
+  isFromSubjectSender,
+  authenticatedMessage,
+  isReadableMessagePart,
+  kindFromParsed,
+  dmOnlyDelivery,
+} from "./endpoint-messages.js";
+export {
+  isFromSubjectSender,
+} from "./endpoint-messages.js";
 
 /** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
  *  orders lists by `seq` within one `runtime.id`, and a runtime id lives as long as the process, so
@@ -468,40 +246,6 @@ const promptsSeqs = new Map<string, number>();
 /** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
  *  would subscribe the same subject and both answer one request (SPEC 13.21). */
 const principalServers = new Map<string, PrincipalServeIntent>();
-
-/** What {@link CotalEndpoint.servePrincipal} keeps to re-bind on every replaced connection. */
-interface PrincipalServeIntent {
-  readonly serve: { endpoint: string; cluster: ClusterDocument; handlers: EpPrincipalCommandDef[] };
-  readonly self: EpPrincipal;
-  /** Its key in {@link principalServers}. */
-  readonly serverKey: string;
-  /** The binding on the connection it was made on, and every binding not yet retired: the current
-   *  one and those on replaced connections whose handlers are still finishing, so `stop` awaits
-   *  them. */
-  binding?: { nc: NatsConnection; handle: EpPrincipalServeHandle };
-  readonly handles: EpPrincipalServeHandle[];
-  /** The connection on which the broker last accepted the subscription. */
-  readyOn?: NatsConnection;
-  /** Ended: stopped, or refused by the broker. */
-  ended: boolean;
-  readySettled: boolean;
-  resolveReady(): void;
-  rejectReady(e: Error): void;
-  resolveFailed(e: Error): void;
-}
-
-/** A served principal endpoint (SPEC 13.21). */
-export interface PrincipalServe {
-  /** Resolves once the broker accepted this process's subscription; rejects with its refusal. */
-  readonly ready: Promise<void>;
-  /** Resolves with the refusal that ended the serve, including one that arrives on a replaced
-   *  connection after `ready` resolved. Never rejects, and never resolves after `stop`. */
-  readonly failed: Promise<Error>;
-  /** Unsubscribe, abort every handler's `signal`, and wait for each handler in flight until its
-   *  request's deadline at most, which the route caps at 30 s. A reply that comes after that is
-   *  dropped. */
-  stop(): Promise<void>;
-}
 
 export class CotalEndpoint extends EventEmitter {
   readonly card: AgentCard;
@@ -5518,640 +5262,4 @@ export class CotalEndpoint extends EventEmitter {
   private sweep(): void {
     return this.presence.sweep();
   }
-}
-
-/** A usable delivery-message id (#624): a string, possibly empty (the never-a-key case), but
- *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
- *  SPEC sec 5; each delivery pump handles it per its own class (durable term, live drop, history
- *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
-function isUsableMessageId(id: unknown): id is string {
-  return typeof id === "string";
-}
-
-/** Map an authenticated parsed-subject kind to the message class surfaced to "message" listeners.
- *  Throws on `ctl` (control-plane is request/reply, never a "message") — per repo convention, no
- *  silent default: an unexpected delivering kind is a bug, not something to swallow. */
-function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
-  switch (kind) {
-    case "chat":
-      return "channel";
-    case "inst":
-      return "dm";
-    case "svc":
-      return "anycast";
-    default:
-      throw new Error(`cannot derive a message kind from subject kind "${kind}"`);
-  }
-}
-
-/** SPEC §5 on receive: a delivery comes from the principal its subject names. The payload is an
- *  object whose `from.id` is the subject's sender, and the subject's owner is a real principal, not
- *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
- *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
- *  the path. */
-export function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
-  return isRecord(msg) && isRecord(msg.from) && msg.from.id === parsed.sender && isPrincipalOwnerToken(parsed.owner);
-}
-
-/** Routing fields in the envelope are advisory. The broker forge-locks sender (and for DMs,
- *  recipient) into the subject. Callers MUST already have passed {@link isFromSubjectSender}
- *  (SPEC §5). This derives the remaining
- *  routing tokens from the subject for rows that survived — it does not rewrite a mismatched
- *  `from.id`. Live tails, channel backfill, and channel recall skip the mismatch; history
- *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
- *  row type already verified stays verified (#1413). */
-function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
-  if (parsed.kind === "chat" || parsed.kind === "evp") return authenticatedChannelMessage(msg, parsed.rest);
-  if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
-  if (parsed.kind === "svc") return authenticatedAnycastMessage(msg, parsed.rest);
-  return msg;
-}
-
-function authenticatedDmMessage<M extends CotalMessage>(msg: M, to: string): CotalMessage & M {
-  if (msg.to === to && (msg as CotalMessage).channel === undefined && msg.toService === undefined) return msg;
-  const { channel: _channel, toService: _toService, ...base } = msg;
-  return { ...base, to } as CotalMessage & M;
-}
-
-function authenticatedAnycastMessage<M extends CotalMessage>(msg: M, toService: string): CotalMessage & M {
-  if (msg.toService === toService && msg.to === undefined && (msg as CotalMessage).channel === undefined) return msg;
-  const { to: _to, channel: _channel, ...base } = msg;
-  return { ...base, toService } as CotalMessage & M;
-}
-
-/** A DM-only copy's delivery. An ack, nak or in-progress signal on a closed connection is refused
- *  with a throw instead of being dropped silently: the copy stays unacked and the broker redelivers it. */
-function dmOnlyDelivery(m: JsMsg, ackWaitMs: number, nc: NatsConnection | undefined): Delivery {
-  const open = (what: string): void => {
-    if (!nc || nc.isClosed()) throw new Error(`DM-only ${what} refused: the connection that delivered this copy is closed; the broker will redeliver it`);
-  };
-  return {
-    ack: () => { open("ack"); m.ack(); },
-    nak: () => { open("nak"); m.nak(); },
-    durable: true,
-    redelivery: { deliveryCount: m.info.deliveryCount, ackWaitMs, working: () => { open("in-progress signal"); m.working(); } },
-  };
-}
-
-/** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify
- *  `from.id` equals the subject sender; on mismatch, a missing `from`, or an unparseable delivery
- *  subject, reject and never surface. Fail closed on shape too: a stored JSON `null` or a truthy
- *  non-object `from` must not throw mid-array. Do not echo-drop `from.id === this.card.id`:
- *  god-view history must include the viewer's own sends. */
-function historyMessageFromDelivery(m: { subject: string; json: <T>() => T }): HistoryMessage | undefined {
-  let raw: unknown;
-  try {
-    raw = m.json();
-  } catch {
-    return undefined;
-  }
-  if (!isHistoryDrainEnvelope(raw)) return undefined;
-  if (!isVerifiedHistoryRow(raw)) return undefined;
-  const parsed = parseSubject(m.subject);
-  if (!parsed || !isFromSubjectSender(raw, parsed)) return undefined;
-  return authenticatedMessage(raw, parsed);
-}
-
-/** A row `isHistoryDrainEnvelope` admitted: object envelope, usable `id`, object `from` — the
- *  drain's own MINIMAL row type, what it checked and nothing more (#1413). Distinct from both
- *  `CotalMessage` (which promises more than the drain verified) and `HistoryMessage` (the
- *  PUBLIC row, whose every present field the drain checked before returning it). */
-type HistoryDrainEnvelope = {
-  id: string;
-  from: { id: unknown; name?: unknown; role?: unknown };
-  [key: string]: unknown;
-};
-
-/** The members `HistoryMessage` promises beyond the drain envelope (#1413): a full
- *  `EndpointRef` (`from.name`, and `from.role` only when a string), a finite `ts`, a string
- *  `space`, `parts` the drain could read, and the optional members in their promised shape
- *  when present. Every field the PUBLIC row type promises is checked here, before the row is
- *  returned. A row missing one is dropped, never returned with that member silently
- *  `undefined` under the full type — a consumer reading `msg.ts`, `msg.space`, `msg.parts`
- *  or `msg.from.name` must not be able to reach one that was never there. Nothing is invented
- *  for an absent field.
- *
- *  `parts` is held to READABLE, not to `isMessagePart`: every member must be an object with a
- *  string `kind` (so `partsToText` can read `part.kind` without throwing), but a keyless
- *  `{kind:"data"}` row from a pre-#1404 producer is not dropped — history must surface it.
- *  `mentions`, `replyTo`, and `contextId` keep exactly their `CotalMessage` shapes when
- *  present: an array of strings, a string, a string. */
-function isVerifiedHistoryRow(row: HistoryDrainEnvelope): row is HistoryDrainEnvelope & HistoryMessage {
-  if (typeof row.from.name !== "string") return false;
-  if (row.from.role !== undefined && typeof row.from.role !== "string") return false;
-  if (typeof row.ts !== "number" || !Number.isFinite(row.ts)) return false;
-  if (typeof row.space !== "string") return false;
-  if (!Array.isArray(row.parts) || !row.parts.every(isReadableMessagePart)) return false;
-  if (row.mentions !== undefined &&
-      (!Array.isArray(row.mentions) || !row.mentions.every((name) => typeof name === "string"))) return false;
-  if (row.replyTo !== undefined && typeof row.replyTo !== "string") return false;
-  if (row.contextId !== undefined && typeof row.contextId !== "string") return false;
-  return true;
-}
-
-/** A part `partsToText` can read without throwing: an object with a string `kind` (#1413).
- *  Deliberately weaker than `isMessagePart` — a keyless `{kind:"data"}` part passes here —
- *  because history must surface rows a pre-#1404 producer wrote, not drop them. */
-function isReadableMessagePart(value: unknown): boolean {
-  return isRecord(value) && typeof value.kind === "string";
-}
-
-/**
- * Narrow enough for the type checker and for fail-closed history: object envelope, usable `id`,
- * object `from`. That is what lets `authenticatedMessage` take the row without a cast.
- *
- * Does NOT verify SPEC §5 message shape. It does not require a string `from.id` (the SPEC §5
- * comparison still rejects a mismatch) or exactly one route key. The members the PUBLIC
- * history row promises beyond this envelope — a full EndpointRef `from` (`name`/`role`), a
- * finite `ts`, a string `space` — are checked by {@link isVerifiedHistoryRow} before the row
- * is returned (#1413). Well-formed `parts` still belong to `isCotalMessage` (Plane-3), and
- * history must not use that guard: a publisher now REFUSES a `data` part carrying a non-JSON
- * value, but a keyless `{kind:"data"}` row from a pre-fix producer can still sit in a stream,
- * and history must surface it rather than drop it.
- */
-function isHistoryDrainEnvelope(value: unknown): value is HistoryDrainEnvelope {
-  return isRecord(value) && isUsableMessageId(value.id) && isRecord(value.from);
-}
-
-/** Auth subset of connect() options, shared by the endpoint and isReachable. `bearer` may be a
- *  sync GETTER — nats.js re-evaluates token authenticators per (re)connect attempt, which is how a
- *  refreshing endpoint presents its freshest bearer without rebuilding the connection options. */
-interface AuthOpts {
-  token?: string;
-  user?: string;
-  pass?: string;
-  /** May be a sync GETTER (like `bearer`) — the authenticator then re-reads it per (re)connect
-   *  attempt, which is how a standing-renewal endpoint presents its freshest cred. */
-  creds?: string | (() => string);
-  /** Observe only the credential actually presented, including native reconnect authentication. */
-  onCreds?: (creds: string) => void;
-  bearer?: string | (() => string);
-  sentinelCreds?: string;
-  tls?: boolean;
-}
-
-function authOpts(a: AuthOpts) {
-  const tls = a.tls ? {} : undefined;
-  // USER MODE: present the shared auth-account sentinel creds AND the user bearer as `auth_token` (an
-  // authenticator ARRAY — nats.js merges them into one CONNECT). The connect lands in the callout
-  // account, which validates the bearer and re-binds the client into the data account with a scoped JWT.
-  if (a.bearer) {
-    if (a.creds || a.token || a.user || a.pass)
-      throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
-    if (!a.sentinelCreds)
-      throw new Error("user-mode bearer requires sentinelCreds");
-    return {
-      authenticator: [nativeCredsAuthenticator(a.sentinelCreds), tokenAuthenticator(a.bearer)],
-      tls,
-    };
-  }
-  // creds (JWT/nkey) are mutually exclusive with token/user/pass — reject rather than
-  // silently pick one, so a misconfigured caller fails loud.
-  if (a.creds) {
-    if (a.token || a.user || a.pass)
-      throw new Error("creds are mutually exclusive with token/user/pass auth");
-    const creds = a.creds;
-    // A getter re-wraps per (re)connect attempt so each attempt signs with the freshest cred;
-    // nats.js invokes the authenticator function on every attempt, including internal reconnects.
-    const authenticator = (nonce?: string) => {
-      const presented = typeof creds === "function" ? creds() : creds;
-      const authenticated = nativeCredsAuthenticator(presented)(nonce);
-      a.onCreds?.(presented);
-      return authenticated;
-    };
-    return { authenticator, tls };
-  }
-  return { token: a.token, user: a.user, pass: a.pass, tls };
-}
-
-/** The bearer's `exp` as epoch ms — what the refresh schedule keys on. A bearer without a numeric
- *  `exp` is structurally unusable for a refreshing endpoint (fail-loud, like the principal decode). */
-function bearerExpiryMs(bearer: string): number {
-  return bearerLifetimeMs(bearer, 0).expiresAtMs;
-}
-
-/** The bearer's lifetime as epoch ms: `iat` to `exp`, starting at `adoptedAtMs` when it carries no
- *  `iat`. */
-function bearerLifetimeMs(bearer: string, adoptedAtMs: number): { issuedAtMs: number; expiresAtMs: number } {
-  const payload = bearer.split(".")[1];
-  if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
-  let claims: { exp?: unknown; iat?: unknown };
-  try {
-    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-  } catch {
-    throw new Error("user-mode bearer payload is not valid base64url JSON");
-  }
-  if (typeof claims.exp !== "number") throw new Error("user-mode bearer is missing a numeric exp claim");
-  const expiresAtMs = claims.exp * 1000;
-  return { issuedAtMs: Math.min(typeof claims.iat === "number" ? claims.iat * 1000 : adoptedAtMs, expiresAtMs), expiresAtMs };
-}
-
-/** Past this point a held bearer is overdue: its renewal should already have replaced it. */
-function bearerRenewalDeadlineMs(bearer: string, adoptedAtMs: number): number {
-  const { issuedAtMs, expiresAtMs } = bearerLifetimeMs(bearer, adoptedAtMs);
-  return renewalDeadlineMs(issuedAtMs, expiresAtMs);
-}
-
-/** A refusal already surfaced once for this outage. The rebuild loop retries it without a notice,
- *  so an endpoint that cannot renew shows one status line rather than one per attempt. */
-class RepeatedRefusal extends Error {}
-
-/** Decode the owner+actor PRINCIPAL from a user bearer WITHOUT verifying it — the client trusts its own
- *  bearer only to build its subjects; the broker's minted grant (from the callout, which DOES verify the
- *  bearer) is the real boundary, so a client that lied to itself would just be denied. Per the token
- *  claim semantics the OWNER is the JWT `sub` (`act.owner` merely restates it) and the ACTOR is
- *  `act.actor`. Throws on a structurally-unusable bearer (fail-loud). */
-function decodeBearerPrincipal(bearer: string): { owner: string; actor: string } {
-  const payload = bearer.split(".")[1];
-  if (!payload) throw new Error("user-mode bearer is not a JWT (no payload segment)");
-  let claims: { sub?: unknown; act?: { actor?: unknown } };
-  try {
-    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-  } catch {
-    throw new Error("user-mode bearer payload is not valid base64url JSON");
-  }
-  const owner = claims.sub, actor = claims.act?.actor;
-  if (typeof owner !== "string" || typeof actor !== "string")
-    throw new Error("user-mode bearer is missing a string sub (owner) / act.actor claim");
-  return { owner, actor };
-}
-
-/** Turn a raw async-status error into one whose message says *why* — a permission
- *  violation looks like absence unless it's named as a denial. */
-function describeStatusError(err: Error): Error {
-  if (err instanceof PermissionViolationError) {
-    return new Error(
-      `NATS permission denied: cannot ${err.operation} "${err.subject}" - check this ` +
-        `endpoint's ACLs (a denied peer looks "absent" rather than blocked)`,
-      { cause: err },
-    );
-  }
-  return err;
-}
-
-/** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */
-function kvWatchConsumer(iter: Awaited<ReturnType<KV["watch"]>>): PushConsumer {
-  const consumer = (iter as { _data?: PushConsumer })._data;
-  if (!consumer) throw new Error("KV watch carries no consumer - the pinned nats.js changed shape");
-  return consumer;
-}
-
-/** True ONLY for a denial on a **publish** — the single case that proves the message was never
- *  ACCEPTED or stored. (Not "never reached the server": the server necessarily received enough of
- *  it to reject it. The distinction matters precisely here, because this helper exists to separate
- *  provably-not-stored from possibly-stored, and the looser phrasing overstates the very thing
- *  being measured.) {@link isPermissionDenied} deliberately does not look at the operation: it exists to
- *  separate "denied" from "service down", and that answer is the same either way. The operation
- *  matters enormously to a caller that reports *delivery*, because a JetStream publish is
- *  request/PubAck and the subscription half is the reply inbox — a denial THERE rejects
- *  `js.publish()` while the stream may already hold the message. Verified against a live broker: a
- *  user allowed to publish but denied its `_INBOX` subscription got
- *  `Permissions Violation for Subscription to "_INBOX.….*"` back from `js.publish()`, and an
- *  unrestricted observer then read `messages: 1` off the stream.
- *
- *  Note what is deliberately NOT accepted: the untyped text fallback above. A permission-shaped
- *  message string carries no operation, so it cannot prove non-delivery, and guessing "publish"
- *  from wording would reintroduce exactly the false certainty this exists to prevent. Anything not
- *  provably a publish denial is unknown, and a caller reporting delivery must fail toward
- *  "I could not confirm" rather than toward "it did not happen" — the costly mistake is telling
- *  someone to re-send a message that was in fact stored. */
-export function isPublishPermissionDenied(e: unknown): boolean {
-  const typed =
-    e instanceof PermissionViolationError
-      ? e
-      : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError
-        ? ((e as { cause: PermissionViolationError }).cause)
-        : undefined;
-  return typed?.operation === "publish";
-}
-
-/** Whether a server list dials over websocket: the FIRST entry's scheme decides (one list, one
- *  transport — a mixed tcp+ws list would race two transports over one identity). */
-export function wsServers(servers: string): boolean {
-  return /^wss?:\/\//i.test((servers.split(",")[0] ?? "").trim());
-}
-
-/** Default probe budget by TRANSPORT. 1s was tuned for the loopback/LAN TCP brokers every local
- *  probe dials; a ws(s) broker is by definition published through an HTTPS edge (CDN tunnel,
- *  reverse proxy), where TLS + upgrade + INFO + the auth round-trip routinely exceeds 1s cold —
- *  measured ~60% spurious "not reachable" against a Cloudflare-fronted broker. Callers passing an
- *  explicit `timeoutMs` are untouched.
- *
- *  EXPORTED because a caller that judges a probe by WHEN it answered has to compare against the
- *  deadline this function actually handed the probe. The delivery watchdog does exactly that, and
- *  hardcoding 1000 there silently misread every ws broker: honest refusals arrive at 2-5s, past a
- *  budget that was never theirs, and would be classified as this process's starvation rather than
- *  the server's refusal. The budget and the judgment must come from one place. */
-export function defaultProbeTimeoutMs(servers: string): number {
-  return wsServers(servers) ? 5000 : 1000;
-}
-
-/** Pick the dial function by SCHEME: `ws://`/`wss://` servers go through nats-core's
- *  `wsconnect` (the websocket transport - e.g. a broker published through an HTTPS edge at
- *  `wss://host/path`), everything else through the TCP transport. The websocket dial OWNS its
- *  transport options: a required TLS connection refuses any `ws://` target before dialing.
- *  `wss://` performs TLS itself, and the w3c transport refuses a `tls` block outright
- *  ("'tls' is not configurable"), so the block is removed after that check.
- *  A TCP dial that requires TLS to one IP address names that address as the host its certificate
- *  must cover (see {@link withDialedTlsHost}). */
-export function dialerFor(servers: string): typeof connect {
-  if (!wsServers(servers)) return ((opts?: Parameters<typeof connect>[0]) => connect(withDialedTlsHost(servers, opts))) as typeof connect;
-  return ((opts: Parameters<typeof connect>[0]) => {
-    const { tls, ...rest } = (opts ?? {}) as Record<string, unknown>;
-    const targets = Array.isArray(rest.servers) ? rest.servers : String(rest.servers ?? servers).split(",");
-    if (tls && targets.some((target) => !/^wss:\/\//i.test(String(target).trim())))
-      return Promise.reject(new Error("TLS-required WebSocket connections must use wss:// for every server"));
-    return (wsconnect as unknown as typeof connect)(rest as Parameters<typeof connect>[0]);
-  }) as typeof connect;
-}
-
-/** `opts` for a dial to `servers`, with the IP address it names as the host a TLS certificate must
- *  cover when the dial requires TLS: a `tls` block, or a `tls://` address. The TCP transport upgrades
- *  to TLS with no server name for an IP, and Node then checks the certificate against "localhost":
- *  a certificate for the dialed address alone is refused, and one naming localhost passes for any
- *  address. A dial that does not require TLS keeps its options, because a `tls` block refuses a
- *  plaintext broker, and so does a list of several servers, whose one host the options cannot name. */
-function withDialedTlsHost(servers: string, opts: Parameters<typeof connect>[0]): Parameters<typeof connect>[0] {
-  const urls = servers.split(",").map((url) => url.trim()).filter(Boolean);
-  const tls = opts?.tls;
-  if (urls.length !== 1 || tls === null || tls === undefined && !/^tls:\/\//i.test(urls[0]!)) return opts;
-  let host: string;
-  try { ({ host } = hostPort(urls[0]!)); } catch { return opts; }
-  // Node checks an upgraded socket's certificate against `host` when no server name is set.
-  return isIP(host) ? { ...opts, tls: { host, ...tls } as NonNullable<typeof tls> } : opts;
-}
-
-/** Parse a NATS server URL (`nats://host:port`, `host:port`, a bare host, or a comma list — the
- *  first entry wins) into a host+port for {@link tcpInfoProbe}. Defaults the port to 4222. */
-function hostPort(server: string): { host: string; port: number } {
-  const raw = (server.split(",")[0] ?? "").trim();
-  const scheme = raw.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase();
-  const first = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""); // strip scheme
-  const u = new URL(`http://${first}`); // http:// so .hostname/.port resolve (incl. bracketed IPv6)
-  // A websocket broker rides the web's ports, not NATS's: `wss://host/path` reaches TCP 443.
-  const fallback = scheme === "wss" ? 443 : scheme === "ws" ? 80 : 4222;
-  return { host: u.hostname, port: u.port ? Number(u.port) : fallback };
-}
-
-/** Silent credless liveness probe. Opens a plain TCP connection and confirms a NATS server is there
- *  by reading its UNPROMPTED `INFO {…}` greeting — which the server sends on accept, BEFORE the
- *  client's CONNECT/auth (per the NATS client protocol) — then closes immediately without
- *  authenticating. Since it never sends CONNECT, an auth broker has nothing to reject, so this emits
- *  NO broker-side auth-error/auth-timeout log line (unlike a credless `connect()`, which an auth
- *  broker rejects and logs). It is a *plaintext NATS* liveness check only:
- *    • a TLS-first (`handshake_first`, NATS ≥ 2.10.4) listener sends its TLS handshake before INFO,
- *      so the read won't match → returns false (a documented false-negative for that broker config);
- *    • a non-NATS listener never sends a valid `INFO {` → also false, and a silent one resolves
- *      `"silent"` (we require the real greeting, never "any open port is reachable").
- *  Closes well within the server's ~1s authorization timeout, so it cannot trip a timeout log.
- *  A live server resolves to what its greeting said about auth. A peer that accepted the connection
- *  and sent no full line before the deadline, as a stopped or overloaded broker does, resolves
- *  `"silent"`; anything else resolves `false`. */
-function tcpInfoProbe(server: string, timeoutMs: number): Promise<false | "silent" | { authRequired: boolean }> {
-  return new Promise<false | "silent" | { authRequired: boolean }>((resolve) => {
-    let socket: ReturnType<typeof createConnection> | undefined;
-    let done = false;
-    let connected = false;
-    const finish = (live: false | "silent" | { authRequired: boolean }) => {
-      if (done) return;
-      done = true;
-      try { socket?.destroy(); } catch { /* already gone */ }
-      resolve(live);
-    };
-    let host: string, port: number;
-    try { ({ host, port } = hostPort(server)); } catch { return resolve(false); }
-    socket = createConnection({ host, port });
-    socket.setTimeout(timeoutMs);
-    let buf = "";
-    socket.on("data", (chunk: Buffer) => {
-      buf += chunk.toString("utf8");
-      const nl = buf.indexOf("\r\n");
-      if (nl === -1) { if (buf.length > 4096) finish(false); return; } // no real INFO line is 4KB+
-      const line = buf.slice(0, nl);
-      const brace = line.indexOf("{"); // greeting is `INFO {json}` (the server appends a trailing space)
-      if (!/^INFO\b/.test(line) || brace === -1) return finish(false); // not NATS (incl. a TLS-first handshake)
-      try { finish({ authRequired: (JSON.parse(line.slice(brace)) as { auth_required?: unknown })?.auth_required === true }); } // require a real INFO greeting, not arbitrary bytes
-      catch { finish(false); }
-    });
-    socket.on("connect", () => { connected = true; });
-    socket.on("timeout", () => finish(connected ? "silent" : false));
-    socket.on("error", () => finish(false)); // refused / reset / DNS failure
-    socket.on("close", () => finish(false)); // closed before a full INFO line arrived
-  });
-}
-
-/** Bounded TCP reachability on a socket we OWN: does a handshake to `server` complete within
- *  `timeoutMs`? Deliberately narrower than {@link tcpInfoProbe} — it asks only whether the
- *  transport can be reached, never whether NATS is speaking there, so the TLS-first listener that
- *  `tcpInfoProbe` reports false for still passes this gate and goes on to a real connect.
- *
- *  It exists because `connect()` cannot be trusted to release a connection it never established.
- *  `@nats-io/transport-node`'s `NodeTransport.dial()` keeps its socket in a local until the
- *  handshake resolves (`this.socket = await this.dial(hp)`), so `this.socket` is STILL UNDEFINED
- *  when the client's own connect timeout wins the race in `protocol.ts`'s `dial` and the catch
- *  calls `transport.close()` — whose teardown is `this.socket?.destroy()`, i.e. a destroy of
- *  nothing. Against an address that BLACKHOLES (SYN unanswered) rather than REFUSES (RST), the
- *  socket is orphaned in libuv until the OS SYN timeout, and the process cannot exit for minutes
- *  after the probe already returned its answer. That is issue #389, and it is upstream: nothing a
- *  caller passes (`reconnect: false`, `timeout`) reaches the orphan. Our socket, our `destroy()`,
- *  on every exit path — never an `unref`/force-exit, which would hide the symptom and a future
- *  real hang with it. A second orphan case (#2156) needs a greeting, not just a handshake, so it is
- *  gated by {@link tcpInfoProbe} instead wherever the dial will be plaintext. */
-function tcpDialable(server: string, timeoutMs: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    let socket: ReturnType<typeof createConnection> | undefined;
-    let done = false;
-    const finish = (dialable: boolean) => {
-      if (done) return;
-      done = true;
-      try { socket?.destroy(); } catch { /* already gone */ }
-      resolve(dialable);
-    };
-    let host: string, port: number;
-    try { ({ host, port } = hostPort(server)); } catch { return resolve(false); }
-    socket = createConnection({ host, port });
-    socket.setTimeout(timeoutMs);
-    socket.on("connect", () => finish(true));
-    socket.on("timeout", () => finish(false)); // blackhole: SYN unanswered inside our deadline
-    socket.on("error", () => finish(false)); // refused / reset / DNS failure
-    socket.on("close", () => finish(false));
-  });
-}
-
-/** Whether a failed connect was the server refusing these credentials: a server answered, so it is
- *  up. The same errors {@link isReachable} reads as up after its own authenticated connect. */
-export function isAuthRejection(e: unknown): boolean {
-  return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
-}
-
-/** The wait a credential source asked for with a numeric `retryAfterSeconds` on its error, in
- *  milliseconds, or 0. */
-function retryAfterMs(e: unknown): number {
-  const seconds = (e as { retryAfterSeconds?: unknown } | undefined)?.retryAfterSeconds;
-  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
-}
-
-/** Whether a NATS server is *running* at `servers`. With NO creds this is a SILENT plaintext
- *  liveness check ({@link tcpInfoProbe}): it reads the server's pre-auth `INFO` greeting and closes
- *  WITHOUT authenticating, so a live broker (open OR auth — INFO precedes auth) returns true while
- *  emitting no broker auth-error log. It may return false for a TLS-first listener — the credless
- *  probe is plaintext-only. With creds/token/tls supplied it is instead the AUTHORITATIVE identity
- *  check: a real authenticated connect, true on success AND on an auth rejection (a server that
- *  refuses these creds is still up — so the caller surfaces the real auth failure, and `up` won't
- *  start a duplicate on the bound port). Only a genuine connection failure (refused/timeout) is false. */
-export async function isReachable(
-  servers: string = DEFAULT_SERVER,
-  opts: AuthOpts & { timeoutMs?: number } = {},
-): Promise<boolean> {
-  const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(servers);
-  if (!opts.creds && !opts.token && !opts.user && !opts.pass && !opts.tls) {
-    // A websocket broker rides an HTTPS edge: the plaintext INFO probe reads TLS bytes and
-    // declares a perfectly live broker down (which then blocks spawn/connect with a wrong
-    // remedy). Dial the ws transport credless instead — an auth broker REJECTING the bare
-    // connect still proves it is there, the same reading the authed branch below gives its
-    // catch. Costs one broker-side auth-error log line per probe, which the INFO probe was
-    // designed to avoid; on a ws broker there is no silent alternative.
-    if (wsServers(servers)) {
-      try {
-        const nc = await dialerFor(servers)({ servers, timeout: timeoutMs, reconnect: false, maxReconnectAttempts: 0 });
-        await nc.close();
-        return true;
-      } catch (e) {
-        return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
-      }
-    }
-    return typeof (await tcpInfoProbe(servers, timeoutMs)) === "object";
-  }
-  // The credless branch above already owns its socket. This one reaches `connect()`, so it carries
-  // the same orphaned-socket defects probeConnect did (#389, and the slow-greeting case #2156) and
-  // takes the same gate choice: reach the address on a socket we own first, requiring the NATS
-  // greeting for a plaintext dial (the upstream transport orphans a socket whose handshake
-  // completed but whose greeting came late) and only the handshake for a TLS-required or websocket
-  // dial (no plaintext greeting to read), then give `connect()` the remainder of the budget its own
-  // timeout always covered. A gate failure is a genuine connection failure, which is exactly the
-  // `false` the catch below already returns for one — an auth rejection cannot reach us from an
-  // address that never completed a handshake.
-  const started = Date.now();
-  const gate = opts.tls || wsServers(servers) ? tcpDialable : tcpInfoProbe;
-  const reached = await gate(servers, timeoutMs);
-  if (!reached || reached === "silent") return false;
-  try {
-    const nc = await dialerFor(servers)({
-      servers,
-      timeout: Math.max(1, timeoutMs - (Date.now() - started)),
-      reconnect: false,
-      maxReconnectAttempts: 0,
-      ...authOpts(opts),
-    });
-    await nc.close();
-    return true;
-  } catch (e) {
-    return e instanceof AuthorizationError || e instanceof UserAuthenticationExpiredError;
-  }
-}
-
-/** What a connect attempt told us about the server — the distinction {@link isReachable} flattens.
- *  `auth-required` means a server answered but rejected these creds (so it IS up); `stale-auth`
- *  means the PRESENTED CREDENTIAL ITSELF is dead — expired by its bounded lifetime, either because
- *  the broker said "authentication expired" or because the cred is LOCALLY PROVABLY expired (its own
- *  JWT `exp` is past). The local check is decided without a round-trip, so a slow or failed connect
- *  never downgrades a dead cred to `unreachable`; the repair is `doctor auth` either way, never a
- *  registry prune (the D5 credential-death event). `unreachable` means nothing usable answered and
- *  the cred is not provably dead (refused / timeout / a stale registry entry). `timeout` means the
- *  dial ran out of its own budget before anything conclusive came back — never a trust or credential
- *  verdict, just "try again with more time" (#851). `inferred` marks an `auth-required` read from
- *  the broker's greeting rather than from a rejection: the greeting asked for auth and the handshake
- *  was then reset. The greeting is unauthenticated, so that verdict may name a failure but must never
- *  be grounds for deleting state. */
-export type ProbeResult =
-  | { ok: true }
-  | { ok: false; reason: "auth-required"; inferred?: true }
-  | { ok: false; reason: "stale-auth" }
-  | { ok: false; reason: "unreachable" }
-  | { ok: false; reason: "tls-unsupported" }
-  | { ok: false; reason: "timeout" };
-
-/** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
- *  `spawn` needs the difference: auth-required → name the trust dir + next step; unreachable → the
- *  mesh is down (prune the stale entry, tell the user to `cotal up`). Pass `creds` to confirm a
- *  specific identity is accepted (`ok`); omit them to probe mere liveness (an auth broker answers
- *  `auth-required`, which still proves it's up). */
-export async function probeConnect(
-  server: string = DEFAULT_SERVER,
-  opts: AuthOpts & { timeoutMs?: number } = {},
-): Promise<ProbeResult> {
-  const timeoutMs = opts.timeoutMs ?? defaultProbeTimeoutMs(server);
-  const started = Date.now();
-  // Reach the address on a socket we own BEFORE handing it to `connect()`, which orphans the
-  // connection it never established (see {@link tcpDialable} for the upstream mechanism, #389,
-  // and {@link tcpInfoProbe} for the second orphan case below, #2156). For a plaintext dial the
-  // gate must see the server's NATS greeting, not just the handshake: `connect()`'s own timeout
-  // can fire while it is still waiting on that greeting, and the upstream transport only destroys
-  // a socket whose handshake never completed, not one whose greeting came late (`_closed`'s guard
-  // on `connected`, which is set only after the greeting is read) — so `tcpInfoProbe` (which owns
-  // its socket and requires the greeting) is the gate there, while a TLS-required or websocket
-  // dial has no plaintext greeting to read and keeps the handshake-only `tcpDialable` gate. This
-  // cannot change any verdict: every address that gets past here had to complete a TCP handshake
-  // for `connect()` to have gotten anywhere either, and a gate failure is routed through the SAME
-  // classification the catch uses — so a locally-dead cred is still `stale-auth` and not silently
-  // downgraded to `unreachable` by the address being dark. The cost is one extra handshake (and,
-  // off TLS/ws, one extra greeting read) on the reachable path; the deadline below is the
-  // REMAINDER of the budget, because `connect()`'s own `timeout` always covered its handshake too.
-  const gate = opts.tls || wsServers(server) ? tcpDialable : tcpInfoProbe;
-  const greeting = await gate(server, timeoutMs);
-  if (!greeting) return classifyProbeFailure(undefined, opts);
-  // A peer that took the connection and never greeted is there but not answering, as a stopped or
-  // overloaded broker is. That is the same latency verdict as a dial that ran out of its budget.
-  if (greeting === "silent") return classifyProbeFailure(undefined, opts, false, "timeout");
-  try {
-    const nc = await dialerFor(server)({
-      servers: server,
-      timeout: Math.max(1, timeoutMs - (Date.now() - started)),
-      reconnect: false,
-      maxReconnectAttempts: 0,
-      ...authOpts(opts),
-    });
-    await nc.close();
-    return { ok: true };
-  } catch (e) {
-    return classifyProbeFailure(e, opts, greeting !== true && greeting.authRequired);
-  }
-}
-
-/** Why a {@link probeConnect} attempt did not end in `ok`. Shared by the pre-connect reachability
- *  gate and the connect catch so both classify identically — the gate must never turn a diagnosable
- *  credential death into a bare `unreachable` just because the address went dark.
- *
- *  A presented cred that is PROVABLY expired by its own JWT is stale-auth (credential death) — and
- *  that is knowable LOCALLY, without the network, so it is decided FIRST, before the error type. On
- *  the wire the broker's rejection and the socket close race: a slow CI/Windows handshake can
- *  surface a bare transport failure (→ "unreachable") instead of a clean AuthorizationError, which
- *  used to misclassify a dead cred. Reading the cred removes that timing dependency entirely, so the
- *  classification is deterministic. Unreadable content falls through to the wire truth (no false
- *  stale diagnosis from garbage). `e` is undefined when the gate refused before any connect.
- *  `authRequired` is true when the gate read a greeting that asked for auth. `otherwise` is the
- *  verdict when nothing more specific applies. */
-function classifyProbeFailure(e: unknown, opts: AuthOpts, authRequired = false, otherwise: "unreachable" | "timeout" = "unreachable"): ProbeResult {
-  if (typeof opts.creds === "string") {
-    try {
-      if (inspectCredHealth(opts.creds).state === "expired") return { ok: false, reason: "stale-auth" };
-    } catch { /* not introspectable — keep the wire truth */ }
-  }
-  if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
-  // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
-  if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
-  // A dial that ran out of its own budget is neither a refusal nor a dead broker — it is latency,
-  // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
-  // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
-  if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
-  // The native client read a greeting without TLS support and refused the TLS requirement.
-  // That is a transport mismatch, not an unreachable listener or proof of mesh identity.
-  if (e instanceof ConnectionError && e.message === "server does not support 'tls'")
-    return { ok: false, reason: "tls-unsupported" };
-  // A broker that greeted us asking for auth and then reset the handshake most likely refused it.
-  // Windows can discard its `-ERR 'Authorization Violation'` when the reset lands, so the client
-  // sees only ECONNRESET, and a running auth broker used to read as gone. No rejection was read, so
-  // the verdict is marked inferred.
-  if (authRequired && (e as { code?: unknown } | undefined)?.code === "ECONNRESET") return { ok: false, reason: "auth-required", inferred: true };
-  return { ok: false, reason: otherwise };
 }

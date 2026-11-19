@@ -36,6 +36,34 @@ for (const flag of ["--help", "-h"]) {
   }
 }
 
+{
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-ext-seed-refusal-"));
+  try {
+    const env = { ...process.env, XDG_CONFIG_HOME: xdg, NO_COLOR: "1" };
+    const run = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env });
+    const help = run("ext", "seed", "--help");
+    for (const [args, message] of [
+      [["ext", "seed", "--not-an-option"], /Unknown option '--not-an-option'/],
+      [["ext", "seed", "--", "--not-an-option"], /takes no operands/],
+      [["ext", "seed", "--repair", "--repair"], /Option '--repair' cannot be repeated/],
+      [["ext", "seed", "--repair=unexpected"], /Option '--repair' does not take an argument/],
+      [["x", "--re.pair", "seed"], /Unknown option '--re\.pair' - did you mean --repair\?/],
+      [["ext", "\u2014reset=false", "seed"], /\u2014reset=false starts with a typographic dash/],
+    ] as const) {
+      const refused = run(...args);
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.equal(refused.stdout, "");
+      assert.match(refused.stderr, message);
+      assert.ok(refused.stderr.endsWith(help.stdout), refused.stderr);
+      assert.doesNotMatch(refused.stderr, /positional argument|put -- before it|type the option with hyphens: --reset/);
+      assert.equal(existsSync(join(xdg, "cotal")), false, "invalid seed arguments must not write config");
+    }
+    console.log("  ✓ invalid seed arguments refuse with seed help and no operand workaround or config writes");
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+  }
+}
+
 // `ext root` is a scripting primitive: exactly the prefix path, one line, and NO seed - even on a
 // first-run empty config, where the auto-reconcile would otherwise emit `✓ added …` ahead of the path.
 {

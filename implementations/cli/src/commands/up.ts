@@ -214,7 +214,7 @@ import { ensureAuthService, resolveAuthProvider, stopAuthService } from "../lib/
 import { resolveSpace } from "../lib/status.js";
 import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
-import { natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
+import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { channelsReads, readChannelsFile, readDefaultChannelsFile } from "../lib/channel-seed.js";
 import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
@@ -377,7 +377,7 @@ export const upFlags: FlagSpec[] = [
   { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file or broker.logFile in a manifest" },
   { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file or broker.logFile in a manifest" },
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
-  { name: "max-payload", type: "string", value: "<bytes>", description: "broker-wide message size limit in bytes (default: nats-server's 1048576). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next `up`" },
+  { name: "max-payload", type: "string", value: "<bytes>", description: `broker-wide message size limit in bytes (default: nats-server's ${NATS_DEFAULT_MAX_PAYLOAD}). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next \`up\`` },
   { name: "account-resolver", type: "string", value: "<memory|full>", description: "how the broker resolves space accounts: memory (default) knows only the accounts its configuration lists, so adding one means a reload; full also keeps pushed account claims in .cotal/account-jwts, so a host can add and retire accounts on the running broker without a reload. Fixed at broker start and recorded for the next `up`" },
   { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
   { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
@@ -1963,10 +1963,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         process.exit(1);
       }
       // And so is the payload limit, which the same record carries.
-      if (maxPayload !== undefined && maxPayload !== runningPolicy?.maxPayload) {
+      if (maxPayload !== undefined && maxPayload !== (runningPolicy?.maxPayload ?? NATS_DEFAULT_MAX_PAYLOAD)) {
         console.error(
           c.red(
-            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --max-payload (it is fixed at start); \`cotal down\` it first, then \`cotal up --max-payload ${maxPayload}\``,
+            `✗ mesh "${held.space}" is already running at ${server} - a running broker can't change --max-payload (it is fixed at start); \`cotal down\` it first, then \`cotal up${noManager ? " --no-manager" : ""} --max-payload ${maxPayload}\``,
           ),
         );
         process.exit(1);
@@ -2326,10 +2326,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
       console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
       if (composition.note) console.log(c.yellow(composition.note));
-      for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId))) console.log(c.yellow(line));
+      const cleanupRoot = values.__invokedRoot && values.__invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
+      for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot)) console.log(c.yellow(line));
       const journal = readMaintenanceJournal(restored.root);
       if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal))}`));
+        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot)}`));
     }
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);
@@ -5274,7 +5275,14 @@ async function refuseRunningElsewhere(space: string, root: string): Promise<void
   if (!owner || owner.origin === "manual" || owner.origin === "catalog" || !isAbsolute(owner.root) || canonicalRoot(owner.root) === canonicalRoot(root) || !(await isReachable(owner.server))) return;
   let controller = false;
   try { controller = readStackJournal(owner.root)?.journal.space === space; } catch { /* named with the legacy stop */ }
-  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy: `use it from here with --space ${space}, or stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}` });
+  const rootExists = existsSync(owner.root);
+  const moved = !controller && !retainedLegacyBroker(owner.root) && recordsElsewhereError(root)?.details.stackSpace === space;
+  const remedy = moved
+    ? `${rootExists ? `move what is now at ${owner.root} aside, then ` : ""}move this folder back to ${owner.root} and run \`cotal down --yes\` there`
+    : !rootExists
+      ? `restore the original project at ${owner.root}, then run \`cotal down --yes\` there`
+      : `use it from here with --space ${space}, or stop it with \`cotal down${controller ? " --yes" : ""}\` in ${owner.root}`;
+  throw new CommandFailure("refused", "CONFLICT", `space "${space}" runs at ${owner.server}, started in ${owner.root}, so up did not start it again`, { target: { space, root: owner.root, server: owner.server }, remedy });
 }
 
 /** Refuses a bare `up` in a folder holding the records of a space this machine registers for another

@@ -26,7 +26,7 @@ import type { HostedManager, LoginPrompt, LoginResult, RegisterResult, ServiceCo
 import { applyInstall, installedDaemonIdentity, planUninstall, planInstalledPathRefresh, startInstalled, restartInstalled } from "./install.js";
 import { fromRegister } from "./service.js";
 import { DAEMON_PROTOCOL_VERSION } from "./endpoint.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 
 /** How each step ended, in the order they ran. A reader sees what this did and what it skipped. */
 export interface SetupStep {
@@ -272,6 +272,9 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
 async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<RegisterResult | undefined> {
   const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
   if (!check.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connection check: ${check.code} ${check.message}`, { native: { code: check.code } });
+  if (check.result.outcome === "not-user-auth") {
+    throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+  }
   if (check.result.outcome === "credential-expired") {
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", check.result.message, { native: { code: "CREDENTIAL_EXPIRED" } });
   }

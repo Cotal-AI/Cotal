@@ -77,6 +77,9 @@ The Quickstart starts the prepared space separately.
 
 ## Install with npm
 
+On Linux, use a glibc distribution to start the built-in PTY manager. The default local stack
+uses that manager. Alpine and other musl distributions cannot start it.
+
 If you already have Node.js 22.10 or newer, install as your own user, without sudo.
 The npm global prefix must be writable by your user, and its executable directory must be on PATH.
 On macOS or Linux with distribution Node, the default prefix may be root-owned.
@@ -183,6 +186,10 @@ On Windows, run `npm uninstall -g cotal-ai`.
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.
 Delete each `# cotal` block the installer added to your shell startup files.
+
+Both uninstall methods leave the [operator configuration directory](config.mdx#configuration-files) in place. It holds settings, installed extensions, and the built-in connector seed store.
+The directory is `$XDG_CONFIG_HOME/cotal` when `XDG_CONFIG_HOME` is non-empty. Otherwise it is `%APPDATA%\Cotal` on Windows when `APPDATA` is set, or `~/.config/cotal`.
+For complete removal, back up any settings you want to keep, then delete that directory only if no other Cotal installation or running Cotal process uses it.
 
 Deleting `~/.cotal` also deletes machine-local mesh records, agent data, and credentials.
 Keep or back up that data unless you intend to remove it.
