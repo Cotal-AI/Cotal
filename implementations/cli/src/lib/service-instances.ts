@@ -102,19 +102,28 @@ export function processServiceHost(): ServiceHost {
     return host = { platform: "win32", machine: createHash("sha256").update(Buffer.from(system.id, "hex")).digest("hex"), machineSource, sid, name: hostname() };
   }
   if ((process.platform !== "linux" && process.platform !== "darwin") || process.getuid === undefined) throw new CommandFailure("refused", "UNSUPPORTED", "this process-service driver currently requires Linux, macOS or Windows machine identity; another platform is not silently treated as one of them");
-  const native = process.platform === "darwin" ? darwinProcessBinding() : undefined;
   let machine: string, boot: string;
-  try {
-    if (native) {
+  if (process.platform === "darwin") {
+    const native = darwinProcessBinding();
+    try {
       ({ machine, boot } = native.hostIdentity());
       if (!UUID.test(machine) || !UUID.test(boot)) throw new Error();
       boot = boot.toLowerCase();
-    } else {
+    } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
+  } else {
+    try {
       machine = readFileSync("/etc/machine-id", "utf8").trim();
-      boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-      if (!/^[0-9a-f]{32}$/i.test(machine) || !/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
+      if (!/^[0-9a-f]{32}$/i.test(machine)) throw new Error();
+    } catch {
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Linux needs a readable, valid /etc/machine-id to identify this host; no process-service effect was attempted", {
+        remedy: "ask an administrator to provision a unique, persistent machine ID with 32 hexadecimal digits. If the file is missing, they can run `dbus-uuidgen --ensure=/etc/machine-id` without systemd. Keep any existing valid ID.",
+      });
     }
-  } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the host's stable machine/boot identity could not be established; no process-service effect was attempted"); }
+    try {
+      boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      if (!/^[0-9a-f-]{36}$/i.test(boot)) throw new Error();
+    } catch { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Linux needs a readable, valid /proc/sys/kernel/random/boot_id to identify this boot; no process-service effect was attempted"); }
+  }
   return host = { machine: createHash("sha256").update(machine.toLowerCase()).digest("hex"), boot, name: hostname(), uid: process.getuid() };
 }
 

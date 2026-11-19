@@ -4,9 +4,11 @@
  *  name is refused. */
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import fs, { mkdtempSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mock } from "node:test";
 
 const home = mkdtempSync(join(tmpdir(), "service-host-record-"));
 process.env.COTAL_HOME = join(home, ".cotal");
@@ -22,6 +24,36 @@ const refused = (fn: () => unknown) => { try { fn(); return false; } catch (erro
 
 try {
   assert.notEqual(process.platform, "win32", "this suite reads Windows records from a POSIX host");
+  if (process.platform === "linux") {
+    // Probe failures before the first successful read caches this process's host identity.
+    const read = fs.readFileSync;
+    for (const [name, path, contents] of [
+      ["missing machine ID", "/etc/machine-id", undefined],
+      ["invalid machine ID", "/etc/machine-id", "invalid"],
+      ["missing boot ID", "/proc/sys/kernel/random/boot_id", undefined],
+    ] as const) {
+      const identityRead = mock.method(fs, "readFileSync", (...args: Parameters<typeof read>) => {
+        if (args[0] === path) {
+          if (contents === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" });
+          return contents;
+        }
+        if (args[0] === "/etc/machine-id") return "a".repeat(32);
+        return read(...args);
+      });
+      syncBuiltinESMExports();
+      try {
+        const expectation = `${name}: the refusal names ${path} and gives only the applicable remedy`;
+        assert.throws(processServiceHost, (error: { code?: string; message?: string; remedy?: string }) =>
+          error.code === "DEPENDENCY_UNAVAILABLE" && error.message?.includes(path) === true &&
+          (path === "/etc/machine-id" ? error.remedy?.includes("dbus-uuidgen --ensure=/etc/machine-id") === true : error.remedy === undefined), expectation);
+        checks++;
+        console.log(`PASS ${expectation}`);
+      } finally {
+        identityRead.mock.restore();
+        syncBuiltinESMExports();
+      }
+    }
+  }
   const space = "hostrecords", ts = new Date().toISOString(), self = requireProcessIdentity(process.pid);
   const custody = { custodian: self, pipe: `\\\\.\\pipe\\cotal-custody-${"a".repeat(32)}`, capability: `custody-${randomUUID()}.key` };
   const windowsHost = { platform: "win32" as const, machine: "b".repeat(64), machineSource: "uefi" as const, sid: "S-1-5-21-1004336348-1177238915-682003330-1001", name: "winhost" };
