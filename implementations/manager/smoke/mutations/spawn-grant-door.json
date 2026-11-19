@@ -32,7 +32,7 @@
     },
     {
       "name": "D3 write the def composed before the evidence resolved",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
       "replace": "      const kept",
       "expectRed": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile",
