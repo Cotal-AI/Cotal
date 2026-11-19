@@ -55,7 +55,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Verify passive native diagnostic wiring
-        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs desktop/e2e/windows-task-stage-script.test.mjs desktop/e2e/windows-task-context-measure.test.mjs desktop/e2e/windows-task-context-preflight.test.mjs
+        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs desktop/e2e/windows-task-stage-script.test.mjs desktop/e2e/windows-task-context-measure.test.mjs desktop/e2e/windows-task-context-preflight.test.mjs desktop/e2e/windows-taskbar-accessibility.test.mjs
       - run: pnpm --dir desktop exec playwright-core install --with-deps chromium
       - run: pnpm --dir desktop test:render
       - name: Verify desktop motion

@@ -148,6 +148,18 @@ process.stdin.setEncoding('utf8').on('data', chunk => {
     Move-Item -LiteralPath $original -Destination $entry -Force
   }
 }
+function Read-ExplorerRunningApps($taskbarHandle) {
+  try {
+    if (!('ExplorerTaskbarAccessibility' -as [type])) {
+      $accessibility = [Reflection.Assembly]::Load('Accessibility')
+      Add-Type -Path (Join-Path $PSScriptRoot 'windows-taskbar-accessibility.cs') -ReferencedAssemblies @($accessibility.Location, 'System.Collections.dll')
+    }
+    $toolbar = [ExplorerTaskbarAccessibility]::RunningApps($taskbarHandle)
+    return @{ toolbar = $toolbar.ToInt64(); buttons = @([ExplorerTaskbarAccessibility]::Buttons($toolbar)); error = $null }
+  } catch {
+    return @{ toolbar = $null; buttons = @(); error = $_.Exception.GetBaseException().Message }
+  }
+}
 $results = @()
 $taskbarMissing = @()
 foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') })) {
@@ -178,6 +190,8 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     }
     $links = @(Shortcuts $path)
     $links | Set-Content (Join-Path $out "$kind-shortcuts.txt")
+    $beforeTaskbar = [PresenceWindow]::Taskbar()
+    $beforeLegacy = Read-ExplorerRunningApps $beforeTaskbar
     $launch = Start-Process -FilePath $path -PassThru -RedirectStandardOutput (Join-Path $out "$kind-stdout.log") -RedirectStandardError (Join-Path $out "$kind-stderr.log")
     $launch.Id | Set-Content (Join-Path $out "$kind-launched-pid.txt")
     $owned = Wait-Window $path
@@ -194,9 +208,20 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $names = @($items | ForEach-Object { $_.Current.Name })
     $names | Set-Content (Join-Path $out "$kind-taskbar-elements.txt")
     $taskbarNamed = [bool]($names | Where-Object { $_ -match '^Cotal(?:\b|$)' })
+    $taskbarNameSource = if ($taskbarNamed) { 'uia-name' } else { $null }
+    $afterLegacy = Read-ExplorerRunningApps $taskbarHandle
+    $beforeNamed = @($beforeLegacy.buttons | Where-Object { $_.Name -match '^Cotal(?:\b|$)' })
+    $afterNamed = @($afterLegacy.buttons | Where-Object { $_.Name -match '^Cotal(?:\b|$)' })
+    if (!$taskbarNamed -and !$beforeLegacy.error -and !$afterLegacy.error -and
+        $beforeTaskbar -eq $taskbarHandle -and $beforeLegacy.toolbar -eq $afterLegacy.toolbar -and
+        $beforeNamed.Count -eq 0 -and $afterNamed.Count -eq 1) {
+      $taskbarNamed = $true
+      $taskbarNameSource = 'explorer-msaa-name'
+    }
+    @{ before = $beforeLegacy; after = $afterLegacy; source = $taskbarNameSource } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out "$kind-taskbar-accessibility.json")
     if (!$taskbarNamed) {
       $taskbarMissing += $kind
-      Write-Warning 'Not proven: the Cotal taskbar button accessibility name. Explorer exposes unnamed running-app children. Screenshot and independent window, shortcut identity, lifecycle and uninstall checks are retained, not substituted for this name lookup.'
+      Write-Warning 'Not proven: the Cotal taskbar button accessibility name. See the recorded Explorer UI Automation names and legacy reads. Screenshot and independent window, shortcut identity, lifecycle and uninstall checks are retained, not substituted for this name lookup.'
     }
     Start-Process -FilePath $path | Out-Null
     Start-Sleep 3
@@ -230,7 +255,7 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $installed = $false
     $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
-    $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
+    $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed; taskbarNameSource = $taskbarNameSource }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {
     if ($launch -and (Get-Process -Id $launch.Id -ErrorAction SilentlyContinue)) {
