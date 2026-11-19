@@ -484,8 +484,9 @@ function seatExpiry(values: { "expires-in"?: string; "expires-at"?: string }, di
 const spawnRerun = (values: { detach?: unknown; space?: unknown; server?: unknown }, positionals: readonly string[]): string =>
   onRerun("cotal spawn", values, [...positionals, ...(values.detach === true ? ["-d"] : [])]);
 
-/** Check the public mode and spelling before catalog preparation or identity allocation. */
-export function validateSpawnArguments(args: ParsedArgs): void {
+/** Check the public mode and spelling before catalog preparation or identity allocation.
+ *  Return the parsed channel overrides for the foreground policy. */
+export function validateSpawnArguments(args: ParsedArgs) {
   const values = args.values as FlagValues<typeof spawnFlags>;
   const handoffRefusal = managedHandoffRefusal();
   if (handoffRefusal) throw handoffRefusal;
@@ -532,8 +533,13 @@ export function validateSpawnArguments(args: ParsedArgs): void {
     if (values.role !== undefined) assertValidRole(values.role);
     parseShareSelection(values["share-tools"]);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid launch options, native role or tool-sharing selection; use declared keys and unique key=value option pairs"); }
-  for (const flag of ["subscribe", "allow-subscribe", "allow-publish"] as const) {
-    for (const channel of parseCommaList(values[flag]) ?? []) {
+  const channels = {
+    subscribe: parseCommaList(values.subscribe),
+    "allow-subscribe": parseCommaList(values["allow-subscribe"]),
+    "allow-publish": parseCommaList(values["allow-publish"]),
+  };
+  for (const [flag, list] of Object.entries(channels)) {
+    for (const channel of list ?? []) {
       try { assertValidChannel(channel); }
       catch (error) {
         throw new CommandFailure("refused", "USAGE_INVALID", `--${flag}: ${oneLine((error as Error).message)}`, {
@@ -543,8 +549,8 @@ export function validateSpawnArguments(args: ParsedArgs): void {
       }
     }
   }
-  if (values.subscribe !== undefined && values["allow-subscribe"] !== undefined) {
-    try { resolveReadAcl(parseCommaList(values.subscribe), parseCommaList(values["allow-subscribe"])); }
+  if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined) {
+    try { resolveReadAcl(channels.subscribe, channels["allow-subscribe"]); }
     catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message), {
         remedy: "include every --subscribe channel in --allow-subscribe", selfContained: true,
@@ -553,6 +559,7 @@ export function validateSpawnArguments(args: ParsedArgs): void {
   }
   if (!internal && args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "spawn takes one persona; pass the kickoff request with --prompt/-p");
   if (!internal && values.config !== undefined && args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "choose one persona input, not both a positional name and --config");
+  return channels;
 }
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -1154,7 +1161,7 @@ async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, insta
  */
 export async function spawn(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
-  validateSpawnArguments(args);
+  const channels = validateSpawnArguments(args);
   const values = { ...args.values, ...(typeof args.values.harness === "string" ? { agent: args.values.harness } : {}), ...(typeof args.values.file === "string" ? { config: personaFileReference(args.values.file) } : {}) } as FlagValues<typeof spawnFlags>;
   if (values["dry-run"]) return spawnLaunchPreview({ ...args, values });
   // Claimed first: custody already removed the file and its variable, so the text lives only here
@@ -1547,15 +1554,15 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
-  let subscribe = parseCommaList(values.subscribe) ?? def.subscribe;
+  let subscribe = channels.subscribe ?? def.subscribe;
   let allowSubscribe: string[];
   try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], parseCommaList(values["allow-subscribe"]) ?? def.allowSubscribe);
+    allowSubscribe = resolveReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
   } catch (e) {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  let allowPublish = parseCommaList(values["allow-publish"]) ?? def.allowPublish;
+  let allowPublish = channels["allow-publish"] ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
