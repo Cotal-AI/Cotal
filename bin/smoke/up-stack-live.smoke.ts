@@ -729,8 +729,9 @@ try {
       else await until(() => !alive(pid[window as Member]), 15_000);
       // A folder's stopped space is not selected on its own, so status names it.
       const st = plain(cliIn(irRoot, "status", "--space", irSpace).stdout);
-      ok(`${name}: status reads no stale pidfile or exited broker, and marks the stopped members`,
-        stopped.every((m) => new RegExp(`${ROW[m]}\\s+○ ${m === "manager" && running.includes("nats") ? "stopped" : "not started"}`).test(st)) && !/stale pidfile|broker.*which exited/.test(st), st);
+      const statusAfterStop = { manager: running.includes("nats") ? "stopped" : "not started", delivery: "not started", nats: "no local process record" };
+      ok(`${name}: status describes each stopped member's local record without claiming a stale or exited broker`,
+        stopped.every((m) => new RegExp(`^ +${ROW[m]} +○ ${statusAfterStop[m]}$`, "m").test(st)) && !/stale pidfile|broker.*which exited/.test(st), st);
       const finish = cliIn(irRoot, "down", "--yes");
       ok(`${name}: cotal down --yes finishes the stop`, finish.status === 0 && await until(() => MEMBERS.every((m) => !alive(pid[m])), 20_000), finish.stdout + finish.stderr);
     } finally {
