@@ -48,6 +48,8 @@ CLI
 }
 if [ "\${FIXTURE_TARGET:-}" = latest ]; then
   main --no-setup --no-modify-path
+elif [ "\${FIXTURE_MODIFY_PATH:-}" = 1 ]; then
+  main --no-setup --version "\${FIXTURE_TARGET:-0.82.2}"
 else
   main --no-setup --no-modify-path --version "\${FIXTURE_TARGET:-0.82.2}"
 fi
@@ -121,6 +123,58 @@ try {
   const quote = (value: string): string => "'" + value.replaceAll("'", "'\\''") + "'";
   for (const command of ["setup", "up --detach", "spawn"])
     assert(output(shadowed).includes(`${quote(join(shadow.newBin, "cotal"))} ${command}`), `installer next step uses its absolute safely quoted executable: ${command}`);
+
+  if (process.platform === "linux") {
+    const installForBash = (f: ReturnType<typeof fixture>) => spawnSync("/bin/sh", [driver, library], {
+      env: { ...f.env, PATH: toolPath, FIXTURE_MODIFY_PATH: "1" }, encoding: "utf8",
+    });
+    const bash = (f: ReturnType<typeof fixture>, flags: string, command: string) => spawnSync("/bin/bash", [flags, `test "$HOME" = "$1" && ${command}`, "bash", f.home], {
+      env: { ...f.env, PATH: toolPath }, encoding: "utf8", timeout: 10_000,
+    });
+    const clean = fixture("clean-bash");
+    const cleanInstall = installForBash(clean);
+    assert.equal(cleanInstall.status, 0, output(cleanInstall));
+    assert(output(cleanInstall).includes("PATH updated in ~/.bashrc, ~/.profile"));
+    for (const flags of ["-ilc", "-ic"]) {
+      const shell = bash(clean, flags, "cotal --version");
+      assert.equal(shell.status, 0, output(shell));
+      assert.equal(shell.stdout.trim(), "cotal-ai 0.82.2");
+    }
+
+    const existing = fixture("existing-bash");
+    const previousRc = '# cotal\nexport PATH=' + quote(existing.newBin) + ':"$PATH"\n';
+    writeFileSync(join(existing.home, ".bashrc"), previousRc);
+    const login = join(existing.home, ".bash_login");
+    writeFileSync(login, 'printf "bash login ran\\n"\n. "$HOME/.bashrc"\n');
+    writeFileSync(join(existing.home, ".profile"), 'printf "wrong profile\\n"\n');
+    const existingInstall = installForBash(existing);
+    assert.equal(existingInstall.status, 0, output(existingInstall));
+    assert(output(existingInstall).includes("PATH updated in ~/.bash_login"));
+    const existingLogin = bash(existing, "-ilc", 'cotal --version && printf "%s\\n" "$PATH"');
+    assert.equal(existingLogin.status, 0, output(existingLogin));
+    const [profileRan, installedVersion, loginPath] = existingLogin.stdout.trim().split("\n");
+    assert.equal(profileRan, "bash login ran");
+    assert.equal(installedVersion, "cotal-ai 0.82.2");
+    assert.equal(loginPath.split(":").filter((dir) => dir === existing.newBin).length, 1);
+    const loginBefore = readFileSync(login, "utf8");
+    const rerun = installForBash(existing);
+    assert.equal(rerun.status, 0, output(rerun));
+    assert.equal(readFileSync(join(existing.home, ".bashrc"), "utf8"), previousRc);
+    assert.equal(readFileSync(login, "utf8"), loginBefore);
+    assert(!existsSync(join(existing.home, ".bash_profile")), "installer does not mask an existing .bash_login");
+
+    const linked = fixture("linked-bash");
+    const outsideProfile = join(root, "outside-profile");
+    writeFileSync(outsideProfile, "# do not change\n");
+    symlinkSync(outsideProfile, join(linked.home, ".bash_profile"));
+    const linkedInstall = installForBash(linked);
+    assert.equal(linkedInstall.status, 0, output(linkedInstall));
+    assert(output(linkedInstall).includes("Add that export to: ~/.bash_profile"));
+    assert(output(linkedInstall).includes("PATH updated in ~/.bashrc"));
+    assert.equal(readFileSync(outsideProfile, "utf8"), "# do not change\n");
+    assert(!existsSync(join(linked.home, ".profile")), "installer does not bypass the active login file");
+    console.log("BASH PATH: clean login and non-login shells, existing profile, reinstall, and an external profile symlink passed");
+  }
 
   const broken = fixture("broken");
   const crashed = spawnSync("/bin/sh", [driver, library], { env: { ...broken.env, FIXTURE_CRASH: "1", PATH: `${broken.newBin}:${toolPath}` }, encoding: "utf8" });
@@ -303,7 +357,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: 69, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 90 : 69, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });
