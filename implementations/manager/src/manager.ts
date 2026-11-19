@@ -39,7 +39,7 @@ import {
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
 import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, connectorInstallHint, DEFAULT_SEAT_CAP, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, InlinePersona, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -74,13 +74,14 @@ import { TerminalInput } from "./terminal-input.js";
 import { StatusAndModels, MANAGER_VERSION } from "./status-and-models.js";
 import { ReadinessWait } from "./readiness-wait.js";
 import { BrokerTransport } from "./broker-transport.js";
+import { StartDoors } from "./start-doors.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
 import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft, sameStrings } from "./credential-renewal.js";
 import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
-import { inlineSnapshotPath, launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
-import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
+import { inlineSnapshotPath, launchSpecForRun } from "./launch.js";
+import { authorizeNamedControl } from "./authorize.js";
 import { RunHosting } from "./run-hosting.js";
 import { rejectionText, attemptCleanup, type CleanupFailure } from "@cotal-ai/core";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readReleasedSeatReference, readSeatRecord, writeReleasedSeatReference, writeSeatRecord, type SeatRecord } from "./resume.js";
@@ -97,7 +98,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, MAX_SCHEDULE_MS, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
@@ -105,8 +106,6 @@ import {
   ownedBySibling,
 } from "./static-lifecycle.js";
 
-/** A `once` spawn's task deadline when the caller names none: one hour from the spawn's accept. */
-const ONCE_DEFAULT_DEADLINE_MS = 60 * 60_000;
 /** The bound on one {@link Connector.retireAfterExit} call. An expired bound is not proof: the debt
  *  stays and the turn sweep asks again. */
 const ONCE_RETIRE_MS = 60_000;
@@ -1362,6 +1361,18 @@ export class Manager {
     transportDown: () => this.transportDown,
     renewRemoteExecutor: (...args) => this.renewRemoteExecutor(...args),
     renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
+  });
+
+  /** The start and launch control doors. Every dependency reads through at its use. */
+  private readonly startDoorsComponent = new StartDoors({
+    eventsRequired: () => this.eventsRequired,
+    execution: () => this.execution,
+    remoteAuthority: () => this.remoteAuthority,
+    space: () => this.space,
+    userMode: () => this.userMode,
+    workspaceRoot: () => this.workspaceRoot,
+    executionRefusal: (...args) => this.executionRefusal(...args),
+    startAgent: (...args) => this.startAgent(...args),
   });
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
@@ -3628,100 +3639,8 @@ export class Manager {
     return this.seatLaunch.waitForPresence(name, timeoutMs);
   }
 
-  /** Parse a served `spawn` request into {@link StartAgentOpts}. The compiled spawn input contract
-   *  is the shape check: it already refused a non-mapping `launchOptions`, a `supervise` that is not
-   *  the closed `{ restarts, windowMs }` pair, and a list on `subscribe`, `allowSubscribe`,
-   *  `allowPublish`, `shareTools`, `join` or `callerAcl` that is not an array of strings. This reads
-   *  those fields as admitted, the way it reads the string fields. The connector still validates the
-   *  launch-option keys, and `startAgent` still refuses a supervise budget the seat record would not
-   *  take. `once` is shape-checked by that same contract. Its omitted `deadlineMs` takes the default
-   *  here, and a deadline past the scheduler's last instant is refused here, which the schema does
-   *  not express. */
-  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller, served?: string): Promise<ControlReply> {
-    const supervise = args.supervise as { restarts: number; windowMs: number } | undefined;
-    let once: StartAgentOpts["once"];
-    if (args.once !== undefined) {
-      const rec = args.once as { deadlineMs?: number };
-      // The default is applied here, so every caller of the wire gets the same one.
-      const d = rec.deadlineMs ?? ONCE_DEFAULT_DEADLINE_MS;
-      if (d !== -1 && (typeof d !== "number" || !Number.isSafeInteger(d) || d < 1 || Date.now() + d > MAX_SCHEDULE_MS))
-        return Promise.resolve({ ok: false, error: "once.deadlineMs: expected -1 (no deadline) or a positive whole number of milliseconds that ends by the deadline scheduler's last instant (the end of year 9999)" });
-      once = { deadlineMs: d === -1 ? undefined : d };
-    }
-    const callerAcl = args.callerAcl as StartAgentOpts["callerAcl"];
-    // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
-    // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
-    // omitting it. The gate is on the DECISION, and it runs before connector resolution and
-    // before `startAgent` (which mints credentials), so a refusal provisions nothing.
-    if (args.eventPayloads !== undefined && typeof args.eventPayloads !== "boolean")
-      return Promise.resolve({ ok: false, error: "eventPayloads must be a boolean" });
-    const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
-    let eventsNotice: string | undefined;
-    let events: boolean | undefined = requestedEvents;
-    // Imperative spawns have no payload-selected owner. Local provisioning derives it from
-    // the authenticated u_-owner caller; hosted enrollment fixes it to the manager's owner.
-    // Match the same owner-domain boundary as authorizeNamed, without treating the spawn's
-    // spawner relation as authority over a different owner's session.
-    const callerOwner = parsePrincipalKey(caller)?.owner;
-    const childOwner = this.remoteAuthority?.owner ?? (callerOwner?.startsWith("u_") ? callerOwner : undefined);
-    const ownsChild = this.userMode && callerOwner !== undefined && callerOwner === childOwner;
-    if (!admin && !ownsChild) {
-      if (requestedEvents === true)
-        return Promise.resolve({
-          ok: false,
-          error: `spawn is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2): events: arming the event plane needs the admin tier`,
-        });
-      if (this.eventsRequired)
-        return Promise.resolve({
-          ok: false,
-          error: `spawn is operator reach; the caller's current ledger grant does not carry "admin" (SPEC 13.2): space "${this.space}" requires the event plane by registration policy, which cannot be met without the admin tier`,
-        });
-      // Omission arms by default in startAgent; serve it DISARMED and say so (never a silent
-      // downgrade). An explicit `false` is already the opt-out — served as-is, no notice.
-      if (requestedEvents === undefined) {
-        events = false;
-        eventsNotice = `event plane not armed: arming it on spawn needs the admin tier; the spawn was served with events: false`;
-      }
-    }
-    return this.startAgent(
-      {
-        name: String(args.name ?? "").trim(),
-        agent: args.agent as string | undefined,
-        defaultAgent: args.defaultAgent as string | undefined,
-        role: args.role as string | undefined,
-        config: args.config as string | undefined,
-        identity: args.identity as string | undefined,
-        // Passed as sent: spawnPersona validates the record, the one place every door reads it.
-        persona: args.persona as InlinePersona | undefined,
-        ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
-        model: args.model as string | undefined,
-        variant: args.variant as string | undefined,
-        launchOptions: args.launchOptions as Record<string, unknown> | undefined,
-        resume: args.resume as string | undefined,
-        resumeClaim: args.resumeClaim as string | undefined,
-        resumeAgent: args.resumeAgent as string | undefined,
-        events,
-        eventPayloads: args.eventPayloads as boolean | undefined,
-        eventsNotice,
-        cwd: args.cwd as string | undefined,
-        prompt: args.prompt as string | undefined,
-        subscribe: args.subscribe as string[] | undefined,
-        allowSubscribe: args.allowSubscribe as string[] | undefined,
-        allowPublish: args.allowPublish as string[] | undefined,
-        join: args.join as string[] | undefined,
-        callerAcl,
-        shareTools: args.shareTools as string[] | undefined,
-        ...(supervise !== undefined ? { supervise } : {}),
-        ...(once !== undefined ? { once } : {}),
-        ...(typeof args.runtime === "string" ? { runtime: args.runtime.trim() } : {}),
-        route,
-        ...(served !== undefined ? { served } : {}),
-      },
-      caller,
-      hooks,
-      authenticatedCaller,
-    );
-  }
+  /** {@link StartDoors.opStart}. */
+  private opStart(...args: Parameters<StartDoors["opStart"]>): ReturnType<StartDoors["opStart"]> { return this.startDoorsComponent.opStart(...args); }
   private listSpawnDirectory(args: Record<string, unknown>) { return this.seatLaunch.listSpawnDirectory(args); }
   /** {@link SeatLaunch.resolveSpawnCwd}. */
   private resolveSpawnCwd(value: unknown): { cwd: string; host: string } { return this.seatLaunch.resolveSpawnCwd(value); }
@@ -3919,72 +3838,8 @@ export class Manager {
   /** {@link StatusAndModels.psOwnerFilter}. */
   private psOwnerFilter(...args: Parameters<StatusAndModels["psOwnerFilter"]>): ReturnType<StatusAndModels["psOwnerFilter"]> { return this.statusAndModelsComponent.psOwnerFilter(...args); }
 
-  /** Boot one resolved agent from a mesh-manifest launch spec, for `cotal spawn -f` onto a RUNNING
-   *  manager. The request carries `{ runId, name }` — plus, for a deploy from another checkout or
-   *  host, the resolved `spec` itself inline (validated as untrusted input and persisted under THIS
-   *  manager's `.cotal/run/` first) — NEVER a path: the manager derives + validates
-   *  `.cotal/run/<runId>.json` itself ({@link launchSpecForRun} — token-safe id, no-follow,
-   *  `loadLaunchSpec`'s untrusted-input + `validateLaunchPolicy` contract), materializes the named
-   *  agent's transient persona, and spawns via the same `startAgent({ resolved })` path as
-   *  `supervise --launch`. The reply is enriched for the ownership ledger: the SPAWNED
-   *  (collision-numbered) name + nkey id creds are filed under, plus the manifest `requested` name,
-   *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
-   *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
-  private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
-    if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
-    const runId = String(args.runId ?? "").trim();
-    const name = String(args.name ?? "").trim();
-    if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
-    let spec;
-    if (args.spec !== undefined) {
-      // REMOTE deploy: the caller pushes the resolved spec inline over the control plane instead of
-      // sharing this checkout's disk. Same untrusted-input contract as the file path (strict schema,
-      // safe names, policy re-validation), then persisted under OUR `.cotal/run/<runId>.json` so
-      // stale-restart and retained resume read the same on-disk source either way. Still never a
-      // path: the payload is the spec itself, and where it lands is derived here.
-      try {
-        spec = parseLaunchSpec(args.spec, `inline launch spec (run ${runId})`);
-        if (spec.runId !== runId)
-          return { ok: false, error: `inline launch spec runId "${spec.runId}" does not match requested "${runId}"` };
-        hooks?.onEffect?.();
-        persistLaunchSpec(this.workspaceRoot, spec);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-    } else {
-      try {
-        spec = launchSpecForRun(this.workspaceRoot, runId);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-    }
-    const la = spec.agents.find((a) => a.name === name);
-    if (!la) return { ok: false, error: `no agent "${name}" in launch spec for run ${runId}` };
-    // USER mesh: a manifest launch runs under the spec's apply-time owner, never the ctl caller —
-    // fail loud on a spec without one rather than guess (core `MeshLaunchSpec.owner`).
-    if (this.userMode && !spec.owner)
-      return { ok: false, error: `user-auth space "${this.space}": launch spec for run ${runId} carries no owner - re-apply the manifest as a logged-in operator` };
-    if (this.userMode) {
-      // Privileged-tier user-mode launch: owner-equality (spec owner === caller owner), decided by
-      // the pure policy BEFORE materializePersona or any other side effect, so a denied
-      // cross-owner launch writes nothing. Admin tier passes through it unchanged.
-      const denied = authorizeLaunch({ specOwner: spec.owner, caller, admin, runId });
-      if (denied) return { ok: false, error: denied };
-    }
-    let configPath: string;
-    try {
-      hooks?.onEffect?.();
-      configPath = materializePersona(this.workspaceRoot, runId, la);
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
-    }
-    const reply = await this.startAgent({ ...launchAgentToStartOpts(la, configPath, spec.owner, runId), route }, caller, hooks);
-    if (reply.ok)
-      // `data.name` stays the spawned (numbered) identity — what creds are filed under and the ledger
-      // keys on; `requested`/`runId`/`hash` give the CLI the manifest name + drift hash for the ledger.
-      reply.data = { ...(reply.data as object), requested: la.name, runId, hash: la.hash, newlyStarted: true };
-    return reply;
-  }
+  /** {@link StartDoors.opLaunch}. */
+  private opLaunch(...args: Parameters<StartDoors["opLaunch"]>): ReturnType<StartDoors["opLaunch"]> { return this.startDoorsComponent.opLaunch(...args); }
 
   /** Spawn and supervise one agent. The single spawn path: both the control-plane
    *  `start` op and declarative roster boot call this. Mints scoped creds in auth mode,

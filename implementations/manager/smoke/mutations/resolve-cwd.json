@@ -34,7 +34,7 @@
     },
     {
       "name": "M3 drop the answered cwd before spawning the real seat",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/start-doors.ts",
       "find": "        cwd: args.cwd as string | undefined,",
       "replace": "        cwd: undefined,",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
