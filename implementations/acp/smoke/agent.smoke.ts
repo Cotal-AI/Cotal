@@ -27,6 +27,9 @@ import { SignInRequired, type AgentCatalog, type AguiEventLike, type Mesh, type 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
 const tick = (ms = 5): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** A prompt that never answers is a failed check, not a hung suite. */
+const within = <T>(p: Promise<T>, ms = 5000): Promise<T | undefined> =>
+  Promise.race([p, new Promise<undefined>((r) => setTimeout(() => r(undefined), ms).unref())]);
 
 const dir = mkdtempSync(join(tmpdir(), "acp-smoke-"));
 const link = join(dir, "link");
@@ -173,12 +176,12 @@ mesh.script = {
   ],
 };
 updates.length = 0;
-const answer = await agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "do it" }, { type: "resource_link", name: "spec", uri: "file:///spec.md" }] });
+const answer = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "do it" }, { type: "resource_link", name: "spec", uri: "file:///spec.md" }] }));
 const seen = updates.filter((u) => u.sessionId === sid).map((u) => u.update);
 const req = mesh.spawned[0];
 check("the first prompt spawns one seat named after the session", mesh.spawned.length === 1 && req?.name === sid, mesh.spawned);
 check("it spawns in the session's folder with the prompt and the chosen options", req?.cwd === link && req.prompt === "do it\n\n[spec](file:///spec.md)" && req.agent === "claude" && req.model === "opus" && req.persona === "reviewer" && req.managerInstanceId === "m1" && JSON.stringify(req.subscribe) === '["ops"]', req);
-check("the prompt answers end_turn", answer.stopReason === "end_turn", answer);
+check("the prompt answers end_turn", answer?.stopReason === "end_turn", answer);
 check("frames published before the spawn reply still reach the client", seen.some((u) => u.sessionUpdate === "user_message_chunk"), seen.map((u) => u.sessionUpdate));
 check("the reply reaches the client before the prompt answers", seen.some((u) => u.sessionUpdate === "agent_message_chunk" && (u as { content: { text: string } }).content.text === "done"));
 check("a tool call left open is closed before the prompt answers", seen.some((u) => u.sessionUpdate === "tool_call_update" && (u as { toolCallId: string }).toolCallId === "c2"), seen);
@@ -237,7 +240,7 @@ check("/despawn stops the session's seat", mesh.despawned.includes("outside"), m
 const second = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
 mesh.script = { before: [], after: [[{ type: "RUN_STARTED", runId: "r1" }, { type: "TOOL_CALL_START", toolCallId: "z", toolCallName: "Bash" }], [{ type: "RUN_ERROR", message: "rate limited" }]] };
 updates.length = 0;
-const failed = await errorOf(agent.request(methods.agent.session.prompt, { sessionId: second.sessionId, prompt: [{ type: "text", text: "go" }] }));
+const failed = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: second.sessionId, prompt: [{ type: "text", text: "go" }] })));
 check("a failed run fails the prompt with the seat's message", failed?.code === -32603 && failed.message?.includes("rate limited") === true, failed);
 check("its open tool call is closed as failed", updates.some((u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status: string }).status === "failed"), updates);
 
