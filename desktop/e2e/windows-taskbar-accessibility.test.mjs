@@ -47,8 +47,22 @@ test("legacy names come only from visible accessible push buttons under the Expl
   assert.match(helper, /name\.ToString\(\) == "MSTaskListWClass"/);
   assert.match(helper, /matches\.Count != 1/);
   assert.match(helper, /AccessibleObjectFromWindow\(toolbar, OBJID_CLIENT,/);
-  assert.match(helper, /role == ROLE_SYSTEM_PUSHBUTTON.*\n.*STATE_SYSTEM_INVISIBLE \| STATE_SYSTEM_OFFSCREEN/);
+  assert.match(helper, /\(int\)role == ROLE_SYSTEM_PUSHBUTTON[\s\S]*?STATE_SYSTEM_INVISIBLE \| STATE_SYSTEM_OFFSCREEN/);
   assert.match(helper, /Name = accessible\.get_accName\(child\)/);
   assert.match(helper, /remaining = 128/);
   assert.doesNotMatch(helper, /GetWindowText|Shortcut|AppUserModel|Screenshot|OCR/i);
+});
+
+test("only the legacy reader uses the framework-matched Windows PowerShell", () => {
+  const checker = read("../scripts/check-presence-windows.ps1");
+  const probe = checker.slice(checker.indexOf("function Read-ExplorerRunningApps"), checker.indexOf("$results = @()"));
+  assert.match(probe, /WindowsPowerShell\\v1\.0\\powershell\.exe/);
+  assert.match(probe, /read-windows-taskbar-accessibility\.ps1/);
+  assert.match(probe, /WaitForExit\(8000\)/);
+  assert.match(probe, /\$probe\.Kill\(\$true\)/);
+  assert.doesNotMatch(probe, /Add-Type|IgnoreWarnings/);
+  const child = read("../scripts/read-windows-taskbar-accessibility.ps1");
+  assert.match(child, /PSEdition -ne 'Desktop'/);
+  assert.match(child, /Assembly\]::Load\('Accessibility'\)/);
+  assert.match(child, /RunningApps\(\[IntPtr\]\$TaskbarHandle\)/);
 });

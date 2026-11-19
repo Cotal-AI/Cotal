@@ -149,15 +149,39 @@ process.stdin.setEncoding('utf8').on('data', chunk => {
   }
 }
 function Read-ExplorerRunningApps($taskbarHandle) {
+  $probe = $null
   try {
-    if (!('ExplorerTaskbarAccessibility' -as [type])) {
-      $accessibility = [Reflection.Assembly]::Load('Accessibility')
-      Add-Type -Path (Join-Path $PSScriptRoot 'windows-taskbar-accessibility.cs') -ReferencedAssemblies @($accessibility.Location, 'System.Collections.dll')
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [Text.Encoding]::UTF8
+    foreach ($arg in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'read-windows-taskbar-accessibility.ps1'), '-TaskbarHandle', $taskbarHandle.ToInt64().ToString())) {
+      $start.ArgumentList.Add($arg)
     }
-    $toolbar = [ExplorerTaskbarAccessibility]::RunningApps($taskbarHandle)
-    return @{ toolbar = $toolbar.ToInt64(); buttons = @([ExplorerTaskbarAccessibility]::Buttons($toolbar)); error = $null }
+    $probe = [Diagnostics.Process]::Start($start)
+    $stdout = $probe.StandardOutput.ReadToEndAsync()
+    $stderr = $probe.StandardError.ReadToEndAsync()
+    if (!$probe.WaitForExit(8000)) { throw 'Explorer legacy reader exceeded its eight-second bound.' }
+    if (!$stdout.Wait(500) -or !$stderr.Wait(500)) { throw 'Explorer legacy reader output did not close.' }
+    if ($probe.ExitCode -ne 0) {
+      $message = $stderr.Result.Trim()
+      if ($message.Length -gt 2048) { $message = $message.Substring(0, 2048) }
+      throw "Explorer legacy reader exited $($probe.ExitCode): $message"
+    }
+    $reply = ConvertFrom-Json -InputObject $stdout.Result -AsHashtable
+    if ($reply.toolbar -le 0 -or $reply.buttons -isnot [array]) { throw 'Explorer legacy reader returned invalid geometry or button evidence.' }
+    return @{ toolbar = $reply.toolbar; buttons = @($reply.buttons); error = $null }
   } catch {
     return @{ toolbar = $null; buttons = @(); error = $_.Exception.GetBaseException().Message }
+  } finally {
+    if ($null -ne $probe) {
+      try { if (!$probe.HasExited) { $probe.Kill($true); $null = $probe.WaitForExit(1000) } }
+      finally { $probe.Dispose() }
+    }
   }
 }
 $results = @()

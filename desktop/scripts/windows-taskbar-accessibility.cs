@@ -37,7 +37,8 @@ public static class ExplorerTaskbarAccessibility {
 
     public static Button[] Buttons(IntPtr toolbar) {
         var iid = typeof(IAccessible).GUID;
-        int result = AccessibleObjectFromWindow(toolbar, OBJID_CLIENT, ref iid, out IAccessible root);
+        IAccessible root;
+        int result = AccessibleObjectFromWindow(toolbar, OBJID_CLIENT, ref iid, out root);
         Marshal.ThrowExceptionForHR(result);
         if (root == null) throw new InvalidOperationException("Explorer did not return a running-app client object.");
         var buttons = new List<Button>();
@@ -50,9 +51,12 @@ public static class ExplorerTaskbarAccessibility {
 
     private static void Visit(IAccessible accessible, int child, List<Button> buttons, int depth, ref int remaining) {
         if (--remaining < 0 || depth > 8) throw new InvalidOperationException("Explorer running-app accessibility tree exceeded its inspection bound.");
-        if (accessible.get_accRole(child) is int role && role == ROLE_SYSTEM_PUSHBUTTON &&
-            accessible.get_accState(child) is int state && (state & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_OFFSCREEN)) == 0) {
-            buttons.Add(new Button { Name = accessible.get_accName(child), ChildId = child });
+        object role = accessible.get_accRole(child);
+        if (role is int && (int)role == ROLE_SYSTEM_PUSHBUTTON) {
+            object state = accessible.get_accState(child);
+            if (state is int && ((int)state & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_OFFSCREEN)) == 0) {
+                buttons.Add(new Button { Name = accessible.get_accName(child), ChildId = child });
+            }
         }
         if (child != CHILDID_SELF) return;
         int count = accessible.accChildCount;
@@ -60,11 +64,12 @@ public static class ExplorerTaskbarAccessibility {
         if (count < 0 || count > remaining) throw new InvalidOperationException("Explorer returned too many running-app children.");
         var children = new object[count];
         try {
-            Marshal.ThrowExceptionForHR(AccessibleChildren(accessible, 0, count, children, out int obtained));
+            int obtained;
+            Marshal.ThrowExceptionForHR(AccessibleChildren(accessible, 0, count, children, out obtained));
             if (obtained != count) throw new InvalidOperationException("Explorer running-app children changed during enumeration.");
             foreach (var item in children) {
-                if (item is int id && id > 0) Visit(accessible, id, buttons, depth + 1, ref remaining);
-                else if (item is IAccessible node) Visit(node, CHILDID_SELF, buttons, depth + 1, ref remaining);
+                if (item is int && (int)item > 0) Visit(accessible, (int)item, buttons, depth + 1, ref remaining);
+                else if (item is IAccessible) Visit((IAccessible)item, CHILDID_SELF, buttons, depth + 1, ref remaining);
                 else throw new InvalidOperationException("Explorer returned an unknown running-app child.");
             }
         } finally {
