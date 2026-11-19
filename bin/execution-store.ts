@@ -182,21 +182,32 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     };
     const recovery = readUpdateRecovery();
     const protectedJournal = recovery?.execution;
-    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
-      const directory = join(store, name), stat = lstatSync(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+    const unreadableJournals: string[] = [];
+    const scannedTransactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
+      const directory = join(store, name);
       const path = join(directory, "execution.json");
-      if (!lstatSync(path, { throwIfNoEntry: false }) && readdirSync(directory).length === 0 && path !== protectedJournal) {
-        rmSync(directory, { recursive: true });
+      try {
+        const stat = lstatSync(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+        if (!lstatSync(path, { throwIfNoEntry: false }) && readdirSync(directory).length === 0 && path !== protectedJournal) {
+          rmSync(directory, { recursive: true });
+          return [];
+        }
+        const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
+        if (!record || record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
+        generation(record.target);
+        if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
+        if (record.previous.descriptor) generation(record.previous.descriptor.generation);
+        return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
+      } catch {
+        unreadableJournals.push(path);
         return [];
       }
-      const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
-      if (record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
-      generation(record.target);
-      if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
-      if (record.previous.descriptor) generation(record.previous.descriptor.generation);
-      return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
     });
+    // An incomplete scan cannot prove unique rollback ancestry. Keep the completion evidence for
+    // a later scan, but still remove abandoned staging under the same lock.
+    if (unreadableJournals.length) warn(new Error(`retained unreadable or invalid execution journals: ${unreadableJournals.join(", ")}`));
+    const transactions = unreadableJournals.length ? [] : scannedTransactions;
     // A successful successor supersedes its uniquely identified rollback ancestry. Unlike the
     // absence of this home's recovery record, its explicit completion is installation-wide proof.
     for (const completed of transactions.filter(row => row.finished)) {

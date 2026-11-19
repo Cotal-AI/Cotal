@@ -98,6 +98,8 @@ does not count a failed attempt and schedules no retry. After the installation c
 Update attempts, successful publications and daemon startup retire abandoned staging and completed
 transactions under the update lock. All execution generations remain, including earlier generations
 that loaded processes may still use. Another account's store is untouched; a cleanup warning does not fail the update.
+The updater publishes each execution journal only after writing it in full. Cleanup reports the paths
+of unreadable or invalid journals and leaves transaction records in place while it removes abandoned staging.
 Normal command startup does not collect old update data.
 When the installation supplies connector-version sets, the same locked cleanup keeps its current
 and previous sets and every recorded live or unknown version. An unknown holder without a version

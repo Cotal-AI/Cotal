@@ -59,7 +59,7 @@ export function journalExecutionTransaction(installed: string, target: RetainedE
     }, target,
   };
   const path = join(directory, "execution.json");
-  writeFileSync(path, JSON.stringify(transaction), { flag: "wx", mode: 0o600 });
+  atomicFile(path, JSON.stringify(transaction), 0o600);
   return path;
 }
 
