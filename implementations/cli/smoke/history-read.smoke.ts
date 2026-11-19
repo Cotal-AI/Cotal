@@ -400,7 +400,7 @@ try {
   }
 
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
-  const f = follow(["history", "general", "--follow", "--json"]);
+  const f = follow(["history", "general", "--since", "0", "--follow", "--json"]);
   const snap = await f.until((l) => l.includes('"type":"snapshot"'));
   const records = () => f.lines.map((l) => JSON.parse(l) as { schemaVersion: number; stream: string; type: string; data: { text?: string; reason?: string; items?: Item[] } });
   check("--follow --json starts with one snapshot record of the window", snap && records()[0]?.type === "snapshot" && records()[0]?.stream === "history" && records()[0]?.schemaVersion === 1 && records()[0]?.data.items?.length === 3, { lines: f.lines.slice(0, 2), stderr: f.stderr() });
@@ -411,12 +411,30 @@ try {
   // The snapshot's items carry their stream sequence. A live event has no `seq` field: the live feed
   // carries none, and a null would read as a message that has no sequence.
   const live = records().find((r) => r.type === "event");
-  check("the snapshot items carry their stream sequence and a live event carries no seq field",
+  check("a sequence cutoff applies only to the snapshot, whose items carry their sequence",
     records()[0]?.data.items?.every((item) => typeof item.seq === "number") === true && live !== undefined && !("seq" in live.data), { snapshot: records()[0]?.data.items?.map((item) => item.seq), event: live?.data });
   f.child.kill("SIGINT");
   const code = await f.exited;
   check("an interrupted follow ends with an end record and exit 130", code === 130 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
   check("every follow line is one parseable stream record", f.lines.every((l) => { try { const r = JSON.parse(l); return r.schemaVersion === 1 && r.stream === "history"; } catch { return false; } }), f.lines);
+
+  const timed = follow(["history", "general", "--since", midpoint, "--follow", "--json"]);
+  const timedSnap = await timed.until((l) => l.includes('"type":"snapshot"'));
+  // Stamp only the outgoing envelope with the cutoff, then send a later event on the same channel.
+  const now = Date.now;
+  const atCutoff = (() => {
+    Date.now = () => Date.parse(midpoint);
+    try { return alice.multicast("at the cutoff", { channel: "general" }); }
+    finally { Date.now = now; }
+  })();
+  await atCutoff;
+  await alice.multicast("after the cutoff", { channel: "general" });
+  const timedEvent = await timed.until((l) => l.includes('"text":"after the cutoff"'));
+  timed.child.kill("SIGINT");
+  await timed.exited;
+  const timedEvents = timed.lines.map((l) => JSON.parse(l) as { type: string; data: { text?: string } }).filter((r) => r.type === "event");
+  check("a live follow excludes an event at the time cutoff and emits a later event",
+    timedSnap && timedEvent && timedEvents.map((r) => r.data.text).join() === "after the cutoff", timed.lines);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
   await fp.until((l) => /replay to new members/.test(l));
@@ -585,6 +603,20 @@ try {
     const after = await run(["history", "--dms", "--json"]);
     check("explicit history clear with --dms still purges authorized channel and DM history", before.status === 0 && before.envelope?.result?.items.some((item) => item.channel !== null) === true && before.envelope?.result?.items.some((item) => item.to !== null) === true && cleared.status === 0 && after.status === 0 && after.envelope?.result?.items.length === 0, { before: shown(before), cleared: shown(cleared), after: shown(after) });
   }
+
+  await alice.unicast(bobId, "one retained DM");
+  const exact = await run(["history", "--dms", "--limit", "1", "--json"]);
+  const widest = await run(["history", "--dms", "--limit", String(Number.MAX_SAFE_INTEGER), "--json"]);
+  check("one DM fills a one-row window without omitting older history",
+    exact.status === 0 && exact.envelope?.result?.window.olderRetained === false && texts(exact).join() === "one retained DM", shown(exact));
+  check("the largest supported DM history limit still reads the available history",
+    widest.status === 0 && widest.envelope?.result?.window.olderRetained === false && texts(widest).join() === "one retained DM", shown(widest));
+
+  await alice.unicast(bobId, "second retained DM");
+  const more = await run(["history", "--dms", "--limit", "1", "--json"]);
+  check("two retained DMs read at limit one show the latest and report the omission",
+    more.status === 0 && more.envelope?.result?.window.olderRetained === true && texts(more).join() === "second retained DM", shown(more));
+  await run(["history", "clear", "--yes", "--dms"]);
 
   // ── a space with no channel registry ────────────────────────────────────────────────────────────
   {
