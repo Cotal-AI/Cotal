@@ -133,9 +133,10 @@ check(
   "claim 2: detach summary is pidfile-live, ensureManager returns a started manager once it is up; supervise prints manager up after start",
   upReport.includes('if (status.manager) components.push("manager");') &&
     upReport.includes("return `✓ running in the background: ${components.join(\", \")} - ") &&
-    renderDetachedSummary(detachedStatus).endsWith("stop with: `cotal down`") &&
-    renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith("stop with: `cotal down --preserve-state`") &&
-    renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith("stop with: `cotal up` to start its manager, then `cotal down --preserve-state`") &&
+    ["cotal", "pnpm cotal"].some((launcher) =>
+      renderDetachedSummary(detachedStatus).endsWith(`stop with: \`${launcher} down\``) &&
+      renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith(`stop with: \`${launcher} down --preserve-state\``) &&
+      renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith(`stop with: \`${launcher} up\` to start its manager, then \`${launcher} down --preserve-state\``)) &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
     /const pid = startManagerDetached\(o(?:, [^\n]+)?\);\s*await awaitManagerUp\(space, identityRecord\(pid\)(?:, logStart)?\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&

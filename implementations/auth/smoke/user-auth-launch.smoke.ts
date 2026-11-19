@@ -192,7 +192,7 @@ try {
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
     "up summary reports the complete user-auth component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: `cotal down`$/m.test(plain(up.out)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, user-auth service, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(up.out)),
     up.out,
   );
   const stateDir = userAuthStateDir(root, SPACE);
