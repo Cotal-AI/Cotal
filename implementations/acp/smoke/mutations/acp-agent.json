@@ -156,7 +156,7 @@
     {
       "name": "a refused interrupt is silent",
       "file": "implementations/acp/src/agent.ts",
-      "find": "          void send(session, { sessionUpdate: \"agent_message_chunk\", content: { type: \"text\", text: `Could not stop ${seat.name}: ${e.message}. The turn keeps running.` } });",
+      "find": "          void send(session, { sessionUpdate: \"agent_message_chunk\", content: { type: \"text\", text: `Could not stop ${seat.name}: ${e.message}. It keeps working on the mesh.` } })\n            .catch((err: Error) => options.log(`session ${session.id}: update not sent: ${err.message}`));",
       "replace": "          void seat;",
       "expectRed": "a refused interrupt is said in the thread"
     },
