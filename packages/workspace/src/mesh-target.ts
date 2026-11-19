@@ -2,7 +2,7 @@ import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, read
 import { join } from "node:path";
 import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { parse as parseYaml } from "yaml";
-import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootControlProblem, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
@@ -654,6 +654,8 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
   if (existsSync(stackJournalPath(recordedRoot))) return `use the stack from ${recordedRoot}, which holds it; this copy does not`;
   const pathProblem = rootPathProblem(root) ?? rootPathProblem(canonicalRoot(root));
   if (pathProblem) return `${pathProblem}; rename the folder without those characters, then check it with \`cotal status\``;
+  const controlProblem = rootControlProblem(root);
+  if (controlProblem) return `${controlProblem.message}; move the folder outside the control directory, then check it with \`cotal status\``;
   let block: StackAdoptionBlock | undefined, adopt: string | undefined;
   try {
     block = stackAdoptionBlock(root, recordedRoot, space, members);

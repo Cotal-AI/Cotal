@@ -78,8 +78,9 @@ and the retained instances are confirmed stopped, `cotal up`, `cotal status` and
 `cotal space create <name> --adopt --root <dir>` commands for keeping the new location. Forget
 releases the stopped definitions and leaves the project data in place. Run `cotal up` after adoption
 to start the space in the renamed folder. If the new path contains a control character or a
-bidirectional formatting mark, the reports ask you to rename the folder before offering those
-commands.
+bidirectional formatting mark, rename the folder again. If it is inside a Cotal control directory
+such as another project's `.cotal`, move it outside that directory. Check `cotal status` in the new
+location before forgetting the space.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,

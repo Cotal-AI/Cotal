@@ -169,7 +169,21 @@ for (const open of [false, true]) {
       renameSync(invalid, project);
     }
   }
-  renameSync(project, renamed);
+  const controlDir = join(other, ".cotal"), insideControl = join(controlDir, "moved-project");
+  renameSync(project, insideControl);
+  try {
+    const upInside = cli(insideControl, "up", "--plain");
+    check("up refuses a project moved inside another project's .cotal",
+      upInside.status === 2 && `${upInside.stdout}${upInside.stderr}`.includes(`in the control directory ${controlDir}`));
+    for (const [command, run] of [["status", cli(insideControl, "status", "--plain")], ["space show", cli(insideControl, "space", "show", space, "--plain")]] as const) {
+      const output = `${run.stdout}${run.stderr}`;
+      check(`${command} advises moving outside .cotal before forget or adopt`, run.status === 0 && output.includes(`in the control directory ${controlDir}`)
+        && output.includes("move the folder outside the control directory") && !/space forget|--adopt/.test(output));
+    }
+    check("diagnosing the control directory leaves the journal unchanged", readFileSync(join(insideControl, ".cotal", "stack-controller.json")).equals(originalJournal));
+  } finally {
+    renameSync(insideControl, renamed);
+  }
   const journal = join(renamed, ".cotal", "stack-controller.json");
   const before = readFileSync(journal);
   const upMoved = cli(renamed, "up", "--plain"), status = cli(renamed, "status", "--plain");
