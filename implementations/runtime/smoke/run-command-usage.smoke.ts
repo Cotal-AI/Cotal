@@ -517,6 +517,31 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   rmSync(dir, { recursive: true, force: true });
 }
 
+// Plans use the parser's line breaks in both formats, including in a file with mixed endings.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-plan-lines-"));
+  const program = join(dir, "mixed.cotal.js");
+  const text: string[] = [], json: string[] = [];
+  const log = console.log, write = process.stdout.write;
+  try {
+    writeFileSync(program, 'log(1)\rlog(2)\r\nlog(3)\nlog(4)\u2028log(5)\u2029log(6); log(7)');
+    console.log = (...args: unknown[]) => { text.push(args.map(String).join(" ")); };
+    process.stdout.write = ((chunk: string | Uint8Array) => { json.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { plain: true }, positionals: ["plan", program], raw: [] });
+    await runWorkflow({ values: { json: true }, positionals: ["plan", program], raw: [] });
+  } finally {
+    console.log = log;
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const expected = [1, 2, 3, 4, 5, 6, 6];
+  const rows = Array.from(text.join("\n").matchAll(/^[ \t]*(\d+)[ \t]+log[ \t]*$/gm), (match) => Number(match[1]));
+  const envelope = JSON.parse(json.join("")) as { outcome: string; result: { calls: unknown } };
+  c("plan text counts each JavaScript line break once", rows.join() === expected.join(), rows);
+  c("plan JSON counts each JavaScript line break once", envelope.outcome === "ok"
+    && JSON.stringify(envelope.result.calls) === JSON.stringify(expected.map((line) => ({ call: "log", line }))), envelope);
+}
+
 // A workflow source that cannot be read is refused naming its path and the cause, before any plane.
 {
   const dir = mkdtempSync(join(tmpdir(), "run-source-"));

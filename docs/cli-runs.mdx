@@ -296,9 +296,11 @@ code, position, cause and fix, as a hosted `start` lists them. `--json` carries 
 `result.problems`. A warning leaves the program valid. All three print it on stderr with its code,
 position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
 `id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
-gets no warning, because it can change before the call; the run refuses it the same way. Plan lists validated static call sites in source order; it does not evaluate branches,
-loop counts or an execution schedule. Simulation uses the native simulator with a JSON results
-script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
+gets no warning, because it can change before the call; the run refuses it the same way.
+Plan lists validated static call sites in source order with their one-based line numbers. It counts
+JavaScript line breaks, including bare CR, the same way validation does. It does not evaluate
+branches, loop counts or an execution schedule. Simulation uses the native simulator with a JSON
+results script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`; any other shape, a scripted `at` included, is refused `SCHEMA_INVALID`, because the
 simulator stamps `at` from virtual time. A scripted turn result needs a `status` of `done`, `blocked` or
