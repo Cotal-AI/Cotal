@@ -26,7 +26,7 @@ import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, typ
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -420,6 +420,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
+            if (req.op === "service-connect" && !findMesh(req.space)) return {
+              space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
+              remedy: "Check the space name or run `cotal space` to list registered spaces.",
+            };
             // Disconnect retires local authority even when sign-in or the account host is gone.
             // The local removal revision fences account reconciliation until a fresh enable.
             if (req.op === "service-connect" && await account.intent(req.space, true)) return services.status(req.space);
@@ -440,6 +444,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
+          if (req.op === "service-connect" && result.state === "not-registered") return result;
           return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
         });
         return;

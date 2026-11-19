@@ -176,18 +176,23 @@ export function hasDuplicateNames(text: string): { duplicate: true; name: string
     if (ch === '"') {
       // Read one complete string, honouring escapes, so its contents can never be mistaken for
       // structure. `\\` must consume both characters or a trailing `\"` reads as an open quote.
-      let j = i + 1, out = "";
+      let j = i + 1, escaped = false;
       while (j < n) {
         const cj = text[j];
-        if (cj === "\\") { out += text[j + 1] ?? ""; j += 2; continue; }
+        if (cj === "\\") { escaped = true; j += 2; continue; }
         if (cj === '"') break;
-        out += cj; j++;
+        j++;
       }
       if (j >= n) return { duplicate: false }; // unterminated: not our error to report
       const top = stack[stack.length - 1];
       if (expectName && top instanceof Set) {
-        if (top.has(out)) return { duplicate: true, name: out };
-        top.add(out);
+        let name = text.slice(i + 1, j);
+        if (escaped) {
+          try { name = JSON.parse(text.slice(i, j + 1)) as string; }
+          catch { return { duplicate: false }; }
+        }
+        if (top.has(name)) return { duplicate: true, name };
+        top.add(name);
         expectName = false;
       }
       i = j + 1;

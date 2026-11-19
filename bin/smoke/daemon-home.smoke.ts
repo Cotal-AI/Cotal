@@ -246,6 +246,10 @@ try {
     check("G0 login usage permits Cloud or another provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login [--cloud | --idp <auth URL or name>]"), loginHelp.out);
     const statusHelp = await cli(["status", "--help"]);
     check("G0 local status keeps its optional space selector", statusHelp.status === 0 && statusHelp.out.includes("cotal daemon status [--space <s>]"), statusHelp.out);
+    for (const space of ["bad space", "", "a".repeat(65)]) {
+      const invalid = await cli(["status", `--space=${space}`, "--daemon-home", managed, "--json"]);
+      check("G0 status refuses a malformed space before contacting the daemon", invalid.status === 1 && invalid.doc.error?.code === "USAGE_INVALID", invalid);
+    }
     for (const mode of ["spaces", "start", "desktop"]) {
       const scoped = await cli([mode, "--help"]);
       check(`G0 ${mode} has scoped usage and examples`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} [`) && scoped.out.includes("Examples"), scoped.out);
@@ -321,6 +325,23 @@ try {
     check("H1 the legacy socket keeps its inode and mtime", legacyAfter.ino === legacyBefore.ino && legacyAfter.mtimeMs === legacyBefore.mtimeMs, { legacyBefore, legacyAfter });
     check("H1 D/daemon.lock is held by the managed serve, whose record names its pid", !lockFree(managed) && lockRecordPid(managed) === managedServe.child.pid, { free: lockFree(managed), recorded: lockRecordPid(managed), pid: managedServe.child.pid });
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
+  });
+
+  await cell("H1 unknown space commands leave Manager inventory unchanged", async () => {
+    const statusArgs = ["status", "--daemon-home", managed, "--json"];
+    const before = await cli(statusArgs);
+    check("H1 the managed daemon has no hosted Managers", before.status === 0 && before.doc.result?.managers?.length === 0, before);
+    const malformed = await cli([...statusArgs, "--space", "bad space"]);
+    check("H1 running daemon status rejects malformed space as usage", malformed.status === 1 && malformed.doc.error?.code === "USAGE_INVALID" && malformed.doc.target?.space === "bad space", malformed);
+    const targetArgs = ["--daemon-home", managed, "--space", "unknown-space"];
+    const connect = await cli(["service-connect", ...targetArgs, "--json"]);
+    check("H1 connecting an unknown space names the missing registration and lists the remedy", connect.status === 2 && connect.doc.error?.code === "TARGET_NOT_FOUND" && connect.doc.error.cause?.code === "NOT_REGISTERED" && connect.doc.error.message?.includes("unknown-space is not registered") === true && connect.doc.error.remedy?.includes("`cotal space`") === true, connect);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const disconnect = await cli(["service-disconnect", ...targetArgs, "--json"]);
+      check("H1 disconnect is a no-op without Manager setup guidance", disconnect.status === 0 && disconnect.doc.result?.state === "disconnected" && disconnect.doc.result?.removedRecords?.length === 0 && !disconnect.doc.result?.manager?.next, disconnect);
+    }
+    const after = await cli(statusArgs);
+    check("H1 repeated disconnect adds no Manager to status", after.status === 0 && after.doc.result?.managers?.length === 0, after);
   });
 
   await cell("H1b remedies retain the selected daemon and known provider or space", async () => {
