@@ -52,7 +52,7 @@ The file is machine-local and gitignored; delete it to replay a feed from scratc
 **4. Let an agent manage the subscriptions** (another terminal):
 
 ```
-pnpm cotal spawn --agent claude --name feedkeeper --config examples/06-feed-agent/agents/feedkeeper.md
+pnpm cotal spawn --agent claude --name feedkeeper --file examples/06-feed-agent/agents/feedkeeper.md
 ```
 
 Then, on `#feeds.control`, ask it in plain language:
@@ -67,7 +67,7 @@ and nothing else. Feed text on `#feeds.events` can never authorize an edit.
 **5. Add a curator** (optional, another terminal):
 
 ```
-pnpm cotal spawn --agent claude --name curator --config examples/06-feed-agent/agents/curator.md
+pnpm cotal spawn --agent claude --name curator --file examples/06-feed-agent/agents/curator.md
 ```
 
 The pump keeps posting everything to `#feeds.events`; the curator treats every line as untrusted

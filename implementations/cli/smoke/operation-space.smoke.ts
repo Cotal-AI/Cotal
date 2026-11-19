@@ -302,7 +302,7 @@ const bareConfig = cotal("spawn", "--config");
 check("public bare --config gives both alternatives rather than asking for a value",
   bareConfig.status === 1 && bareConfig.stdout === "" && bareConfig.stderr.includes(reserved)
     && guidance.test(bareConfig.stderr.replace(/\s+/g, " ")) && !configOption.test(bareConfig.stderr), shown(bareConfig));
-for (const args of [["--config", "--json"], ["\u2013\u2013config", "default", "--json"]]) {
+for (const args of [["--config", "--json"], ["\u2013\u2013config", "default", "--json"], ["--dry-run", "--config=default", "--config=another", "--json"]]) {
   const r = cotal("sp", ...args);
   check(`public sp ${args.join(" ")} refuses the reserved flag without suggesting its spelling or value`,
     r.status === 1 && r.stderr === "" && r.envelope?.error?.code === "USAGE_INVALID"
@@ -319,6 +319,20 @@ check("spawn still suggests the public --file flag for a typo",
 const spawnOptions = cotal("__complete", "spawn", "--");
 check("spawn option completion offers --file but does not suggest the reserved flag",
   spawnOptions.status === 0 && /^--file\t/m.test(spawnOptions.stdout) && !/^--config\b/m.test(spawnOptions.stdout), shown(spawnOptions));
+for (const [command, ...args] of [["sp", "--config", ""], ["spawn", "--config", "./rev"], ["spawn", "--config="], ["sp", "--config=./rev"]] as const) {
+  const r = cotal("__complete", command, ...args);
+  check(`completion ${command} ${args.join(" ")} offers neither catalog nor file candidates`,
+    r.status === 0 && r.stdout.trim() === ":nofiles", shown(r));
+}
+const catalogCompletion = cotal("__complete", "spawn", "");
+const fileCompletion = cotal("__complete", "sp", "--file", "./rev");
+check("public spawn completion still offers catalog names and delegates file values to the shell",
+  catalogCompletion.status === 0 && /^rev(?:\t|$)/m.test(catalogCompletion.stdout)
+    && fileCompletion.status === 0 && fileCompletion.stdout.trim() === ":default", { catalog: shown(catalogCompletion), file: shown(fileCompletion) });
+const legacyStart = cotal("start", "default");
+check("the removed start command points to detached spawn and both public persona inputs",
+  legacyStart.status === 1 && legacyStart.stdout === "" && legacyStart.stderr.includes("`cotal spawn --detach`")
+    && legacyStart.stderr.includes("persona catalog name or `--file <persona-file>`") && !legacyStart.stderr.includes("--config"), shown(legacyStart));
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
@@ -361,6 +375,10 @@ const launcherBare = launcherSpawn("--json", "--config");
 check("a persisted launcher's bare --config still needs a value",
   launcherBare.status === 1 && launcherBare.envelope?.error?.code === "USAGE_INVALID"
     && launcherBare.envelope.error.message === "--config needs a value", shown(launcherBare));
+const launcherRepeated = launcherSpawn("--dry-run", "--config=./pv.md", "--config=./other.md", "--json");
+check("a persisted launcher still gets the duplicate-flag refusal instead of silently choosing a value",
+  launcherRepeated.status === 1 && launcherRepeated.envelope?.error?.code === "USAGE_INVALID"
+    && launcherRepeated.envelope.error.message === "Option '--config' cannot be repeated", shown(launcherRepeated));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.

@@ -137,6 +137,7 @@ import { withProvisioner } from "../lib/provisioner.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { metadataPositionals } from "../lib/command-path.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
 import { cliControl, failIfNotOk, onInstance, onRerun } from "../lib/control.js";
@@ -332,15 +333,13 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
  *  personas, not the cwd's. */
 export function spawnComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, spawnFlags);
+  const cursor = argv[argv.length - 1] ?? "";
+  if (flag?.name === "config" || (cursor.startsWith("--config=") && !flag && !metadataPositionals({ flags: spawnFlags }, argv, { completing: true }).optionsEnded))
+    return { items: [], directive: "nofiles" };
   if (flag?.name === "agent" || flag?.name === "harness")
     return { items: registry.all<Connector>("connector").map((c) => ({ value: c.name })), directive: "nofiles" };
   if (flag?.name === "role")
     return { items: declaredFrom(argv, listDeclaredRoles).map((value) => ({ value, description: "declared role" })), directive: "nofiles" };
-  if (flag?.name === "config") {
-    const current = argv[argv.length - 1] ?? "";
-    if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
-    return { items: personaItems(argv), directive: "nofiles" };
-  }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
   if (flag && ["cwd", "file", "creds", "enrollment-file"].includes(flag.name)) return { items: [], directive: "default" };

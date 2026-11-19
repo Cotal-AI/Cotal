@@ -50,7 +50,8 @@ cotal spawn [<persona> | --file <persona-file>] [-d | --foreground] [--dry-run] 
 ```
 
 Pass a persona catalog name, or use `--file` for a persona file on the execution host. The CLI
-reserves `--config` for internal launchers and points public callers to both forms.
+reserves `--config` for internal launchers and points public callers to both forms. Shell completion
+offers catalog names for the positional argument and leaves `--file` values to the shell.
 
 A bare `spawn` runs the application in this terminal, on every kind of mesh, and no manager is
 involved unless you name one with `--on` or request `--detach`. An explicit empty or whitespace-only

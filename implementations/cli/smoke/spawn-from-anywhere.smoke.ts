@@ -346,7 +346,7 @@ try {
     const personas = spawnComplete([""]); // CompletionResult, not a Promise
     check("completion: lists the resolved mesh's personas (not cwd's)", personas.items.map((i) => i.value).join(",") === "builder", personas.items);
     const configFlag = spawnComplete(["--config", ""]);
-    check("completion: --config lists the resolved mesh's personas", configFlag.items.map((i) => i.value).join(",") === "builder", configFlag.items);
+    check("completion: --config suppresses both catalog and file candidates", configFlag.items.length === 0 && configFlag.directive === "nofiles", configFlag);
     // `--space` is completed by the kernel's one rule for every command, not by spawn's own completer.
     const spaces = spaceCompletion();
     check("completion: --space lists the running spaces", spaces.items.map((i) => i.value).sort().join(",") === "teamA,teamB", spaces.items);

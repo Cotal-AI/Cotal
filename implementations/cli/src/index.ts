@@ -649,7 +649,7 @@ const baseCommands: Command[] = [
     run: async () => {
       console.error(
         c.red(
-          "✗ `cotal start` was merged into `cotal spawn --detach` - one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
+          "✗ `cotal start` was merged into `cotal spawn --detach`. Pass a persona catalog name or `--file <persona-file>`.",
         ),
       );
       process.exit(1);

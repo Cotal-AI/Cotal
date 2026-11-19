@@ -79,7 +79,7 @@ plane. The manager owns each peer's process in a pseudo-terminal (`pty` runtime)
 (cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)
 
 # then, from the repo root
-cotal spawn --detach --no-events --agent cotal --config examples/01-lateral-coordination/agents/ada.md \
+cotal spawn --detach --no-events --agent cotal --file examples/01-lateral-coordination/agents/ada.md \
   --cwd "$PWD" --space demo --name alice --role planner   # manager spawns alice in a PTY
 cotal ps    --space demo                                # list managed peers + mesh status
 cotal attach --space demo --name alice                  # stream + drive her terminal (Ctrl-] detaches)
@@ -92,7 +92,7 @@ such as an agent session's own `COTAL_SPACE`, would point it at another space. I
 under the nearest `.cotal/` above its folder, which is the repo root only because of the
 `mkdir -p .cotal` in step 1. The example's `cotal` peer runs `pnpm cotal join`, so it needs the repo
 as its `--cwd`, and `--no-events`, because it publishes no event plane. Every manager spawn needs a
-persona: with no `--config` and no persona name, `cotal spawn` asks for the persona that
+persona: with no `--file` and no persona name, `cotal spawn` asks for the persona that
 `COTAL_DEFAULT_PERSONA` names, else `default`, and the manager refuses when
 `.cotal/agents/<persona>.md` is missing under the repo root. These commands pass one of the example's
 [agent files](./agents/) instead, as a path from the repo root. `cotal spawn --detach
@@ -111,8 +111,8 @@ pnpm cotal up --open --no-manager --space demo --server nats://127.0.0.1:4222   
 (cd examples/01-lateral-coordination && COTAL_SPACE=demo COTAL_SERVERS=nats://127.0.0.1:4222 pnpm manager)   # 3. manager + console, prints http://127.0.0.1:7878/
 
 # 4. drive it from the CLI; the console updates live
-pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --config examples/01-lateral-coordination/agents/ada.md
-pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --config examples/01-lateral-coordination/agents/linus.md
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name ada   --file examples/01-lateral-coordination/agents/ada.md
+pnpm cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name linus --file examples/01-lateral-coordination/agents/linus.md
 ```
 
 Open **http://127.0.0.1:7878/**: two panes appear, each a real Claude Code TUI you can type
@@ -128,7 +128,7 @@ native launch in a PTY pane, with no wrapper in front of an ordinary Claude sess
 # one-time, per machine: install the bundled plugin for your user account
 claude plugin install cotal@cotal-mesh --scope user
 
-cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name dave --config examples/01-lateral-coordination/agents/dave.md   # manager spawns a real claude
+cotal spawn --detach --space demo --agent claude --cwd "$PWD" --name dave --file examples/01-lateral-coordination/agents/dave.md   # manager spawns a real claude
 ```
 
 ### Personas from a file
@@ -137,8 +137,8 @@ Role, identity and persona can come from an [agent file](./agents/) instead of f
 frontmatter is the identity, and the Markdown body is the system prompt:
 
 ```
-cotal spawn --detach --agent claude --name dave --config examples/01-lateral-coordination/agents/dave.md  # manager, detached PTY
-cotal spawn --agent claude --name dave --config examples/01-lateral-coordination/agents/dave.md           # foreground, in this terminal
+cotal spawn --detach --agent claude --name dave --file examples/01-lateral-coordination/agents/dave.md  # manager, detached PTY
+cotal spawn --agent claude --name dave --file examples/01-lateral-coordination/agents/dave.md           # foreground, in this terminal
 cotal spawn dave                                                                                         # …or the shorthand (./.cotal/agents/dave.md)
 ```
 

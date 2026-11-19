@@ -697,13 +697,14 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
-// --- __complete offers declared flag names on a `-` prefix --------------------------------------
+// --- __complete offers public flag names on a `-` prefix ----------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");
   assert.ok(spawnCmd?.flags?.length, "spawn declares flags");
   const out = await completionOut(["spawn", "--"]);
   assert.ok(out.includes("--space"), "flag completion lists --space");
-  assert.ok(out.includes("--config"), "flag completion lists --config");
+  assert.match(out, /^--file\t/mu, "spawn completion lists the public persona file flag");
+  assert.doesNotMatch(out, /^--config(?:\t|$)/mu, "spawn completion omits the reserved flag");
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
 }
 

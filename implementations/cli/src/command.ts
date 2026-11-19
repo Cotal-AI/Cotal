@@ -383,15 +383,10 @@ function typographicOption(word: string, names: ReadonlySet<string>, shorts: Rea
   return { option, message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${option}` };
 }
 
-/** The parser can reject a reserved flag before spawn's validator sees it. Keep its remedy the same. */
-function reservedOptionRefusal(cmd: Command, option: string): typeof reservedSpawnConfig | undefined {
-  if (cmd.name === "spawn" && option === "--config" && !isPersistedSpawn()) return reservedSpawnConfig;
-}
-
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(cmd: Command, rest: readonly string[]): { message: string; remedy: string } | undefined {
+function misspelledOption(cmd: Command, rest: readonly string[]): { option?: string; message: string; remedy: string } | undefined {
   const names = new Set<string>([...(cmd.flags ?? []).map((flag) => flag.name), ...GLOBAL_FLAGS]);
   const shorts = new Set<string>((cmd.flags ?? []).flatMap((flag) => (flag.short ? [flag.short] : [])));
   for (const [index, word] of rest.entries()) {
@@ -402,7 +397,7 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
     const typed = typographicOption(word, names, shorts);
-    if (typed) return reservedOptionRefusal(cmd, typed.option) ?? typed;
+    if (typed) return typed;
   }
   return undefined;
 }
@@ -411,10 +406,11 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
  *  carries is given as the remedy in this CLI's words: a word that starts with `-` goes after `--`,
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[]): { message: string; remedy?: string } {
+function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], reservedConfig: boolean): { message: string; remedy?: string } {
   const message = error.message.split(".")[0]!;
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const option = /^Unknown option '(--[^']+)'/.exec(message)?.[1];
+    if (reservedConfig && option === "--config") return reservedSpawnConfig;
     const scope = helpPath(cmd, rest).selected ?? cmd;
     const candidates = visibleFlags(cmd, scope.flagNames).map((flag) => `--${flag.name}`);
     const hint = option ? didYouMean(option, [...candidates, "--no-color", "--no-input", "--help"]) : "";
@@ -428,8 +424,6 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const name = bare ?? long;
-  const reserved = name === undefined ? undefined : reservedOptionRefusal(cmd, `--${name}`);
-  if (reserved) return reserved;
   const flag = name === undefined ? undefined : cmd.flags?.find((item) => item.name === name);
   if (flag) {
     if (bare !== undefined) return missingValue(flag);
@@ -446,14 +440,21 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const json = asksForJson(cmd, rest);
   const plain = rest.includes("--plain");
+  // Public spawn must refuse --config before the parser starts giving it value or repeat advice.
+  // Retain the declared grammar for pre-parsing spelling checks and for persisted launchers.
+  const reservedConfig = cmd.name === "spawn" && !isPersistedSpawn() && (cmd.flags?.some((flag) => flag.name === "config") ?? false);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest);
-  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, rest);
+  if (misspelled) {
+    const refusal = reservedConfig && misspelled.option === "--config" ? reservedSpawnConfig : misspelled;
+    usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
+  }
+  const grammar = reservedConfig ? { ...cmd, flags: cmd.flags?.filter((flag) => flag.name !== "config") } : cmd;
   let parsed: ParsedArgs;
   try {
-    parsed = parseCommandArgs(cmd, rest);
+    parsed = parseCommandArgs(grammar, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest);
+      const refusal = parseRefusal(e as Error & { code?: string }, grammar, rest, reservedConfig);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
