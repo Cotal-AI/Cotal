@@ -4,10 +4,11 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { displayCmd } from "./lib/self-exec.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -158,9 +159,10 @@ export function printCommandList(commands: readonly Command[]): void {
 export function printEntry(commands: readonly Command[], listing = false): void {
   const width = terminalWidth(process.stdout);
   const has = (name: string): boolean => commands.some((command) => command.name === name && !command.hidden);
+  const cmd = displayCmd();
   const actions = (title: string, items: readonly [string, string, string][]): Section => ({
     title,
-    blocks: [{ kind: "commands", items: items.filter(([name]) => has(name)).map(([, command, description]) => ({ command, description })) }],
+    blocks: [{ kind: "commands", items: items.filter(([name]) => has(name)).map(([, command, description]) => ({ command: `${cmd} ${command}`, description })) }],
   });
   let space: string | undefined;
   let context: string | undefined;
@@ -204,11 +206,11 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     const explicit = selected && readCurrentSelection()?.source === "explicit";
     space = (explicit ? selected : folder) ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (!explicit && selected && folder !== undefined && folder !== selected) outside = selected;
-    if (explicit && folder && folder !== selected) folderHeld = `commands here target the selected space "${selected}"; reach this folder's space with --space ${folder} or \`cotal use --clear\``;
+    if (explicit && folder && folder !== selected) folderHeld = `commands here target the selected space "${selected}"; reach this folder's space with --space ${folder} or \`${cmd} use --clear\``;
     // The same `up` the note under a command's heading names, with `--root` from another folder.
-    const upAt = (dir: string, name: string): string => upCommand(dir, name, ...(canonicalRoot(dir) === canonicalRoot(root) ? [] : ["--root", shellWord(dir)]));
+    const upAt = (dir: string): string => canonicalRoot(dir) === canonicalRoot(root) ? "up" : `up --root ${shellWord(dir)}`;
     if (held) {
-      const up = upAt(held.root, held.space);
+      const up = upAt(held.root);
       if (held.space === space) start = up;
       else folderStart = up;
     }
@@ -219,7 +221,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       const preferences = cachedPreferences();
       const harness = resolvePreference("harness", { space, preferences }).value;
       context = [space, mesh ? mesh.origin === "catalog" || mesh.origin === "manual" ? "registered" : "local" : here ? "prepared here" : prepared ? "prepared" : "not recorded", harness ? `default agent ${harness}` : "no default application"].join(" · ");
-      if (prepared) start = upAt(prepared.root, space);
+      if (prepared) start = upAt(prepared.root);
       if (held && held.space !== space) folderHeld = heldSpaceNote(held);
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
     if (!space && rootHidesNoManifest(root)) manifest = nearbyMeshManifest(process.cwd(), root);
@@ -234,39 +236,39 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(outside ? [{ text: `this folder's space while it runs; the selected space "${outside}" applies outside it and while it is stopped`, tone: "hint" } as const] : []),
     ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : []),
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
-  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: manifest ? `${manifest.path} declares space "${manifest.space}".` : anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Sign in to Cotal Cloud with `cotal login`, set up a local space, or connect to a self-hosted one.", tone: "hint" },
+  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: manifest ? `${manifest.path} declares space "${manifest.space}".` : anySpace ? `Select one with \`${cmd} use <name>\`; \`${cmd} space\` lists them.` : `Sign in to Cotal Cloud with \`${cmd} login\`, set up a local space, or connect to a self-hosted one.`, tone: "hint" },
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
-  sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
+  sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: `${cmd} <command> [options]`, tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
     // A folder's `up` starts THAT folder's space, not the one commands here target, so it is named
     // as the folder's. The selection keeps its own first action: its `up` while it is prepared or
     // stopped, else spawn.
     ...(start ? [["up", start, "Start this space"] as [string, string, string]] : folderStart ? [["up", folderStart, "Start this folder's space"] as [string, string, string]] : []),
-    ...(start ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
-    ["setup", "cotal setup", "Review setup and defaults"],
-    ["use", "cotal use", "Choose another space"],
+    ...(start ? [] : [["spawn", "spawn", "Open your default agent"] as [string, string, string]]),
+    ["setup", "setup", "Review setup and defaults"],
+    ["use", "use", "Choose another space"],
   ] : manifest ? [
-    ["team", `cotal team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
-    ["space", `cotal space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
-    ["team", `cotal team boot ${shellWord(manifest.path)}`, "Boot that team"],
-    ["up", `cotal up -f ${shellWord(manifest.path)}`, "Start the space from that file"],
+    ["team", `team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
+    ["space", `space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
+    ["team", `team boot ${shellWord(manifest.path)}`, "Boot that team"],
+    ["up", `up -f ${shellWord(manifest.path)}`, "Start the space from that file"],
   ] : anySpace ? [
-    ["use", "cotal use <name>", "Choose the space commands use"],
-    ["space", "cotal space", "List the spaces on this machine"],
-  ] : [["login", "cotal login", "Sign in to Cotal Cloud"], ["setup", "cotal setup", "Choose your application and prepare a space"]]));
+    ["use", "use <name>", "Choose the space commands use"],
+    ["space", "space", "List the spaces on this machine"],
+  ] : [["login", "login", "Sign in to Cotal Cloud"], ["setup", "setup", "Choose your application and prepare a space"]]));
   sections.push(actions("Everyday", [
-    ["ps", "cotal ps", "List agents"],
-    ["attach", "cotal attach <name>", "Return to an agent"],
-    ["stop", "cotal stop <name>", "Stop one agent"],
-    ["send", `cotal send -t <name> "${localeIsUtf8() ? "…" : "..."}"`, "Send one message"],
-    ["chat", "cotal chat", "Join a live conversation"],
-    ["watch", "cotal watch", "Follow activity without controlling agents"],
-    ["status", "cotal status", "See this machine and the selected space"],
+    ["ps", "ps", "List agents"],
+    ["attach", "attach <name>", "Return to an agent"],
+    ["stop", "stop <name>", "Stop one agent"],
+    ["send", `send -t <name> "${localeIsUtf8() ? "…" : "..."}"`, "Send one message"],
+    ["chat", "chat", "Join a live conversation"],
+    ["watch", "watch", "Follow activity without controlling agents"],
+    ["status", "status", "See this machine and the selected space"],
   ]));
   if (!listing) {
     sections.push({ title: "More", blocks: [{ kind: "commands", items: [
-      { command: "cotal help", description: "Every command" },
-      { command: "cotal <command> -h", description: "Options, shorthands and examples" },
+      { command: `${cmd} help`, description: "Every command" },
+      { command: `${cmd} <command> -h`, description: "Options, shorthands and examples" },
     ] }] });
     const groups = ["space", "persona", "personas", "team", "run", "config"].filter(has);
     if (groups.length) sections.push({ blocks: [{ kind: "lines", lines: [{ text: `Also: ${groups.join(" · ")}`, tone: "hint" }] }] });
