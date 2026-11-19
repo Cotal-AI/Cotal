@@ -114,6 +114,8 @@ warning says so. The JSON `cleanup` field then reads `registration-removed-deliv
 definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
 selection that names it stays, so the next command run without `--space` refuses with
 `TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
+When the stack was started with `--no-manager`, the stop receipt recommends `cotal up --no-manager`
+to restart it without a manager.
 No descendant, lease or authority cleanup is
 implied. A dry run reads records and, with a live manager, how much the space's store holds. It takes
 no lock, does not establish native impact and exits 0;

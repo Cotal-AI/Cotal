@@ -85,9 +85,18 @@ try {
       && refused.env.error.message.startsWith(`the mgr service of this space runs this root's manager (pid ${mgr?.pid}, instance ${id})`)
       && refused.env.error.remedy === `stop it with \`cotal svc stop mgr --instance ${id} --space ${space} --yes\`, then run \`cotal up\` again`
       && JSON.stringify(refused.env.target?.services) === JSON.stringify([{ definition: "mgr", instanceId: id }]), shown(refused));
+  const brokerOnly = cotal("up", "--no-manager", "--json");
+  const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
+  check("the broker-only refusal retains the selected space and --no-manager",
+    brokerOnly.status === 2 && brokerOnly.env?.error?.code === "LIFECYCLE_BLOCKED"
+      && brokerOnly.env.error.remedy === `stop it with \`cotal svc stop mgr --instance ${id} --space ${space} --yes\`, then run \`cotal up --space ${space} --no-manager\` again`, shown(brokerOnly));
 
   const stopped = cotal("svc", "stop", "mgr", "--instance", id, "--space", space, "--yes");
   check("the named stop stops the service", stopped.status === 0 && running("mgr") === undefined, shown(stopped));
+  if (retry === `cotal up --space ${space} --no-manager`) {
+    const retried = cotal(...retry.split(" ").slice(1), "--json");
+    check("the printed retry succeeds without starting the stack's manager", retried.status === 0 && running("stack-manager") === undefined, shown(retried));
+  }
   const again = cotal("up", "--json");
   check("bare up then starts the stack's own manager", again.status === 0 && running("stack-manager") !== undefined, shown(again));
   const after = cotal("status", "--json");

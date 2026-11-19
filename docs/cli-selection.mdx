@@ -613,6 +613,10 @@ state and service replies remain separate observations.
 If the legacy broker PID file is missing or empty, the broker process row says
 `no local process record`. The connection row still reports whether the selected broker answers.
 
+If a ready preservation journal's store is missing, Next says to move it back or restore a backup
+with `cotal backup restore <dir> --accept-missing-source` instead of offering to restart that stack.
+JSON marks the missing store as `maintenance.sourceMissing: true`.
+
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
 If that persona cannot be read or validated, status reports the application as unresolved
@@ -664,6 +668,8 @@ folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `` `cotal down`, completed ``, and Next names `cotal up` in its root.
+If the recorded broker address is occupied after a completed stop, `status` and `history` name the
+address and explain how to free it before restarting. The stack keeps its address.
 A space that never started still reads as prepared but not started. A recorded file-store cap does not
 change the restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`

@@ -837,8 +837,7 @@ export function restoreNextStep(state: string, attemptId: string, leftOut?: stri
 
 /** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
  *  moved after the cut is told to move back, and a missing store is named. */
-function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
-  const where = preservedSourceState(root, source);
+function readyNextStep(source: StoreIdentity, where: ReturnType<typeof preservedSourceState>): string {
   if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare \`${displayCmd()} up\``;
   if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with \`${displayCmd()} backup restore <dir> --accept-missing-source\``;
   return `create a backup with \`${displayCmd()} backup create <dir>\`, or resume with bare \`${displayCmd()} up\``;
@@ -855,10 +854,13 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
 
 /** The attempt a root's maintenance journal holds and the step that moves it on, as `cotal status`
  *  shows it and a command that refuses over that journal names it. */
-export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
+export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null; sourceMissing?: true } {
   const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
+  if (journal.state === "ready") {
+    const source = preservedSourceState(root, journal.source);
+    return { attemptId, next: readyNextStep(journal.source, source), ...(source.state === "missing" ? { sourceMissing: true } : {}) };
+  }
   const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
-    : journal.state === "ready" ? readyNextStep(root, journal.source)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
 }

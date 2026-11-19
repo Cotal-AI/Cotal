@@ -131,6 +131,7 @@ import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, 
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
+import { stoppedStackAddressProblem } from "./stack-up.js";
 import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -357,7 +358,7 @@ export interface StatusResult {
    *  a recovery command names. Null when the root holds none; older inputs may omit it.
    *  `rolledBackRuns` names the runs a restore over a newer cut rolled back, and `rolledBackRunsMore`
    *  counts those it did not list. */
-  maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null; rolledBackRuns?: readonly RolledBackRun[]; rolledBackRunsMore?: number } | null;
+  maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null; sourceMissing?: true; rolledBackRuns?: readonly RolledBackRun[]; rolledBackRunsMore?: number } | null;
   /** A store write failure the selected space's running local broker logged, or a store over its
    *  recorded cap; older inputs may omit it. */
   store?: StoreWriteObservation;
@@ -517,10 +518,12 @@ export async function status(args: ParsedArgs): Promise<void> {
       ? `if the stored JetStream state is stale: \`${cmd} reset store ${resetSpace}\`, then \`up\` with your usual flags`
       : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   }
-  // A held backup must be released before this root can start. Keep the selection's diagnostics,
+  // A held backup or missing preserved store blocks startup. Keep the selection's diagnostics,
   // but replace its ordinary restart advice with the journal's recovery step.
   if (recovery) hints.unshift(recovery);
-  else hints.push(...selectedHints);
+  const recoveringOtherSpace = maintenance?.sourceMissing === true && (target.space !== maintenance.space || target.root !== undefined && !sameDir(target.root, maintenance.root));
+  if (!recovery || recoveringOtherSpace) hints.push(...selectedHints);
+  if (maintenance?.sourceMissing && maintenance.space) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", maintenance.space);
   if (!blocked) readStackStoreWarnings(root, gaps, hints);
   if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
     readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
@@ -1458,8 +1461,9 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
+    const held = e.code === "not-started" && d.stopped && !d.unsettled && d.root && d.space ? await stoppedStackAddressProblem(d.root, d.space) : undefined;
     const result: SelectedResult = {
-      resolved: false, code: e.code, message: elsewhere ?? message,
+      resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
@@ -1482,9 +1486,9 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       if (block) {
         result.channelSeedBlocksRestart = true;
         hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
-      } else hints.push(remedy ?? message);
+      } else hints.push(held?.remedy ?? remedy ?? message);
     } else if (!d.unsettled || !servedStack(folder, result)) {
-      const step = remedy ?? message;
+      const step = held?.remedy ?? remedy ?? message;
       hints.push(e.code === "no-meshes" && d.root === undefined ? step.replaceAll("`cotal ", () => `\`${cmd} `) : step);
     } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
     return result;
@@ -2168,9 +2172,9 @@ function roleList(roles: readonly StackRole[]): string {
   return roles.length > 1 ? `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}` : roles[0] ?? "";
 }
 
-/** Pre-commit backup claims block ordinary startup; ready cuts and committed restores do not. */
+/** Pre-commit backup claims and ready cuts with a missing source block ordinary startup. */
 function backupRecovery(maintenance: StatusResult["maintenance"]): string | null {
-  return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" ? maintenance.next : null;
+  return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" || maintenance?.sourceMissing === true ? maintenance.next : null;
 }
 
 function nextActions(r: StatusResult): Section {

@@ -72,6 +72,9 @@ per-agent ACLs. It runs in the background by default and records the mesh so `co
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
 native stack in this terminal.
 
+If a separately started manager service at the same root blocks `up --no-manager`, the refusal
+names the command to stop that instance and the retry retains both `--space` and `--no-manager`.
+
 Ordinary startup and refresh start delivery before user-auth, then start the manager. Auth uses
 delivery to check whether a crashed predecessor has disconnected. Live or unknown holders remain
 refused, and the refusal names its code and reason, such as
