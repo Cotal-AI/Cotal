@@ -342,7 +342,8 @@ the default store, and `up` warns `STORE_SHARED`, naming the other space; `--jso
 warning. `clean store`, `clean all`, `reset store` and `reset space` refuse such a folder, as
 [clean](cli-shutdown.mdx#clean) and [reset](cli-shutdown.mdx#reset) describe. A controller stack whose recorded store folder is
 missing, as after it was removed by hand, starts its broker on a new empty store there and warns
-`STORE_MISSING`: the space's history starts empty. A legacy root whose last broker served a missing
+`STORE_MISSING`: the space's history starts empty. `reset store` and `reset space` leave an empty
+store that the journal records, so neither `status` nor the next `up` warns after them. A legacy root whose last broker served a missing
 folder warns the same. A controller stack records its store directory's identity when the broker
 starts. If the path now names another directory, `status`, `down` (including `--dry-run`) and `up`
 warn `STORE_REPLACED`. A running broker can still serve its old open files, but a restart uses the

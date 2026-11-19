@@ -13,7 +13,7 @@ import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/s
 import { assertResetIdentityRemoved, planResetSpaceIdentity, recheckResetSpaceIdentity, reviewedResetIdentityCleanup, resetSpaceIdentityProjection } from "../lib/reset-space-plan.js";
 import { removeLocalState, userAuthTrustNote, type safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { assertResetEligible, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
+import { assertResetEligible, recordResetStore, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
 import { acquireStackOperationLock } from "../lib/stack-journal.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { verdictSection } from "../lib/verdict.js";
@@ -118,6 +118,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     assertResetIdentityRemoved(plan);
     if (lstatSync(expected.path, { throwIfNoEntry: false })) throw new Error("store remains after cleanup");
     cleanupReturned = true;
+    recordResetStore(root, space, expected.path, removed);
     // A stopped controller stack has no registration; its prepared record and journal stay so a
     // later up starts it with a new identity.
     if (selected.source === "registration") {
