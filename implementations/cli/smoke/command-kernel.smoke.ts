@@ -713,7 +713,8 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(spawnCmd?.flags?.length, "spawn declares flags");
   const out = await completionOut(["spawn", "--"]);
   assert.ok(out.includes("--space"), "flag completion lists --space");
-  assert.ok(out.includes("--config"), "flag completion lists --config");
+  assert.match(out, /^--file(?:\t|$)/mu, "flag completion lists the public persona file option");
+  assert.doesNotMatch(out, /^--config(?:\t|$)/mu, "flag completion omits the reserved internal spawn option");
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
 }
 
