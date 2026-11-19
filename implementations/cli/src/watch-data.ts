@@ -1,6 +1,7 @@
 import { codeSpan, oneLine, type Report } from "@cotal-ai/workspace";
 import type { FeedEntry, MeshSnapshot } from "@cotal-ai/workspace/view";
-import { channelHistoryCommand } from "./lib/history-command.js";
+import { channelHistoryCommand, type HistoryTarget } from "./lib/history-command.js";
+import { targetWords } from "./lib/confirmation-required.js";
 
 export const watchViews = ["activity", "events", "messages", "roster", "channels", "waiting", "dms", "topology"] as const;
 export type WatchFilter = typeof watchViews[number];
@@ -39,16 +40,16 @@ export function scriptLine(ts: number | string, sender: string, destination: str
 
 /** The `cotal history` read whose JSON document carries a cut message's whole text. A text or plain
  *  history row cuts again, so the line names the read that does not. */
-export function wholeTextRead(entry: { channel?: string; events?: boolean; delivery?: string }): string {
-  if (entry.channel && !entry.events) return codeSpan(`${channelHistoryCommand(entry.channel)} --json`);
-  if (entry.delivery === "unicast") return "`cotal history --dms --json`";
+function wholeTextRead(entry: FeedEntry, target: HistoryTarget): string {
+  if (entry.channel && !entry.events) return codeSpan(`${channelHistoryCommand(entry.channel, target)} --json`);
+  if (entry.delivery === "unicast") return codeSpan(`cotal history --dms --json${targetWords(target)}`);
   return "";
 }
 
 /** One feed entry as a line. Text past {@link WATCH_TEXT_LIMIT} is cut, and the line says how much
  *  was not shown and which `cotal history` read carries the whole text. A stream row whose text was already
  *  cut carries that count as `omittedCodeUnits`. */
-export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): string {
+export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }, historyTarget: HistoryTarget): string {
   const time = feedTime(entry.ts);
   const sender = shown(entry.from.name, entry.from.id);
   const destination = entry.channel ? `#${entry.channel}` : entry.toService ? `role ${entry.toService}` : `DM to ${entry.toIds?.join(", ") || "not attributed"}`;
@@ -60,12 +61,14 @@ export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): stri
     } catch { /* A non-JSON event remains attributed text. */ }
   }
   const notShown = body.omittedCodeUnits + (entry.omittedCodeUnits ?? 0);
-  const whole = wholeTextRead(entry);
-  return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole ? `; ${whole} carries the whole text` : ""}]` : ""}`);
+  if (!notShown) return scriptLine(entry.ts, sender, destination, body.text);
+  const whole = wholeTextRead(entry, historyTarget);
+  const here = historyTarget.space === undefined ? " when run from the same folder" : "";
+  return scriptLine(entry.ts, sender, destination, `${body.text} [${notShown} text code units not shown${whole ? `; ${whole} carries the whole text${here}` : ""}]`);
 }
 
 /** Read views use facts already normalized by MeshView, without inferring task or membership state. */
-export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report {
+export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter, historyTarget: HistoryTarget): Report {
   const hint = "This observer's snapshot, not a complete history or proof of task completion.";
   if (filter === "roster" || filter === "waiting") {
     const rows = filter === "waiting" ? snapshot.signals.waiting : [...snapshot.agents, ...snapshot.endpoints];
@@ -89,7 +92,7 @@ export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report
     ] }] };
   }
   return { sections: [{ title: filter === "dms" ? "Authorized direct-message observations" : `Observed ${filter}`, blocks: [
-    { kind: "lines", lines: snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).map(feedLine) },
+    { kind: "lines", lines: snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).map((entry) => feedLine(entry, historyTarget)) },
     { kind: "lines", lines: [{ text: hint, tone: "hint" }] },
   ] }] };
 }

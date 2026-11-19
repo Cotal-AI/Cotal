@@ -493,7 +493,10 @@ channel resolves to the default policy, as an endpoint's registry watch does. `s
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
 of that key removes the entry. `show` includes resolved replay, window and delivery settings.
-Its `Next` section gives a history read with the channel written as a quoted `#` name.
+Its `Next` section gives a history read with the channel written as a quoted `#` name. The read
+keeps any explicit broker or credential file. It names the resolved space unless the original
+command used an unregistered project or specified only the broker. In those cases, run the read
+from the same folder.
 Each value with no per-channel override is marked `inherited`, whether it comes from space
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the

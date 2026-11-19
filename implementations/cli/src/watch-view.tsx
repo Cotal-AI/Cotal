@@ -3,6 +3,7 @@ import { Box, Text, useInput, useStdout } from "ink";
 import { displayWidth, oneLine, renderReport } from "@cotal-ai/workspace";
 import { feedLine, isFeedView, matchesWatchFilter, watchReport, watchViews, type WatchFilter } from "./watch-data.js";
 import type { MeshView } from "@cotal-ai/workspace/view";
+import type { HistoryTarget } from "./lib/history-command.js";
 
 /** Wrap without dropping a character, including long identities and wide graphemes. */
 function lines(text: string, width: number): string[] {
@@ -19,7 +20,7 @@ function lines(text: string, width: number): string[] {
   return result;
 }
 
-export function WatchView({ view, initialFilter, onLeave }: { view: MeshView; initialFilter: WatchFilter; onLeave: () => void }) {
+export function WatchView({ view, initialFilter, historyTarget, onLeave }: { view: MeshView; initialFilter: WatchFilter; historyTarget: HistoryTarget; onLeave: () => void }) {
   const { stdout } = useStdout();
   const [size, setSize] = useState(() => ({ width: Math.max(20, stdout.columns ?? 80), height: Math.max(8, stdout.rows ?? 24) }));
   const [snapshot, setSnapshot] = useState(() => view.snapshot());
@@ -40,8 +41,8 @@ export function WatchView({ view, initialFilter, onLeave }: { view: MeshView; in
     if (input === "g") setOffset(0);
   });
   const content = useMemo(() => isFeedView(filter)
-    ? snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).flatMap((entry) => lines(feedLine(entry), size.width))
-    : renderReport(watchReport(snapshot, filter), "plain", size.width).split("\n"), [snapshot, filter, size.width]);
+    ? snapshot.feed.filter((entry) => matchesWatchFilter(entry, filter)).flatMap((entry) => lines(feedLine(entry, historyTarget), size.width))
+    : renderReport(watchReport(snapshot, filter, historyTarget), "plain", size.width).split("\n"), [snapshot, filter, size.width, historyTarget]);
   const title = lines(`cotal watch · ${snapshot.status.space}`, size.width);
   const connected = snapshot.status.connected && !snapshot.status.error;
   const connection = lines(connected ? `live · authorized ${filter}` : snapshot.status.error ? "Observer reported an error · last observations" : "Reconnecting · last observations", size.width);

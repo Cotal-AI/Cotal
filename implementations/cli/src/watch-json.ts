@@ -3,11 +3,12 @@ import { oneLine, renderReport, streamRecord, writeStreamRecord } from "@cotal-a
 import { feedLine, isFeedView, matchesWatchFilter, observedText, watchReport, type WatchFilter } from "./watch-data.js";
 import { MeshView, type FeedEntry, type MeshSnapshot } from "@cotal-ai/workspace/view";
 import { outputFailed, ownStdoutErrors } from "./lib/stdout-owner.js";
+import type { HistoryTarget } from "./lib/history-command.js";
 
 const WINDOW = 300;
 
 /** Snapshot metadata and attributed coalesced rows, never an invented complete event history. */
-export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubject: string | undefined, filter: WatchFilter, presentation: "json" | "plain" = "json"): Promise<void> {
+export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubject: string | undefined, filter: WatchFilter, historyTarget: HistoryTarget, presentation: "json" | "plain" = "json"): Promise<void> {
   const view = new MeshView(ep, { tapSubject, window: WINDOW });
   const target = { space };
   const seen = new Map<string, string>();
@@ -29,9 +30,9 @@ export async function runWatchStream(ep: CotalEndpoint, space: string, tapSubjec
     try {
       if (presentation === "json") writeStreamRecord(streamRecord("watch", type, target, data));
       else if (type === "snapshot" && currentSnapshot && !isFeedView(filter)) {
-        const report = renderReport({ ...watchReport(currentSnapshot, filter), space }, "plain", process.stdout);
+        const report = renderReport({ ...watchReport(currentSnapshot, filter, historyTarget), space }, "plain", process.stdout);
         if (report !== lastReport) { lastReport = report; console.log(report); }
-      } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry & { omittedCodeUnits?: number })}`));
+      } else if (type === "event" && data && typeof data === "object" && "row" in data) console.log(oneLine(`[${space}] ${feedLine(data.row as FeedEntry & { omittedCodeUnits?: number }, historyTarget)}`));
       else if (type === "gap" || type === "error") {
         const message = data && typeof data === "object" && ("reason" in data || "message" in data) ? String("reason" in data ? data.reason : "message" in data ? data.message : "") : "observation incomplete";
         console.error(oneLine(`[${space}] Observer ${type}: ${message}`));

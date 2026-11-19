@@ -508,40 +508,70 @@ try {
       && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
 
-  // Follow the emitted reads with a private open space selected explicitly for every command.
+  // A space selected in this shell must not replace the source of a printed read.
   {
-    const args = ["--space", openSpace];
-    const readArgs = (command: string | undefined, expected: string) =>
-      command === expected ? execWords(command).slice(1) : undefined;
-    for (const name of ["clear", "limit", "-ops", "history-control"]) {
-      const marker = `retained recommendation marker for #${name}`;
-      const posted = await run(["send", "-c", `#${name}`, marker, ...args]);
-      const card = await run(["channel", "show", `#${name}`, "--plain", ...args]);
-      const command = /^\s+(cotal history .+?) {2,}Read retained messages within your grant$/m.exec(card.stdout)?.[1];
-      const words = readArgs(command, `cotal history '#${name}'`);
-      const read = words && await run([...words, "--json", ...args]);
-      const items = read?.envelope?.result?.items;
-      check(`channel show recommends a read of #${name} alone`,
-        posted.status === 0 && card.status === 0 && read?.status === 0 && items?.length === 1 && items[0]?.channel === name && items[0].text === marker,
-        { posted: shown(posted), card: shown(card), read: read && shown(read) });
-    }
-
-    const body = `watch recommendation marker ${"x".repeat(17_000)} watch end`;
-    const posted = await run(["send", "-c", "clear", body, ...args]);
-    const watch = follow(["watch", "--view", "messages", "--plain", ...args]);
+    const selected = `${openSpace}-selected`;
+    await setupSpaceStreams({ servers: openServers, space: selected });
+    inHome(() => {
+      recordMesh({ space: selected, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+      setCurrent(selected);
+    });
     try {
+      const sentinel = "selection marker on #clear";
+      const posted = await run(["send", "-c", "clear", sentinel]);
+      const read = await run(["history", "#clear", "--json"]);
+      check("control: a bare history target reads the selected space's #clear",
+        posted.status === 0 && read.status === 0 && texts(read).join() === sentinel, { posted: shown(posted), read: shown(read) });
+      const args = ["--space", openSpace];
+      // Allowlist the printed read before passing its parsed words to the CLI. Never run a shell.
+      const readArgs = (command: string | undefined, expected: string) =>
+        command === expected ? execWords(command).slice(1) : undefined;
+      for (const name of ["clear", "limit", "-ops", "history-control"]) {
+        const marker = `retained recommendation marker for #${name}`;
+        const posted = await run(["send", "-c", `#${name}`, marker, ...args]);
+        const card = await run(["channel", "show", `#${name}`, "--plain", ...args]);
+        const command = /^\s+(cotal history .+?) {2,}Read retained messages within your grant$/m.exec(card.stdout)?.[1];
+        const words = readArgs(command, `cotal history '#${name}' --space ${openSpace}`);
+        const read = words && await run([...words, "--json"]);
+        const items = read?.envelope?.result?.items;
+        check(`channel show recommends a read of #${name} alone in the shown space`,
+          posted.status === 0 && card.status === 0 && read?.status === 0 && items?.length === 1 && items[0]?.channel === name && items[0].text === marker,
+          { posted: shown(posted), card: shown(card), read: read && shown(read) });
+      }
+
       const marker = "watch recommendation marker";
-      const saw = await watch.until((line) => line.includes(marker));
-      const line = watch.lines.find((row) => row.includes(marker));
-      const command = /`([^`]+)` carries the whole text/.exec(line ?? "")?.[1];
-      const words = readArgs(command, "cotal history '#clear' --json");
-      const read = words && await run([...words, ...args]);
-      check("watch's cut #clear line recommends a channel read that returns the entire message",
-        posted.status === 0 && saw && !line?.includes("watch end") && read?.status === 0 && read.envelope?.result?.items.some((item) => item.channel === "clear" && item.text === body) === true,
-        { posted: shown(posted), line: line?.slice(-200), stderr: watch.stderr(), read: read && shown(read) });
+      const body = `${marker} ${"x".repeat(17_000)} watch end`;
+      const postedLong = await run(["send", "-c", "clear", body, ...args]);
+      const watch = follow(["watch", "--view", "messages", "--plain", ...args, "--server", openServers]);
+      try {
+        const saw = await watch.until((line) => line.includes(marker));
+        const line = watch.lines.find((row) => row.includes(marker));
+        const command = /`([^`]+)` carries the whole text/.exec(line ?? "")?.[1];
+        const words = readArgs(command, `cotal history '#clear' --space ${openSpace} --server ${openServers} --json`);
+        const read = words && await run(words);
+        check("watch's cut #clear line recommends a read that returns the entire message from the watched space",
+          postedLong.status === 0 && saw && !line?.includes("watch end") && read?.status === 0 && read.envelope?.result?.items.some((item) => item.channel === "clear" && item.text === body) === true && !texts(read).includes(sentinel),
+          { posted: shown(postedLong), line: line?.slice(-200), stderr: watch.stderr(), read: read && shown(read) });
+      } finally {
+        await killAndAwaitExit(watch.child);
+      }
     } finally {
-      await killAndAwaitExit(watch.child);
+      inHome(() => { setCurrent(space); removeMesh(selected); });
     }
+  }
+
+  // A credential file is a path, never the connection's loaded credential material.
+  {
+    const file = "observer key.creds";
+    const path = join(shell, file);
+    writeFileSync(path, await mintCreds(auth, newIdentity(), "observer"), { mode: 0o600 });
+    const card = await run(["channel", "show", "general", "--creds", file, "--plain"]);
+    const command = /^\s+(cotal history .+?) {2,}Read retained messages within your grant$/m.exec(card.stdout)?.[1];
+    const expected = ["cotal", "history", "#general", "--space", space, "--creds", path];
+    const words = command === undefined ? [] : execWords(command);
+    const read = JSON.stringify(words) === JSON.stringify(expected) && await run([...words.slice(1), "--json"], openRoot);
+    check("a history recommendation keeps an explicit credential path when copied to another folder",
+      card.status === 0 && !!read && read.status === 0 && texts(read).includes("deploy started"), { card: shown(card), read: read && shown(read) });
   }
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────

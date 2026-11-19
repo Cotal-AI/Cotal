@@ -4,6 +4,7 @@ import { colorEnabled, CommandFailure, exitCode, inputDisabledByFlag, isCommandF
 import { MeshView, openObserver } from "@cotal-ai/workspace/view";
 import { completingFlagValue } from "../lib/completion.js";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
+import { historyReadTarget } from "../lib/history-command.js";
 import { watchViews, type WatchFilter } from "../watch-data.js";
 export type { WatchFilter } from "../watch-data.js";
 
@@ -64,9 +65,10 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
   const user = connection.bearer ? values.json ? await userViewAuth(connection, "admin") : await userViewAuthOrExit(connection, "admin") : undefined;
   const ep = openObserver({ space: connection.space, server: connection.server, name: "watch", auth: user ? { user } : { creds: connection.creds } });
   const tapSubject = connection.creds || user ? chatWildcard(connection.space) : undefined;
+  const historyTarget = historyReadTarget(connection, values);
   if (values.json || !interactive) {
     const { runWatchStream } = await import("../watch-json.js");
-    return runWatchStream(ep, connection.space, tapSubject, filter, values.json ? "json" : "plain");
+    return runWatchStream(ep, connection.space, tapSubject, filter, historyTarget, values.json ? "json" : "plain");
   }
   const forced = process.env.FORCE_COLOR;
   if (!colorEnabled()) process.env.FORCE_COLOR = "0";
@@ -94,7 +96,7 @@ async function watchSession(args: ParsedArgs, resolved: { space?: string }): Pro
     process.once("exit", restore);
     process.on("SIGINT", interrupt);
     process.on("SIGTERM", terminate);
-    const instance = render(createElement(WatchView, { view, initialFilter: filter, onLeave: () => leave?.() }), { exitOnCtrlC: false, maxFps: 30 });
+    const instance = render(createElement(WatchView, { view, initialFilter: filter, historyTarget, onLeave: () => leave?.() }), { exitOnCtrlC: false, maxFps: 30 });
     leave = () => instance.unmount();
     await instance.waitUntilExit();
   } finally {

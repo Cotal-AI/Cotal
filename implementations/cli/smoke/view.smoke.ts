@@ -123,22 +123,23 @@ check(
   s.signals.counts.working === 1 && s.signals.counts.waiting === 1 && s.signals.counts.idle === 1 && s.signals.counts.offline === 0,
 );
 check("signals.waiting surfaces the blocked agent", s.signals.waiting.length === 1 && s.signals.waiting[0].card.name === "bob");
-const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
+const historyTarget = { space };
+const watchRoster = renderReport(watchReport(s, "roster", historyTarget), "plain", 200).split("\n");
 check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
 check("the watch roster includes endpoint kind and identity alongside agents", watchRoster.some((line) => /console.*endpoint.*ID_CON/.test(line)) && watchRoster.some((line) => /alice.*agent.*ID_ALICE/.test(line)));
-  const blankSender = feedLine({ id: "blank", ts: 1_700_000_000_000, from: { id: "local.blank", name: " \n" }, delivery: "multicast", channel: "general", text: "hello" });
+  const blankSender = feedLine({ id: "blank", ts: 1_700_000_000_000, from: { id: "local.blank", name: " \n" }, delivery: "multicast", channel: "general", text: "hello" }, historyTarget);
   check("a blank sender name is replaced by the id", blankSender.includes("local.blank") && !blankSender.includes("\\u000a"));
   const blankRoster = watchReport({
     ...s,
     agents: [{ ...s.agents[0]!, card: { ...s.agents[0]!.card, id: "local.blank", name: " " }, activity: " \n" }],
     endpoints: [],
-  }, "roster");
+  }, "roster", historyTarget);
   const blankBlock = blankRoster.sections[0]?.blocks[0];
   const blankRow = (blankBlock && "rows" in blankBlock ? blankBlock.rows[0] : undefined) as Readonly<Record<string, unknown>> | undefined;
   check("a blank roster name and activity use the id and not reported", blankRow?.name === "local.blank" && blankRow?.activity === "not reported");
-const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "plain", 200);
+const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster", historyTarget), "plain", 200);
 check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
-const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
+const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster", historyTarget), "plain", 200);
 check("an empty roster names its participant scope", emptyRoster.includes("No participants in this observer snapshot."));
 {
   const lines: string[] = [];
@@ -168,7 +169,7 @@ for (const name of [" ", "", "\n", " \n\t"]) {
 check("join keeps a participant name", joinPeerLabel({ name: "ada", id: "local.ada" }) === "ada");
 check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
 check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
-const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
+const waitingReport = renderReport(watchReport(s, "waiting", historyTarget), "plain", 200);
 check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {
   // A message past the row bound is cut, and the line says how much it lost and which read carries the whole text.
@@ -178,14 +179,14 @@ check("the waiting view keeps the agent-only signal scope", waitingReport.includ
   const cut = observedText(long);
   const lost = long.length - WATCH_TEXT_LIMIT;
   const marker = (line: string) => line.match(/ \[(\d+) text code units not shown(.*)\]$/);
-  const whole = marker(feedLine(post));
-  const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
-  const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
+  const whole = marker(feedLine(post, historyTarget));
+  const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, historyTarget));
+  const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }, historyTarget));
   check("a watch line cut at the row bound names the code units not shown and the history read that carries the whole text",
-    whole?.[1] === String(lost) && whole[2] === "; `cotal history '#general' --json` carries the whole text" && !feedLine(post).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history '#general' --json` carries the whole text");
-  check("a cut direct message points at cotal history --dms --json", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms --json` carries the whole text");
-  check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
+    whole?.[1] === String(lost) && whole[2] === "; `cotal history '#general' --space view-test --json` carries the whole text" && !feedLine(post, historyTarget).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history '#general' --space view-test --json` carries the whole text");
+  check("a cut direct message points at history in the watched space", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms --json --space view-test` carries the whole text");
+  check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" }, historyTarget)) === null);
 }
 
 const aliceDm = s.signals.dms.find((p) => p.name === "alice");

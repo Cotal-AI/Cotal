@@ -47,7 +47,7 @@ export async function checkWatchOutput(): Promise<void> {
   console.log = (...args: unknown[]) => { lines.push(strip(args.join(" "))); };
   console.error = () => {};
   let settled = false;
-  const stream = runWatchStream(ep as unknown as CotalEndpoint, ep.space, undefined, "roster", "plain").finally(() => { settled = true; });
+  const stream = runWatchStream(ep as unknown as CotalEndpoint, ep.space, undefined, "roster", { space: ep.space }, "plain").finally(() => { settled = true; });
   try {
     await until(() => working.test(lines.join("\n")) || settled);
     const output = lines.join("\n");
@@ -91,7 +91,7 @@ export async function checkWatchOutput(): Promise<void> {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
   try {
     await view.start();
-    await act(async () => { app = render(React.createElement(WatchView, { view, initialFilter: "roster", onLeave: () => {} }), { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false }); });
+    await act(async () => { app = render(React.createElement(WatchView, { view, initialFilter: "roster", historyTarget: { space: observer.space }, onLeave: () => {} }), { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false }); });
     await until(() => working.test(frame));
     assert.match(frame, /\balice\b[^\n]*working - progress unknown/, "the mounted watch view paints working with unknown progress");
     assert.match(frame, /\bbob\b[^\n]*waiting/);
