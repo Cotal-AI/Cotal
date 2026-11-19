@@ -54,9 +54,10 @@ if (!["linux", "darwin"].includes(process.platform)) {
   syncBuiltinESMExports();
   let stop = () => {};
   const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-  const until = async (predicate: () => boolean): Promise<void> => {
-    for (let i = 0; i < 150 && !predicate(); i++) await sleep(100);
-    assert.ok(predicate(), "generation poll reached its expected state within 15 seconds");
+  const until = async (predicate: () => boolean, timeoutMs = 15_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate() && Date.now() < deadline) await sleep(100);
+    assert.ok(predicate(), `generation poll reached its expected state within ${timeoutMs / 1000} seconds`);
   };
   try {
     const pending: (string | undefined)[] = [];
@@ -97,6 +98,15 @@ if (!["linux", "darwin"].includes(process.platform)) {
     assert.equal(observeExecutionVersion(root), "0.1.0", "descriptor removal observes the installed generation");
     writeExecutionDescriptor(root, { ...descriptor, v: 99 } as unknown as typeof descriptor);
     assert.throws(() => observeExecutionVersion(root), /unsupported execution descriptor version/);
+    packageAt(source, "0.4.0");
+    fs.writeFileSync(join(source, "dist/cotal-program.js"), 'setTimeout(() => console.log("cotal-ai 0.4.0"), 6000);');
+    writeExecutionDescriptor(root, describeExecutionGeneration(root, retainExecutionGeneration(root, source)));
+    const slowReports: string[] = [];
+    stop = watchDaemonGeneration("0.3.0", async version => { activations.push(version); }, line => slowReports.push(line));
+    await until(() => slowReports.some(line => line.includes("entry verification timed out after 5s")));
+    assert.deepEqual(activations, ["0.3.0"], "timing out is not proof of the replacement version");
+    await until(() => activations.includes("0.4.0"), 30_000);
+    stop();
     fs.unlinkSync(executionDescriptorPath(root));
     // Real child exits exercise the same installed-entry failure reporting as a hosted start.
     for (const [body, cause] of [
@@ -115,7 +125,7 @@ if (!["linux", "darwin"].includes(process.platform)) {
       fs.writeFileSync(join(root, "dist/cotal-program.js"), 'process.stderr.write("reconciling fixture\\n"); setInterval(() => {}, 1000);');
       await assert.rejects(reconcileHostedConnectors("0.1.0"), /timed out after 600000ms, signal SIGKILL/);
     }
-    console.log("daemon generation poll: idle metadata reads, descriptor replacement, corrupt refusal, verified activation, unmarked observation and one-line child failure causes passed");
+    console.log("daemon generation poll: idle metadata reads, corrupt refusal, unmarked observation, slow entry retry and one-line child failure causes passed");
   } finally {
     stop();
     fs.readFileSync = read;

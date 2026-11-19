@@ -144,18 +144,21 @@ which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that
 space under that name and drops the prepared record. It also writes the `default` persona into
 `<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
 `--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
-directories owned by you or root, with no symlinks. World write refuses. Group write is allowed only
-on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
-that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
-no other member and is no other account's primary group, and `getfacl` must show no ACL entries
+directories owned by you or root, with no symlinks. World write refuses. A Linux directory can be
+group-writable if an ancestor owned by you or root gives group and other accounts no search
+permission. Otherwise, group write is allowed only on a directory you own whose group is your user
+private group, the Debian and Ubuntu default, and that has no extended ACL. For the private-group
+check, `getent` must show that the group is your primary group, lists no other member and is no
+other account's primary group, and `getfacl` must show no ACL entries
 beyond the base ones. When `getfacl` is not installed, `python3 -I` reads the entry's extended
 attribute names without following symlinks instead. Either `system.posix_acl_access` or
 `system.posix_acl_default` means an extended ACL and refuses; unrelated attributes do not. That account list counts only when `/etc/nsswitch.conf` names `files` and
 `systemd` alone for passwd and group. A directory source such as LDAP or SSSD can list part of its
-accounts, so with one configured, group write refuses. `getent`, `getfacl` and `python3` run from your PATH
-with a 2 second limit and a 4 MiB output limit each, so the first check in a process can take a few seconds. A proven group
-holds for the life of the process. When neither ACL reader is installed, or the selected read fails, group write refuses; install the
-`acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
+accounts, so with one configured, the private-group check refuses. `getent`, `getfacl` and `python3`
+run from your PATH with a 2 second limit and a 4 MiB output limit each, so the first check in a
+process can take a few seconds. A proven group holds for the life of the process. When neither ACL
+reader is installed, or the selected read fails, the private-group check refuses. Install the `acl`
+package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
 even with a group-writable umask. An unsafe existing path refuses before the
 prepared record is written, without changing its permissions. The refusal names every unsafe path
@@ -277,8 +280,10 @@ the folder, because no space was resolved there.
 In open or static-auth mode, an unanswered `--server` address that differs from the registration
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
 Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
-no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place. A trailing slash or scheme case change in `--server` retains the
+no registration, the Next says to check the address instead. For a prepared space and an explicit
+`nats://127.0.0.1:<port>` address, it also gives `cotal up --root <root> --space <space> --server <url>`
+to start that project there. The request is not sent to the recorded broker in its place.
+A trailing slash or scheme case change in `--server` retains the
 registered space, including when its broker does not answer. The refusal gives the same next step
 as `--space` for that registration, including where to restart a stopped local space. Matching
 preserves the URL's transport scheme and TLS intent. If equivalent addresses name several
@@ -585,7 +590,8 @@ cotal status --components [--space <s>] [--server <url>]
 ```
 
 `cotal meshes` is a legacy command. It still runs, and `cotal help meshes` still prints its help,
-but `cotal help` no longer lists it and completion does not offer it. `cotal space` lists the
+but `cotal help` no longer lists it and completion does not offer it. Both bare `cotal meshes`
+and `cotal meshes list` show the registry without installing or refreshing connectors. `cotal space` lists the
 spaces, `space add <name>` registers one that runs elsewhere, including a user-auth space with
 `--file` or `--from`, and `space forget <name>` drops a registration.
 
@@ -1139,7 +1145,8 @@ sibling as proof that the component serves. It prints one of `serving`, `absent`
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
 state wins). The optional dashboard prints `not-installed` when its extension is not installed,
 or `not-started` when it is installed but has no process record or unsettled owned instance. Both exit `0`.
-The component pass uses the same selected space as the report above it.
+The component pass uses the same selected space as the report above it. A trailing slash in the
+broker URL does not change which startup records the pass reads.
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed

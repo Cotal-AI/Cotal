@@ -1050,6 +1050,22 @@ if (process.platform === "linux") {
     list.env?.result.prepared.some((p: { space: string; state: string; lastOperation: unknown }) => p.space === "demo" && p.state === "prepared" && p.lastOperation === null) && show.env?.result.state === "prepared" && show.env.result.lastOperation === null, { list: list.env?.result.prepared, show: show.env?.result });
   const named = await json(["who", "--space", "demo"]);
   check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(named.env?.error?.message ?? "") && named.env?.error?.remedy?.includes(fresh), shown(named));
+  for (const form of [["history", "general"], ["send", "-c", "general", "hello"]]) {
+    const explicit = await json([...form, "--space", "demo", "--server", DEAD]);
+    check(`${form[0]} on an unreachable explicit broker gives a startup command for the prepared project`,
+      refused(explicit, 2, "TARGET_UNAVAILABLE") && explicit.env?.target?.space === "demo" && explicit.env.target.root === fresh
+        && explicit.env.error?.message.includes(DEAD) && explicit.env.error.remedy?.includes(`--space demo --server '${DEAD}'`)
+        && explicit.env.error.remedy.includes("cotal up --root ") && explicit.env.error.remedy.includes("check that address"), shown(explicit));
+  }
+  const raw = await json(["history", "general", "--space", "not-prepared", "--server", DEAD]);
+  check("without preparation, an unreachable explicit broker only gives an address check",
+    refused(raw, 2, "TARGET_UNAVAILABLE") && raw.env?.error?.remedy === "check that address and that a broker runs there", shown(raw));
+  const live = ["--space", "demo", "--server", LIVE];
+  const sent = await json(["send", "-c", "general", "explicit broker control", ...live]);
+  const history = await json(["history", "general", ...live]);
+  check("a live explicit broker is still used for send and history even when the name is prepared here",
+    sent.status === 0 && history.status === 0 && history.stdout.includes("explicit broker control") && findPreparedSpace("demo")?.root === fresh,
+    [sent, history].map(shown));
   const channelForms = [["channel"], ["channel", "show", "general"], ["channel", "set", "general", "--desc", "x"], ["channel", "defaults"], ["channel", "members", "general"], ["channel", "remove", "general", "--yes"]];
   const channelRefusals: Awaited<ReturnType<typeof json>>[] = [];
   for (const form of channelForms) channelRefusals.push(await json([...form, "--space", "demo"]));
