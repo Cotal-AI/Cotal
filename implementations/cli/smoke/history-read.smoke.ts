@@ -686,7 +686,7 @@ try {
     check("built-in replay, retained-history window and delivery are marked inherited",
       policyIs(builtIn, "on - inherited", "retained history - inherited", "durable - inherited")
         && policyIs(builtInDefaults, "on - inherited", "retained history - inherited", "durable - inherited"), { show: shown(builtIn), defaults: shown(builtInDefaults) });
-    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", "1h");
+    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", " 1h ");
     const created = await channel("set", "policy", "--desc", "Operations");
     check("control: channel policy defaults and metadata are saved through the CLI", defaults.status === 0 && created.status === 0, { defaults: shown(defaults), created: shown(created) });
     const inherited = await channel("show", "policy");
@@ -722,6 +722,16 @@ try {
     check("explicit settings equal to defaults are still unmarked",
       sameSet.status === 0 && policyIs(same, "off", "1h", "live") && sameList.status === 0
         && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
+  }
+
+  {
+    const saved = await run(["channel", "set", "wire.window", "--window", " 24h ", "--space", openSpace, "--json"]);
+    const readback = await run(["channel", "show", "wire.window", "--space", openSpace, "--json"]);
+    const patch = (saved.envelope?.result as unknown as { patch?: { replayWindow?: string } })?.patch;
+    const registry = (readback.envelope?.result as unknown as { registry?: { channels?: Record<string, { replayWindow?: string }> } })?.registry;
+    check("channel set trims the replay window in the receipt and the saved open-space registry",
+      saved.status === 0 && patch?.replayWindow === "24h" && readback.status === 0 && registry?.channels?.["wire.window"]?.replayWindow === "24h",
+      { saved: shown(saved), readback: shown(readback) });
   }
 
   // Empty wire IDs are independent deliveries, including after a retained snapshot.
