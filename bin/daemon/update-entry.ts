@@ -14,7 +14,7 @@ import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
-import { waitForInstalledDaemonGeneration } from "./update-generation.js";
+import { isDaemonStatusInterrupted, waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
@@ -70,6 +70,21 @@ function assertDaemonReachable(): void {
     throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
 }
 
+/** Retry only status. A disappearing socket after an interruption is not proof of absence. */
+async function reconcileDaemonStatus(paths: DaemonPaths, expected = false): ReturnType<typeof queryDaemon> {
+  const deadline = Date.now() + 120_000;
+  let interruption: unknown;
+  for (;;) {
+    try { return await queryDaemon({ paths, timeoutMs: Math.min(20_000, Math.max(1, deadline - Date.now())) }); }
+    catch (error) {
+      if (isDaemonStatusInterrupted(error)) interruption = error;
+      else if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING" && (expected || interruption))) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));
+      if (Date.now() >= deadline) throw interruption ?? error;
+    }
+  }
+}
+
 async function collectConnectorSets(): Promise<void> {
   try {
     const entry = logicalExecutionEntry();
@@ -120,11 +135,14 @@ const composed: Command = { ...command, async run(args) {
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
   let replacementVersion: string | undefined;
   let targetAdmissionChecked = false;
+  let reconcileDaemonObserved = false;
   let recoveryFence = false;
   let repairService: DaemonPaths | undefined;
-  let ambiguousRepairRoot: string | undefined;
+  let interruptedChildRoot: string | undefined;
+  let legacyRepair = false;
   let admission: UpdateAdmission | undefined;
   const staged = Boolean(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
+  const standaloneReconcile = args.values.self !== true && !process.env.COTAL_UPDATE_PARENT;
   const recoveryAdmission = readUpdateRecovery();
   if (recoveryAdmission?.admission && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && recoveryAdmission.owner?.pid === process.ppid && recoveryAdmission.phase !== "restoring" && recoveryAdmission.target === updateRuntime.version()) {
     const release = claimUpdateClosureAccess(); release();
@@ -183,13 +201,14 @@ const composed: Command = { ...command, async run(args) {
   };
   try {
   if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
-  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
     if (prefix && existsSync(join(prefix, "lib/node_modules/.cotal-update-child"))) {
       const marker = JSON.parse(readFileSync(join(prefix, "lib/node_modules/.cotal-update-child"), "utf8"));
-      if (marker.phase === "ambiguous") {
-        ambiguousRepairRoot = join(prefix, "lib/node_modules");
+      if (marker.phase === "ambiguous" || marker.phase === "pending") interruptedChildRoot = join(prefix, "lib/node_modules");
+      if ((marker.phase === "ambiguous" && marker.custody === undefined) ||
+        (marker.phase === "pending" && marker.gated === undefined && marker.intermediary === false && ["global install", "global reconcile"].includes(marker.operation))) {
+        legacyRepair = true;
         const paths = daemonPaths();
         if (existsSync(unitReceiptFile(paths))) {
           if (!installedDaemonIdentity(paths).same) throw new Error("ambiguous update repair cannot stop another installation's daemon");
@@ -207,7 +226,7 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
@@ -267,8 +286,9 @@ const composed: Command = { ...command, async run(args) {
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
     let hostedInstances = new Set<string | undefined>();
     try {
-      const daemon = await queryDaemon({ paths: daemonPaths() });
+      const daemon = await reconcileDaemonStatus(daemonPaths());
       if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
+      reconcileDaemonObserved = standaloneReconcile;
       hostedInstances = new Set((daemon.result.managers ?? []).map(manager => manager.instanceId));
     } catch (error) {
       if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
@@ -414,13 +434,14 @@ const composed: Command = { ...command, async run(args) {
     }
     let managers;
     try {
-      const reply = await queryDaemon({ paths: daemonPaths() });
+      const paths = daemonPaths();
+      const reply = standaloneReconcile ? await reconcileDaemonStatus(paths, reconcileDaemonObserved) : await queryDaemon({ paths });
       if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
       daemonObserved = true;
       if (process.platform === "win32") await captureWindowsGeneration(daemonPaths());
       managers = reply.result.managers ?? [];
     } catch (error) {
-      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
+      if (!reconcileDaemonObserved && error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
         if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
         return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
       }
@@ -518,10 +539,11 @@ const composed: Command = { ...command, async run(args) {
     }
     return localVerdict;
   }) };
-  if (ambiguousRepairRoot) {
-    const release = runtime.claimGlobalUpdate(ambiguousRepairRoot);
+  if (interruptedChildRoot) {
+    const release = runtime.claimGlobalUpdate(interruptedChildRoot);
     release();
   }
+  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
   await collectConnectorSets();
@@ -546,7 +568,7 @@ const composed: Command = { ...command, async run(args) {
   }
   if (currentPackages) return;
   const paths = daemonPaths();
-  const current = await queryDaemon({ paths });
+  const current = standaloneReconcile ? await reconcileDaemonStatus(paths, true) : await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
   if (!existsSync(unitReceiptFile(paths))) {
     console.log(`machine daemon: PID ${current.result.pid} runs Cotal ${current.result.version}; no recorded user service, left running`);
@@ -573,11 +595,13 @@ const composed: Command = { ...command, async run(args) {
   const deadline = Date.now() + 120_000;
   for (;;) {
     try {
-      const reply = await queryDaemon({ paths });
+      const reply = await queryDaemon({ paths, timeoutMs: Math.min(20_000, Math.max(1, deadline - Date.now())) });
       if (reply.ok && reply.result.version === expectedVersion && hostedSpaces.every((space) => reply.result.managers?.some((manager) => manager.space === space && manager.state === "answering"))) return;
-    } catch (error) { if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error; }
+    } catch (error) {
+      if (!isDaemonStatusInterrupted(error) && !(error instanceof EndpointRefusal && ["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code))) throw error;
+    }
     if (Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the updated daemon did not restore its hosted Managers before the deadline", { remedy: "read \`cotal daemon status\` and the recorded daemon user service" });
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));
   }
   } finally {
     closeWindowsGeneration();

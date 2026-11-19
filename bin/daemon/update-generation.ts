@@ -19,6 +19,13 @@ interface GenerationWaitProbe {
   }>;
 }
 
+export function isDaemonStatusInterrupted(error: unknown): boolean {
+  return error instanceof Error && !(error instanceof EndpointRefusal) && (
+    ["daemon closed the connection without a reply", "timed out waiting for the daemon's reply"].includes(error.message) ||
+    ["ECONNRESET", "EPIPE"].includes((error as NodeJS.ErrnoException).code ?? "") || error.message.startsWith("timed out connecting to ")
+  );
+}
+
 export async function waitForInstalledDaemonGeneration(version: string, probe: GenerationWaitProbe = {}): Promise<void> {
   let paths;
   try { paths = daemonPaths(); }
@@ -70,12 +77,7 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
       // Authentication and ownership failures are refusals, not evidence of a restarting service.
       if (error instanceof EndpointRefusal) {
         if (error.code !== "NOT_RUNNING" && error.code !== "PEER_NOT_LOCK_OWNER") throw error;
-      } else {
-        const transient = error instanceof Error && ([
-          "daemon closed the connection without a reply", "timed out waiting for the daemon's reply",
-        ].includes(error.message) || ["ECONNRESET", "EPIPE"].includes((error as NodeJS.ErrnoException).code ?? "") || error.message.startsWith("timed out connecting to "));
-        if (!transient) throw error;
-      }
+      } else if (!isDaemonStatusInterrupted(error)) throw error;
       // Retain the last generation/Manager observation so an endpoint gap does not erase it.
     }
     await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));

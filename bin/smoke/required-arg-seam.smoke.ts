@@ -567,9 +567,10 @@ const SEAMS: Seam[] = [
   // 452/360 -> 457/365: run-host-live adds four connections (the interrupted driver, the reader,
   // the admitter and the fresh driver of the interrupted-activation cells) and run-command adds
   // one; each states `tls: false` for the suite's loopback broker.
-  // 457/365 -> 458/366: run-host-live adds one timer connection factory for broker outage
+  // The idle-work observer adds one native connection and its suites add seven fixture calls.
+  // 465/372 -> 466/373: run-host-live adds one timer connection factory for broker outage
   // recovery. It supplies delivery credentials and states `tls: false` for the loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 458, untypecheckedSites: 366 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 466, untypecheckedSites: 373 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
