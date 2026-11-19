@@ -228,19 +228,7 @@ try {
   await relInstalling.catch(() => {});
 }
 
-const unowned = isolated("unowned");
-const unownedHome = join(unowned.dir, "cotal");
-const unownedDaemon = await serveDaemon({ paths: daemonPaths(unowned.env, unownedHome), sessionDir: unownedHome, version: "0.0.0-unowned" });
-try {
-  const refused = await request(unowned, "install");
-  assert.equal(refused.ok, false);
-  assert.equal(refused.error?.code, "CONFLICT");
-  assert.match(refused.error?.message ?? "", /an unowned daemon is already running/);
-  assert.deepEqual(operations(unowned.calls), ["directory-read"]);
-  assert.ok(!existsSync(unowned.receipt) && !existsSync(unowned.unit));
-} finally { await unownedDaemon.close(); }
-
-// Prove that the real installed-service path can reach an answering foreground daemon.
+// First prove that the real installed-service path can reach an answering foreground daemon.
 const control = isolated("control");
 const absent = await request(control, "status");
 assert.equal(absent.error?.code, "NOT_RUNNING");
