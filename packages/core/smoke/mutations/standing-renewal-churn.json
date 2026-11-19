@@ -21,7 +21,7 @@
   "mutations": [
     {
       "name": "the un-re-signed generation is adopted instead of refused",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (current !== undefined && credsFingerprint(candidate) === credsFingerprint(current) && delayMs <= 0)",
       "replace": "    if (current !== undefined && credsFingerprint(candidate) === credsFingerprint(current) && delayMs <= Number.NEGATIVE_INFINITY)",
       "expectRed": "an unchanged source past 75% did NOT busy-loop",
@@ -30,7 +30,7 @@
     },
     {
       "name": "the refusal compares envelope bytes again",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (current !== undefined && credsFingerprint(candidate) === credsFingerprint(current) && delayMs <= 0)",
       "replace": "    if (candidate === current && delayMs <= 0)",
       "expectRed": "a reformatted envelope of the SAME generation is refused, so no 1s re-read follows",
