@@ -18,8 +18,11 @@ import {
   clearUpdateRecovery,
   writeUpdateRecovery,
   readUpdateSettings,
+  observeUpdateVersion,
+  UPDATE_HOUR_MS,
   recordUpdateCompletion,
   recordUpdateDeferral,
+  recordUpdateReleaseHold,
   recordUpdateRefusal,
   recordUpdateReplacement,
   prepareConnectorConfigForUpdate,
@@ -547,13 +550,13 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
 export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}): Promise<number> {
   const current = rt.version();
-  if (self && rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for update preflight");
   const child = childBinding(rt);
   if (child.kind === "invalid") {
     rt.err(c.red(`✗ invalid global update child binding: ${child.reason}; refusing to mutate extensions`));
     return 1;
   }
   if (child.kind === "bound") {
+    if (self && rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for update preflight");
     if (current !== child.target) {
       rt.err(c.red(`✗ global update child is cotal-ai ${current}, expected ${child.target}; refusing to mutate extensions`));
       return 1;
@@ -602,7 +605,17 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.out("The registry cannot be reached; nothing was changed.");
       return 0;
     }
-    if (compareSemver(latest.version, current) > 0) {
+    const upgrading = compareSemver(latest.version, current) > 0;
+    if (rt.env.COTAL_AUTO_UPDATE === "1") {
+      // The live npm lookup can select a different version from the one the daemon held.
+      const next = await observeUpdateVersion(latest.version) + UPDATE_HOUR_MS;
+      if (upgrading && Date.now() < next) {
+        recordUpdateReleaseHold(latest.version, next);
+        return 0;
+      }
+      recordUpdateDeferral(current, "waiting for update preflight");
+    }
+    if (upgrading) {
       const code = await upgradeAndReconcile(latest.version, current, rt, target);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;

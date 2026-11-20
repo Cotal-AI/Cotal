@@ -142,6 +142,12 @@ export function recordUpdateDeferral(version: string, reason: string, registry =
   save("update-attempt.json", { version, failures: Math.max(0, (previous?.failures ?? 0) - (refundReplacement ? 1 : 0)), deferred: reason, result: reason, next: Date.now() + (registry ? 3600_000 : 60_000) });
 }
 
+/** Schedule the release that was actually observed, with no failures carried over from another release. */
+export function recordUpdateReleaseHold(version: string, next: number): void {
+  const previous = readRecord("update-attempt.json") as { version?: string; failures?: number } | undefined;
+  save("update-attempt.json", { version, failures: previous?.version === version ? previous.failures ?? 0 : 0, result: "waiting for release hold", next });
+}
+
 /** Record an automatic attempt this account cannot make. No retry is scheduled until a successful manual update records a new result. */
 export function recordUpdateRefusal(version: string, reason: string): void {
   if (process.env.COTAL_AUTO_UPDATE !== "1") return;
