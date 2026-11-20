@@ -350,10 +350,12 @@ export const cotalAuthProvider: AuthProvider = {
     const idpToken = await fetchIdpJwt(idpUrl, session.token);
     let res: Response;
     try {
-      res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ idpToken }), signal: AbortSignal.timeout(15_000) });
+      res = await fetch(url, { method: "POST", redirect: "manual", headers, body: JSON.stringify({ idpToken }), signal: AbortSignal.timeout(15_000) });
     } catch (e) {
       throw credentialFailure("unavailable", `the user-auth service for space "${space}" did not answer its manager list at ${url} (${e instanceof Error ? e.message : String(e)})`);
     }
+    if (res.status >= 300 && res.status < 400)
+      throw credentialFailure("refused", `the auth service's manager list at ${url} answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login proof cannot be walked onto another host`);
     const body = await readAuthResponseJson(res, `the auth service's manager list at ${url}`);
     if (!res.ok)
       throw credentialFailure("refused", `signed in, but the manager list for space "${space}" was refused: ${(body as { error?: string } | null)?.error ?? `HTTP ${res.status}`}`);

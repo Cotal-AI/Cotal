@@ -1,0 +1,31 @@
+{
+  "suite": [
+    "implementations/auth/smoke/auth-response-json.smoke.ts"
+  ],
+  "guard": "the manager list a person's bridge reads carries their login proof, so neither its local nor its remote arm follows a redirect, and the redirect's target gets no request",
+  "command": "pnpm smoke:auth-response-json",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/manager-list-redirect.json",
+  "why": [
+    "The smoke imports the built provider, so each mutation builds it first and rebuilds it from the restored source afterwards."
+  ],
+  "mutations": [
+    {
+      "name": "the manager list follows a redirect",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "res = await fetch(url, { method: \"POST\", redirect: \"manual\", headers, body: JSON.stringify({ idpToken }), signal: AbortSignal.timeout(15_000) });",
+      "replace": "res = await fetch(url, { method: \"POST\", headers, body: JSON.stringify({ idpToken }), signal: AbortSignal.timeout(15_000) });",
+      "expectRed": "manager list refuses a redirect by name",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:auth-response-json",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "the manager list reads a redirect as an answer",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    if (res.status >= 300 && res.status < 400)\n      throw credentialFailure(\"refused\", `the auth service's manager list at ${url} answered",
+      "replace": "    if (false)\n      throw credentialFailure(\"refused\", `the auth service's manager list at ${url} answered",
+      "expectRed": "manager list refuses a redirect by name",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:auth-response-json",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

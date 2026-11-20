@@ -24,8 +24,11 @@ process.env.COTAL_HOME = join(root, "home", ".cotal");
 mkdirSync(join(root, ".cotal"));
 process.chdir(root);
 let status = 200, answer = "{}";
+let redirectTo: string | undefined, elsewhereHits = 0;
 const server = createServer(async (req, res) => {
   let raw = ""; for await (const chunk of req) raw += chunk;
+  if (req.url === "/elsewhere") { elsewhereHits++; res.writeHead(404).end(); return; }
+  if (redirectTo && req.url?.endsWith("/manager-instances")) { res.writeHead(307, { location: redirectTo }).end(); return; }
   if (req.url === "/api/auth/token") { res.setHeader("content-type", "application/json"); res.end('{"token":"fixture-idp-proof"}'); return; }
   res.writeHead(status, { "content-type": answer.startsWith("<") ? "text/html" : "application/json" });
   res.end(answer === "retired" ? JSON.stringify({ retired: true, lifecycleUid: JSON.parse(raw).lifecycleUid }) : answer);
@@ -88,6 +91,19 @@ try {
     set(403, { error: "fixture-denial" });
     await assert.rejects(credentials(), (error: unknown) => error instanceof Error && error.message.includes("fixture-denial") && (error as { code?: string }).code === "refused", `${face} preserves authenticated refusal classification`);
     set(403, {}); await assert.rejects(credentials(), local ? /HTTP 403/ : /withheld the reason \(HTTP 403\)/, `${face} preserves readable refusal without reason`);
+  }
+
+  // The manager list carries the login proof in its body, so neither arm follows a redirect.
+  for (const local of [true, false]) {
+    const list = () => cotalAuthProvider.listManagerInstances!({ store: local ? store : emptyStore, dir: local ? dir : remoteDir, space: local ? space : remoteSpace });
+    const face = local ? "local manager list" : "remote manager list";
+    const listed = { instanceId: "abcdefghijklmnopqrstuvwxyz01234", placement: "remote", state: "candidate" };
+    set(200, { v: 1, owner, complete: true, instances: [listed] });
+    assert.deepEqual(await list(), [listed], `${face} returns the listed managers`);
+    redirectTo = `${origin}/elsewhere`; elsewhereHits = 0;
+    await assert.rejects(list(), (error: unknown) => error instanceof Error && /answered 307 with redirect Location .*elsewhere.* redirects are refused/.test(error.message) && (error as { code?: string }).code === "refused", `${face} refuses a redirect by name`);
+    assert.equal(elsewhereHits, 0, `${face} sends nothing to the redirect's target`);
+    redirectTo = undefined;
   }
 
   for (const local of [true, false]) {
