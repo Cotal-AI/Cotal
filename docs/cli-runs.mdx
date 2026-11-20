@@ -357,6 +357,9 @@ moves the virtual clock forward.
 If the `clock.wait` delay is longer than the step's `timeout`, the simulated wait returns `null`
 and advances virtual time only to that timeout.
 
+A checkpoint scripted as `expired` expires at the step's `timeout`, as a live deadline does. A
+resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
+
 The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
 with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
 stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key,

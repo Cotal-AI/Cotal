@@ -105,6 +105,19 @@ log("reply", reply === null ? "timed out" : "received", "elapsed", now() - start
     assert.equal(timedOut.status, 0, timedOut.stdout + timedOut.stderr);
     assert.match(timedOut.stdout, /Virtual time:\s+1000 ms/);
     assert.match(timedOut.stdout, /reply timed out elapsed 1000/);
+
+    writeFileSync(join(root, "expiry-race.js"), `
+const raceResult = await race({
+  approval: async () => await checkpoint("approve", "Approve?", { timeout: "1s", onExpiry: "proceed" }),
+  fallback: async () => await sleep("8s")
+}, { name: "approval-or-fallback" });
+log("winner", raceResult.index);
+`);
+    writeFileSync(join(root, "expiry.json"), '{"checkpoints":{"approve":{"status":"expired"}}}');
+    const expired = run(["run", "simulate", "expiry-race.js", "--handler", "expiry.json", "--plain"]);
+    assert.equal(expired.status, 0, expired.stdout + expired.stderr);
+    assert.match(expired.stdout, /Virtual time:\s+1000 ms/);
+    assert.match(expired.stdout, /winner approval/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
