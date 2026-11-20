@@ -241,10 +241,12 @@ check("up in a copied folder refuses CONFLICT, exit 2, naming the folder its jou
 // space of this folder and the `cotal up` that would start it.
 {
   check("rig: sel07 is selected again", run(["use", "sel07"], copy).status === 0);
+  // sel07 was added with --force, so whoami there reports its mode as not checked and exits 4.
   for (const command of ["ps", "whoami"]) {
     const r = run([command, "--json"], copy);
     check(`${command} in a copy targets the explicit selection`,
-      command === "ps" ? selectedRefusal(r) : r.status === 0 && r.envelope?.outcome === "ok" && r.envelope.target?.space === "sel07", shown(r));
+      command === "ps" ? selectedRefusal(r) : r.status === 4 && r.envelope?.outcome === "partial" && r.envelope.target?.space === "sel07" &&
+        (r.envelope.warnings ?? []).some((w) => w.code === "MODE_NOT_CHECKED"), shown(r));
   }
   // Bare cotal reads no broker, so it names what the folder holds from its records, with the step the
   // reads name, and status reports under the space they name, as the reads refuse under it.
