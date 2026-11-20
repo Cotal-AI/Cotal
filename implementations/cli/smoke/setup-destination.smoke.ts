@@ -86,6 +86,9 @@ const args = process.argv.slice(2);
 const state = path.join(process.env.HOME, ".codex-fixture.json");
 const saved = fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, "utf8")) : {};
 if (args.join(" ") === "plugin marketplace list") console.log(saved.market ? "cotal-mesh" : "");
+else if (args.join(" ") === "plugin marketplace list --json") {
+  console.log(JSON.stringify({ marketplaces: saved.market ? [{ name: "cotal-mesh", root: saved.market }] : [] }));
+}
 else if (args.slice(0, 3).join(" ") === "plugin marketplace add") {
   saved.market = args[3]; fs.writeFileSync(state, JSON.stringify(saved));
 } else if (args.join(" ") === "plugin add cotal@cotal-mesh") {
@@ -193,6 +196,19 @@ const seeded = spawnSync(process.execPath, [BIN, "ext", "seed"], { cwd: home, en
 if (seeded.status !== 0) {
   console.error(`✗ seeding the connectors failed: ${seeded.stderr.slice(-800)}`);
   process.exit(1);
+}
+
+// Status qualifies the interactive command and points scripts to setup help.
+{
+  const state = join(home, ".codex-fixture.json");
+  for (const label of ["not installed", "stale"]) {
+    if (label === "stale") writeFileSync(state, JSON.stringify({ version: "0.0.0+fixture" }));
+    const status = await run(["status", "--plain"]);
+    const row = status.stdout.split("\n").find(line => line.startsWith("  Codex plugin:"));
+    check(`headless status points a ${label} Codex plugin to scripted setup help`, status.status === 0 &&
+      row?.trim().replace(/\s+/g, " ") === `Codex plugin: ${label} - run \`cotal setup\` in a terminal, or see \`cotal setup --help\` for scripted setup`, row ?? shown(status));
+  }
+  rmSync(state);
 }
 
 // A stand-in npm registry serving the official tmux and herdr runtimes, packed from this checkout,

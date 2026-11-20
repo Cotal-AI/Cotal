@@ -247,9 +247,10 @@ function statusRow({ version }: ConnectorStatusInput): ConnectorStatusRow {
       if (isConfigProtected(config)) return row("warn", protectedRegistration(config));
     }
   } catch (e) { return row("error", (e as Error).message); }
-  if (!installed) return row("off", "not installed · run `cotal setup`");
+  const remedy = "run `cotal setup` in a terminal, or see `cotal setup --help` for scripted setup";
+  if (!installed) return row("off", `not installed · ${remedy}`);
   if (installed.disabled) return row("off", "disabled");
-  return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", "stale · run `cotal setup`");
+  return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", `stale · ${remedy}`);
 }
 
 export const codexSetupProvider: ConnectorSetupProvider = {
