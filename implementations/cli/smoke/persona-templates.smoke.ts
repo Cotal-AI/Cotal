@@ -30,9 +30,8 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-// The default's template lives with the writer every seeding command shares, and the guided team's
-// stay in setup. Each file is matched on its own, so a fence in one never pairs with one in the other.
-const templateSources = ["../src/commands/setup.ts", "../src/lib/default-persona.ts"].map((file) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8"));
+// The current default is shared by seed and launch. The guided team's templates stay in setup.
+const templateSources = [DEFAULT_AGENT, readFileSync(fileURLToPath(new URL("../src/commands/setup.ts", import.meta.url)), "utf8")];
 
 // Every frontmatter block in setup's template literals. Anchored on the fences and on a `name:`
 // line ANYWHERE inside, not on the block starting with one: the managed-marker comment precedes
@@ -143,7 +142,7 @@ ok("default-persona-fix: any other space is fixed by creating the file in its ca
 const KNOWN_WRITERS = [
   "packages/core/src/agent-file.ts", // saveAgentFile — guards itself
   "implementations/cli/src/commands/setup.ts", // the guided team's literal templates — asserted above
-  "implementations/cli/src/lib/default-persona.ts", // the default's literal template — asserted above
+  "implementations/cli/src/lib/default-persona.ts", // the default's seeding and migration writer
 ];
 const searched = ["packages/core/src", "packages/workspace/src", "implementations", "extensions", "bin"];
 const found = new Set<string>();
