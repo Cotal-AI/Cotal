@@ -502,7 +502,10 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
   }
   assert(workflow.jobs.priority.steps.some(step => step.run?.includes('--stale-version 0.161.1 --method self')));
   const desktop = workflow.jobs['desktop-beside-cli'];
-  assert(desktop.steps.some(step => step.with?.['run-id'] === 43456519342 && step.with?.name === 'desktop-release-Linux-X64'));
+  const releasedDesktop = step => step.run?.includes("gh release download v0.164.2") && step.run.includes("--pattern 'Cotal_0.164.2_amd64.deb'");
+  assert(desktop.steps.some(releasedDesktop));
+  assert(workflow.jobs['release-cells'].steps.some(step => releasedDesktop(step) && step.if === "matrix.scenario == 'candidate-next-stopped-desktop-self'"));
+  for (const job of Object.values(workflow.jobs)) assert(!job.steps?.some(step => typeof step.with?.['run-id'] === 'number'), 'a pinned run id names artifacts that expire');
   assert(desktop.steps.some(step => step.run?.includes('--desktop-runtime') && step.run.includes('--desktop-node')));
   assert.deepEqual(workflow.jobs['candidate-B'].strategy.matrix.source, ['0.164.0']);
   assert.deepEqual(workflow.jobs['candidate-B-expanded'].strategy.matrix.source, sources);
