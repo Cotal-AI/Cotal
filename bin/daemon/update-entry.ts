@@ -609,7 +609,7 @@ const composed: Command = { ...command, async run(args) {
       console.log(`machine daemon: ${admission.reason}. Activation was not attempted.`);
       return;
     }
-    console.log(`machine daemon activation deferred: ${admission.reason}; software update finished; run \`cotal daemon status\` to inspect what still needs a restart`);
+    console.log(`machine daemon activation deferred: ${admission.reason}; software update finished`);
     return;
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
