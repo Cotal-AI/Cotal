@@ -19,6 +19,8 @@ refuse it rather than grant the allow list alone:
 
 The Manager cluster advances to revision 53. The read and post lists of `spawn`, `define-persona`
 and `chat-session-open` accept the `{ allow, exclude }` form, which a revision 52 schema refuses.
+Revision 53 has a new contract digest, so a release that ships it needs Cotal Cloud's contract
+record for that digest first.
 
 Exclusions need nats-server 2.12.7 or later on the 2.12 line, or 2.14.0 or later. A credential
 with exclusions is not signed for an older or unknown server. Update the broker first, then the
