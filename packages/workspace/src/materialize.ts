@@ -85,6 +85,18 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
+/** Resolve the same installed entry for on-disk checks and import, using the caller's metadata. */
+export function extensionEntryPath(dir: string, meta: InstalledExtensionPackage): string {
+  let entry = meta.main ?? "index.js";
+  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
+  if (typeof dot === "string") entry = dot;
+  else if (dot && typeof dot === "object") {
+    const d = dot as Record<string, string>;
+    entry = d.import ?? d.default ?? entry;
+  } else if (typeof meta.exports === "string") entry = meta.exports;
+  return join(dir, entry);
+}
+
 /**
  * Import an installed package's declared entry so it self-registers. `cotal ext add` and every later
  * load import through here, so a missing peer export is reported as a ranked skew on both paths.
@@ -96,15 +108,8 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const dir = extensionPackageDir(pkg);
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
-  let entry = meta.main ?? "index.js";
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
   try {
-    await import(pathToFileURL(join(dir, entry)).href);
+    await import(pathToFileURL(extensionEntryPath(dir, meta)).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }
