@@ -8,7 +8,7 @@ import { isUnansweredDeliveryAdmin, untilDeliveryAdminAnswers } from "./endpoint
 import { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
-import { Manager } from "./manager.js";
+import type { Manager } from "./manager.js";
 
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
  * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
@@ -114,6 +114,7 @@ export interface CredentialRenewalDeps {
   setSupervisorCredentialPushPending: (value: Manager["supervisorCredentialPushPending"]) => void;
   userMode: () => Manager["userMode"];
   workspaceRoot: () => Manager["workspaceRoot"];
+  deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
   dialRemoteStanding: (...args: Parameters<Manager["dialRemoteStanding"]>) => ReturnType<Manager["dialRemoteStanding"]>;
   dialServeConnection: (...args: Parameters<Manager["dialServeConnection"]>) => ReturnType<Manager["dialServeConnection"]>;
@@ -176,6 +177,7 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
     setSupervisorCredentialPushPending: (value) => { m["supervisorCredentialPushPending"] = value; },
     userMode: () => m["userMode"],
     workspaceRoot: () => m["workspaceRoot"],
+    deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
     dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
     dialServeConnection: (...args) => m["dialServeConnection"](...args),
@@ -307,7 +309,7 @@ export class CredentialRenewal {
     // principal. A reply asserting the claim while some other process holds the shard fails here,
     // which is the case a bare store identity could not see. An unreadable row is an unknown and
     // refuses too: this test may never be satisfied by failing to run.
-    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);
+    const holder = await this.ep.deliveryLeaseHolder(this.deps.deliveryShard());
     if (holder === undefined)
       throw new Error(
         "this manager could not read the delivery lease row, so it cannot verify that the answering " +
@@ -349,7 +351,7 @@ export class CredentialRenewal {
   async absentByLeaseRow(unanswered: boolean): Promise<"absent"> {
     let entry: { info: DeliveryLeaseInfo } | undefined;
     try {
-      entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
+      entry = await this.ep.readDeliveryLeaseEntry(this.deps.deliveryShard());
     } catch (e) {
       throw new Error(
         `could not read the delivery lease row to settle whether the delivery daemon is absent ` +
