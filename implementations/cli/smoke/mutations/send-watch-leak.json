@@ -32,7 +32,7 @@
     },
     {
       "name": "a read-once endpoint watches presence",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    if (this.doWatch && this.readOnce) await this.readPresenceOnce();",
       "replace": "    if (this.doWatch && this.readOnce && false) await this.readPresenceOnce();",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
@@ -42,7 +42,7 @@
     },
     {
       "name": "a read-once endpoint watches the channel registry",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "      if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());",
       "replace": "      if (watchChannels) await this.startChannelWatch();",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
