@@ -85,8 +85,9 @@ console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(directory, "config")}`)});\
       assert.match(output, /has mode 0755, not 0700/);
       assert.equal(existsSync(calls), false);
     } else if (kind !== "absent") {
-      assert.equal(code, 1, output);
-      assert.match(output, /installed daemon preflight.*no installed unit recorded/);
+      assert.equal(code, 2, output);
+      assert.match(output, /the recorded daemon service receipt could not be verified/);
+      assert.match(output, /Code:\s+CONFLICT/);
       assert.doesNotMatch(output, /XDG_RUNTIME_DIR is not set/);
       assert.doesNotMatch(output, /Built-in connectors|wrote operator-global seed store payload/);
       assert.equal(existsSync(join(directory, "config/cotal/seed")), false, output);
