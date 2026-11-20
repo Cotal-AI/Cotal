@@ -1547,7 +1547,7 @@ export class MeshAgent extends EventEmitter {
   private nativeTurnLeaseValid(): boolean { return this.turns.nativeTurnLeaseValid(); }
   private armTurnRelay(): void { return this.turns.armTurnRelay(); }
   private requestTurnPull(): void { return this.turns.requestTurnPull(); }
-  private async pollTurns(): Promise<void> { return this.turns.pollTurns(); }
+  protected async pollTurns(): Promise<void> { return this.turns.pollTurns(); }
   peekPendingTurns(): { text: string; goalIds: string[]; once?: true } | undefined { return this.turns.peekPendingTurns(); }
   commitSurfacedTurns(goalIds: readonly string[]): void { return this.turns.commitSurfacedTurns(goalIds); }
   unsurfaceTurns(goalIds: readonly string[]): void { return this.turns.unsurfaceTurns(goalIds); }
