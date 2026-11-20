@@ -350,6 +350,8 @@ computer keeps its service credentials and identity. `cotal daemon uninstall` is
 would remove them. An incomplete rollback still requires guarded snapshot restoration.
 Before replacing the global binary, `cotal update --self` checks the release's first-party
 package archives through npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
+The extension dependency check resolves Cotal peers at the selected release's exact version.
+Reconciliation links those peers to the installed CLI's copies.
 The command prints progress before release checks, the recovery snapshot, package installation,
 connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector reconciliation installs changed built-ins and first-party operator extensions into one
 private copy of the extension prefix. It checks every package before promoting the complete prefix.
