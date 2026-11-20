@@ -16,7 +16,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { assertDerivedOwnerToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -320,6 +320,44 @@ export const cotalAuthProvider: AuthProvider = {
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...exchangeAuthority(out, `the auth service's exchange at ${info.url}/exchange`) };
+  },
+
+  /** Client side: this machine's login session -> a fresh IdP JWT -> the auth service's
+   *  `/manager-instances`, local or pinned remote, as {@link userCredentials} reaches `/exchange`.
+   *  A refused or malformed answer throws; nothing is read into a failure. */
+  async listManagerInstances({ store, dir, space }) {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, space);
+    const remote = !idp || !callout ? remoteUserAuthEntry(dir, space) : undefined;
+    if ((!idp || !callout) && !remote)
+      throw new Error(
+        `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\` and sign in with \`cotal login --idp <idp-url>\``,
+      );
+    const idpUrl = remote ? remote.idp.url : idp!.url;
+    // A remote pin's transport rule is static, so it is checked before the login gate, as the exchange does.
+    const remoteUrl = remote ? managerInstancesUrl(remote.endpoints.url, space) : undefined;
+    const session = requireIdpSession(idpSessionDir(), idpUrl);
+    let url: string;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (remoteUrl) url = remoteUrl;
+    else {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw credentialFailure("unavailable", `the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
+      url = `${info.url}/manager-instances`;
+      headers.authorization = `Bearer ${info.cap}`;
+    }
+    const idpToken = await fetchIdpJwt(idpUrl, session.token);
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "POST", headers, body: JSON.stringify({ idpToken }), signal: AbortSignal.timeout(15_000) });
+    } catch (e) {
+      throw credentialFailure("unavailable", `the user-auth service for space "${space}" did not answer its manager list at ${url} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    const body = await readAuthResponseJson(res, `the auth service's manager list at ${url}`);
+    if (!res.ok)
+      throw credentialFailure("refused", `signed in, but the manager list for space "${space}" was refused: ${(body as { error?: string } | null)?.error ?? `HTTP ${res.status}`}`);
+    return managerInstanceList(body, url);
   },
 
   async serviceEndpointInfo({ store, dir, space, signal }) {
@@ -816,6 +854,29 @@ function managerAuthorityUrl(base: string, space: string): string {
   const u = new URL(pinnedExchangeUrl(base, space));
   u.pathname = `${u.pathname.slice(0, -"/exchange".length)}/manager-service-authority`;
   return u.toString();
+}
+
+/** The manager list shares the verified exchange origin, as the manager-authority route does. */
+function managerInstancesUrl(base: string, space: string): string {
+  const u = new URL(pinnedExchangeUrl(base, space));
+  u.pathname = `${u.pathname.slice(0, -"/exchange".length)}/manager-instances`;
+  return u.toString();
+}
+
+const MANAGER_INSTANCE_STATES: ReadonlySet<string> = new Set(["candidate", "unknown", "not open", "not this owner's", "not registered"]);
+
+/** The catalog `/manager-instances` answers, checked whole. Anything else is an error, never a
+ *  partial list. */
+function managerInstanceList(body: unknown, url: string): ManagerInstanceListing[] {
+  const malformed = () => new Error(`the auth service's manager list at ${url} is malformed - its build may be stale; restart it with \`cotal up\``);
+  const o = body as { v?: unknown; complete?: unknown; instances?: unknown } | null;
+  if (!o || o.v !== 1 || o.complete !== true || !Array.isArray(o.instances)) throw malformed();
+  return o.instances.map((i: unknown): ManagerInstanceListing => {
+    const r = i as { instanceId?: unknown; placement?: unknown; state?: unknown } | null;
+    if (!r || typeof r.instanceId !== "string" || (r.placement !== "remote" && r.placement !== "local") || typeof r.state !== "string" || !MANAGER_INSTANCE_STATES.has(r.state))
+      throw malformed();
+    return { instanceId: assertLifecycleToken(r.instanceId, "managerInstanceId"), placement: r.placement, state: r.state as ManagerInstanceListing["state"] };
+  });
 }
 
 /** Retain provider-owned nonsecret routing before a hosted Manager can register. */

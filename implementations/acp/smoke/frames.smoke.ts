@@ -7,13 +7,15 @@
  *  - a frame mapped once maps to nothing the second time, so a history read and a live tap overlap;
  *  - RUN_ERROR ends the frame's run with the seat's message; an interrupt outcome is told apart;
  *  - `closeOpen` closes every tool call still open, once;
- *  - `frameOf` reads the frame part of an event-channel message and nothing else.
+ *  - `frameOf` reads the frame part of an event-channel message and nothing else;
+ *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
+ *    every live manager the person may use.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
 import type { CotalMessage } from "@cotal-ai/core";
 import { FrameMapper } from "../src/frames.js";
-import { answeredReads, frameOf } from "../src/live-mesh.js";
+import { answeredReads, frameOf, managerPlan } from "../src/live-mesh.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -81,6 +83,21 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   let thrown: unknown;
   try { answeredReads([{ instanceId: "a", error: new Error("first") }, { instanceId: "b", error: new Error("second") }], () => {}); } catch (e) { thrown = e; }
   check("when no manager answered, the first failure is the answer", thrown instanceof Error && thrown.message === "first", thrown);
+}
+
+// Which listed managers a person's new thread may start on, and which the bridge reads.
+{
+  const L = (instanceId: string, placement: "remote" | "local", state: "candidate" | "unknown" | "not open" = "candidate") => ({ instanceId, placement, state });
+  const both = managerPlan([L("space", "local"), L("lapb", "remote"), L("lapa", "remote"), L("gone", "remote", "not open")]);
+  check("with managers of their own live, new threads start only on those, in a stable order", JSON.stringify(both.launch) === JSON.stringify(["lapa", "lapb"]) && both.why === undefined, both);
+  check("and agents are read from them and from the space's manager", JSON.stringify(both.read) === JSON.stringify(["lapa", "lapb", "space"]), both);
+  const none = managerPlan([L("space", "local")]);
+  check("with none registered, new threads start on the space's manager", JSON.stringify(none.launch) === JSON.stringify(["space"]) && JSON.stringify(none.read) === JSON.stringify(["space"]), none);
+  const asleep = managerPlan([L("space", "local"), L("lapa", "remote", "unknown")]);
+  check("with managers registered and none live, nothing starts and the reason names each", asleep.launch.length === 0 && String(asleep.why).includes("lapa: unknown") && String(asleep.why).includes("cotal manager start"), asleep);
+  check("while the space's manager is still read", JSON.stringify(asleep.read) === JSON.stringify(["space"]), asleep);
+  const empty = managerPlan([L("space", "local", "not open")]);
+  check("a manager that is not a candidate is neither started on nor read", empty.launch.length === 0 && empty.read.length === 0 && typeof empty.why === "string", empty);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

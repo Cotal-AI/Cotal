@@ -40,6 +40,9 @@ export interface Offer {
   readonly channels: readonly string[];
   readonly managers: readonly ManagerChoice[];
   readonly defaultAgent?: string;
+  /** The thread opened without the launch lists: it drives the agent it loaded, offers only that
+   *  agent's model, and cannot start another. */
+  readonly seatOnly?: boolean;
 }
 
 /** Split a model choice into its application and model. */
@@ -140,8 +143,9 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
     type: "select",
     currentValue: selection.model,
     options: usable(offer.catalogs).map((c) => {
+      // A seat-only thread offers the model its agent runs, and the default only when it names none.
       const choices = [
-        { value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` },
+        ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` }]),
         ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: m.name ?? m.id })),
       ];
       // The current value is always a choice, a custom id included.

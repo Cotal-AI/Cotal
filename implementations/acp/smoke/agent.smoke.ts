@@ -17,8 +17,9 @@
  *    including a cancel that beats the spawn reply; a refused interrupt is said in the thread;
  *  - `session/list` hides deleted runs and matches a folder through symlinks;
  *  - `session/load` replays before it answers, marked as replay, then follows live; a seat whose
- *    launch lists the caller may not read loads with only its own model; a seat no manager listed
- *    while one did not answer is not called missing, and deleting it fails;
+ *    launch lists the caller may not read loads with only its own model and cannot start another
+ *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
+ *    and deleting it fails;
  *  - a new session with no manager on this machine starts on the first listed one;
  *  - the slash commands answer locally, and `/despawn` stops the seat.
  *
@@ -330,12 +331,16 @@ const unsureDelete = await errorOf(agent.request(methods.agent.session.delete, {
 check("deleting such a seat fails the same way and hides nothing", unsureDelete?.code === -32603 && String(unsureDelete.message).includes("m9") && hidden.ids.size === hiddenBefore, unsureDelete);
 mesh.silent = [];
 
-// A person whose grant does not let them spawn opens their agent and types into it.
+// A person whose grant does not let them spawn opens their agent and types into it. The agent runs
+// on m2, which is neither the local machine nor the first listed.
 mesh.launchRefused = true;
+const rowsBefore = mesh.rows;
+mesh.rows = [{ ...outside, managerInstanceId: "m2" }, ...rowsBefore.slice(1)];
 let narrowFailed: unknown;
 const narrow = await agent.request(methods.agent.session.load, { sessionId: "outside", cwd: dir, mcpServers: [] }).catch((e: unknown) => { narrowFailed = e; return undefined; });
-const narrowModel = narrow?.configOptions?.find((o) => o.id === "model") as { currentValue?: string } | undefined;
-check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel"), narrowFailed ?? narrow?.configOptions);
+const narrowModel = narrow?.configOptions?.find((o) => o.id === "model") as { currentValue?: string; options?: { options?: { value: string }[] }[] } | undefined;
+const narrowChoices = (narrowModel?.options ?? []).flatMap((g) => (g.options ?? []).map((c) => c.value));
+check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && JSON.stringify(narrowChoices) === JSON.stringify(["claude/haiku"]) && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel"), narrowFailed ?? narrow?.configOptions);
 mesh.present.set(outside.actor, "idle");
 mesh.onInput = (seat) => {
   mesh.present.set(seat.actor, "working");
@@ -343,14 +348,19 @@ mesh.onInput = (seat) => {
   after(30, () => { mesh.emit(seat, [{ type: "RUN_FINISHED", runId: "r7" }], "r7"); mesh.present.set(seat.actor, "idle"); });
 };
 const narrowTurn = narrow ? await within(agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "go on" }] })) : undefined;
-check("its prompt is typed into the seat through the manager that holds it", narrowTurn?.stopReason === "end_turn" && mesh.typed.at(-1)?.text === "go on" && mesh.typedTo.at(-1) === "m1", { narrowTurn, typed: mesh.typed.at(-1), to: mesh.typedTo.at(-1) });
+check("its prompt is typed into the seat through the manager that holds it", narrowTurn?.stopReason === "end_turn" && mesh.typed.at(-1)?.text === "go on" && mesh.typedTo.at(-1) === "m2", { narrowTurn, typed: mesh.typed.at(-1), to: mesh.typedTo.at(-1) });
 mesh.onInput = () => {};
 mesh.launchRefused = false;
+mesh.rows = rowsBefore;
 
-// despawn
+// despawn, in the thread opened without the launch lists
 updates.length = 0;
 await agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "/despawn" }] });
 check("/despawn stops the session's seat", mesh.despawned.includes("outside"), mesh.despawned);
+check("and says that starting another agent there needs a grant that may spawn", updates.some((u) => u.sessionId === "outside" && JSON.stringify(u.update).includes("needs a grant that may spawn")), updates);
+const spawnsBefore = mesh.spawned.length;
+const noLaunch = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "again" }] })));
+check("a later prompt there is refused with that reason and spawns nothing", noLaunch?.code === -32602 && String(noLaunch.message).includes("may spawn") && mesh.spawned.length === spawnsBefore, noLaunch);
 
 // a failed run
 const second = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });

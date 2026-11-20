@@ -29,6 +29,7 @@ import {
   registry,
   token,
   type AuthProvider,
+  type ManagerInstanceListing,
   type EpCaller,
   type MintOpts,
   type ProbeResult,
@@ -238,6 +239,15 @@ export function userSignInAuth(conn: Connection): UserViewAuth {
     return next;
   };
   return { bearer, sentinelCreds, owner, actor, lifecycleUid, source };
+}
+
+/** The signed-in person's own Manager instances, as the space's auth service lists them: each Manager
+ *  their owner registered and the space host's own, with the verdict an unpinned selection reads.
+ *  The list spends no selection. Call ONLY with a user-mode connection. */
+export async function ownManagerInstances(conn: Connection): Promise<ManagerInstanceListing[]> {
+  const { provider, dir, store } = userAuthState(conn, "the manager list");
+  if (!provider.listManagerInstances) throw new Error(`the "${provider.name}" auth provider cannot list a person's managers`);
+  return provider.listManagerInstances({ store, dir, space: conn.space });
 }
 
 /** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode

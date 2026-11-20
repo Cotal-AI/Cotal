@@ -17,10 +17,11 @@ import {
   principalKey,
   type CotalEndpoint,
   type CotalMessage,
+  type ManagerInstanceListing,
   type Profile,
 } from "@cotal-ai/core";
-import { connectTargetOrThrow, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, refusedManagers, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
+import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
+import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
 import { LaunchListsRefused, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
@@ -49,6 +50,24 @@ export function answeredReads<T>(reads: readonly ({ instanceId: string; rows: T[
   if (failed.length > 0 && failed.length === reads.length) throw failed[0]!.error;
   for (const f of failed) log(`manager ${f.instanceId} did not list its agents: ${f.error.message}`);
   return { answered: reads.filter((r): r is { instanceId: string; rows: T[] } => "rows" in r), silent: failed.map((f) => f.instanceId) };
+}
+
+/** Which of a person's managers, as the auth service lists them, a new thread may start on, and which
+ *  the bridge reads agents from. A new thread follows the service's own rule: the person's registered
+ *  managers that are live once they have registered any, else the space's manager. Agents are read
+ *  from every live one, so an agent left on the space's manager stays listed. `why` says why nothing
+ *  may start. */
+export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch: string[]; read: string[]; why?: string } {
+  const live = (placement: ManagerInstanceListing["placement"]) =>
+    listed.filter((m) => m.placement === placement && m.state === "candidate").map((m) => m.instanceId).sort();
+  const remote = live("remote");
+  const local = live("local");
+  const registered = listed.filter((m) => m.placement === "remote");
+  const launch = registered.length > 0 ? remote : local;
+  const why = launch.length > 0 ? undefined
+    : registered.length > 0 ? `none of your managers is live (${registered.map((m) => `${m.instanceId}: ${m.state}`).join(", ")}); start one with \`cotal manager start\``
+    : "the space lists no live manager for you";
+  return { launch, read: [...remote, ...local], ...(why ? { why } : {}) };
 }
 
 /** A seat id as a manager reports it: the principal in user mode, a bare actor otherwise. */
@@ -103,6 +122,10 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
   let events: string;
   /** The person's sign-in on a user-auth space. The bridge acts as this sign-in throughout. */
   let started: { owner: string; actor: string; lifecycleUid: string } | undefined;
+  /** On a user-auth space: asks the exchange for the sign-in again, and stops the bridge when it changed. */
+  let signInNow: (() => Promise<string>) | undefined;
+  /** On a user-auth space: the person's managers, as the space's auth service lists them. */
+  let ownManagers: (() => Promise<ManagerInstanceListing[]>) | undefined;
   try {
     target = await resolveTargetOrThrow({ space: options.space, server: options.server });
     const conn = await connectTargetOrThrow(target, "admin");
@@ -116,6 +139,8 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       }),
     };
     started = user && { owner: user.owner, actor: user.actor, lifecycleUid: user.lifecycleUid };
+    signInNow = user?.source;
+    ownManagers = user && (() => ownManagerInstances(conn));
     // Only an agent publishes on its own event channel, so on a user-auth space the sender's owner
     // is the person's too.
     events = user ? chatSubject(conn.space, user.owner, "*", `${EVENT_CHANNEL_PREFIX}${user.owner}.*`) : chatSubject(conn.space, "*", "*", `${EVENT_CHANNEL_PREFIX}*.*`);
@@ -169,9 +194,17 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     return t;
   };
 
-  /** The instrument for one command, pinned to an instance when one is named. */
+  /** The instrument for one command, pinned to an instance when one is named. A refused instrument
+   *  may be the sign-in changing under the bridge, as when another account may not use this manager,
+   *  so on a user-auth space it asks once, and a changed sign-in stops the bridge as a changed bearer
+   *  does. */
   const resolve = (profile: Profile, instanceId?: string) =>
-    resolveControlTarget(ctx, profile, instanceId, { onRefusal: "throw" }).then(checked, (e: unknown) => Promise.reject(plain(e)));
+    resolveControlTarget(ctx, profile, instanceId, { onRefusal: "throw" }).then(checked, async (e: unknown) => {
+      if (signInNow) await signInNow().catch((c: unknown) => {
+        if (c instanceof SignInChangedError) throw c;
+      });
+      throw plain(e);
+    });
 
   /** One manager command, pinned to an instance when one is named. */
   const ask = async (op: string, args?: Record<string, unknown>, instanceId?: string, timeoutMs?: number): Promise<ManagerReply> => {
@@ -185,12 +218,14 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
 
   /** A seat command, sent to the manager that holds the seat and checked against the run the bridge
    *  bound, so nothing reaches a seat that restarted. The bridge learns the holding manager from the
-   *  spawn reply or from the pinned list read, so no name lookup can pick another manager. */
+   *  spawn reply or from the pinned list read, so no name lookup can pick another manager or refuse
+   *  two seats whose names differ only in case. */
   const seatCommand = async (op: "stop" | "interrupt" | "input", seat: SeatRef, args: Record<string, unknown>): Promise<ManagerReply> => {
     const instanceId = seat.managerInstanceId;
     if (!instanceId) throw new Error(`${seat.name}: the manager that holds it is not known`);
     const t = await resolve("control-caller-admin", instanceId);
-    return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedTarget: expected(seat) });
+    const run = expected(seat);
+    return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
   /** A manager as a choice, its host read from its presence when the roster carries it. */
@@ -199,23 +234,10 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     return { instanceId, ...(seen ? { host: seen } : {}), local: seen === hostname() };
   };
 
-  /** On a user-auth space, the managers the space's exchange lets this person reach: the one it
-   *  selects for an unpinned call, or each live one it names when it will not pick among several.
-   *  The exchange is the authority, so a manager whose presence has not arrived is still listed, and
-   *  each later call is pinned to the manager that was read. */
-  const yourManagers = async (): Promise<ManagerChoice[]> => {
-    let t: Awaited<ReturnType<typeof resolveControlTarget>>;
-    try {
-      t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
-    } catch (e) {
-      const named = await refusedManagers(client, e, ctx);
-      if (!named) throw plain(e);
-      return named.map((m) => choice(m.instanceId, m.host));
-    }
-    const instanceId = checked(t).auth.managerInstanceId;
-    if (!instanceId) throw new Error(`the exchange for space "${t.space}" selected no manager`);
-    return [choice(instanceId)];
-  };
+  /** On a user-auth space, the person's managers as the space's auth service lists them. The list
+   *  spends no selection, a manager whose presence has not arrived is still listed, and each later
+   *  call is pinned to a manager it names, which the exchange authorizes again. */
+  const yourManagers = async () => managerPlan(await ownManagers!().catch((e: unknown) => Promise.reject(plain(e))));
 
   const defaultPersona = resolvePreference("persona", { space: target.space }).value;
   const defaultAgent = resolvePreference("harness", { space: target.space }).value;
@@ -246,7 +268,11 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     },
 
     async managers() {
-      if (started) return yourManagers();
+      if (started) {
+        const plan = await yourManagers();
+        if (plan.why) throw new Error(plan.why);
+        return plan.launch.map((instanceId) => choice(instanceId));
+      }
       const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth);
       const here = hostname();
@@ -289,11 +315,15 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
         const reply = await controlPs(client, ctx, { readOnly: true });
         if (!reply.ok) throw new Error(reply.error);
         answered = reply.answered;
-        silent = [...reply.silent, ...reply.failed.map((f) => f.instanceId)];
+        // A registration whose host is gone never answers, so it is not one that may still hold the agent.
+        for (const id of reply.gone) options.log(`manager ${id} is registered, but nothing is behind its rail; its host is gone and never deregistered`);
+        silent = [...reply.silent.filter((id) => !reply.gone.includes(id)), ...reply.failed.map((f) => f.instanceId)];
       } else {
         // A user-auth bearer reads one manager per call, each pinned. A manager that does not answer
         // hides only its own agents, as `cotal ps` reports it.
-        const reads = await Promise.all((await yourManagers()).map(async ({ instanceId }) => {
+        const plan = await yourManagers();
+        if (plan.read.length === 0) throw new Error(plan.why ?? "the space lists no live manager for you");
+        const reads = await Promise.all(plan.read.map(async (instanceId) => {
           try {
             const reply = await ask("ps", undefined, instanceId);
             if (!reply.ok) throw failure(reply, "the manager did not list its agents");

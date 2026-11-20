@@ -188,6 +188,12 @@ export interface AuthProvider extends Extension {
    */
   userCredentials(opts: UserCredentialsRequest): Promise<UserCredentialsResult>;
   /**
+   * CLIENT side: the signed-in person's own Manager instances, as the space's auth service lists
+   * them to a human (`POST /manager-instances`), from the same session state {@link userCredentials}
+   * reads. A failed or partial scan MUST throw; an empty array is an owner with no Manager.
+   */
+  listManagerInstances?(opts: { store: SecretStore; dir: string; space: string }): Promise<ManagerInstanceListing[]>;
+  /**
    * Admit ONE distinct chat session for the signed-in human: the provider fetches the IdP
    * proof itself, and the minting authority derives the owner, draws the session actor and its
    * lifecycle UID, pins the human's own parent grant, and confines the session to `read`/`post`
@@ -575,6 +581,16 @@ export interface UserCredentialsResult {
   bearer: string;
   sentinelCreds: string;
   authority?: { owner: string; grant: UserAuthGrant };
+}
+
+/** One Manager instance of the signed-in person's owner, as the auth service lists it (SPEC §10).
+ *  `candidate` is the verdict an unpinned selection reads: an open gate whose registration and status
+ *  match. It is registration evidence, not proof that the instance answers. */
+export interface ManagerInstanceListing {
+  instanceId: string;
+  /** `remote` is a Manager the owner registered; `local` is the space host's own. */
+  placement: "remote" | "local";
+  state: "candidate" | "unknown" | "not open" | "not this owner's" | "not registered";
 }
 
 /** The error for a failed run of an {@link AuthProvider.agentBearerCommand} argv. The command prints

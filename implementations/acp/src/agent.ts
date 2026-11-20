@@ -231,6 +231,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     channels: [],
     managers: [],
     defaultAgent: row.agent,
+    seatOnly: true,
   });
 
   const offerFor = async (m: Mesh, machine?: string): Promise<Offer> => {
@@ -351,7 +352,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         const seat = session.seat;
         await m.despawn(seat);
         unbind(session);
-        await say(`Stopped ${seat.name}. A new prompt spawns a fresh agent.`);
+        await say(session.offer.seatOnly ? `Stopped ${seat.name}. Starting another agent here needs a grant that may spawn.` : `Stopped ${seat.name}. A new prompt spawns a fresh agent.`);
         return "end_turn";
       }
       case "roster": {
@@ -430,6 +431,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         const stopReason = await runTurn(session, m, "idle", () => m.input(running, text));
         return { stopReason };
       }
+      if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
       const { agent: harness, model } = parseModel(session.selection.model);
       const why = refusal(session.offer.catalogs, harness);
       if (why) throw RequestError.invalidParams(undefined, why);

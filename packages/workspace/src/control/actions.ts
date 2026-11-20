@@ -113,7 +113,8 @@ const BEARER_INSTANCE = "owner";
 
 /** The managed rows of every reachable manager in the space: the `cotal ps` read.
  *
- *  `rows` is the merged list, `silent` the instances that did not answer, `failed` the reachable
+ *  `rows` is the merged list, `silent` the instances that did not answer, `gone` those of them whose
+ *  rail the broker affirmed has nothing behind it (a host that died without deregistering), `failed` the reachable
  *  instances that answered with an error, and `answered` the rows attributed to the instance that
  *  served them. The attribution is what makes a partial answer
  *  usable: a caller holding state across polls can replace exactly the instances that spoke and
@@ -121,7 +122,7 @@ const BEARER_INSTANCE = "owner";
  *  `cotal ps` prints a silent instance rather than dropping it, and the console must not be the
  *  one surface that quietly answers a narrower question than the one asked. */
 export type PsReply =
-  | { ok: true; rows: ManagedRow[]; silent: string[]; failed: { instanceId: string; error: string }[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
+  | { ok: true; rows: ManagedRow[]; silent: string[]; gone: string[]; failed: { instanceId: string; error: string }[]; answered: { instanceId: string; rows: ManagedRow[] }[] }
   | { ok: false; error: string };
 
 /** Fold one ps answer into the rows held per manager instance, which is the only shape that can
@@ -217,7 +218,7 @@ export async function controlPs(client: ControlClient, ctx: ControlCtx, opts: { 
       const r = await askManager(client, t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
       if (!r.ok) return { ok: false, error: r.error ?? "error" };
       const rows = (r.data as ManagedRow[]) ?? [];
-      return { ok: true, rows, silent: [], failed: [], answered: [{ instanceId: BEARER_INSTANCE, rows }] };
+      return { ok: true, rows, silent: [], gone: [], failed: [], answered: [{ instanceId: BEARER_INSTANCE, rows }] };
     }
     const s = await scatterManager(client, t.space, t.server, "ps", t.auth, t.spaceAuth);
     if (!s.ok) return s;
@@ -228,6 +229,7 @@ export async function controlPs(client: ControlClient, ctx: ControlCtx, opts: { 
       ok: true,
       rows: answered.flatMap((i) => i.rows),
       silent: s.instances.filter((i) => !i.reachable).map((i) => i.instanceId),
+      gone: s.instances.filter((i) => !i.reachable && i.liveness === "gone").map((i) => i.instanceId),
       failed: s.instances.filter((i) => i.reachable && i.error).map((i) => ({ instanceId: i.instanceId, error: i.error! })),
       answered,
     };

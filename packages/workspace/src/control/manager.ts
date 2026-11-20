@@ -357,7 +357,9 @@ export function describeUnanswered(reply: ManagerReply): boolean {
  *  to type a flag it does not have. Absence of a pin therefore never means "not passed". */
 export interface ManagerPin {
   instanceId?: string;
-  /** The live presence row used to select this manager before minting its caller instrument. */
+  /** The seat row that selected this manager before minting its caller instrument: a live presence
+   *  row, or the row the pinned manager listed. It skips the presence lookup by name, and the
+   *  manager's own `inspect` must still answer this id and lifecycle before anything is sent. */
   expectedSeat?: { name: string; id: string; lifecycleUid: string };
   /** A picker-selected incarnation, checked after name resolution and before publication. */
   expectedTarget?: { id: string; lifecycleUid: string };

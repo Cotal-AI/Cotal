@@ -88,11 +88,11 @@ console.log("7. the poll is single flight, so a slow read cannot be overtaken an
   check("a tick while a read is in flight is skipped", overlap === "skipped", overlap);
   check("...and it starts no second read that could be applied out of order", reads === 1, { reads });
 
-  gate[0]({ ok: true, rows: [row("x")], silent: [], failed: [], answered: [{ instanceId: "A", rows: [row("x")] }] });
+  gate[0]({ ok: true, rows: [row("x")], silent: [], gone: [], failed: [], answered: [{ instanceId: "A", rows: [row("x")] }] });
   check("the in-flight read still applies when it lands", (await outcome(p1)) === "applied" && held() === "id-x", held());
 
   const p2 = poller.tick();
-  gate[1]({ ok: true, rows: [], silent: [], failed: [], answered: [{ instanceId: "A", rows: [] }] });
+  gate[1]({ ok: true, rows: [], silent: [], gone: [], failed: [], answered: [{ instanceId: "A", rows: [] }] });
   check("the next read retires the seat", (await outcome(p2)) === "applied" && flat.size === 0, held());
   check("...and no older answer is left in flight to resurrect it", gate.length === 2, { reads, gates: gate.length });
 }
@@ -112,8 +112,8 @@ console.log("8. a failed read stops the poll, and cannot be raced by a newer suc
 console.log("9. a reachable manager error is surfaced and cannot retain stale rows as silence");
 {
   const replies: PsReply[] = [
-    { ok: true, rows: [row("x")], silent: [], failed: [], answered: [{ instanceId: "A", rows: [row("x")] }] },
-    { ok: true, rows: [], silent: [], failed: [{ instanceId: "A", error: "manager fenced" }], answered: [] },
+    { ok: true, rows: [row("x")], silent: [], gone: [], failed: [], answered: [{ instanceId: "A", rows: [row("x")] }] },
+    { ok: true, rows: [], silent: [], gone: [], failed: [{ instanceId: "A", error: "manager fenced" }], answered: [] },
   ];
   let flat = new Map<string, { agent?: string; mode?: string }>();
   let partial = "";
@@ -135,9 +135,9 @@ console.log("9. a reachable manager error is surfaced and cannot retain stale ro
 console.log("10. a changed partial cause is announced, while an unchanged one stays quiet");
 {
   const replies: PsReply[] = [
-    { ok: true, rows: [], silent: ["B"], failed: [], answered: [] },
-    { ok: true, rows: [], silent: ["B"], failed: [], answered: [] },
-    { ok: true, rows: [], silent: [], failed: [{ instanceId: "B", error: "manager fenced" }], answered: [] },
+    { ok: true, rows: [], silent: ["B"], gone: [], failed: [], answered: [] },
+    { ok: true, rows: [], silent: ["B"], gone: [], failed: [], answered: [] },
+    { ok: true, rows: [], silent: [], gone: [], failed: [{ instanceId: "B", error: "manager fenced" }], answered: [] },
   ];
   const partials: string[] = [];
   const poller = createManagedPoller(
