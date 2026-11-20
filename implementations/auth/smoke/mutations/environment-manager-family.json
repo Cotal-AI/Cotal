@@ -16,7 +16,7 @@
     },
     {
       "name": "plain preparation releases before its native family reservation",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "          if (r.operation === \"prepare\" && existing === null) {",
       "replace": "          if (false) {",
       "expectRed": "plain preparation reserves its native family before credential release",
