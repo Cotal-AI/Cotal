@@ -8,6 +8,7 @@ import {
   dialerFor,
   EpEnvelopeError,
   formatAge,
+  globalConfigDir,
   isReachable,
   isStreamNotFound,
   mintCreds,
@@ -30,6 +31,7 @@ import {
 } from "@cotal-ai/core";
 import {
   stoppedLoopbackListener,
+  UnreadableConnectorSelection,
   stackRunsUnderOtherHome,
   accountInventory,
   authDir,
@@ -490,9 +492,11 @@ export async function status(args: ParsedArgs): Promise<void> {
     const cursor = readCursor();
     if (cursor?.failed !== undefined) seed = cursor;
   } catch (error) {
-    const path = reconcileCursorPath();
     const code = (error as NodeJS.ErrnoException).code;
-    gaps.add("EXTENSIONS_UNREADABLE", `the connector seed cursor at ${path} could not be read${code ? ` (${code})` : ""}`, { path });
+    if (!(error instanceof UnreadableConnectorSelection)) {
+      const path = reconcileCursorPath();
+      gaps.add("EXTENSIONS_UNREADABLE", `the connector seed cursor at ${path} could not be read${code ? ` (${code})` : ""}`, { path });
+    }
   }
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
   const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
@@ -792,9 +796,18 @@ function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
  *  installed", which is ambiguous on a fresh binary before its first seed. Versions are the manifest
  *  pin (add-time), not a live on-disk/host-compat check. */
 function readExtensions(gaps: Gaps): StatusResult["extensions"] {
+  let root: string;
+  try { root = extensionsDir(); }
+  catch (error) {
+    if (!(error instanceof UnreadableConnectorSelection)) throw error;
+    // The existing result requires a path. Use the containing config directory, not an invented
+    // extension prefix, and leave the inventory explicitly unknown.
+    gaps.add("EXTENSIONS_UNREADABLE", error.message);
+    return { root: globalConfigDir(), items: null };
+  }
   const { versions, unreadable } = readExtensionVersions();
   if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}`);
-  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
+  return { root, items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
 }
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
