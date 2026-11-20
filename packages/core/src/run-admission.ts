@@ -36,6 +36,7 @@ import {
 } from "./issued-authority.js";
 import { chatSubject, token } from "./subjects.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
+import { channelGrantField, parseChannelGrant, type ChannelGrantField } from "./channel-grant.js";
 
 export function admissionBucket(space: string): string {
   return `cotal_admission_${token(space)}`;
@@ -60,8 +61,9 @@ export type RunAdmissionProvenance =
  *  and channel lists, as the issuing host read them (§14.8). */
 export interface RunDelegation {
   readonly scope: readonly string[];
-  readonly allowSubscribe: readonly string[];
-  readonly allowPublish: readonly string[];
+  /** A plain list, or `{ allow, exclude }` when the row removes channels (SPEC §9). */
+  readonly allowSubscribe: ChannelGrantField;
+  readonly allowPublish: ChannelGrantField;
 }
 
 export interface RunAdmission {
@@ -137,7 +139,11 @@ function delegationSnapshot(value: unknown): RunDelegation {
     if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw new Error("admission delegation lists must be arrays of strings");
     return Object.freeze([...v as string[]]);
   };
-  return Object.freeze({ scope: list(raw.scope), allowSubscribe: list(raw.allowSubscribe), allowPublish: list(raw.allowPublish) });
+  const grant = (v: unknown, field: string): ChannelGrantField => {
+    const g = parseChannelGrant(v, `admission delegation ${field}`);
+    return channelGrantField(g.allow, g.exclude);
+  };
+  return Object.freeze({ scope: list(raw.scope), allowSubscribe: grant(raw.allowSubscribe, "allowSubscribe"), allowPublish: grant(raw.allowPublish, "allowPublish") });
 }
 
 /** Validate a record at the consuming boundary: closed schema, version, coordinates. */

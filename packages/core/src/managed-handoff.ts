@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { isCredentialTransportUrl } from "./loopback.js";
 import { assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
+import { parseChannelGrant, type ChannelGrantField } from "./channel-grant.js";
 
 /** The env var naming the handoff file inside the child. It carries a path, never a secret. */
 export const MANAGED_HANDOFF_FILE_ENV = "COTAL_MANAGED_HANDOFF_FILE";
@@ -29,15 +30,17 @@ export interface ManagedLifecycleHandoff extends ManagedLifecycleTarget {
   readonly sentinelCreds: string;
   readonly actorToken: string;
   readonly subscribe: readonly string[];
-  readonly allowSubscribe: readonly string[];
-  readonly allowPublish: readonly string[];
+  /** A plain list, or `{ allow, exclude }` when it removes channels (SPEC §9). */
+  readonly allowSubscribe: ChannelGrantField;
+  readonly allowPublish: ChannelGrantField;
   readonly policy?: { readonly events?: "required"; readonly eventPayloads?: "withheld" };
 }
 
 const TARGET_FIELDS = ["space", "owner", "actor", "lifecycleUid"] as const;
 const STRING_FIELDS = [...TARGET_FIELDS, "kind", "server", "authProvider", "exchangeUrl", "sentinelCreds", "actorToken"] as const;
-const LIST_FIELDS = ["subscribe", "allowSubscribe", "allowPublish"] as const;
-const FIELDS = new Set<string>([...STRING_FIELDS, ...LIST_FIELDS, "tlsRequired", "idp", "policy"]);
+const LIST_FIELDS = ["subscribe"] as const;
+const GRANT_FIELDS = ["allowSubscribe", "allowPublish"] as const;
+const FIELDS = new Set<string>([...STRING_FIELDS, ...LIST_FIELDS, ...GRANT_FIELDS, "tlsRequired", "idp", "policy"]);
 const IDP_FIELDS = ["url", "issuer", "audience"] as const;
 
 /** Validate the handoff text against the coordinate the runtime passed beside it. Throws a
@@ -74,6 +77,7 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   for (const k of LIST_FIELDS)
     if (!Array.isArray(doc[k]) || !(doc[k] as unknown[]).every((s) => typeof s === "string"))
       throw new Error(`the managed handoff's ${k} is not an array of strings`);
+  for (const k of GRANT_FIELDS) checkField(k, () => parseChannelGrant(doc[k], k));
   const policy = doc.policy as Record<string, unknown> | undefined | null;
   if (policy !== undefined &&
       (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length === 0 ||

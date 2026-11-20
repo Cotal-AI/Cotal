@@ -8,6 +8,19 @@
  *  the canonical serializer refuses a shared reference as circular. */
 const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
 
+/** A read or post list: a plain array, or `{ allow, exclude }` when it removes channels or patterns
+ *  (SPEC §9). A manager that predates exclusions accepts only the array, so it refuses the object
+ *  form instead of granting the allow list alone. A fresh object per field, as for `nonBlank`. */
+const grantList = () => ({
+  oneOf: [
+    { type: "array", items: { type: "string" } },
+    {
+      type: "object", additionalProperties: false, required: ["allow", "exclude"],
+      properties: { allow: { type: "array", items: { type: "string" } }, exclude: { type: "array", items: { type: "string" }, minItems: 1 } },
+    },
+  ],
+});
+
 /** One managed-agent row (`ps`/`inspect`), the ctl `list()` shape plus `lifecycleUid` — the
  *  coordinate an ep caller needs to build a targeted (`despawn`/`attach`) request. The two
  *  auth-health fields appear only on a user-mode agent whose bearer refresh is unhealthy; `role`
@@ -161,8 +174,8 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
         variant: nonBlank(),
         description: nonBlank(),
         subscribe: { type: "array", items: { type: "string" } },
-        allowSubscribe: { type: "array", items: { type: "string" } },
-        allowPublish: { type: "array", items: { type: "string" } },
+        allowSubscribe: grantList(),
+        allowPublish: grantList(),
         capabilities: { type: "array", items: { type: "string" } },
         endpoints: PERSONA_ENDPOINTS_SCHEMA,
         save: { type: "boolean" },
@@ -172,8 +185,8 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     // run can read the run's admission and bound the helper by it (SPEC 14.8).
     runId: nonBlank(),
     subscribe: { type: "array", items: { type: "string" } },
-    allowSubscribe: { type: "array", items: { type: "string" } },
-    allowPublish: { type: "array", items: { type: "string" } },
+    allowSubscribe: grantList(),
+    allowPublish: grantList(),
     // Channels the new seat joins on top of its persona's read set (the peer door's `join`).
     join: { type: "array", items: { type: "string" } },
     // The caller's own read/post ACL. Used only when the persona file names no channel field, so
@@ -183,8 +196,8 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
       additionalProperties: false,
       required: ["allowSubscribe", "allowPublish"],
       properties: {
-        allowSubscribe: { type: "array", items: { type: "string" } },
-        allowPublish: { type: "array", items: { type: "string" } },
+        allowSubscribe: grantList(),
+        allowPublish: grantList(),
       },
     },
     shareTools: { type: "array", items: { type: "string" } },

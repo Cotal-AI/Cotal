@@ -1,5 +1,6 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
+import type { ChannelGrantField } from "./channel-grant.js";
 import type { SecretStore } from "./secret-store.js";
 import type { ServiceAuthorityInfo, ServiceAuthorityProof, ServiceAuthorityRequest, ServiceAuthorityResult, ServiceRegistrationWitness } from "./remote-service-authority.js";
 import type {
@@ -482,6 +483,9 @@ export interface AuthProvider extends Extension {
     scope: string[];
     allowSubscribe: string[];
     allowPublish: string[];
+    /** Channels or patterns removed from `allowSubscribe` / `allowPublish` (SPEC §9). */
+    excludeSubscribe?: string[];
+    excludePublish?: string[];
     eventPayloads?: false;
     role?: string;
     /** The spawning principal (`<owner>.<actor>` dot-form) — the grant's audit link. */
@@ -562,8 +566,9 @@ export interface AuthProvider extends Extension {
  *  profile's own direct-message inbox and never means every DM in the space. */
 export interface UserAuthGrant {
   scope: string[];
-  allowSubscribe: string[];
-  allowPublish: string[];
+  /** A plain list, or `{ allow, exclude }` when the row removes channels (SPEC §9). */
+  allowSubscribe: ChannelGrantField;
+  allowPublish: ChannelGrantField;
   dmHistory: "own";
 }
 
@@ -669,8 +674,9 @@ export interface RetainedAgentAuthority {
    *  pre-effect validation rather than at the broker after the child is already running (SPEC §13.1). */
   lifecycleUid: string;
   scope: string[];
-  allowSubscribe: string[];
-  allowPublish: string[];
+  /** A plain list, or `{ allow, exclude }` when the row removes channels (SPEC §9). */
+  allowSubscribe: ChannelGrantField;
+  allowPublish: ChannelGrantField;
   role?: string;
   parent?: string;
 }
@@ -799,7 +805,7 @@ export interface UserAuthStatus {
   /** The (owner, actor) interactive ledger row: its lists when granted, `"not-granted"` when the
    *  locally-readable ledger has no row. Absent when the ledger is not on this machine. */
   grant?:
-    | { scope: string[]; allowSubscribe: string[]; allowPublish: string[]; role?: string; label?: string }
+    | { scope: string[]; allowSubscribe: ChannelGrantField; allowPublish: ChannelGrantField; role?: string; label?: string }
     | "not-granted";
 }
 

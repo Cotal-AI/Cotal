@@ -11,6 +11,8 @@
  *                              #   omit ⇒ NO channels (reachable by DM only)
  *   allowSubscribe: [general]  # read ACL — channels it MAY read; omit ⇒ same as `subscribe`
  *   allowPublish: [general]    # post ACL — channels it may publish to; omit ⇒ DENY (default-deny)
+ *   # Either list may remove channels or patterns from what it allows (SPEC §9):
+ *   #   allowSubscribe: { allow: [">"], exclude: [secret, "team.*.private"] }
  *   model: opus                # optional CLI/model override
  *   variant: high              # optional connector-defined model variant
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
@@ -32,7 +34,8 @@ import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
-import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { assertValidChannel, assertValidRole, isConcreteChannel } from "./subjects.js";
+import { channelGrantField, channelInGrant, parseOptionalChannelGrant, resolveReadGrant, type ChannelGrantField } from "./channel-grant.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
@@ -61,6 +64,11 @@ export interface AgentDef {
    *  ACLs). Entries may be wildcard subtrees (`team.>`). Omitted ⇒ **deny** (default-deny):
    *  publishing is the dangerous capability, so it must be declared explicitly. */
   allowPublish?: string[];
+  /** Channels or patterns removed from {@link allowSubscribe} (SPEC §9). The file writes the pair as
+   *  `allowSubscribe: { allow, exclude }`; a list without exclusions stays a plain array. */
+  excludeSubscribe?: string[];
+  /** Channels or patterns removed from {@link allowPublish}, written the same way. */
+  excludePublish?: string[];
   /** Per-channel attention DEFAULT: channels delivered but never waking this agent — per-channel
    *  `dnd`. Concrete channels within the read ACL (`allowSubscribe`). One-way operator default; the runtime toggle is
    *  connector state, never written back here (the file is a shared template). */
@@ -216,8 +224,15 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
       );
 
   const subscribe = list("subscribe");
-  const allowSubscribe = list("allowSubscribe");
-  const allowPublish = list("allowPublish");
+  // A read or post list is a plain array, or `{ allow, exclude }` when it removes channels (SPEC §9).
+  const grant = (k: "allowSubscribe" | "allowPublish") => {
+    try { return parseOptionalChannelGrant(fm[k], k); }
+    catch (e) { throw new Error(`agent file ${path}: ${(e as Error).message}`); }
+  };
+  const readGrant = grant("allowSubscribe"), postGrant = grant("allowPublish");
+  const allowSubscribe = readGrant && [...readGrant.allow], allowPublish = postGrant && [...postGrant.allow];
+  const excludeSubscribe = readGrant?.exclude.length ? [...readGrant.exclude] : undefined;
+  const excludePublish = postGrant?.exclude.length ? [...postGrant.exclude] : undefined;
   const quiet = list("quiet");
   const muted = list("muted");
   // Reject channel names the wire layer would silently rewrite — a policy name must equal its wire
@@ -236,7 +251,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   // minted the matching channel read row into its credential — a channel nobody chose.
   let effAllow: string[];
   try {
-    effAllow = resolveReadAcl(subscribe ?? [], allowSubscribe);
+    effAllow = resolveReadGrant(subscribe ?? [], allowSubscribe, excludeSubscribe);
   } catch (e) {
     throw new Error(`agent file ${path}: ${(e as Error).message}`);
   }
@@ -256,8 +271,8 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
       }
       if (!isConcreteChannel(ch))
         throw new Error(`agent file ${path}: ${field} channel "${ch}" must be a concrete channel (no wildcard)`);
-      if (!channelInAllow(effAllow, ch))
-        throw new Error(`agent file ${path}: ${field} channel "${ch}" is not within your read ACL / allowSubscribe [${effAllow.join(", ")}]`);
+      if (!channelInGrant(effAllow, excludeSubscribe ?? [], ch))
+        throw new Error(`agent file ${path}: ${field} channel "${ch}" is not within your read ACL / allowSubscribe [${effAllow.join(", ")}]${excludeSubscribe ? ` minus [${excludeSubscribe.join(", ")}]` : ""}`);
     }
 
   // Opaque connector-specific launch options — a mapping core never interprets (each connector
@@ -292,6 +307,8 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     subscribe,
     allowSubscribe,
     allowPublish,
+    ...(excludeSubscribe ? { excludeSubscribe } : {}),
+    ...(excludePublish ? { excludePublish } : {}),
     quiet,
     muted,
     model,
@@ -351,8 +368,12 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   // an explicit `subscribe: []` into an omitted field, so a persona that declined every channel came
   // back from a redefine indistinguishable from one that never named the field at all.
   if (def.subscribe) fm.subscribe = def.subscribe;
-  if (def.allowSubscribe) fm.allowSubscribe = def.allowSubscribe;
-  if (def.allowPublish) fm.allowPublish = def.allowPublish;
+  // A list with exclusions is written as `{ allow, exclude }`, which a reader that predates
+  // exclusions refuses rather than reading the allow list alone (SPEC §9).
+  for (const [field, allow, exclude] of [["allowSubscribe", def.allowSubscribe, def.excludeSubscribe], ["allowPublish", def.allowPublish, def.excludePublish]] as const) {
+    if (exclude?.length && !allow) throw new Error(`saveAgentFile: an exclusion on ${field} needs the list it removes channels from`);
+    if (allow) fm[field] = channelGrantField(allow, exclude);
+  }
   if (def.quiet?.length) fm.quiet = def.quiet;
   if (def.muted?.length) fm.muted = def.muted;
   if (def.agent) fm.agent = def.agent;
@@ -394,8 +415,9 @@ export interface InlinePersona {
   variant?: string;
   description?: string;
   subscribe?: string[];
-  allowSubscribe?: string[];
-  allowPublish?: string[];
+  /** A plain list, or `{ allow, exclude }` when it removes channels (SPEC §9). */
+  allowSubscribe?: ChannelGrantField;
+  allowPublish?: ChannelGrantField;
   capabilities?: string[];
   endpoints?: PersonaEndpoint[];
   save?: boolean;
@@ -412,8 +434,9 @@ export type WirePersonaArgs = {
   role?: string;
   agent?: string;
   subscribe?: string[];
-  allowSubscribe?: string[];
-  allowPublish?: string[];
+  /** A plain list, or `{ allow, exclude }` when it removes channels (SPEC §9). */
+  allowSubscribe?: ChannelGrantField;
+  allowPublish?: ChannelGrantField;
   capabilities?: string[];
   endpoints?: PersonaEndpoint[];
 };
@@ -460,14 +483,22 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
 export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): AgentDef {
   const parsed = parseLeadingPromptFrontmatter(args.prompt, args.name);
   const fromPrompt = parsed.def;
+  const readGrant = parseOptionalChannelGrant(args.allowSubscribe, "allowSubscribe");
+  const postGrant = parseOptionalChannelGrant(args.allowPublish, "allowPublish");
+  // A named list replaces the stored list together with its exclusions.
+  const setGrant = (def: AgentDef, read: boolean, g: { allow: readonly string[]; exclude: readonly string[] }) => {
+    const exclude = g.exclude.length ? [...g.exclude] : undefined;
+    if (read) { def.allowSubscribe = [...g.allow]; def.excludeSubscribe = exclude; }
+    else { def.allowPublish = [...g.allow]; def.excludePublish = exclude; }
+  };
   if (existing) {
     const def: AgentDef = { ...existing };
     if (args.model !== undefined) def.model = args.model;
     if (args.role !== undefined) def.role = args.role;
     if (args.agent !== undefined) def.agent = args.agent;
     if (args.subscribe !== undefined) def.subscribe = args.subscribe;
-    if (args.allowSubscribe !== undefined) def.allowSubscribe = args.allowSubscribe;
-    if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
+    if (readGrant) setGrant(def, true, readGrant);
+    if (postGrant) setGrant(def, false, postGrant);
     if (args.capabilities !== undefined) def.capabilities = args.capabilities;
     if (args.endpoints !== undefined) def.endpoints = args.endpoints;
     def.persona = parsed.body;
@@ -484,8 +515,10 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     role: args.role ?? fromPrompt?.role,
     agent: args.agent ?? fromPrompt?.agent,
     subscribe,
-    allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
-    allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
+    allowSubscribe: fromPrompt?.allowSubscribe,
+    excludeSubscribe: fromPrompt?.excludeSubscribe,
+    allowPublish: fromPrompt?.allowPublish,
+    excludePublish: fromPrompt?.excludePublish,
     capabilities: args.capabilities,
     endpoints: args.endpoints,
     description: fromPrompt?.description,
@@ -496,6 +529,8 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     launchOptions: fromPrompt?.launchOptions,
     meta: authored ? fromPrompt?.meta : { scope_source: "wire-default" },
   };
+  if (readGrant) setGrant(def, true, readGrant);
+  if (postGrant) setGrant(def, false, postGrant);
   dropWireDefaultIfScoped(def);
   return def;
 }

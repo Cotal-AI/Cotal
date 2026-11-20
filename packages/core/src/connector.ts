@@ -59,6 +59,10 @@ export interface LaunchOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Channels or patterns removed from the two lists above (SPEC §9), forwarded as
+   *  `COTAL_EXCLUDE_SUBSCRIBE` / `COTAL_EXCLUDE_PUBLISH` beside them. */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   /** Control-plane capabilities the manager granted this agent (e.g. `["spawn"]`) — the SAME set
    *  the creds were provisioned from. Forwarded as `COTAL_CAPABILITIES` so the connector exposes the
    *  matching control-plane tools (cotal_spawn / cotal_persona). Without it a manifest-spawned agent —

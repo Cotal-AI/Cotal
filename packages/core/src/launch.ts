@@ -7,6 +7,8 @@
  * untrusted input at load.
  */
 
+import type { ChannelGrantField } from "./channel-grant.js";
+
 /** One agent's effective, resolved launch form. (`Mesh`-prefixed to avoid the connector's
  *  process-launch {@link LaunchSpec}/recipe — this is the deployment-manifest launch.) */
 export interface MeshLaunchAgent {
@@ -38,10 +40,11 @@ export interface MeshLaunchAgent {
   capabilities?: string[];
   /** Effective merged read set — the sole creds authority (not re-read from any file). */
   subscribe: string[];
-  /** Effective merged read ACL. */
-  allowSubscribe: string[];
-  /** Effective merged post ACL (default-deny). */
-  allowPublish: string[];
+  /** Effective merged read ACL: a plain list, or `{ allow, exclude }` when it removes channels
+   *  (SPEC §9), which a manager that predates exclusions refuses. */
+  allowSubscribe: ChannelGrantField;
+  /** Effective merged post ACL (default-deny), in the same shape. */
+  allowPublish: ChannelGrantField;
   /** Original persona path — for user-facing output only; never read for authority. */
   personaPath?: string;
   /** Content hash of the resolved launch fields (drift detection: a changed hash ⇒ restart-required). */

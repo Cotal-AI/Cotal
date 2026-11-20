@@ -3,6 +3,7 @@ import { rawDigest, canonicalJson, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, principalKey } from "./subjects.js";
+import { channelGrantField, parseChannelGrant, type ChannelGrantField } from "./channel-grant.js";
 
 /** The manager-service authority operations. The request type and the host parser both read this
  *  list, so an operation added here is admitted by the parser too. */
@@ -360,8 +361,9 @@ export interface RemoteManagedAgentEnrollmentRequest {
     label?: string;
     capabilities?: string[];
     subscribe?: string[];
-    allowSubscribe?: string[];
-    allowPublish?: string[];
+    /** A plain list, or `{ allow, exclude }` when it removes channels (SPEC §9). */
+    allowSubscribe?: ChannelGrantField;
+    allowPublish?: ChannelGrantField;
     eventPayloads?: false;
   };
   /** The spawn request this enrollment answers, when a caller asked for it: the request subject the
@@ -391,8 +393,9 @@ export interface RemoteManagedAgentEnrollmentResult {
     /** Space-wide callout sentinel credentials, NOT per-agent material. */
     sentinelCreds: string;
     subscribe: string[];
-    allowSubscribe: string[];
-    allowPublish: string[];
+    /** A plain list, or `{ allow, exclude }` when the row removes channels (SPEC §9). */
+    allowSubscribe: ChannelGrantField;
+    allowPublish: ChannelGrantField;
     /** Pinned public auth-service base URL for agent bearer exchange. */
     agentBearerExchangeUrl: string;
   };
@@ -640,6 +643,18 @@ function parseManagedAgentEnvelope(o: Record<string, unknown>, what: string, kin
 }
 
 /** One optional channel/pattern list on an enrollment target: bounded, string-only, in-grammar. */
+/** A read or post list on an enrollment target: either shape (SPEC §9), the same entry bound over
+ *  both halves, written back in its canonical shape. */
+function parseEnrollmentGrant(value: unknown, what: string, field: string): ChannelGrantField | undefined {
+  if (value === undefined) return undefined;
+  let g;
+  try { g = parseChannelGrant(value, `target.${field}`); }
+  catch (e) { enrollmentError(what, (e as Error).message); }
+  if (g.allow.length + g.exclude.length > MAX_ENROLLMENT_LIST)
+    enrollmentError(what, `target.${field} carries ${g.allow.length + g.exclude.length} entries, more than the ${MAX_ENROLLMENT_LIST}-entry bound`);
+  return channelGrantField(g.allow, g.exclude);
+}
+
 function parseEnrollmentList(value: unknown, what: string, field: string): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) enrollmentError(what, `target.${field} must be an array of channel patterns when present`);
@@ -725,8 +740,8 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
   if (t.eventPayloads !== undefined && t.eventPayloads !== false)
     enrollmentError(what, "target.eventPayloads must be false when present");
   const subscribe = parseEnrollmentList(t.subscribe, what, "subscribe");
-  const allowSubscribe = parseEnrollmentList(t.allowSubscribe, what, "allowSubscribe");
-  const allowPublish = parseEnrollmentList(t.allowPublish, what, "allowPublish");
+  const allowSubscribe = parseEnrollmentGrant(t.allowSubscribe, what, "allowSubscribe");
+  const allowPublish = parseEnrollmentGrant(t.allowPublish, what, "allowPublish");
   return {
     actor: t.actor,
     ...(t.role !== undefined ? { role: t.role as string } : {}),
@@ -1350,10 +1365,11 @@ export function parseRemoteDelegatedUserIntentExecutionResult(
     const value = m[key];
     if (typeof value !== "string" || value.length === 0) throw new Error(`${what} material requires a non-empty ${key}`);
   }
-  for (const key of ["subscribe", "allowSubscribe", "allowPublish"]) {
-    const list = m[key];
-    if (!Array.isArray(list) || !list.every((value) => typeof value === "string" && value.length > 0))
-      throw new Error(`${what} material carries an invalid ${key} list`);
+  if (!Array.isArray(m.subscribe) || !m.subscribe.every((value) => typeof value === "string" && value.length > 0))
+    throw new Error(`${what} material carries an invalid subscribe list`);
+  for (const key of ["allowSubscribe", "allowPublish"]) {
+    try { parseChannelGrant(m[key], key); }
+    catch (e) { throw new Error(`${what} material carries an invalid ${key} list: ${(e as Error).message}`); }
   }
   return r as unknown as RemoteDelegatedUserIntentExecutionResult;
 }

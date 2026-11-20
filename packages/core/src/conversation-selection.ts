@@ -29,6 +29,10 @@ export interface ConversationGrant {
   role: string | null;
   allowSubscribe: string[];
   allowPublish: string[];
+  /** Channels or patterns removed from the lists above (SPEC §9). A selection names none; the
+   *  unselected grant carries its persona's. */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   subscribe: [];
   /** Present, and empty, exactly when the grant derives from a selection: the one an identity was
    *  created with, or the one a person approved, empty included. */

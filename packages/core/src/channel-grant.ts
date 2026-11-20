@@ -9,7 +9,7 @@
  * matches. Both lists may hold names and patterns. Every decision here is exact on that set, using
  * the pattern algebra below; nothing is approximated.
  */
-import { assertValidChannel, isChannelFamily, isConcreteChannel, patternInAllow, subjectMatches } from "./subjects.js";
+import { assertValidChannel, isChannelFamily, isConcreteChannel, patternInAllow, resolveReadAcl, subjectMatches } from "./subjects.js";
 
 /** A grant list as files and the wire carry it. */
 export type ChannelGrantField = string[] | { allow: string[]; exclude: string[] };
@@ -114,7 +114,11 @@ export function parseChannelGrant(value: unknown, field: string): ChannelGrant {
     if (!Array.isArray(v) || !v.every((s) => typeof s === "string")) throw new Error(`${field}${what} must be a list of channel names`);
     return [...v];
   };
-  if (Array.isArray(value)) return { allow: strings(value, ""), exclude: [] };
+  if (Array.isArray(value)) {
+    const allow = strings(value, "");
+    for (const a of allow) assertValidChannel(a);
+    return { allow, exclude: [] };
+  }
   if (value === null || typeof value !== "object") throw new Error(`${field} must be a list of channels or { allow, exclude }`);
   const extra = Object.keys(value).filter((k) => k !== "allow" && k !== "exclude");
   if (extra.length) throw new Error(`${field} carries unknown key(s) ${extra.join(", ")}; expected { allow, exclude }`);
@@ -130,6 +134,26 @@ export function parseChannelGrant(value: unknown, field: string): ChannelGrant {
  *  byte-identical to what older readers accept. */
 export function channelGrantField(allow: readonly string[], exclude: readonly string[] = []): ChannelGrantField {
   return exclude.length === 0 ? [...allow] : { allow: [...allow], exclude: [...exclude] };
+}
+
+/** Read a grant field that may be absent: `undefined` stays absent, either shape parses. */
+export function parseOptionalChannelGrant(value: unknown, field: string): ChannelGrant | undefined {
+  return value === undefined ? undefined : parseChannelGrant(value, field);
+}
+
+/** {@link resolveReadAcl} with the read exclusions applied: the exclusions must be valid for the
+ *  resolved list, and each subscription must survive them (a concrete one must not be excluded, a
+ *  pattern must not be excluded in full). Exclusions need an explicit `allowSubscribe`, the list
+ *  they remove channels from. Returns the resolved allow list. */
+export function resolveReadGrant(subscribe: string[], allowSubscribe: string[] | undefined, excludeSubscribe: readonly string[] = []): string[] {
+  if (excludeSubscribe.length && allowSubscribe === undefined)
+    throw new Error("a read exclusion needs an explicit allowSubscribe, the list it removes channels from");
+  const allow = resolveReadAcl(subscribe, allowSubscribe);
+  assertExclusions(allow, excludeSubscribe, "allowSubscribe");
+  for (const ch of subscribe)
+    if (!(isConcreteChannel(ch) ? channelInGrant(allow, excludeSubscribe, ch) : patternInGrant(allow, excludeSubscribe, ch)))
+      throw new Error(`subscribe "${ch}" is excluded from allowSubscribe by [${excludeSubscribe.join(", ")}]`);
+  return allow;
 }
 
 /** Is concrete `channel` within the grant? */

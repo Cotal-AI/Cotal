@@ -1,5 +1,5 @@
-import { assertValidChannel, resolveReadAcl, principalKey, assertLifecycleToken } from "./subjects.js";
-import { assertExclusions } from "./channel-grant.js";
+import { assertValidChannel, principalKey, assertLifecycleToken } from "./subjects.js";
+import { resolveReadGrant } from "./channel-grant.js";
 import { type Identity } from "./identity.js";
 import type { MintOpts, SpaceAuth } from "./provision-jwt.js";
 import { mintCreds, principalOf } from "./provision-jwt.js";
@@ -96,11 +96,8 @@ export async function provisionAgentDurables(
   // Re-assert the load-time invariant at the trust boundary (defense in depth): the pre-created
   // live filter (subscribe) must sit within the read ACL (allowSubscribe), or the provisioner
   // would hand the agent live delivery it isn't permitted to read.
-  const allowSubscribe = resolveReadAcl(subscribe, opts.allowSubscribe);
   const excludeSubscribe = opts.excludeSubscribe ?? [];
-  assertExclusions(allowSubscribe, excludeSubscribe, "allowSubscribe");
-  for (const ch of subscribe)
-    if (excludeSubscribe.includes(ch)) throw new Error(`subscribe "${ch}" is excluded from allowSubscribe`);
+  const allowSubscribe = resolveReadGrant(subscribe, opts.allowSubscribe, excludeSubscribe);
   // History under an excluded wildcard is served only by the delivery daemon from this lifecycle's
   // ACL row (SPEC §8), so a launcher that writes no row cannot carry a read exclusion.
   if (excludeSubscribe.length > 0 && opts.durableMembership === false)

@@ -10,6 +10,7 @@ import {
   type RemoteManagerEnvelope,
 } from "./remote-manager-authority.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, parsePrincipalKey } from "./subjects.js";
+import { channelGrantField, parseChannelGrant, type ChannelGrantField } from "./channel-grant.js";
 
 export interface DelegatedRecoveryTarget {
   owner: string;
@@ -290,9 +291,16 @@ export function parseRemoteDelegatedRecoveryLaunchRequest(raw: unknown): RemoteD
   return { ...legacy, execute: { ...legacy.execute, recoveryPlan: { runtimeKind: text(plan.runtimeKind), launch: launchPlan(plan.launch), localStoreBindingDigest: digest(plan.localStoreBindingDigest), localStoreIdentityDigest: digest(plan.localStoreIdentityDigest) } } };
 }
 
+/** A retained grant list, either shape (SPEC §9), written back in its canonical shape. */
+function grantField(raw: unknown, field: string): ChannelGrantField {
+  let g;
+  try { g = parseChannelGrant(raw, field); } catch (e) { refuse((e as Error).message); }
+  return channelGrantField(g.allow, g.exclude);
+}
+
 function authority(raw: unknown): RetainedAgentAuthority {
   const o = object(raw, ["owner", "actor", "lifecycleUid", "scope", "allowSubscribe", "allowPublish", "role", "parent"], ["owner", "actor", "lifecycleUid", "scope", "allowSubscribe", "allowPublish"]);
-  return { owner: assertDerivedOwnerToken(text(o.owner)), actor: assertValidOwnerToken(text(o.actor)), lifecycleUid: token(o.lifecycleUid), scope: strings(o.scope), allowSubscribe: strings(o.allowSubscribe), allowPublish: strings(o.allowPublish), ...(Object.hasOwn(o, "role") ? { role: text(o.role) } : {}), ...(Object.hasOwn(o, "parent") ? { parent: text(o.parent) } : {}) };
+  return { owner: assertDerivedOwnerToken(text(o.owner)), actor: assertValidOwnerToken(text(o.actor)), lifecycleUid: token(o.lifecycleUid), scope: strings(o.scope), allowSubscribe: grantField(o.allowSubscribe, "allowSubscribe"), allowPublish: grantField(o.allowPublish, "allowPublish"), ...(Object.hasOwn(o, "role") ? { role: text(o.role) } : {}), ...(Object.hasOwn(o, "parent") ? { parent: text(o.parent) } : {}) };
 }
 function record(raw: unknown): DelegatedRecoveryRecord {
   const o = object(raw, ["intentId", "intentRevision", "recoveryRevision", "target", "phase", "descriptor", "descriptorDigest", "authority", "localProof", "startedAt", "executionIdentityDigest", "reasonCode"]);
