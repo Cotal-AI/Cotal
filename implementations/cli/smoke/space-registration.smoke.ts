@@ -263,6 +263,31 @@ setCurrent("keep");
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
+  // Reading an unserved name on a real open broker must not make it registerable (#8392).
+  {
+    const { dialerFor } = await import("@cotal-ai/core");
+    const { jetstreamManager } = await import("@nats-io/jetstream");
+    const nc = await dialerFor(LIVE)({ servers: LIVE });
+    try {
+      const jsm = await jetstreamManager(nc);
+      const streams = async () => {
+        const names: string[] = [];
+        for await (const name of jsm.streams.names()) names.push(name);
+        return names.sort();
+      };
+      const before = await streams();
+      const lookedUp = await json(["who", "--space", "open", "--server", LIVE]);
+      check("who reports a complete empty roster for an unserved open space",
+        lookedUp.status === 0 && lookedUp.env?.completeness === "complete" && lookedUp.env?.target?.space === "open" && lookedUp.env?.result?.items?.length === 0, shown(lookedUp));
+      const after = await streams();
+      check("who creates no streams or buckets for an unserved open space", before.join() === after.join(), { before, after });
+      const retried = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
+      check("verified registration still refuses after who, and records nothing",
+        refused(retried, 2, "TARGET_NOT_FOUND") && findMesh("open") === undefined, shown(retried));
+    } finally {
+      await nc.close();
+    }
+  }
   // The guided form offers the same served names, so the operator picks one instead of typing it blind.
   {
     const { addWizard } = await import("../src/commands/meshes-wizard.js");

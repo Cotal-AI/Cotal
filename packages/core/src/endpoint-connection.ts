@@ -15,6 +15,7 @@ import type { EndpointPresence } from "./endpoint-presence.js";
 import type { MembershipFeedWatch } from "./endpoint-subscriptions.js";
 import { credsRenewalDelayMs, credsClaims } from "./identity.js";
 import { type IssuedSubjectPermission, importNativeSubjectPermissions, readAcceptedRow } from "./issued-authority.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
 import type { LivenessPlane, ResponderState } from "./liveness.js";
 import { type NativeConnectionBinding, nativeConnectionBinding } from "./native-connection.js";
 import { nextHeartbeat } from "./presence-heartbeat.js";
@@ -24,6 +25,18 @@ import type { AgentCard, CotalMessage, ChannelConfig, ChannelDefaults } from "./
 import { type JetStreamClient, type JetStreamManager, type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+
+/** A Direct Get cannot distinguish a missing bucket from an unanswered read. Ask for the
+ *  bucket's status and accept only a broker-confirmed absence. */
+async function bucketExists(kv: KV): Promise<boolean> {
+  try {
+    await kv.status();
+    return true;
+  } catch (error) {
+    if (isStreamNotFound(error)) return false;
+    throw error;
+  }
+}
 
 /** What the connection component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
@@ -448,13 +461,14 @@ export class EndpointConnection {
     await this.beforeBind?.();
     if (this.stopped) return;
 
+    // A one-shot observer must not initialize an open space just to read it.
+    const createBuckets = !this.authed && !this.readOnce;
     if (this.doWatch || this.doRegister) {
       const kvm = new Kvm(this.nc);
-      // The presence bucket is a JetStream stream. Open mode lazily creates it; auth mode
-      // OPENs it (it's pre-created at `cotal up`; KV stream-create is denied to agents).
-      this.kv = this.authed
-        ? await kvm.open(presenceBucket(this.space))
-        : await kvm.create(presenceBucket(this.space), { ttl: this.ttlMs, storage: PRESENCE_STORAGE });
+      this.kv = createBuckets
+        ? await kvm.create(presenceBucket(this.space), { ttl: this.ttlMs, storage: PRESENCE_STORAGE })
+        : await kvm.open(presenceBucket(this.space));
+      if (!this.authed && this.readOnce && !(await bucketExists(this.kv))) this.kv = undefined;
     }
 
     if (this.doWatch && this.readOnce) await this.readPresenceOnce();
@@ -470,10 +484,11 @@ export class EndpointConnection {
     // pull/display) or consume (the join-time replay decision reads it fresh). A presence-only
     // supervisor (watchChannels:false, consume:false) skips it entirely — it needs no channel cache,
     // so its scoped cred holds no channel-registry read (residual 2). Auth mode OPENs the bucket
-    // pre-created at `cotal up`; open mode lazily creates it.
+    // pre-created at `cotal up`; an open live endpoint can lazily create it.
     const watchChannels = this.doWatch && this.doWatchChannels;
     if (watchChannels || this.doConsume) {
-      this.channelKv = await openChannelRegistry(this.nc, this.space, { create: !this.authed });
+      this.channelKv = await openChannelRegistry(this.nc, this.space, { create: createBuckets });
+      if (!this.authed && this.readOnce && !(await bucketExists(this.channelKv))) this.channelKv = undefined;
       if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
       // A seat reads the registry on demand, as it reads the roster; this first read fills the cache
       // its boot briefing renders from.
