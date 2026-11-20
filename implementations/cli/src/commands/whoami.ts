@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
 import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
+import { displayRemedy } from "../lib/self-exec.js";
 
 const credsFlag = { name: "creds", type: "string", value: "<file>", description: "report what this credential file may do, from its own claims; no broker is contacted" } as const satisfies FlagSpec;
 
@@ -318,7 +319,7 @@ function whoamiView(r: WhoamiResult, preparedRoot?: string): Report {
   const hints: Cell[] = [];
   if (id.kind === "user" && !id.subject) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
   else if (id.grant === "not-granted") hints.push({ text: "the space's operator grants this identity with `cotal actor grant cli`", tone: "hint" });
-  if (preparedRoot !== undefined) hints.push({ text: `this space is prepared and not started; start it with \`cotal up\` in ${preparedRoot}`, tone: "hint" });
+  if (preparedRoot !== undefined) hints.push({ text: `${displayRemedy("this space is prepared and not started; start it with `cotal up`")} in ${preparedRoot}`, tone: "hint" });
   else if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
   const identity: Section = { title: "Identity and access", blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] };
   return { sections: [identity] };

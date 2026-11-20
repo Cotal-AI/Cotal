@@ -41,6 +41,7 @@ import {
 import { completingFlagValue } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { registryFailure } from "../lib/registry-errors.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { SPACE_MODES } from "./meshes-add.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
@@ -366,20 +367,21 @@ function spacesView(result: SpacesResult): Report {
 }
 
 function preparedView(p: PreparedDetail, moved: string | undefined, canAdoptAfterForget: boolean): Report {
+  const cmd = displayCmd();
   const hints: Cell[] = [];
   if (moved !== undefined) {
     hints.push(
       { text: `this folder holds the stack journal of "${p.space}" and was moved from ${p.root}`, tone: "waiting" },
-      { text: movedRootRemedy(p.root), tone: "hint" });
-    if (canAdoptAfterForget) hints.push({ text: `to keep this location, run \`cotal space forget ${p.space}\`, then ${codeSpan(`cotal space create ${p.space} --adopt --root ${shellWord(moved)}`)}`, tone: "hint" });
+      { text: displayRemedy(movedRootRemedy(p.root), cmd), tone: "hint" });
+    if (canAdoptAfterForget) hints.push({ text: `to keep this location, run ${codeSpan(`${cmd} space forget ${p.space}`)}, then ${codeSpan(`${cmd} space create ${p.space} --adopt --root ${shellWord(moved)}`)}`, tone: "hint" });
   } else if (p.rootMissing) {
-    hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with \`cotal space forget ${p.space}\`, then prepare it again with \`cotal space create ${p.space} --root <dir>\``, tone: "hint" });
+    hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with ${codeSpan(`${cmd} space forget ${p.space}`)}, then prepare it again with ${codeSpan(`${cmd} space create ${p.space} --root <dir>`)}`, tone: "hint" });
   } else if (p.state === "unsettled") {
-    hints.push({ text: `run \`cotal status\` in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
+    hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {
-    hints.push({ text: `start it${p.state === "stopped" ? " again" : ""} with \`cotal up\` in ${p.root}`, tone: "hint" });
+    hints.push({ text: `start it${p.state === "stopped" ? " again" : ""} with ${codeSpan(`${cmd} up`)} in ${p.root}`, tone: "hint" });
   }
-  if (!p.current && !p.rootMissing) hints.push({ text: `select it with \`cotal use ${p.space}\``, tone: "hint" });
+  if (!p.current && !p.rootMissing) hints.push({ text: `select it with ${codeSpan(`${cmd} use ${p.space}`)}`, tone: "hint" });
   return {
     sections: [{
       blocks: [

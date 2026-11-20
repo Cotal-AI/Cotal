@@ -39,13 +39,14 @@ import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR" && key !== "NO_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
+const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 const COTAL = join(repoRoot, "bin", "cotal.ts");
 const TSX = join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
 
@@ -336,9 +337,9 @@ const QUESTION = "Which one?";
   const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && /\nStart here\n {2}(?:pnpm )?cotal up --root /.test(r.stdout) && r.stdout.includes(`--root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
   check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
     startsEta(entryPrepared) && entryPrepared.stdout.includes(`this folder holds the stopped space "zeta"`) && startsEta(entryPreparedAway), { here: shown(entryPrepared), away: shown(entryPreparedAway) });
-  const wholeNote = (r: ReturnType<typeof run>) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`cotal up\` in ${eta}`);
+  const wholeNote = (r: ReturnType<typeof run>, cmd: string) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`${cmd} up\` in ${eta}`);
   check("ps and send there refuse for the prepared selection, naming its up under Next and zeta's whole note under the heading, as ps --json's warning does",
-    wholeNote(refusedPs) && wholeNote(refusedSend) && envelope(refusedPsJson)?.error?.code === "TARGET_UNAVAILABLE" &&
+    wholeNote(refusedPs, launcher) && wholeNote(refusedSend, "cotal") && envelope(refusedPsJson)?.error?.code === "TARGET_UNAVAILABLE" &&
       envelope(refusedPsJson)?.warnings?.some((w: { code: string; message: string }) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === STOPPED) === true,
     { ps: shown(refusedPs), send: shown(refusedSend), json: shown(refusedPsJson) });
   // A stopped stack may retain a tiny file-store cap from an earlier release. It no longer changes

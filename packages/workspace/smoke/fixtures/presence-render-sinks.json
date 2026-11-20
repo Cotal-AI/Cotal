@@ -5514,7 +5514,7 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedR",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: displa",
       "class": "non-render/control",
       "rationale": "Prepared space view: \"waiting\" is the color tone for a stack journal whose folder was moved, not any peer's presence."
     },

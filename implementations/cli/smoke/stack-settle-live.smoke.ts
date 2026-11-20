@@ -240,6 +240,7 @@ const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run
   return { status: run.status, signal: run.signal, ms: Date.now() - began, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const cli = (cwd: string, ...args: string[]): Run => cliAs(env, cwd, ...args);
+const launcherAt = (cwd: string): string | undefined => /^\s{2}(.+) <command> \[options\]$/m.exec(cli(cwd).stdout)?.[1];
 /** `cli` without blocking this process, so a watcher in it can act while the command runs. */
 const cliAsync = (cwd: string, ...args: string[]): Promise<Run> => {
   assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
@@ -617,9 +618,11 @@ try {
     const folderNote = (run: Run) => run.env?.warnings?.find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING" && warning.target?.space === space);
     const stoppedStatus = cli(root, "status", "--space", space, "--json");
     const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string } | undefined;
+    const hints = (stoppedStatus.env?.result?.hints ?? []) as string[];
+    const launcher = launcherAt(root);
     check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
       stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`))
-        && ((stoppedStatus.env?.result?.hints ?? []) as string[]).some((hint) => hint.startsWith("start it again with `cotal up` in ")), shown(stoppedStatus));
+        && launcher !== undefined && hints.includes(`start it again with \`${launcher} up\` in ${root}`), { selected: stoppedSelected, hints, launcher });
     const notedDown = cli(root, "status", "--json");
     check("with another space selected, the folder note names a bare up after a completed down",
       notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up\``, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });
@@ -1931,7 +1934,7 @@ try {
     const hints = (json.env?.result?.hints ?? []) as string[];
     check(`${space}: status --json names that prepared space and its root, and no hint names up`, selected?.resolved === false && selected.code === "not-started" && selected.space === space && selected.root === root && !hints.some((hint) => hint.includes(" up")), { selected, hints });
     const ps = cli(root, "ps", "--json");
-    check(`${space}: ps refuses TARGET_UNAVAILABLE, says the last up has no outcome and names status in the root`, ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && ps.env.error.message === cut && ps.env.error.remedy === `run \`cotal status\` in ${root}, which names the step that finishes or settles it`, shown(ps));
+    check(`${space}: ps refuses TARGET_UNAVAILABLE, says the last up has no outcome and names status in the root`, ps.status === 2 && ps.env?.error?.code === "TARGET_UNAVAILABLE" && ps.env.error.message === cut && ps.env.error.remedy === `run \`${launcherAt(root)} status\` in ${root}, which names the step that finishes or settles it`, shown(ps));
     const settled = cli(root, "down", "--yes", "--json");
     check(`${space}: down settles that up and stops its broker`, settled.status === 0 && gone(space, "stack-broker"), shown(settled));
     const restarted = cli(root, "up", "--root", root, "--json");

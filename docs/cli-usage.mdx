@@ -56,7 +56,8 @@ also preserve its private Node/npm PATH and npm install prefix, so setup can see
 They do not require a source checkout or pnpm. The entry card and status next steps use `cotal`
 when a permanent launcher is on PATH. Otherwise, `npx` runs suggest `npx cotal-ai`, `pnpm dlx`
 runs suggest `pnpm dlx cotal-ai` even with a custom cache directory or when pnpm 11 runs the package
-from its global virtual store, and checkouts suggest `pnpm cotal`.
+from its global virtual store, and checkouts suggest `pnpm cotal`. The restart hint for a stopped
+local space uses the same launcher as the other status next steps.
 
 `npx cotal-ai <command>` and `pnpm dlx cotal-ai <command>` run it without a global install. Bare `cotal` starts nothing: it names
 the explicit `cotal use` selection first, else the space this folder has registered, else an

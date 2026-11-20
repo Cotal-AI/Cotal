@@ -111,8 +111,8 @@ try {
     chmodSync(entry, 0o755);
     symlinkSync(entry, join(shims, "cotal"));
     const runner = stored ? { npm_config_user_agent: "pnpm/11.28.13 npm/? node/v24.22.0 linux x64" } : { npm_config_cache_dir: customCache };
-    const runFromCache = (args: string[], path = `${shims}:${tools}`) => spawnSync(process.execPath, [entry, ...args], {
-      cwd: empty, env: { ...env, PATH: path, ...runner }, encoding: "utf8", timeout: 60_000,
+    const runFromCache = (args: string[], path = `${shims}:${tools}`, cwd = empty) => spawnSync(process.execPath, [entry, ...args], {
+      cwd, env: { ...env, PATH: path, ...runner }, encoding: "utf8", timeout: 60_000,
     });
     const card = runFromCache([]);
     suite.check(`${name} card keeps its runner for every command row`, card.status === 0 &&
@@ -124,6 +124,44 @@ try {
       status.stdout.includes(`\`${prefix} up\` in a project`), status);
     const onPath = runFromCache([], `${shims}:${env.COTAL_BIN_DIR}:${tools}`);
     suite.check(`${name} card prefers a durable cotal when present`, onPath.status === 0 && onPath.stdout.includes("  cotal status "), onPath);
+    if (name === "pnpm 11 dlx") {
+      const runnerPath = `${shims}:${tools}`;
+      const runnerRoot = join(sandbox, "runner-project");
+      mkdirSync(runnerRoot);
+      const runnerAnchor = recordSmokeSandbox({ root: runnerRoot, cotalHome: env.COTAL_HOME, xdgConfigHome: xdg });
+      const runStack = (args: string[], path = runnerPath) => runFromCache(args, path, runnerRoot);
+      const down = ["down", "--yes"];
+      try {
+        const started = runStack(["up", "--open", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`]);
+        if (started.status !== 0) throw new Error(`runner stack failed: ${started.stdout}${started.stderr}`);
+      } finally {
+        assertSmokeSandboxDown(runnerAnchor, down, { cwd: runnerRoot, env: { ...env, PATH: runnerPath, ...runner } });
+        const stopped = runStack(down);
+        if (stopped.status !== 0) throw new Error(`runner stack did not stop: ${stopped.stdout}${stopped.stderr}`);
+      }
+      const stopped = runStack(["status", "--plain"]);
+      const ps = runStack(["ps", "--plain"]);
+      const whoami = runStack(["whoami", "--space", "missing", "--plain"]);
+      const permanent = runStack(["status", "--plain"], `${runnerPath}:${env.COTAL_BIN_DIR}`);
+      // Check the prepared-space view, then leave the remaining runner checks a clean selection.
+      const forgotten = runStack(["space", "forget", "runner-project"]);
+      if (forgotten.status !== 0) throw new Error(`runner stack registration was not removed: ${forgotten.stdout}${forgotten.stderr}`);
+      const preparedRoot = join(sandbox, "runner-prepared");
+      mkdirSync(preparedRoot);
+      const prepared = runFromCache(["space", "create", "runner-prepared", "--root", preparedRoot]);
+      if (prepared.status !== 0) throw new Error(`runner space was not prepared: ${prepared.stdout}${prepared.stderr}`);
+      const space = runFromCache(["space", "show", "runner-prepared", "--plain"]);
+      const preparedIdentity = runFromCache(["whoami", "--plain"], runnerPath, preparedRoot);
+      const unprepared = runFromCache(["space", "forget", "runner-prepared"]);
+      if (unprepared.status !== 0) throw new Error(`runner space preparation was not removed: ${unprepared.stdout}${unprepared.stderr}`);
+      suite.check("pnpm 11 dlx status uses the same runner in the stopped-stack footer and Next rows", stopped.status === 0 &&
+        stopped.stdout.includes(`  ${prefix} space `) && stopped.stdout.includes(`run \`${prefix} up\` there to restart`) &&
+        ps.status === 2 && ps.stderr.includes(`run \`${prefix} up\` there to restart`) &&
+        whoami.status === 2 && whoami.stderr.includes(`see \`${prefix} space\``) &&
+        space.status === 0 && space.stdout.includes(`with \`${prefix} up\` in ${preparedRoot}`) &&
+        preparedIdentity.status === 0 && preparedIdentity.stdout.includes(`with \`${prefix} up\` in ${preparedRoot}`) &&
+        permanent.status === 0 && permanent.stdout.includes("run `cotal up` there to restart"), { stopped, ps, whoami, space, preparedIdentity, permanent });
+    }
   }
   const prepared = run(["space", "create", space, "--root", root, "--json"]);
   if (prepared.code !== 0) throw new Error(`preparation failed: ${prepared.output}`);
