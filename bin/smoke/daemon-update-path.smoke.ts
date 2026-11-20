@@ -300,9 +300,10 @@ try {
   if (process.argv.includes("--childless") && !output.includes("no live child")) throw new Error(`R2-10 childless refusal blocked update: ${output}`);
   if (foreign) {
     console.log("R2-4 foreign update", JSON.stringify({ code, calls, after, output }));
+    const ownerReport = `machine daemon: the background service belongs to another Cotal installation (${otherEntry}). This update did not start or stop it.`;
     if (process.argv.includes("--setup-foreign")) {
       if (calls.length || !output.includes("TARGET_NOT_FOUND") || after.result.version !== "0.0.0") throw new Error("R2-4 compatible foreign setup restarted the daemon");
-    } else if (calls.length || !output.includes("another-install") || !output.includes("0.0.0")) throw new Error("R2-4 update restarted or failed to identify another installation");
+    } else if (calls.length || !output.includes(`${ownerReport} The daemon is running Cotal 0.0.0.`)) throw new Error("R2-4 update restarted or failed to identify the running foreign installation");
     console.log("PASS R2-4 foreign installation is left running");
     if (!process.argv.includes("--setup-foreign")) {
       await old.close();
@@ -312,7 +313,7 @@ try {
       stoppedForeign.stdout.on("data", b => stoppedForeignOut += String(b));
       stoppedForeign.stderr.on("data", b => stoppedForeignOut += String(b));
       const stoppedForeignCode = await new Promise(resolve => stoppedForeign.once("exit", resolve));
-      if (stoppedForeignCode !== 0 || calls.length || existsSync(paths.socket) || /left it stopped/.test(stoppedForeignOut)) {
+      if (stoppedForeignCode !== 0 || calls.length || existsSync(paths.socket) || !stoppedForeignOut.split("\n").includes(ownerReport)) {
         throw new Error(`stopped foreign service was started or not reported: ${JSON.stringify({ stoppedForeignCode, calls, stoppedForeignOut })}`);
       }
       console.log("PASS stopped foreign installation is left stopped and named by update --self");

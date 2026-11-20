@@ -375,7 +375,9 @@ and macOS, when the recorded owned user service is stopped before a manual `cota
 the updater starts the unchanged owned unit or LaunchAgent only when it is enabled and waits for the
 daemon to answer. On all three platforms, if the recorded stopped service belongs to another
 installation, such as the desktop app's bundled runtime, the updater leaves it stopped, does not wait
-for the new CLI version on that socket, and reports that the service belongs to another Cotal installation. On Linux and macOS, an explicit self-update repairs a verified service whose recorded program is missing. It does not enable a disabled service. On Linux, the updater starts
+for the new CLI version on that socket, and reports that it neither started nor stopped the service
+from the other Cotal installation. On Linux and macOS, an explicit self-update repairs a verified
+service whose recorded program is missing. It does not enable a disabled service. On Linux, the updater starts
 a stopped unit only when `systemctl --user show` reports `UnitFileState=enabled`; any other state is
 left stopped and reported as `service is <state>; not started`. On macOS, the updater reads
 `launchctl print-disabled gui/<uid>`, requiring every entry in the `disabled services = { ... }` block

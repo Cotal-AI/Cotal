@@ -1307,7 +1307,7 @@ export async function matrixCell(options) {
       if (desktopRuntime && options['stopped-daemon-before-update'] === 'true') {
         const afterStatus = await daemon('native status after', ['daemon', 'status', '--json']);
         const unitShowAfter = ok(await call('desktop unit show after CLI update', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'show', receipt.unit, '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID']), 'desktop unit show after CLI update');
-        const ownerReport = `machine daemon: the background service belongs to another Cotal installation (${report.desktop.entry}). This update left it stopped.`;
+        const ownerReport = `machine daemon: the background service belongs to another Cotal installation (${report.desktop.entry}). This update did not start or stop it.`;
         const stoppedDesktopAfter = {
           status: afterStatus,
           unitShowAfter,

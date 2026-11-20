@@ -24,7 +24,7 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
-import { daemonServiceRequirement } from "./guidance.js";
+import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
@@ -48,7 +48,7 @@ async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Prom
       }
       const installation = installedDaemonIdentity(paths);
       if (!installation.same) {
-        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update did not start or stop it.`);
+        if (!quiet) console.log(foreignDaemonUpdateReport(installation.installedEntry));
         started = true;
         return false;
       }
@@ -623,7 +623,7 @@ const composed: Command = { ...command, async run(args) {
   if (process.platform === "linux" && linuxMissingProgram(paths)) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon program is missing", { remedy: "run `cotal daemon install` from a working Cotal installation to repair the recorded service" });
   const installation = installedDaemonIdentity(paths);
   if (!installation.same) {
-    console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
+    console.log(`${foreignDaemonUpdateReport(installation.installedEntry)} The daemon is running Cotal ${current.result.version}.`);
     return;
   }
   if (current.result.version !== expectedVersion) {

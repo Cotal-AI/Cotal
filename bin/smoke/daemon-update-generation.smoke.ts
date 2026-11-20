@@ -293,6 +293,7 @@ for (const self of [true, false]) {
         } finally { console.log = priorLog; }
         assert.equal(lines.filter(line => line.includes("the background service belongs to another Cotal installation")).length, 1,
           currentParent ? "the marked child and parent report another installation once" : "the child of an older parent keeps the other installation fact");
+        assert.ok(lines.includes(`machine daemon: the background service belongs to another Cotal installation (${join(foreign, "cotal.js")}). This update did not start or stop it.`));
       }
       writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
       writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });
