@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "files": {
+    "extensions/connector-core/src/tool-specs.ts": 2471,
+    "extensions/connector-jcode/src/host.ts": 2081,
+    "implementations/cli/src/commands/spawn.ts": 2305,
+    "implementations/cli/src/commands/status.ts": 3008,
+    "implementations/cli/src/commands/up.ts": 5988,
+    "implementations/cli/src/commands/update.ts": 2158,
+    "implementations/manager/src/manager.ts": 2432,
+    "packages/core/src/endpoint.ts": 3545
+  }
+}

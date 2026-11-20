@@ -86,6 +86,21 @@ reviewed counts. Regeneration can accept new violations, and counts cannot detec
 replacements. Diagnostics name the first match for a rule, not necessarily the addition. Stage
 new source files before scanning.
 
+## File size check
+
+`pnpm check:file-size` holds shipped source to 1,500 lines. CI runs it as the `smoke:file-size`
+fragment, and `pnpm check` runs it too. It counts lines in tracked JS/TS under package,
+implementation and extension `src/` trees and `bin/`, with the same exclusions as the comment
+history check plus `vendor/` trees and `*.generated.*` files, then runs fixture controls against
+an unchanged copy of the checker.
+
+`scripts/file-size-allowlist.json` records each file over the limit with its line count, one file
+per line. An unlisted file over 1,500 lines fails, and so does a listed file longer than its
+recorded count. A listed file that shrinks passes and prints its new count; one at or under the
+limit, or no longer tracked, prints that its row can go. After a reviewed split or move, run
+`pnpm check:file-size:update` and commit the new counts. Regeneration also records any new file
+over the limit, so review its diff. Stage new source files before checking.
+
 ## Upgrade-section gate
 
 `pnpm upgrade-section-gate --base <ref>` checks `<ref>..HEAD`, and `--range <a>..<b>` checks any

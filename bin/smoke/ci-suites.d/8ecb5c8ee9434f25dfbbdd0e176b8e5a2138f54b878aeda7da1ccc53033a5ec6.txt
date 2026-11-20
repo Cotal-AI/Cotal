@@ -1,0 +1,2 @@
+# No shipped source file grows past 1,500 lines, and a file already past that does not grow.
+smoke:file-size
