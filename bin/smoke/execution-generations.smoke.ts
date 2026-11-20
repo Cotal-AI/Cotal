@@ -279,18 +279,27 @@ TEST_PATH_NODE=1 exec "$TEST_REAL_NODE" --require "$TEST_PATH_NODE_PRELOAD" "$@"
 Object.defineProperty(process.versions, "node", { value: process.env.TEST_PATH_NODE_VERSION });
 Object.defineProperty(process, "version", { value: "v" + process.env.TEST_PATH_NODE_VERSION });
 `);
-    writeFileSync(markerPreload, `console.log(process.env.TEST_PATH_NODE ? "PATH Node" : "recorded Node", process.env.PATH.split(":")[0]);`);
+    writeFileSync(markerPreload, `
+const { execFileSync } = require("node:child_process");
+console.log(process.env.TEST_PATH_NODE ? "PATH Node" : "recorded Node");
+console.log(process.env.PATH);
+console.log(execFileSync("node", ["-p", "process.version"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } }).trim());
+`);
     const recordedBin = dirname(realpathSync(process.execPath));
+    const shimBin = join(realpathSync(root), "dist/npm-node-bin");
+    assert.deepEqual(readdirSync(shimBin), ["node"]);
+    assert.equal(lstatSync(join(shimBin, "node")).isFile(), true, "retained packages cannot carry links to an external Node");
     for (const [version, selected] of [
       ["22.9.0", "recorded Node"],
       ["22.10.0", "PATH Node"],
       ["broken", "recorded Node"],
       ["", "recorded Node"],
     ]) {
+      const path = version ? pathBin : join(scratch, "no-node-on-path");
       const selection = spawnSync(entry, ["--version"], {
         env: {
           ...process.env,
-          PATH: version ? pathBin : join(scratch, "no-node-on-path"),
+          PATH: path,
           NODE_OPTIONS: `--require ${JSON.stringify(markerPreload)}`,
           TEST_REAL_NODE: process.execPath,
           TEST_PATH_NODE_PRELOAD: versionPreload,
@@ -301,8 +310,9 @@ Object.defineProperty(process, "version", { value: "v" + process.env.TEST_PATH_N
         timeout: 10_000,
       });
       assert.equal(selection.status, 0, `${version || "missing"} PATH Node: ${selection.stderr}`);
-      const selectedBin = selected === "PATH Node" ? pathBin : recordedBin;
-      assert.equal(selection.stdout, `${selected} ${selectedBin}\nretained generation selected\n`, `${version || "missing"} PATH Node`);
+      const selectedPath = selected === "PATH Node" ? path : `${shimBin}:${path}:${recordedBin}`;
+      const childVersion = selected === "PATH Node" ? `v${version}` : process.version;
+      assert.equal(selection.stdout, `${selected}\n${selectedPath}\n${childVersion}\nretained generation selected\n`, `${version || "missing"} PATH Node`);
     }
 
     // Keep the same manifest bytes and bootstrap hash. Only the installed package's incarnation changes.

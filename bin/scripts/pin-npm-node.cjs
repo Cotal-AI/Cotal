@@ -13,7 +13,7 @@ if (!meetsNodeFloor(installed, minimum)) {
 } else if (process.platform === "linux" || process.platform === "darwin") {
   // Leave Windows shims, local installs and script-disabled npm installs alone. The JavaScript
   // entry remains the declared bin and the stable entry for daemons and retained generations.
-  const { mkdtempSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("fs");
+  const { mkdirSync, mkdtempSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("fs");
   const { basename, dirname, join, relative, resolve } = require("path");
   const root = realpathSync(join(__dirname, ".."));
   const modules = dirname(root);
@@ -27,6 +27,11 @@ if (!meetsNodeFloor(installed, minimum)) {
       const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
       const node = realpathSync(process.execPath);
       const probe = `(${meetsNodeFloor})(process.versions.node, ${JSON.stringify(minimum)}) ? "supported" : "old"`;
+      // A regular file travels with the package, including in a retained execution generation.
+      // An external symlink would make that generation fail inventory validation.
+      const nodeBin = join(root, "dist", "npm-node-bin");
+      mkdirSync(nodeBin);
+      writeFileSync(join(nodeBin, "node"), `#!/bin/sh\nexec ${quote(node)} "$@"\n`, { flag: "wx", mode: 0o755 });
       writeFileSync(launcher, `#!/bin/sh
 node_support() {
   # Do not run the user's preloads during the version probe. The CLI still inherits them.
@@ -34,14 +39,13 @@ node_support() {
 }
 
 node=node
+recorded_support=
 path_support=$(node_support "$node") || path_support=
 if [ "$path_support" != supported ]; then
   recorded=${quote(node)}
   recorded_support=$(node_support "$recorded") || recorded_support=
   if [ "$recorded_support" = supported ]; then
     node=$recorded
-    PATH=${quote(dirname(node))}\${PATH:+:$PATH}
-    export PATH
   elif [ "$path_support" != old ]; then
     if [ "$recorded_support" != old ]; then
       printf '%s\\n' ${quote(`cotal: Node.js ${minimum} or later is required. Restore a supported Node to PATH and reinstall Cotal with npm.`)} >&2
@@ -73,6 +77,12 @@ entry=$(resolve_entry "$0") || {
   printf 'cotal: cannot resolve the JavaScript entry from launcher %s\\n' "$0" >&2
   exit 1
 }
+if [ "$recorded_support" = supported ]; then
+  # Give children the chosen Node without shadowing their git, npm, or other tools.
+  # Keep the runtime directory last so tools absent from PATH remain available there.
+  PATH="\${entry%/*}/npm-node-bin\${PATH:+:$PATH}":${quote(dirname(node))}
+  export PATH
+fi
 exec "$node" "$entry" "$@"
 `, { flag: "wx", mode: 0o755 });
       const temporary = mkdtempSync(join(dirname(link), ".cotal-node-"));

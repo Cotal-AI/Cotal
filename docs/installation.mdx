@@ -118,6 +118,8 @@ You can also use the shell installer inside WSL.
 On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.
 The `bin/cotal` link in the npm prefix points to a shell launcher. It uses Node from PATH when it
 meets the minimum version, or the recorded executable if it still meets the minimum.
+When it uses the recorded executable, child processes also find that Node without changing the
+precedence of other commands on PATH.
 The launcher finds the JavaScript entry in the installed package, even when a package manager moves the installation after running the scripts.
 The package's JavaScript entry stays the same for daemon services and per-home connector state.
 If neither executable works, restore a supported Node to PATH and reinstall Cotal with npm.
