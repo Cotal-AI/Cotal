@@ -312,11 +312,12 @@ checkpoint result needs a `status` of `resolved` or `expired` and may carry `val
 `artifact`. An invalid checkpoint result is refused with `SCHEMA_INVALID`. The refusal names the
 results file and the entry to correct before rerunning. The simulator stamps `at` from virtual
 time, so you cannot script it. A scripted turn result needs a `status` of `done`, `blocked` or
-`handoff` and may carry `to` and `note`. If present, `to` is an agent handle such as
-`{ "agent": "sim.reviewer", "persona": "reviewer" }`, not an agent name. An invalid turn result,
-including a scripted `at`, is also refused with `SCHEMA_INVALID`. When the script has no result for an effect, the
-simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
-entry to add, and `target.step` carries the step. When the program itself fails under the script,
+`handoff` and may carry a `note`. Each `handoff` result requires a `to` agent handle such as
+`{ "agent": "sim.reviewer", "persona": "reviewer" }`. If the destination is missing, the
+`SCHEMA_INVALID` refusal names the `to` field to add, including the array index for a list entry.
+A scripted `at` is also refused with `SCHEMA_INVALID`. When the script has no result for an effect,
+the simulation exits 5 with `OPERATION_FAILED`. The message names the step and the entry to add,
+and `target.step` carries the step. When the program itself fails under the script,
 as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
 simulation completes and exits 0. Its program outcome is failed, with the step and that step's
 outcome, or the last step the program settled before its own code failed, and the language's error.
@@ -347,7 +348,7 @@ moves the virtual clock forward.
 
 | Field | Meaning |
 |---|---|
-| `turns` | `turn` results: `{status, to, note}`, where `status` is `done`, `blocked` or `handoff` |
+| `turns` | `turn` results: `{status, to, note}`, where `status` is `done`, `blocked` or `handoff`. A `handoff` requires `to`. |
 | `asks` | `ask` replies, each checked against the step's `schema` |
 | `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
 | `events` | `wait` results. `null` is a timeout |

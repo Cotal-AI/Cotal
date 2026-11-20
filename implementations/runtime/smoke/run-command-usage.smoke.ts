@@ -311,9 +311,17 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
   c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
     scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+  for (const [build, path] of [
+    [{ status: "handoff" }, "turns.build.to"],
+    [[{ status: "done" }, { status: "handoff" }], "turns.build[1].to"],
+  ] as const) {
+    const missing = await simulate({ checkpoints: { go: { status: "resolved" } }, turns: { build } });
+    c(`a scripted handoff without a destination names ${path} even when unused`,
+      scriptRefusal(missing, `${path} is required when status is "handoff"`), missing);
+  }
   for (const to of [42, "ana", null, { agent: "sim.ana" }, { agent: "sim.ana", persona: "ana", worktree: 1 }]) {
     const invalid = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to }] } });
-    c(`a malformed scripted handoff names turns.build.to (${JSON.stringify(to)})`, scriptRefusal(invalid, "turns.build.to must be an agent handle"), invalid);
+    c(`a malformed scripted handoff names turns.build[1].to (${JSON.stringify(to)})`, scriptRefusal(invalid, "turns.build[1].to must be an agent handle"), invalid);
   }
   for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
     const invalid = await simulateText(text);
