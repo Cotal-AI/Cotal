@@ -25,7 +25,7 @@ export function spaceExport(rest: readonly string[], out: string | undefined, pr
   let entry;
   try { entry = findMesh(name); }
   catch (error) { throw isMeshRegistryError(error) ? registryFailure(error) : error; }
-  if (!entry) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the named space is not registered on this machine", { target: { space: name } });
+  if (!entry) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the named space is not registered on this machine", { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
   const auth = entry.mode === "user" ? entry.userAuth : undefined;
   if (!auth || auth.remote !== true)
     throw new CommandFailure("refused", "UNSUPPORTED", "space export requires a registered remote user-auth space; no signing authority is exported", { target: { space: name } });

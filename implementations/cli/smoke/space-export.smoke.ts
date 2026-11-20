@@ -32,7 +32,7 @@ let ran = 0, failed = 0;
 function check(name: string, ok: boolean): void { ran++; if (!ok) failed++; console.log(`${ok ? "PASS" : "FAIL"} ${name}`); }
 function run(args: string[]) {
   const child = spawnSync(process.execPath, [bin, ...args], { cwd: home, env: process.env, encoding: "utf8", timeout: 30_000 });
-  let report: { outcome?: string; error?: { code?: string }; result?: { path?: string } } | undefined;
+  let report: { outcome?: string; error?: { code?: string; remedy?: string }; result?: { path?: string } } | undefined;
   try { report = JSON.parse(child.stdout); } catch { /* Plain/help output has no JSON report. */ }
   check("command output contains no fixture credential or signing material", ![callout.sentinelCreds, auth.operator.seed, auth.account.signingSeed].some(value => child.stdout.includes(value) || child.stderr.includes(value)));
   return { ...child, report };
@@ -57,7 +57,9 @@ const linked = join(output, "linked.json"); symlinkSync(file, linked);
 const link = run(["space", "export", "exported", "--out", linked, "--json"]);
 check("symlink output refuses without modifying its target", link.status === 2 && link.report?.error?.code === "CONFLICT" && readFileSync(file, "utf8") === written);
 const missing = run(["space", "export", "absent", "--out", join(output, "absent.json"), "--json"]);
-check("unknown space refuses without output", missing.status === 2 && missing.report?.error?.code === "TARGET_NOT_FOUND" && !existsSync(join(output, "absent.json")));
+check("unknown space refuses without output and reports the remedy in JSON", missing.status === 2 && missing.report?.error?.code === "TARGET_NOT_FOUND" && missing.report.error.remedy === "see the registered spaces with `cotal space`" && !existsSync(join(output, "absent.json")));
+const missingText = run(["space", "export", "absent", "--out", file]);
+check("unknown space shows the space listing as the next step without touching existing output", missingText.status === 2 && /\bNext\s+see the registered spaces with `cotal space`/.test(missingText.stderr) && readFileSync(file, "utf8") === written);
 const noOut = run(["space", "export", "exported", "--json"]);
 check("output path is mandatory", noOut.status === 1 && noOut.report?.error?.code === "USAGE_INVALID");
 const managedPath = join(home, ".cotal", "forbidden.json");
@@ -112,5 +114,5 @@ recordMesh({ ...original, userAuth: { ...original.userAuth!, sentinelCredsPath: 
 const oldLayout = run(["space", "export", "exported", "--out", join(output, "legacy.json"), "--json"]);
 check("legacy custody refuses without migrating or publishing", oldLayout.status === 2 && oldLayout.report?.error?.code === "LIFECYCLE_BLOCKED" && existsSync(legacy) && !existsSync(canonical) && !existsSync(join(output, "legacy.json")));
 console.log(`space-export: ${ran - failed} passed, ${failed} failed; fixture ${home}`);
-assert.equal(ran, process.platform === "win32" ? 41 : 43, "the suite ran every named check");
+assert.equal(ran, process.platform === "win32" ? 43 : 45, "the suite ran every named check");
 assert.equal(failed, 0);
