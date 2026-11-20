@@ -589,7 +589,7 @@ The change is three decisions. None adds an authority, a mediator or a signer to
 | `implementations/manager/src/manager.ts`, `epAdminReach` | A remote-authority manager asks the host's admin door about the run's admitted caller in place of its derived caller. The manager already relays the caller tuple it served, so this relays nothing it could not relay before. |
 | `implementations/auth/src/manager-authority.ts`, `authorizeRemoteRunAttempt` | The mediator is pinned to a placement on the registered instance. |
 | `implementations/auth/src/service.ts`, `renewRunDriver` | The renewed mediator carries the same placement. |
-| `implementations/runtime/src/mesh-handler.ts`, `spawnDespawnTarget` | A succeeded spawn terminal's identity comes before the acceptance floor, for the run's release and its roster. |
+| `implementations/runtime/src/mesh-handler-shared.ts`, `spawnDespawnTarget` | A succeeded spawn terminal's identity comes before the acceptance floor, for the run's release and its roster. |
 
 The host never sees the program, so it cannot mint a placement the program named. The only instance
 a participant manager may place a spawn on is its own, and the instance-pinned `describe`,
