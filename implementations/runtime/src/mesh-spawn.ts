@@ -6,7 +6,6 @@ import { isAbsolute } from "node:path";
 import {
   IncompleteKvScan,
   invokeCommand,
-  readGoalResult,
   readGoalStatus,
   EpEnvelopeError,
   type EpAttributedReply,
@@ -19,7 +18,6 @@ import {
   Cancelled,
   EffectError,
   type AgentHandleValue,
-  type CancelSignal,
   type EffectContext,
   type InlineSpawnDefinition,
   type SpawnRequest,
@@ -29,7 +27,6 @@ import {
 import { delay } from "./delay.js";
 import {
   type CwdResolution,
-  GOAL_POLL_MS,
   parseAgentHandle,
   readPermits,
   readSupervise,
@@ -145,6 +142,7 @@ export interface MeshSpawnDeps {
   actionCtx: (...args: Parameters<MeshHandler["actionCtx"]>) => ReturnType<MeshHandler["actionCtx"]>;
   adoptable: () => MeshHandler["adoptable"];
   binding: () => MeshHandler["binding"];
+  goalTerminal: (...args: Parameters<MeshHandler["goalTerminal"]>) => ReturnType<MeshHandler["goalTerminal"]>;
   invokeManager: (...args: Parameters<MeshHandler["invokeManager"]>) => ReturnType<MeshHandler["invokeManager"]>;
   manager: (...args: Parameters<MeshHandler["manager"]>) => ReturnType<MeshHandler["manager"]>;
   nc: () => MeshHandler["nc"];
@@ -164,6 +162,7 @@ export class MeshSpawn {
   private actionCtx(...args: Parameters<MeshHandler["actionCtx"]>): ReturnType<MeshHandler["actionCtx"]> { return this.deps.actionCtx(...args); }
   private get adoptable() { return this.deps.adoptable(); }
   private get binding() { return this.deps.binding(); }
+  private goalTerminal(...args: Parameters<MeshHandler["goalTerminal"]>): ReturnType<MeshHandler["goalTerminal"]> { return this.deps.goalTerminal(...args); }
   private invokeManager(...args: Parameters<MeshHandler["invokeManager"]>): ReturnType<MeshHandler["invokeManager"]> { return this.deps.invokeManager(...args); }
   private manager(...args: Parameters<MeshHandler["manager"]>): ReturnType<MeshHandler["manager"]> { return this.deps.manager(...args); }
   private get nc() { return this.deps.nc(); }
@@ -507,17 +506,4 @@ export class MeshSpawn {
       return;
     }
     this.worktreeHolders.delete(worktree);
-  }
-
-  /** Poll the goal's durable terminal fact, observing cancellation on the poll cadence — the same
-   *  discipline as `wait`: a race decided against this branch stops parking within one poll, and
-   *  the seat its acceptance may have produced is the DISCHARGE's to release, not this branch's. */
-  private async goalTerminal(ref: GoalRef, signal: CancelSignal): Promise<GoalResultFact> {
-    const actx = await this.actionCtx();
-    for (;;) {
-      if (signal.cancelled) throw new Cancelled(signal.reason ?? "cancelled");
-      const fact = await readGoalResult(actx, ref);
-      if (fact !== undefined) return fact;
-      await delay(GOAL_POLL_MS);
-    }
   }}

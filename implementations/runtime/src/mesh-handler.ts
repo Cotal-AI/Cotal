@@ -64,6 +64,7 @@ import {
   type EpCaller,
   type EpVerbTarget,
   type GoalRef,
+  type GoalResultFact,
   type Presence,
   type ResolvedService,
   type RunAdmissionView,
@@ -1240,6 +1241,19 @@ export class MeshHandler {
     return null;
   }
 
+  /** Poll the goal's durable terminal fact, observing cancellation on the poll cadence — the same
+   *  discipline as `wait`: a race decided against this branch stops parking within one poll, and
+   *  the seat its acceptance may have produced is the DISCHARGE's to release, not this branch's. */
+  private async goalTerminal(ref: GoalRef, signal: CancelSignal): Promise<GoalResultFact> {
+    const actx = await this.actionCtx();
+    for (;;) {
+      if (signal.cancelled) throw new Cancelled(signal.reason ?? "cancelled");
+      const fact = await readGoalResult(actx, ref);
+      if (fact !== undefined) return fact;
+      await delay(GOAL_POLL_MS);
+    }
+  }
+
   /** Resolve the native personal session whose exact issued caller admitted this run. Its identity
    * comes only from the immutable admission, never from program text. The manager separately requires
    * a current finite participation lease when a turn is dispatched. */
@@ -1562,6 +1576,7 @@ export class MeshHandler {
     actionCtx: (...args) => this.actionCtx(...args),
     adoptable: () => this.adoptable,
     binding: () => this.binding,
+    goalTerminal: (...args) => this.goalTerminal(...args),
     invokeManager: (...args) => this.invokeManager(...args),
     manager: (...args) => this.manager(...args),
     nc: () => this.nc,

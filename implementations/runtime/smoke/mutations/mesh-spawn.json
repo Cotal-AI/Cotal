@@ -94,7 +94,7 @@
     },
     {
       "name": "the terminal await stops observing cancellation",
-      "file": "implementations/runtime/src/mesh-spawn.ts",
+      "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "    const actx = await this.actionCtx();\n    for (;;) {\n      if (signal.cancelled) throw new Cancelled(signal.reason ?? \"cancelled\");\n      const fact = await readGoalResult(actx, ref);",
       "replace": "    const actx = await this.actionCtx();\n    for (;;) {\n      void signal;\n      const fact = await readGoalResult(actx, ref);",
       "expectRed": "the await ends Cancelled within one poll",
