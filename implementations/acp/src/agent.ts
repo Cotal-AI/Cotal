@@ -21,7 +21,7 @@ import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
-import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
+import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -216,9 +216,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
 
   const offerFor = async (m: Mesh, machine?: string): Promise<Offer> => {
     const managers = await m.managers();
-    // A new session defaults to this machine's manager, so read its lists rather than whichever
-    // manager answers first.
-    const from = machine ?? managers.find((x) => x.local)?.instanceId;
+    // Read the lists of the manager a new session starts on, never whichever the exchange picks.
+    const from = machine ?? defaultManager(managers)?.instanceId;
     const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
     if (personas.length >= MAX_CHOICES) options.log(`the persona catalog holds ${personas.length} personas, more than a client select shows; the persona option is not offered`);
     if (channels.length >= MAX_CHOICES) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel option is not offered`);

@@ -1,0 +1,27 @@
+{
+  "suite": [
+    "packages/workspace/smoke/sign-in-auth.smoke.ts"
+  ],
+  "guard": "a standing reader's sign-in source returns the person's bearer while their lifecycle holds, and refuses with SignInChangedError once their row was granted again",
+  "command": "npx tsx packages/workspace/smoke/sign-in-auth.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config packages/workspace/smoke/mutations/sign-in-auth.json",
+  "why": [
+    "A reader names its history consumer for the lifecycle it started on. Each mutation is a plausible one-line regression that lets it adopt a re-granted bearer, or hides the refusal from the caller that must stop. The suite imports the workspace source, so no build runs between the mutation and the suite."
+  ],
+  "mutations": [
+    {
+      "name": "the source adopts a bearer for another lifecycle",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "    if (renewed.owner !== owner || renewed.actor !== actor || renewed.lifecycleUid !== lifecycleUid)",
+      "replace": "    if (renewed.owner !== owner || renewed.actor !== actor)",
+      "expectRed": "a renewal after the row was granted again is refused as SignInChangedError"
+    },
+    {
+      "name": "the refusal is a plain error a caller cannot recognize",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "      throw new SignInChangedError(`your sign-in ${owner}.${actor} was granted again",
+      "replace": "      throw new Error(`your sign-in ${owner}.${actor} was granted again",
+      "expectRed": "a renewal after the row was granted again is refused as SignInChangedError"
+    }
+  ]
+}

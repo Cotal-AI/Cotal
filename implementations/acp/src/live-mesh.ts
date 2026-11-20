@@ -19,7 +19,7 @@ import {
   type CotalEndpoint,
   type CotalMessage,
 } from "@cotal-ai/core";
-import { connectTargetOrThrow, instanceIdShaped, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
+import { connectTargetOrThrow, instanceIdShaped, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
 import { askManager, control, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
@@ -33,6 +33,21 @@ export interface LiveMeshOptions {
   readonly space?: string;
   readonly server?: string;
   readonly log: (line: string) => void;
+  /** Ends the bridge: the person's sign-in was granted again, and its reader cannot recover. */
+  readonly stop: (reason: string) => void;
+}
+
+/** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
+const SIGN_IN_CHECK_MS = 5_000;
+const SIGN_IN_CHECKS = 12;
+
+/** The managers that listed their agents. A manager that did not hides only its own agents and is
+ *  logged. When none answered, the first failure is the answer. */
+export function answeredReads<T>(reads: readonly ({ instanceId: string; rows: T[] } | { instanceId: string; error: Error })[], log: (line: string) => void): { instanceId: string; rows: T[] }[] {
+  const failed = reads.filter((r): r is { instanceId: string; error: Error } => "error" in r);
+  if (failed.length > 0 && failed.length === reads.length) throw failed[0]!.error;
+  for (const f of failed) log(`manager ${f.instanceId} did not list its agents: ${f.error.message}`);
+  return reads.filter((r): r is { instanceId: string; rows: T[] } => "rows" in r);
 }
 
 /** A seat id as a manager reports it: the principal in user mode, a bare actor otherwise. */
@@ -85,13 +100,46 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
   try {
     target = await resolveTargetOrThrow({ space: options.space, server: options.server });
     const conn = await connectTargetOrThrow(target, "admin");
-    const user = conn.bearer ? userSignInAuth(conn) : undefined;
+    const signIn = conn.bearer ? userSignInAuth(conn) : undefined;
+    // A re-grant retires the lifecycle the observer reads under. The bridge stops and says so.
+    const user = signIn && {
+      ...signIn,
+      source: () => signIn.source().catch((e: unknown) => {
+        if (e instanceof SignInChangedError) options.stop(e.message);
+        throw e;
+      }),
+    };
     userOwner = user?.owner;
     // Only an agent publishes on its own event channel, so on a user-auth space the sender's owner
     // is the person's too.
     events = user ? chatSubject(conn.space, user.owner, "*", `${EVENT_CHANNEL_PREFIX}${user.owner}.*`) : chatSubject(conn.space, "*", "*", `${EVENT_CHANNEL_PREFIX}*.*`);
     observer = openObserver({ space: conn.space, server: conn.server, name: OBSERVER_NAME, ...(user ? { auth: { user }, lifecycleUid: user.lifecycleUid } : { auth: { creds: conn.creds } }) });
-    observer.on("error", (e: Error) => options.log(`space connection: ${e.message}`));
+    // A re-grant ends the connection at once, while the endpoint renews its sign-in only mid-way
+    // through the token. So a connection error asks the exchange now. The old lifecycle may still be
+    // retiring, which the exchange refuses, so it asks again for a while. A changed sign-in stops
+    // the bridge through the source; an unchanged one ends the checks.
+    let checking = false;
+    const checkSignIn = async (source: () => Promise<string>): Promise<void> => {
+      if (checking) return;
+      checking = true;
+      try {
+        for (let attempt = 1; attempt <= SIGN_IN_CHECKS; attempt++) {
+          try {
+            await source();
+            return;
+          } catch (e) {
+            if (attempt === 1 || attempt === SIGN_IN_CHECKS) options.log(`could not check the sign-in (attempt ${attempt} of ${SIGN_IN_CHECKS}): ${plain(e).message}`);
+          }
+          await new Promise((r) => setTimeout(r, SIGN_IN_CHECK_MS));
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    observer.on("error", (e: Error) => {
+      options.log(`space connection: ${e.message}`);
+      if (user) void checkSignIn(user.source);
+    });
     await observer.start();
   } catch (e) {
     throw plain(e);
@@ -195,19 +243,27 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     },
 
     async seats() {
-      // A user-auth bearer reads one manager per call: each of the person's own, or the space's
-      // own unpinned.
-      const own = userOwner !== undefined ? ownManagers(userOwner) : [];
-      const answered = own.length
-        ? await Promise.all(own.map(async ({ instanceId }) => {
-          const reply = await ask("ps", undefined, instanceId);
-          if (!reply.ok) throw failure(reply, "the manager did not list its agents");
-          return { instanceId, rows: (reply.data as unknown[] | undefined) ?? [] };
-        }))
-        : await controlPs(client, ctx, { readOnly: true }).then((reply) => {
-          if (!reply.ok) throw new Error(reply.error);
-          return reply.answered;
-        });
+      let answered: { instanceId: string; rows: unknown[] }[];
+      if (userOwner === undefined) {
+        const reply = await controlPs(client, ctx, { readOnly: true });
+        if (!reply.ok) throw new Error(reply.error);
+        answered = reply.answered;
+      } else {
+        // A user-auth bearer reads one manager per call: each of the person's own, or with none the
+        // one the space's exchange selects, unpinned. A manager that does not answer hides only its
+        // own agents, as `cotal ps` reports it.
+        const own = ownManagers(userOwner).map((m): string | undefined => m.instanceId);
+        const reads = await Promise.all((own.length ? own : [undefined]).map(async (instanceId) => {
+          try {
+            const reply = await ask("ps", undefined, instanceId);
+            if (!reply.ok) throw failure(reply, "the manager did not list its agents");
+            return { instanceId: instanceId ?? "", rows: (reply.data as unknown[] | undefined) ?? [] };
+          } catch (e) {
+            return { instanceId: instanceId ?? "", error: plain(e) };
+          }
+        }));
+        answered = answeredReads(reads, options.log);
+      }
       return answered.flatMap(({ instanceId, rows }) =>
         rows.map((row): SeatRow => {
           const r = row as unknown as { name: string; id: string; lifecycleUid: string; agent: string; model?: string; cwd?: string; status: string; uptimeMs?: number };

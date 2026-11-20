@@ -13,7 +13,7 @@
  */
 import type { CotalMessage } from "@cotal-ai/core";
 import { FrameMapper } from "../src/frames.js";
-import { frameOf } from "../src/live-mesh.js";
+import { answeredReads, frameOf } from "../src/live-mesh.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -67,6 +67,17 @@ check("frameOf ignores a message off an event channel", frameOf(message("general
 check("frameOf ignores a message with no frame part", frameOf(message("events.local.a1", [{ kind: "text", text: "x" }])) === undefined);
 const forged = { ...message("events.local.a1", [{ kind: "ag-ui.frame", threadId: "t", runId: "r", seq: 1, events: [] }]), from: { id: "local.a2", name: "a2" } } as unknown as CotalMessage;
 check("frameOf ignores a frame that another sender put on an agent's event channel", frameOf(forged) === undefined);
+
+// A manager that does not list its agents hides only its own.
+{
+  const logged: string[] = [];
+  const rows = answeredReads([{ instanceId: "a", error: new Error("did not answer") }, { instanceId: "b", rows: ["onb"] }], (l) => logged.push(l));
+  check("one silent manager leaves the others' agents listed", rows.length === 1 && rows[0]!.instanceId === "b" && rows[0]!.rows[0] === "onb", rows);
+  check("and the silent one is logged by instance", logged.length === 1 && logged[0]!.includes("manager a") && logged[0]!.includes("did not answer"), logged);
+  let thrown: unknown;
+  try { answeredReads([{ instanceId: "a", error: new Error("first") }, { instanceId: "b", error: new Error("second") }], () => {}); } catch (e) { thrown = e; }
+  check("when no manager answered, the first failure is the answer", thrown instanceof Error && thrown.message === "first", thrown);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

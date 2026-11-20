@@ -83,7 +83,7 @@ A new thread offers these options next to the model list. They apply when the fi
 | Reasoning | The model's variant, when the model has more than one. |
 | Persona | A persona from the manager's catalog. |
 | Channel | One channel the new agent joins. |
-| Machine | Which manager spawns the agent, when more than one is live. The default is the manager on this machine. On a space where people sign in, the list holds your own managers, and with none of yours live the space's manager spawns the agent. |
+| Machine | Which manager spawns the agent, when more than one is live. The default is the manager on this machine, or else the first listed. On a space where people sign in, the list holds your own managers. With none of yours registered, the space's manager spawns the agent. Once you have registered one, the space never falls back to its own manager: with none of yours live, a new thread is refused until you start one with `cotal manager start`. |
 
 Only applications that publish an event plane are offered, because the thread is built from it.
 Hermes publishes none (see [Connectors](connectors.mdx)).
@@ -103,9 +103,10 @@ When the space needs a sign-in, a client that can run a terminal offers **Sign i
 It runs `cotal acp --auth`, which signs in to a space that authenticates users with `cotal login`.
 When this machine records no space at all, it runs `cotal setup` instead.
 
-On a space where people sign in, your own sign-in is enough: a grant that may spawn agents lets you
-start threads, type into your agents, stop their turns, read their event channels and despawn them.
-You need no `admin` scope, because a person controls every agent under their own owner (see
+On a space where people sign in, your own sign-in is enough. Whatever your scope, it lists and
+loads your agents, types into them, stops their turns, reads their event channels and despawns them.
+Starting a thread also needs a grant that may spawn agents. You need no `admin` scope, because a
+person controls every agent under their own owner (see
 [Delegation](identity-user-auth.mdx#delegation)).
 
 ## Limits [#limits]
@@ -118,6 +119,8 @@ You need no `admin` scope, because a person controls every agent under their own
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
 - An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
 - An agent on another machine's manager starts in the thread's folder, so that folder must exist on that machine. Otherwise the spawn is refused.
+- On a space where people sign in, the thread list shows the agents on your own live managers, or on the space's manager when you have none. A manager that does not answer leaves its agents out of the list until it answers again.
+- When your sign-in is granted again while `cotal acp` runs, it stops within seconds and says why. Start the agent again in your client.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - Pi agents publish text as completed messages, so their replies arrive whole.
 - Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.

@@ -65,6 +65,13 @@ export function refusal(catalogs: readonly AgentCatalog[], agent: string): strin
   return undefined;
 }
 
+/** The manager a new session starts on: this machine's, else the first listed. Leaving it unpinned
+ *  would let the space's exchange choose, and that refuses when several of a person's own managers
+ *  are live. */
+export function defaultManager(managers: readonly ManagerChoice[]): ManagerChoice | undefined {
+  return managers.find((m) => m.local) ?? managers[0];
+}
+
 /** The selection a new session starts with. */
 export function initialSelection(offer: Offer): Selection {
   const apps = usable(offer.catalogs);
@@ -73,8 +80,8 @@ export function initialSelection(offer: Offer): Selection {
     const reasons = offer.catalogs.map((c) => `${c.agent}: ${refusal(offer.catalogs, c.agent)}`);
     throw new Error(`no application can run a session${reasons.length ? ` (${reasons.join("; ")})` : ": the manager offers none"}`);
   }
-  const local = offer.managers.find((m) => m.local);
-  return { model: `${agent.agent}/${DEFAULT_MODEL}`, variant: DEFAULT_VARIANT, persona: DEFAULT_PERSONA, channel: NO_CHANNEL, ...(local ? { machine: local.instanceId } : {}) };
+  const machine = defaultManager(offer.managers);
+  return { model: `${agent.agent}/${DEFAULT_MODEL}`, variant: DEFAULT_VARIANT, persona: DEFAULT_PERSONA, channel: NO_CHANNEL, ...(machine ? { machine: machine.instanceId } : {}) };
 }
 
 function variantsOf(offer: Offer, selection: Selection): readonly string[] {
@@ -175,7 +182,7 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
       id: "machine",
       name: "Machine",
       type: "select",
-      currentValue: selection.machine ?? offer.managers[0]!.instanceId,
+      currentValue: selection.machine ?? defaultManager(offer.managers)!.instanceId,
       options: offer.managers.map((m) => ({ value: m.instanceId, name: `${m.host ?? m.instanceId}${m.local ? " (this machine)" : ""}` })),
     });
   return options;

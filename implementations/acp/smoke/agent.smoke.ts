@@ -78,7 +78,8 @@ class FakeMesh implements Mesh {
   }
   catalogsAsked: (string | undefined)[] = [];
   async catalogs(instanceId?: string) { this.catalogsAsked.push(instanceId); return CATALOGS; }
-  async managers() { return [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }]; }
+  managerList = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
+  async managers() { return this.managerList; }
   /** Each manager holds its own persona catalog. */
   async personas(instanceId?: string) { return instanceId === "m2" ? ["default", "builder"] : ["default", "reviewer"]; }
   async spawn(req: SpawnRequest): Promise<SeatRef> {
@@ -399,6 +400,22 @@ conn.close();
 await tick(20);
 check("closing the client closes the space", mesh.closed);
 check("a thread's agent name is a valid user-mode actor token", (() => { try { return assertValidOwnerToken(defaultName()) !== ""; } catch { return false; } })());
+
+// With no manager on this machine, a new session starts on the first listed one. Left unpinned, the
+// space's exchange would choose, and it refuses when several of a person's managers are live.
+{
+  const away = new FakeMesh();
+  away.managerList = [{ instanceId: "m2", host: "there", local: false }, { instanceId: "m3", host: "elsewhere", local: false }];
+  const c = connect(async () => away);
+  await c.init;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const machine = s.configOptions?.find((o) => o.id === "machine") as { currentValue?: string } | undefined;
+  check("with no manager on this machine, session/new reads the first listed manager's lists", away.catalogsAsked[0] === "m2", away.catalogsAsked);
+  check("and shows that manager as the machine", machine?.currentValue === "m2", machine);
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }), 500);
+  check("its first prompt spawns pinned to that manager", away.spawned[0]?.managerInstanceId === "m2", away.spawned.map((r) => r.managerInstanceId));
+  c.conn.close();
+}
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

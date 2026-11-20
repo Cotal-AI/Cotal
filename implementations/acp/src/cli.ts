@@ -87,7 +87,11 @@ export async function acp(args: ParsedArgs): Promise<void> {
   }
   const output = claimStdout();
   const input = Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>;
-  const app = cotalAgent({ mesh: () => openLiveMesh({ space, server, log }), hidden: hiddenStore(), log, version });
+  const stop = (reason: string): void => {
+    log(`${reason}. Stopping; start the agent again in your client.`);
+    process.exit(1);
+  };
+  const app = cotalAgent({ mesh: () => openLiveMesh({ space, server, log, stop }), hidden: hiddenStore(), log, version });
   const connection = app.connect(ndJsonStream(output, input));
   await connection.closed;
 }
