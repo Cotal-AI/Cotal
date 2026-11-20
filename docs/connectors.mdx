@@ -63,6 +63,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 Jcode requires Node 22.13 or later; Node 23 requires 23.4 or later.
 All managed connectors also use connector-core's local control endpoint, authenticated by the [control exchange](authoring-a-connector.mdx#control-exchange).
 The Manager reports event support in `status.connectors[].eventPlane`. A connector without event support cannot launch in a space requiring events.
+It reports in `status.connectors[].prompts` whether the connector's sessions serve their harness's tool permissions on the agent endpoint. That is true only for a connector that declares it, on a signed-in space. Claude Code declares it on every platform but Windows. The fact does not promise that a given session's endpoint opens.
 Native queue acceptance does not prove the model consumed the message.
 See [Running release](connector-runtime-reference.mdx#running-release) when installed and running versions differ.
 

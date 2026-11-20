@@ -1076,10 +1076,11 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 51. The closed `spawn` input accepts optional boolean
+The Manager cluster revision is 52. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
-that carries it.
+that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
+closed status schema of revision 51 rejects a row that carries it.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -4073,6 +4074,14 @@ the event channel it publishes; false means it does not. The fact MUST be presen
 declared extension inventory before the package is imported. A missing declaration MUST NOT be read
 as true. A client that knows the space requires events can therefore refuse a connector with
 `eventPlane: false` before spawn. The launch path's existing policy refusal remains authoritative.
+
+**Manager connector prompt facts.** Every row in the reference manager's `status.connectors` array
+also carries required `prompts: boolean`. True means the connector declares that a session it
+launches serves its harness's prompts on the `agent` endpoint (§13.22) and the mesh is user-auth,
+the only mode whose credentials name a caller (§13.21). On an open or static mesh every row reads
+false. The fact MUST be present on rows built from declared extension inventory, and a missing
+declaration MUST be read as false. It is a launch capability: it does not say that a given session's
+endpoint will open. A reader learns that from the session's presence (§6) and from a call.
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
 record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
@@ -8023,6 +8032,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-20 | **The Manager reports which connectors serve prompts (§9, §13.7), additive.** Every Manager `status.connectors` row requires `prompts: boolean`: true when the connector declares that its sessions serve their harness's prompts on the `agent` endpoint and the mesh is user-auth, and false on an open or static mesh. A row built from declared extension inventory carries it too, and a missing declaration reads as false. The Manager cluster advances to revision 52. No subject changes. |
 | 2026-11-18 | **An agent's own commands and skills on the `agent` endpoint (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 2 with four commands. `commands` lists the harness commands and skills an agent runs as `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`, and the agent waits at most 10 s for the harness's list. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once, without waiting for a turn. `command-cancel` cancels a queued command by `id`, and `command-state` reads its state: `queued`, `taken`, `started`, `cancelled`, `refused` with `not-found`, `failed-precondition` or `unavailable`, or `unknown` with `internal`. A state only moves forward, and a cancel of a command that is no longer queued is `conflict` with its state in `details`. The four declare the `owner` authority word only, so an interactive ledger row gets their four caller rows and no grant row can name them. At most 8 commands are queued, with no time bound. Stopping the agent moves every queued command to `refused` with `unavailable`, and the agent remembers the last 32 commands to end. The prompt commands and their digests are unchanged, and an agent on revision 1 answers the four new commands `unimplemented`. |
 | 2026-11-18 | **Principal-route follow-ups (§6, §13.3, §13.5, §13.21), corrections.** A serve of the `agent` endpoint takes a fresh `prompts.seq` when it starts, so one `(runtime.id, seq)` never names two states, and `spec/cotal.schema.json` gives `prompts.open` and `prompts.seq` as non-negative integers, as §6 already said. A caller drops any message on the no-responders sentinel other than the broker's no-responders status and keeps waiting, on every route, where it used to end the call `internal`: a JetStream API request can name the sentinel as its reply subject. §13.5 now states that a service call drops a stored message on its reply read, as the principal route does; clients already did. The principal route has no cast: a request with `replyExpected: false` is refused before its handler runs. Stopping a principal serve waits for a handler in flight only until its request's `deadlineMs` has passed since the request arrived, and drops a reply that comes later. A principal-route `deadlineMs` is at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and a caller refuses it before publishing, so stop waits at most 30 s. A refused reply read is still `permission-denied` when the deadline passes first. |
 | 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |

@@ -1,0 +1,2 @@
+# The Manager connector prompts fact: true only for a connector that declares it, on a user-auth mesh.
+smoke:status-connector-prompts

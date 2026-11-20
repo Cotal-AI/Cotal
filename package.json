@@ -790,6 +790,7 @@
     "smoke:manager-harness-boot": "tsx implementations/manager/smoke/harness-boot.smoke.ts",
     "smoke:manager-connector-generation:live": "tsx implementations/manager/smoke/connector-generation-live.smoke.ts",
     "smoke:status-connector-event-plane": "tsx implementations/manager/smoke/status-connector-event-plane.smoke.ts",
+    "smoke:status-connector-prompts": "tsx implementations/manager/smoke/status-connector-prompts.smoke.ts",
     "smoke:manager-service-ops": "tsx implementations/manager/smoke/manager-service-ops.smoke.ts",
     "smoke:manager-persona-show-auth": "tsx implementations/manager/smoke/persona-show-auth.smoke.ts",
     "smoke:manager-service-invoke": "tsx implementations/manager/smoke/manager-service-invoke.smoke.ts",
