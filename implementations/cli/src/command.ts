@@ -204,7 +204,7 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(extCmd: Command | undefined, words: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
+async function extSeedGate(extCmd: Command | undefined, words: string[], configFolder: ConfigFolderProblem | undefined, startupNotice?: StartupNotice): Promise<boolean> {
   if (extCmd === undefined || !extSeedSubcommand(extCmd, words)) return false;
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
@@ -215,6 +215,7 @@ async function extSeedGate(extCmd: Command | undefined, words: string[], configF
   const parsed = parseOrExit(extCmd, words);
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
   if (parsed.values.repair !== true || parsed.values.reset === true) recoverExtensionPromotion();
+  if (startupNotice) keepStartupNotice(startupNotice);
   await extCmd.run(parsed);
   return true;
 }
@@ -697,7 +698,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (useExtensionOverlay) {
     try {
-      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder)) return;
+      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
       recoverExtensionPromotion();
     } catch (e) {
       if (!skipUnreadableConnectorOverlay(e)) {
