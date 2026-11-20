@@ -16,9 +16,9 @@
   "mutations": [
     {
       "name": "manager boot stops inspecting connector harnesses",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "    await this.inspectConnectorsAtBoot();",
-      "replace": "    this.connectorStatuses = [];",
+      "replace": "    // mutation: boot connector harness inspection skipped (statuses keep their empty initial value)",
       "expectRed": "manager boot surfaces the missing harness before any spawn is attempted",
       "cell": "manager boot surfaces the missing harness before any spawn is attempted"
     },

@@ -22,7 +22,7 @@
   "mutations": [
     {
       "name": "serve last again, recreating startup-wide manager unavailability",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)",
       "replace": "    const startupReconcile = this.auth && !this.userMode ? await this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)",
       "expectRed": "status serves while later orphan rows remain ACTIVE",
