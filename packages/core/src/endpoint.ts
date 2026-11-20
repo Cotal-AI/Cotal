@@ -164,8 +164,6 @@ import {
   type ChannelMember,
   type HistoryPage,
   type PrincipalServe,
-  DmDurableMissingError,
-  DmBindRefusedError,
 } from "./endpoint-options.js";
 export {
   deliveryLimitOf,
