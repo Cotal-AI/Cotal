@@ -178,7 +178,7 @@ const composed: Command = { ...command, async run(args) {
     admission = { disposition: "restart-empty", occupied: 0, hostedSpaces: plan.hostedSpaces };
   };
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
-  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
+  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution();
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()), { retainGraph: true });
   /** Target admission covers the daemon and the Managers it hosts. Every other local Manager keeps
@@ -482,8 +482,8 @@ const composed: Command = { ...command, async run(args) {
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
-      if (!currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
+      const status = reply.data as { agentCount?: number; custody?: string };
+      if (status.custody === "legacy" && status.agentCount !== 0) {
         const instanceId = manager.instanceId;
         const inventory = await withIdpSessionDir(homeCotalDir(), async () => {
           const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
@@ -510,10 +510,6 @@ const composed: Command = { ...command, async run(args) {
             if (!empty.ok || (empty.data as { agentCount?: number })?.agentCount !== 0) throw new Error("hosted Manager still has running agents; update deferred");
           });
         } });
-      }
-      if (currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
-        const names = status.stopImpact?.agents.map(agent => agent.name);
-        console.log(`hosted Manager ${manager.instanceId}: a later update will require stopping its agents${names?.length ? ` (${names.join(", ")})` : ""}`);
       }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
@@ -564,7 +560,7 @@ const composed: Command = { ...command, async run(args) {
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
-  await collectConnectorSets();
+  if (!currentPackages) await collectConnectorSets();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
@@ -572,6 +568,11 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
+  // Current packages need no Manager census or restart. Keep the guarded start of a stopped native service.
+  if (currentPackages) {
+    const state = join(homeCotalDir(), "daemon");
+    if (daemonObserved || !existsSync(unitReceiptFile({ state })) || await observeUpdateDaemon()) return;
+  }
   // This process keeps the release it loaded. The daemon must run the selected or installed release.
   const expectedVersion = replacementVersion ?? installedCliVersion();
   // A version-changing update already waited for the installed generation before it returned.
@@ -584,7 +585,6 @@ const composed: Command = { ...command, async run(args) {
     }
     return;
   }
-  if (currentPackages) return;
   const paths = daemonPaths();
   const current = standaloneReconcile ? await reconcileDaemonStatus(paths, true) : await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");

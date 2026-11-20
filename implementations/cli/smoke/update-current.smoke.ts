@@ -18,9 +18,8 @@ const rt: UpdateRuntime = {
   npm: args => { assert.equal(args[0], "view"); return { status: 0, stdout: '"0.13.1"', stderr: "" }; },
   out: text => { output.push(text); }, err: text => { output.push(text); },
 };
-assert.equal(await executeUpdate(true, rt), 0, "current package closure with no newer release reports legacy custody without refusing");
-assert.deepEqual(effects, ["custody"]);
-assert.match(output.join("\n"), /later update will require/i);
+assert.equal(await executeUpdate(true, rt), 0, "current package closure with no newer release succeeds");
+assert.deepEqual(effects, []);
 assert.ok(output.some(line => line.includes("installed package closure is current")) && !output.some(line => line.includes("Run `cotal update` to repair connector integrations")), "a current no-op reports its observed current package closure without inventing connector repair work");
 for (const consistent of [false, true]) {
   const actions: string[] = [];
@@ -28,8 +27,8 @@ for (const consistent of [false, true]) {
     reportRunningManager: async () => { actions.push("custody"); if (consistent) throw new Error("custody unreadable"); return "legacy"; },
     reconcile: async () => { actions.push("repair"); },
   };
-  assert.equal(await executeUpdate(true, denied), 1, "repair-needed or unreadable custody remains a refusal");
-  assert.deepEqual(actions, ["custody"]);
+  assert.equal(await executeUpdate(true, denied), consistent ? 0 : 1, "only reconciliation needs a custody verdict");
+  assert.deepEqual(actions, consistent ? [] : ["custody"]);
 }
 for (const consistent of [false, true]) {
   const actions: string[] = [], lines: string[] = [];
