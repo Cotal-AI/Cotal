@@ -40,7 +40,7 @@
     },
     {
       "name": "F5 inOrder no longer refuses writes admitted after stop() began, so the straggler setStatus is queued onto the presence chain behind departure instead of rejecting at once with the stopping error: on an unfenced tree it sits out setStatus's ten-second requireConnected grace inside the chain (and a setAttention or setModel straggler would even land its put before the offline put), so a write made after departure began is reordered behind or dropped after offline instead of refused (#636). The mutation touches extensions/connector-core/src/agent.ts, which this suite imports as TS source through tsx, not as a built dist, so unlike the core entries above there is no dist compiled from the mutant and git alone is the recovery.",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-presence.ts",
       "find": "    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n",
       "replace": "",
       "expectRed": "a presence write admitted after stop() began is refused and no put lands after offline",

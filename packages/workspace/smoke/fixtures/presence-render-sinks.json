@@ -84,25 +84,25 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "ry {\n      if (prev !== \"working\" && status === \"working\"",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "\"working\" && status === \"working\") await this.ep.setCondi",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "one.\n      if (prev === \"working\" && status === \"idle\") t",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "\"working\" && status === \"idle\") this.onTurnBoundary();",
       "class": "non-render/control"
@@ -1225,21 +1225,21 @@
       "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    } finally {\n      this._status = status;\n    }\n    });\n  }\n\n  p",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim. #2065 wrapped the body in inOrder, which added the closing });."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "tion(null);\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
@@ -3940,7 +3940,7 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.ep.setStatus(status, activity)",
       "class": "non-render/control",
@@ -4162,14 +4162,14 @@
       "rationale": "Turn-yield control flow: returns the manager's refusal to the caller early; the status is a request field, not a rendered presence status."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "ransition at all.\n      this._status = status;\n      this.turnStatus ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.turnStatus = status",
       "class": "non-render/control",
