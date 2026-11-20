@@ -1013,8 +1013,10 @@ cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
 
 Only the selected mesh is checked. Its row under Spaces dials its address with its recorded TLS
 requirement, and every other row carries no connection state, under the note that says what was
-dialed. When `--server` names another address, that address is the only broker dialed, and the
-selected mesh's row carries no state either. In `--json` each of those rows is `not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
+dialed. A trailing slash on the same NATS URL does not change its address: the Spaces row uses the
+selected broker's check. When `--server` names another address, that address is the only broker
+dialed, and the selected mesh's row carries no state either. In `--json` each of those rows is
+`not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
 recorded TLS requirement. Each row then shows the check of its own address, the selected mesh's
 row included when `--server` names another.
 
