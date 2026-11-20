@@ -45,13 +45,13 @@ export const SERVICE_READY = "ready";
 export const SERVICE_EXITED = "exited";
 /** Restart-intensity escalation (§13.6 virtual endpoints): the instance stops restarting and
  *  the lifecycle retires terminally; readers treat it as permanently not-startable. The state
- *  is IRREVERSIBLE at {@link writeServiceStatus}: no later status write (any epoch) replaces
+ *  is IRREVERSIBLE at `writeServiceStatus` in endpoint-service.ts: no later status write (any epoch) replaces
  *  it — the only touch a stored escalated row admits is the supervisor's own revision-pinned
  *  retirement mark, written directly by the reconciler, never through this writer. */
 export const SERVICE_ESCALATED = "escalated";
 
 /** The SUPERVISOR-OWNED status fields (§13.6 restart intensity): the durable restart history
- *  and the retirement-complete mark. {@link writeServiceStatus} carries them forward on every
+ *  and the retirement-complete mark. `writeServiceStatus` in endpoint-service.ts carries them forward on every
  *  INSTANCE-side write and strips whatever the caller supplied; ONLY a holder of the branded
  *  {@link SupervisorWriteGrant} may originate them or the `escalated` state. */
 export const SERVICE_RESTART_HISTORY_FIELD = "restarts";
