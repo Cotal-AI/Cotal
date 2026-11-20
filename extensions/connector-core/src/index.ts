@@ -19,6 +19,7 @@ export * from "./framing.js";
 export * from "./inline-delivery.js";
 export * from "./feedback.js";
 export * from "./tool-specs.js";
+export { aheadNote, connectionNotReadyWarning, INBOX_WINDOW_CHARS, READ_TAKE_ROUNDS, renderInbox, type InboxResponse } from "./tool-specs-inbox.js";
 export * from "./orientation.js";
 export * from "./briefing.js";
 export * from "./docs.js";

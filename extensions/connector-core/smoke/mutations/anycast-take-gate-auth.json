@@ -39,7 +39,7 @@
     },
     {
       "name": "the read takes every request in its preview instead of the ones its reply carries",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return picked;",
       "replace": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return p;",
       "expectRed": "6c the requests it left still read waiting",
@@ -48,7 +48,7 @@
     },
     {
       "name": "a refused take keeps its room, so the request behind it is not carried",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "    if (!missed.length || showable) break;",
       "replace": "    break;",
       "expectRed": "6e the next read carries the one still waiting and never the cancelled one",
@@ -174,7 +174,7 @@
     },
     {
       "name": "a read whose caller went away still takes what it chose",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "round < READ_TAKE_ROUNDS && !signal?.aborted; round++",
       "replace": "round < READ_TAKE_ROUNDS; round++",
       "expectRed": "15a the request that read would have shown still reads waiting",
@@ -183,7 +183,7 @@
     },
     {
       "name": "the held note is read before the take",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "  const { warning, signal, ...render } = opts;",
       "replace": "  const { signal, ...render } = opts;\n  const frozen = opts.warning();\n  const warning = () => frozen;",
       "expectRed": "16a a read that shows a DM names the request its take left held",
@@ -192,7 +192,7 @@
     },
     {
       "name": "the focus read's empty answer carries no connection note read after the take",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "        const connectionWarning = inboxConnectionWarning(agent);\n        const warning = focusWarning();",
       "replace": "        const connectionWarning = \"\";\n        const warning = focusWarning();",
       "expectRed": "16b in focus mode a read whose take left it held says so, not that the inbox is empty",
@@ -201,7 +201,7 @@
     },
     {
       "name": "an undecided take ends the read with nothing chosen in its place",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "    if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));",
       "replace": "    if (undecided.size) break;",
       "expectRed": "17a the reply carries the channel post and not the request",
@@ -255,7 +255,7 @@
     },
     {
       "name": "a reply chosen again from what needs no take still offers a request never asked",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": " && (!showable || showable.has(i.recvKey))",
       "replace": "",
       "expectRed": "17c a read whose take is undecided names nothing of the request behind it that it never asked",

@@ -228,7 +228,7 @@
     },
     {
       "name": "a read whose client is gone still clears what it shows",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-inbox.ts",
       "find": "        const keeps = () => peek === true || call?.signal?.aborted === true;",
       "replace": "        const keeps = () => peek === true;",
       "expectRed": "a read its client dropped clears nothing it could not hand over",
