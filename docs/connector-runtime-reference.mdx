@@ -69,6 +69,14 @@ Concurrent triggers join that rebuild instead of opening parallel connections.
 A failed post-connect bind closes its partial transport before another attempt begins.
 Unacknowledged durable messages remain eligible for redelivery after the endpoint rebinds.
 `cotal_reconnect` requests this recovery manually.
+
+A websocket connection can die without a reset, for example while a laptop sleeps. When the
+native ping check then finds the connection stale, the client closes the socket and waits at most
+5 seconds for the server to answer the closing handshake. After that it treats the socket as closed
+and starts its own reconnect attempts, so the connection comes back once the network does.
+A failed websocket dial names the URL it dialed, whether the socket had opened, how long it had
+been trying or open, and any reason the runtime or the server gave. That text reaches the endpoint's
+`warning` and `error` events, `connectionIssue` and the `cotal_reconnect` reply.
 When channel drop tracking is exhausted, reconnect reports transport recovery and the
 channel degradation that remains. Ambient channel traffic stays suppressed until the
 session restarts. Direct messages and anycast remain available, and fresh mentions on

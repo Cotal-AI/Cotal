@@ -948,7 +948,7 @@ export class MeshAgent extends EventEmitter {
         this.handleEndpointWarning(e);
         return { ok: false, message: `Reconnect failed: ${missingInboxIssue(e)}` };
       }
-      return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically — or run /reconnect to retry now.` };
+      return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically; call cotal_reconnect again to retry now.` };
     }
   }
 

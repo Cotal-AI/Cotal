@@ -11,6 +11,8 @@ import { createBoundClaudeTranscriptSource } from "./agui-source.js";
 
 const PLUMBING_MS = 60_000;
 const JOIN_MS = 20_000;
+/** How long a disconnect waits for the event plane's queued work before it stops the agent. */
+const PLANE_SETTLE_MS = 3_000;
 /** How often a pending request is replayed to the authority while the person decides, and how long
  *  past its expiry a replay may still bring the recorded decision before the host stops asking. */
 const WATCH = { pollMs: 10_000, graceMs: 60_000 };
@@ -85,6 +87,24 @@ const reason = (error: unknown): string => (error instanceof Error ? error.messa
 function unfinished(id: string, why: string): string {
   return `This conversation is disconnected from the mesh, but its identity cleanup is not finished: ${why}. ` +
     `Call cotal_disconnect with connection_id ${id} to retry it now, or cotal_connect to retry it and then connect again.`;
+}
+
+/** Stop a conversation's event plane before its agent stops, waiting at most {@link PLANE_SETTLE_MS}
+ *  for the holder's queued work. That work is a flush still publishing, and while the mesh is down
+ *  it ends only when its publish fails, so an unbounded wait kept a disconnect from reaching the
+ *  agent stop. Work still running when the wait ends is not cancelled: the agent stop that follows
+ *  closes the connection under it, and its events stay in the transcript. */
+async function closePlane(plane: ReturnType<typeof createClaudeEventPlane> | undefined): Promise<void> {
+  if (!plane) return;
+  plane.stop();
+  let timer: NodeJS.Timeout | undefined;
+  const settled = await Promise.race([
+    plane.events.close().then(() => true, () => true),
+    new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), PLANE_SETTLE_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (!settled)
+    process.stderr.write(`[cotal-connector] the event plane did not settle within ${PLANE_SETTLE_MS / 1000} s of the disconnect; stopping the connection anyway, and unpublished events stay in the transcript\n`);
 }
 
 function launchEnv(base: NodeJS.ProcessEnv, printed: Record<string, string>): NodeJS.ProcessEnv {
@@ -275,8 +295,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       if (config.userAuth) reap(config.space);
       return conn;
     } catch (error) {
-      plane?.stop();
-      await plane?.events.close().catch(() => {});
+      await closePlane(plane);
       await agent?.stop().catch(() => {});
       try { await retire(dir); }
       catch { if (context && dir) pending.set(context, dir); }
@@ -289,8 +308,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
     if (h.closing) return h.closing;
     h.closing = (async () => {
       if (!h.stopped) {
-        h.plane?.stop();
-        await h.plane?.events.close();
+        await closePlane(h.plane);
         await h.conn.agent.stop();
         h.stopped = true;
       }
