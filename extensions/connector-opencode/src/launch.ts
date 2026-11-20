@@ -51,6 +51,15 @@ function resolveOpencodeBin(): string {
 }
 
 export const BIN = resolveOpencodeBin();
+
+/** The file `bin` names, for a message: itself when it is a path, else its first match on PATH. */
+function located(bin: string): string {
+  if (bin.includes("/") || bin.includes("\\")) return bin;
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir && existsSync(join(dir, bin))) return join(dir, bin);
+  }
+  return bin;
+}
 const USERNAME = "opencode";
 
 /** Secret gating the spawned server's HTTP API (see SECURITY above). A caller that drives the
@@ -207,7 +216,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     process.stderr.write(`[cotal-connector] OpenCode version probe failed${stderr ? `: ${stderr.split(/\r?\n/).slice(-2).join(" | ")}` : ""}\n`);
     process.exit(1);
   }
-  const line = opencodeLine(versionRaw, BIN);
+  const line = opencodeLine(versionRaw, located(BIN));
 
   mkdirSync(agentHome, { recursive: true });
   // A launcher killed between starting the serve and recording it would leave a serve on this DB that
