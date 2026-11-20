@@ -130,7 +130,7 @@
     },
     {
       "name": "channelMembers lists a principal once per covering row",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "      const ids = new Set(\n        members\n",
       "replace": "      const ids = new Array<string>().concat(\n        members\n",
       "expectRed": "channelMembers lists alice once on review.b, which her own row and review.> both cover",
@@ -140,7 +140,7 @@
     },
     {
       "name": "channelMembers counts a family row on a live-class channel",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-subscriptions.ts",
       "find": "(stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel))",
       "replace": "(isChannelFamily(r.channel) && subjectMatches(r.channel, channel))",
       "expectRed": "channelMembers leaves alice off the live-class review.quiet, where review.> stores nothing",
