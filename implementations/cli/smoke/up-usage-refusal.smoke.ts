@@ -115,6 +115,19 @@ for (const { args, message } of cases) {
   check(`up ${args.join(" ")} prints the error and the help on stderr, nothing on stdout, exit 1`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Usage/.test(text.stderr), shown(text));
 }
 
+for (const [flag, value] of [
+  ["--service-endpoints"], ["--exchange-public-port", "43033"],
+  ["--exchange-public-url", "https://example.test"], ["--exchange-trusted-proxy"],
+  ["--advertised-server", "nats://127.0.0.1:43033"], ["--agent-provisioning-url", "https://example.test"],
+] as const) {
+  const result = run(["up", "--open", flag, ...(value === undefined ? [] : [value]), "--space", "flags-audit", "--server", "nats://127.0.0.1:43034", "--json"]);
+  const error = result.envelope?.error;
+  check(`up --open ${flag} refuses USAGE_INVALID before writing project state`,
+    result.status === 1 && result.envelope?.outcome === "refused" && error?.code === "USAGE_INVALID"
+      && error.message === `${flag} can only be used with user auth. Nothing started.`
+      && error.remedy?.includes("--user-auth instead of --open") === true && !existsSync(join(folder, ".cotal")), shown(result));
+}
+
 // First-enable user auth must not leave static signing authority on any startup route.
 for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
   for (const idp of [undefined, "not-an-idp", "https://user:secret@example.com/auth"]) {

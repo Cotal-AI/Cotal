@@ -32,7 +32,7 @@
  * Run: pnpm smoke:up-restore-reentry:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -211,6 +211,45 @@ try {
     restoredStatus.status === 0 && launcher !== undefined && restoredStatus.stdout.includes(`or resume with bare \`${launcher} up\``) && !restoredStatus.stdout.includes("--accept-missing-source"), tail(restoredStatus).slice(-1800));
   const made = runSync(["backup", "create", artifact, "--only", "registry"]);
   ok("the registry backup exited 0", made.status === 0, tail(made).slice(-1200));
+
+  const before = readFileSync(journalPath);
+  const identity = lstatSync(store, { bigint: true });
+  const attempts = join(root, ".cotal", "maintenance", "attempts");
+  const staging = () => JSON.stringify(existsSync(attempts) ? readdirSync(attempts).sort() : null);
+  const stagedBefore = staging();
+  for (const [flags, message, code] of [
+    [["--no-manager"], /--no-manager cannot be combined with --restore: the restore needs a manager/, 1],
+    [["--no-manager", "--runtime", "pty"], /--no-manager cannot be combined with --restore/, 1],
+    [["--restore-only", "full"], /--restore-only takes registry/, 1],
+    [["--file", "cotal.yaml"], /--restore cannot be combined with --file/, 1],
+    [["--channels", "channels.json"], /--restore cannot be combined with --file/, 1],
+    [["--rotate-sys"], /--restore cannot be combined with --rotate-sys/, 1],
+    [["--auth-timeout", "2"], /--auth-timeout cannot be combined with --restore/, 1],
+    [["--max-payload", "1048576"], /--max-payload cannot be combined with --restore/, 1],
+    [["--account-resolver", "full"], /--account-resolver cannot be combined with --restore/, 1],
+    [["--recreate-membership-store"], /--recreate-membership-store cannot be combined with --restore/, 1],
+    [["--recreate-issued-stores", "rescue"], /--recreate-issued-stores cannot be combined with --restore/, 1],
+    [["--manager-name", "backup-manager"], /--manager-name.*cannot be combined with --restore/, 1],
+    [["--seat-cap", "5"], /--seat-cap.*cannot be combined with --restore/, 1],
+    [["--space", "wrong-space"], /--space .* does not match the preserved space/, 1],
+    [["--user-auth"], /--user-auth conflicts with the preserved auth mode/, 1],
+    [["--logfile-size-limit", "0"], /--logfile-size-limit must be a positive integer/, 1],
+    [["--logfile-max-num", "2"], /--logfile-max-num require --log-file/, 1],
+    [["--host", "127.0.0.2"], /--host .* and --server .* name different addresses/, 1],
+    [["--server", server.replace("nats:", "tls:")], /no TLS certificate and key are configured/, 1],
+    [["--service-endpoints"], /--service-endpoints can only be used with user auth/, 1],
+    [["--exchange-public-port", "43033"], /--exchange-public-port can only be used with user auth/, 1],
+    [["--runtime", "missing-restore-runtime"], /runtime did not pass preflight/, 2],
+    [["--json"], /retained native launcher, which has no structured or plain receipt/, 2],
+    [["--plain"], /retained native launcher, which has no structured or plain receipt/, 2],
+  ] as const) {
+    const result = runSync(["up", "--restore", artifact, "--detach", ...flags]);
+    const after = lstatSync(store, { bigint: true });
+    ok(`${flags.join(" ")} refuses with the preserved store and ready journal untouched`,
+      result.status === code && message.test(tail(result)) && readFileSync(journalPath).equals(before)
+        && journal().state === "ready" && identity.dev === after.dev && identity.ino === after.ino && staging() === stagedBefore,
+      { status: result.status, log: tail(result).slice(0, 1000), state: journal().state });
+  }
 
   console.log("\n2) SUBJECT A: the first `up --restore` reaches the listener-bind boundary");
   const restore = runSync(

@@ -95,7 +95,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, connectIsolatedBroker, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { readPreviousRunJournals, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
@@ -436,9 +436,6 @@ async function validateManifest(
   if (manifest.space !== ready.space)
     throw new CommandFailure("refused", "CONFLICT", `backup belongs to space ${JSON.stringify(manifest.space)}, not ${JSON.stringify(ready.space)}; the preserved cut was not changed`, { target: { space: ready.space, backupSpace: manifest.space }, remedy: `restore it on the root that preserved ${JSON.stringify(manifest.space)}, or use a backup of ${JSON.stringify(ready.space)}` });
   if (manifest.mode !== ready.mode) throw new Error(`backup auth mode ${manifest.mode} does not match preserved source mode ${ready.mode}`);
-  if (flags.space && flags.space !== manifest.space) throw new Error(`--space ${JSON.stringify(flags.space)} does not match backup space ${JSON.stringify(manifest.space)}`);
-  if (flags.open && manifest.mode !== "open") throw new Error("--open conflicts with the backup auth mode");
-  if (flags["user-auth"] && manifest.mode !== "user") throw new Error("--user-auth conflicts with the backup auth mode");
   const held = artifactStreams(manifest);
   const selected = flags["restore-only"] === "registry" ? spaceBackupInventory(manifest.space).registry : held;
   const actual = manifest.streams.map((entry) => entry.stream);
@@ -947,9 +944,39 @@ function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJ
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
 }
 
-/** `progress` receives the seat admission lines. `up --restore` leaves them on stdout; `backup restore`
- *  routes them to stderr so its receipt stays the only stdout document. */
-export async function prepareRestore(root: string, flags: RestoreFlags, progress?: (line: string) => void): Promise<PreparedRestore> {
+type RestoreLaunch = Pick<PreparedRestore, "root" | "targetPath" | "space" | "mode" | "server" | "host" | "runtime">;
+
+/** Check the named artifact without taking a lock or staging it. */
+export function restoreArtifactPath(root: string, dir: string, source: string): string {
+  const named = resolve(dir);
+  const missing = missingBackupPath(named);
+  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; `cotal backup verify <dir>` checks one before a restore" });
+  const path = realpathSync.native(named);
+  const problem = artifactOverlapRefusal(root, path, source) ?? notAnArtifactRefusal(root, path, "nothing was restored", { root });
+  if (problem) throw problem;
+  return path;
+}
+
+/** The launch that will open the restored store, derived without creating it. */
+export function restoreLaunch(root: string, flags: RestoreFlags, journal: MaintenanceReadyRecord) {
+  const controller = cutController(journal.cut);
+  const defaultStore = join(root, ".cotal", "nats");
+  const source = preservedSourceState(root, journal.source);
+  const targetPath = resolve(flags["store-dir"] ?? (controller || source.state === "missing" || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+  const resume = readMaintenanceResumeDocument(root, journal.resume);
+  const agents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
+  const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
+  if (runtimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${runtimes.join(", ")}`);
+  const launch = resume.launch as { server?: unknown } | undefined;
+  const server = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof launch?.server === "string" ? launch.server : "nats://127.0.0.1:4222"));
+  const host = (!controller ? flags.host : undefined) ?? new URL(server).hostname;
+  const runtime = flags.runtime ?? runtimes[0] ?? "pty";
+  return { launch: { root, targetPath, space: journal.space, mode: journal.mode, server, host, runtime } satisfies RestoreLaunch, resume, preservedRuntime: runtimes[0], source };
+}
+
+/** Recheck the validated launch under the operation lock, before staging. `progress` receives the
+ *  seat admission lines, which `backup restore` routes to stderr to keep stdout for its receipt. */
+export async function prepareRestore(root: string, flags: RestoreFlags, validateLaunch?: (launch: RestoreLaunch, controller: boolean) => Promise<void>, progress?: (line: string) => void): Promise<PreparedRestore> {
   const attemptId = `restore-${randomUUID()}`;
   const serverNonce = randomUUID().replaceAll("-", "");
   const serverName = `${attemptId}-${serverNonce}`;
@@ -962,16 +989,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
   const recorded = readMaintenanceJournal(root);
   if (!recorded) throw notRestorable(root, undefined);
   // A path that names nothing is refused here too, saying whether its folder or the artifact is missing.
-  const named = resolve(flags.restore);
-  const missing = missingBackupPath(named);
-  if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(named, missing)}; nothing was restored`, { target: { root, directory: named, folder: dirname(named), missing }, remedy: "name an existing backup artifact folder; `cotal backup verify <dir>` checks one before a restore" });
-  // So is a path that cannot be an artifact, saying what it is: one that is, holds or sits inside
-  // the store the restore replaces or the folder it stages in, a file, or a folder no create wrote.
-  const namedPath = realpathSync.native(named);
-  const overlap = artifactOverlapRefusal(root, namedPath, recorded.source.path);
-  if (overlap) throw overlap;
-  const notArtifact = notAnArtifactRefusal(root, namedPath, "nothing was restored", { root });
-  if (notArtifact) throw notArtifact;
+  restoreArtifactPath(root, flags.restore, recorded.source.path);
   let lock = acquireStackOperationLock(root, "restore");
   let staged: StagedArtifact | undefined;
   let transitioned = false;
@@ -1003,9 +1021,10 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       journal = rollbackRestoreWithBroker(lock, { unrecordedOwnersDead });
     }
     if (!journal || journal.state !== "ready") throw notRestorable(root, journal);
+    const { launch, resume, preservedRuntime, source } = restoreLaunch(root, flags, journal);
+    const { server: effectiveServer, host: effectiveHost, runtime: effectiveRuntime } = launch;
     // A preserved store gone from its recorded path either moved with this folder, which no restore
     // here may replace, or is lost, which only --accept-missing-source restores over.
-    const source = preservedSourceState(root, journal.source);
     if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run the restore");
     if (source.state === "missing" && !flags["accept-missing-source"])
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the preserved store recorded at ${journal.source.path} is missing; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "if this folder was moved, move it back so that path exists again; pass --accept-missing-source only after verifying disaster recovery intent" });
@@ -1020,12 +1039,17 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
         throw new CommandFailure("refused", "USAGE_INVALID", "a controller restore takes its broker address from the cut; --host is refused", { target: { root, space: journal.space } });
       assertControllerRestorable(root, journal, controller, flags["store-dir"]);
     }
+    await validateLaunch?.(launch, Boolean(controller));
+    if (flags.space && flags.space !== journal.space)
+      throw new CommandFailure("refused", "USAGE_INVALID", `--space ${JSON.stringify(flags.space)} does not match the preserved space ${JSON.stringify(journal.space)}; nothing was restored`, { remedy: "omit --space to use the preserved space" });
+    const wrongMode = flags.open && journal.mode !== "open" ? "--open" : flags["user-auth"] && journal.mode !== "user" ? "--user-auth" : undefined;
+    if (wrongMode)
+      throw new CommandFailure("refused", "USAGE_INVALID", `${wrongMode} conflicts with the preserved auth mode; nothing was restored`, { remedy: `omit ${wrongMode} to use the preserved auth mode` });
     const auth = journal.mode === "open" ? undefined : await getSpaceAuth(workspaceSecretStore(root), journal.space);
     if (journal.mode !== "open") validateSpaceAuth(auth, journal.space);
     // Compute user-provider continuity before staging too. The later manifest comparison reuses this
     // value, so malformed trust cannot create an attempt target or move the preserved source first.
     const currentAuthority = await authorityFingerprint(root, journal.space, journal.mode);
-    const stageParent = ensurePrivateAttemptsDir(root).path;
     const artifactPath = realpathSync.native(resolve(flags.restore));
     // Again under the lock: a link in the path may name another folder now, and the journal is reread.
     const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
@@ -1033,13 +1057,12 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // The cut records its source by real path, so a default .cotal/nats that links there is that
     // source and is restored in place, not taken for an alternate target. A missing source is rebuilt
     // where the cut records it, the only target its disaster restore takes (#7049).
-    const defaultStore = join(root, ".cotal", "nats");
     const rebuild = source.state === "missing";
-    targetPath = resolve(flags["store-dir"] ?? (controller || rebuild || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    targetPath = launch.targetPath;
     if (rebuild && targetPath !== journal.source.path)
       throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
-    assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
+    assertRestoreTargetPath(journal.source.path, artifactPath, join(root, ".cotal", "maintenance", "attempts"), targetPath);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that
     // no Cotal store writes would move with it; it is refused before anything moves. A store restored
     // elsewhere stays where it is, and its cleanup refuses instead.
@@ -1047,25 +1070,27 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
       const foreign = oldStoreForeignEntries(journal.source.path);
       if (foreign.length) throw foreignEntriesRefusal(journal.source.path, foreign, "the preserved store", "a restore into it moves that store aside whole, so nothing was restored", "the restore", { root, space: journal.space });
     }
-    // The journal is ready with no live claim, and the artifact/target are proven disjoint from
-    // the attempts directory: any attempts-dir content is dead-attempt residue.
-    sweepAttemptResidue(root);
+    const assertRuntime = (selection: string) => {
+      if (flags["restore-only"] !== "registry" && selection !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
+        throw new CommandFailure("refused", "USAGE_INVALID", `--runtime ${JSON.stringify(flags.runtime)} contradicts the preserved agent runtime ${JSON.stringify(preservedRuntime)}; nothing was restored`, { remedy: "omit --runtime or restore only the registry with --restore-only registry" });
+    };
+    let stageParent: string;
     let artifact: StagedArtifact;
     // A faulty artifact is refused before anything moves, naming the file and fault verify names.
-    try { artifact = stageArtifact(artifactPath, stageParent); }
-    catch (error) {
+    try {
+      if (flags["restore-only"] !== "registry" && flags.runtime && preservedRuntime && flags.runtime !== preservedRuntime)
+        assertRuntime(inspectBackupArtifact(artifactPath, false).selection);
+      stageParent = ensurePrivateAttemptsDir(root).path;
+      // The journal is ready with no live claim, and the artifact/target are disjoint from attempts.
+      sweepAttemptResidue(root);
+      artifact = stageArtifact(artifactPath, stageParent);
+    } catch (error) {
       if (!(error instanceof ArtifactFileFault)) throw error;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);
     const checkpoints = readStagedCheckpoints(artifact);
-    const resume = readMaintenanceResumeDocument(root, journal.resume);
-    const inventoryAgents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
-    const inventoryRuntimes = [...new Set(inventoryAgents
-      .map((agent) => agent.launch?.runtime)
-      .filter((value): value is string => typeof value === "string"))];
-    if (inventoryRuntimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${inventoryRuntimes.join(", ")}`);
     // The partial selection is a property of the artifact, not only of the flag: a registry-only
     // artifact restored without --restore-only registry must still create omitted infrastructure.
     const onlyRegistry = flags["restore-only"] === "registry" || artifact.manifest.selection === "registry";
@@ -1073,9 +1098,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const selection = onlyRegistry ? "registry" as const : "full" as const;
     // Retained agents relaunch under their preserved runtime; a contradicting override must fail
     // in preflight, before any mutation or listener exposure.
-    if (!onlyRegistry && flags.runtime && inventoryRuntimes[0] && flags.runtime !== inventoryRuntimes[0])
-      throw new Error(`--runtime ${flags.runtime} contradicts the preserved agent runtime ${inventoryRuntimes[0]}; omit it or restore registry-only`);
-    const effectiveRuntime = flags.runtime ?? inventoryRuntimes[0] ?? "pty";
+    assertRuntime(artifact.manifest.selection);
     const wanted = onlyRegistry ? spaceBackupInventory(journal.space).registry : artifactStreams(artifact.manifest);
     for (const checkpoint of onlyRegistry ? [] : checkpoints) {
       if (!wanted.includes(checkpoint.stream)) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} is outside the restored selection`);
@@ -1093,8 +1116,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))
       throw new Error("current trust state changed during restore validation");
     await validateManifest(artifact.manifest, flags, journal, authorityBeforeMutation);
-    const resumeLaunch = (resume.launch ?? {}) as { server?: unknown };
-    const effectiveServer = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof resumeLaunch.server === "string" ? resumeLaunch.server : "nats://127.0.0.1:4222"));
     // The restored broker binds this address after commit intent, so another listener there would
     // leave the attempt degraded. It is refused here, before anything moves, as backup create does.
     await assertEndpointUnreachable(effectiveServer).catch((error: Error) => {
@@ -1247,9 +1268,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // A controller alternate restore rewrites the broker definition to the target before commit
     // intent, so a failure up to here still rolls the definition back first.
     if (controller && sourceExists && targetPath !== journal.source.path) reconfigureControllerBroker(lock);
-    const effectiveHost = controller ? new URL(effectiveServer).hostname : flags.host ?? (() => {
-      try { return new URL(effectiveServer).hostname; } catch { return "127.0.0.1"; }
-    })();
     // The controller binding journals each member start before it.
     const controllerLaunch = controller ? newControllerAttemptLaunch() : undefined;
     // The restored broker starts with this cap, so the journal keeps it for a re-entry that adopts it.
