@@ -362,6 +362,8 @@ try {
 if (!repair) {
   const noRuntime: NodeJS.ProcessEnv = { ...env, npm_config_offline: "true" };
   delete noRuntime.XDG_RUNTIME_DIR;
+  delete noRuntime.COTAL_UPDATE_TARGET_VERSION;
+  delete noRuntime.COTAL_UPDATE_PARENT;
   const noDaemon = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], { cwd: root, env: noRuntime, stdio: ["ignore", "pipe", "pipe"] });
   let noRuntimeOutput = "";
   noDaemon.stdout.on("data", chunk => noRuntimeOutput += String(chunk));
