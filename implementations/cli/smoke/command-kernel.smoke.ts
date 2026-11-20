@@ -74,6 +74,18 @@ const noop = async (): Promise<void> => {};
       assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
 
     writeFileSync(join(root, "workflow.cotal.js"), 'const ok = await checkpoint("approve-plan", "Approve the plan?");\nlog(ok.status);\n');
+    for (const words of [["start", "workflow.cotal.js"], ["resume", "run_sample"]]) {
+      for (const timeout of ["9007199254740992ms", "9007199254740991s"]) {
+        const invalid = run(["run", ...words, "--timeout", timeout, "--json"]);
+        assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+        assert.equal(invalid.stderr, "");
+        const report = JSON.parse(invalid.stdout);
+        assert.equal(report.outcome, "refused");
+        assert.equal(report.error.code, "USAGE_INVALID");
+        assert.match(report.error.message, /--timeout .* is out of range/);
+        assert.ok(report.error.message.includes(timeout));
+      }
+    }
     writeFileSync(join(root, "bad-results.json"), '{"checkpoints":{"approve-plan":{"status":"done"}}}');
     const refused = run(["r", "simulate", "./workflow.cotal.js", "--handler", "./bad-results.json"]);
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
