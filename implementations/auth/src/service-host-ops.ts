@@ -13,16 +13,15 @@
  * multi-key batches: every window between two writes is either fenced on its key or settled from
  * what a later invocation reads. The invocation limit and the original deadline are limits, never
  * waits, fences or proof that an earlier write cannot still land. */
-import { createHash } from "node:crypto";
 import type { MsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket, contractDigest, contractStoreContext, endpointCapabilitiesWithin, endpointRegistrationBarrier, endpointToken, epgateKey, mintLifecycleUid, parseEndpointCapabilities, parseServiceSpec, parseServiceStatus, publishContractArtifact, recordAtomicKey, recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest, verifyClusterManifest, verifyClusterRoot, writeServiceStatus, type ContractStoreContext, type EpCapability, type ServiceAuthorityStatus, type ServiceRegistrationSnapshot, type ServicePrincipal, type ServiceRegistrationWitness, type ServiceSpec, type ServiceUidCustodyV1 } from "@cotal-ai/core";
-import { SERVICE_HOST_INVOCATION_MS, openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
+import { EpEnvelopeError, GOVERN_HEAD, RECORD_KINDS, assertLifecycleToken, canonicalJson, contractArtifactCanonicalBytes, epAuthBucket, contractDigest, contractStoreContext, endpointCapabilitiesWithin, endpointRegistrationBarrier, epgateKey, mintLifecycleUid, parseEndpointCapabilities, parseServiceSpec, parseServiceStatus, publishContractArtifact, recordAtomicKey, recordSpecKey, recordStatusKey, registerServiceInstance, serviceEndpointActor, serviceGateApprovalLive, serviceWitnessDigest, verifyClusterManifest, verifyClusterRoot, writeServiceStatus, type ContractStoreContext, type EpCapability, type ServiceAuthorityStatus, type ServiceRegistrationSnapshot, type ServicePrincipal, type ServiceRegistrationWitness, type ServiceSpec, type ServiceUidCustodyV1 } from "@cotal-ai/core";
+import { openAuthorityClient, serviceHostEffectGrants, serviceHostEffectLabel, type ServiceHostEffectReads } from "./authority-client.js";
 import { callerParentRefs } from "./service-caller-ancestry.js";
 import { findActorUnified, findInteractiveActor } from "./ledger.js";
 import { openLifecycleRegistry, registryMaxPayload, registryServerId, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { activatedServiceGateRow, approvedServiceGateRow, assertApprovableServiceGate, serviceGateRows, type ServiceAssignmentBinding, type ServiceGateRows } from "./native-service-gate.js";
-import { nativeServiceNameAuthority, readNativeServiceName, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
+import { nativeServiceNameAuthority, serviceNameKey, serviceNameRowBytes } from "./native-service-name.js";
 import { genuinePlaneHold, readPlaneClaim, type PlaneClaimHold } from "./plane-claim.js";
 import { SERVICE_CALLER_PAYLOAD_KEY, parseServiceCallerPayloadRecord, serviceCallerPayloadCheck, serviceCallerWriteFits, type ServiceCallerPayloadLimits, type ServiceCallerPayloadRecord } from "./service-caller-payload.js";
 import { callerAppendStep, callerBeginStep, callerCutoffStep, immutableGrantView, parseNativeServiceCallerPolicy, servicePolicyKey, type NativeServiceCallerPolicy } from "./service-caller-policy.js";
@@ -30,158 +29,12 @@ import { encodeRoundTrip } from "./service-custody-shapes.js";
 import { cancelServiceCustody, runServiceBootstrap, sealServiceBootstrapIntent, sealServiceCancelIntent, serviceAssignmentGate, serviceCustodyKeys, serviceReservationKeys, type ServiceCancelResult } from "./service-custody.js";
 import { parseServiceHostRequest, parseServiceProposalClusters, parseServiceProposalCommands, type ServiceApprovalResult, type ServiceCallerGrant, type ServiceCallerPolicyView, type ServiceDenyNew, type ServiceHostDebt, type ServiceHostOutcome, type ServiceHostReason, type ServiceHostRequest, type ServiceHostResult, type ServiceNameView, type ServiceOperationRefusal, type ServiceOperationTerminalView, type ServiceOperationView, type ServiceInstanceView, type ServiceProposalCloseReason, type ServiceProposalTombstoneView, type ServiceProposalView, type ServiceSelector } from "./service-host-contract.js";
 import { readRegistryServiceRoot } from "./service-root-reader.js";
-import { HOSTS, Held, S1_REQUEST_TIMEOUT_MS, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, readyAfter, readyBefore, scopeCovers, write, type Ctx, type EndpointClass, type EndpointRow, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope } from "./service-write.js";
+import { HOSTS, Held, S1_REQUEST_TIMEOUT_MS, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, readyAfter, readyBefore, scopeCovers, write, type Ctx, type EndpointClass, type EndpointRow, type ServiceWriteScope } from "./service-write.js";
 import type { ServiceKeys } from "./store.js";
-import { bad, closed, hexN, digest, pick, owner, endpointName, token, ceilingEntryAdmitted, withStatus, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceCapacityRecord, parseServiceAssignmentRecord, parseServiceRequestIntentRecord, parseServiceRequestIntentIndexRecord, parseServiceAdmissionRecord, parseServiceCallerIndexRecord, byEntry, parseServiceCutoffMarkerRecord, serviceMarkerCeilSeconds, SERVICE_CUTOFF_MARGIN_S, enc, requestDigestOf, S2A_MAX_PENDING, S2A_MAX_PENDING_PER_OWNER, S3_MAX_INTENTS_PER_INSTANCE, S3_MAX_CALLER_GRANTS_PER_INSTANCE, type Rec, type RegisterPlan, type ApprovePlan, type RefusePlan, type GrantBody, type CallerGrantPlan, type CallerRevokePlan, type RegisterResult, type RefuseResult, type GrantResult, type OpResult, type Final, type Progress, type OpLive, type OpTerminal, type Op, type Command, type ProposalLive, type ProposalTerminal, type Proposal, type CapEntry, type Capacity, type Cancel, type Assignment, type Admission, type ServiceServeOperation, type Intent, type IntentIndex, type CallerIndex, type CutoffMarker } from "./service-host-records.js";
+import { bad, closed, hexN, digest, pick, owner, endpointName, token, ceilingEntryAdmitted, withStatus, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceAssignmentRecord, parseServiceRequestIntentRecord, parseServiceRequestIntentIndexRecord, parseServiceAdmissionRecord, parseServiceCallerIndexRecord, byEntry, parseServiceCutoffMarkerRecord, serviceMarkerCeilSeconds, SERVICE_CUTOFF_MARGIN_S, enc, requestDigestOf, S2A_MAX_PENDING, S2A_MAX_PENDING_PER_OWNER, S3_MAX_INTENTS_PER_INSTANCE, S3_MAX_CALLER_GRANTS_PER_INSTANCE, type Rec, type RegisterPlan, type ApprovePlan, type RefusePlan, type GrantBody, type CallerGrantPlan, type CallerRevokePlan, type RegisterResult, type RefuseResult, type GrantResult, type OpResult, type Final, type Progress, type OpLive, type Op, type Command, type ProposalLive, type ProposalTerminal, type Proposal, type CapEntry, type Capacity, type Cancel, type Assignment, type Admission, type ServiceServeOperation, type Intent, type IntentIndex, type CallerIndex, type CutoffMarker } from "./service-host-records.js";
 export { S3_MAX_INTENTS_PER_INSTANCE, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceCapacityRecord, parseServiceAssignmentRecord, parseServiceRequestIntentRecord, parseServiceRequestIntentIndexRecord, parseServiceAdmissionRecord, serviceMarkerCeilSeconds } from "./service-host-records.js";
 export type { ServiceServeOperation } from "./service-host-records.js";
-/** Original authority limit of one approve, refuse or register, from its admission. */
-const S2A_OPERATION_TTL_MS = 600_000;
-/** Per-invocation limit for reads, bookkeeping, settlement and native cancellation, and the
- *  longest window an invocation's effect credential may cover. */
-export const S2A_INVOCATION_MS = SERVICE_HOST_INVOCATION_MS;
-/** A proposal's canonical lifetime (canon:203). */
-const S2A_PROPOSAL_LIFETIME_MS = 86_400_000;
-const S2A_MAX_PROPOSAL_BYTES = 256 * 1024;
-/** Fresh decisions after a CAS loss before a step holds. */
-const S2A_MAX_REDECIDE = 4;
-
-/** The space's service host admission row: `open` while the auth service admits service endpoints. */
-export const ADMISSION_KEY = "svchost.admission";
-const CAPACITY_KEY = "svccap.space";
-const opKey = (operationId: string) => `svcop.${operationId}`;
-const proposalKey = (proposalId: string) => `svcprop.${proposalId}`;
-const assignmentKey = (endpoint: string, instanceId: string) => `svcasg.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
-const intentKey = (operationId: string) => `svcint.${hexN(operationId, 32)}`;
-const intentIndexKey = (endpoint: string, instanceId: string) => `svcintx.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
-const callerIndexKey = (endpoint: string, instanceId: string) => `svcpolx.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}`;
-const cutoffKey = (operationId: string) => `svccut.${hexN(operationId, 32)}`;
-const seconds = (ms: number) => Math.floor(ms / 1000);
-
-// ---- identities ---------------------------------------------------------------------------------
-
-const hex32 = (tag: string, space: string, value: string) => createHash("sha256").update(`${tag}\0${space}\0${value}`, "utf8").digest("hex").slice(0, 32);
-/** One id namespace for every host request in a space; a valid lifecycle token. */
-export const serviceHostOperationId = (space: string, requestId: string) => hex32("cotal-service-host-op", space, requestId);
-/** The native cancel identity an expiry settlement derives from recorded facts only. */
-const expiryOperationId = (space: string, approveOperationId: string) => hex32("cotal-service-host-expiry", space, approveOperationId);
-/** A caller grant's id, from its operation: one grant per bound grant request, never reused. */
-const callerGrantId = (space: string, operationId: string) => hex32("cotal-service-caller-grant", space, operationId);
-const expiryRequestDigest = (operationId: string, assignmentDigest: string) =>
-  contractDigest({ v: 1, kind: "service-approval-expiry", operationId, assignmentDigest });
-const proposalIdOf = (proposalDigest: string, registerRequestId: string) =>
-  contractDigest({ v: 1, kind: "service-proposal-id", proposalDigest, registerRequestId }).slice("sha256:".length);
-const approvalDigestOf = (a: { proposalDigest: string; assignmentDigest: string; callerCeiling: EpCapability[]; approvalExpiresAt: number | null; nameAuthorityRevision: number; operationId: string }) =>
-  contractDigest({ v: 1, kind: "service-approval", ...a });
-
-// ---- keyed reads and writes ---------------------------------------------------------------------
-
-type Read<T> = { state: "absent" } | { state: "value"; row: T; bytes: Uint8Array; revision: number };
-
-/** Leader-read one S2-A key. A deletion marker or spent tombstone holds under a key-specific
- *  reason and is never recreated; anything its closed parser refuses holds as malformed. */
-async function read<T>(ctx: Ctx, key: string, what: string, parse: (v: unknown) => T): Promise<Read<T>> {
-  const cur = await leader(ctx, "auth", key);
-  if (cur.state === "absent") return cur;
-  if (cur.state === "marker") return held(`${what}-tombstone`, ctx.step, `${key} carries a ${cur.op} marker; a spent key is never recreated`);
-  if (cur.state === "malformed") return held(`${what}-malformed`, ctx.step, `${key} is not JSON`);
-  try { return { state: "value", row: parse(cur.value), bytes: cur.bytes, revision: cur.revision }; }
-  catch (e) { return held(`${what}-malformed`, ctx.step, message(e)); }
-}
-const readOp = (ctx: Ctx, id: string) => read(ctx, opKey(id), "operation", parseServiceHostOperationRecord);
-const readProposal = (ctx: Ctx, id: string) => read(ctx, proposalKey(id), "proposal", parseServiceProposalRecord);
-const readCapacity = (ctx: Ctx) => read(ctx, CAPACITY_KEY, "capacity", parseServiceCapacityRecord);
-const readAssignment = (ctx: Ctx, endpointName: string, instanceId: string) => read(ctx, assignmentKey(endpointName, instanceId), "assignment", parseServiceAssignmentRecord);
-const readAdmission = (ctx: Ctx) => read(ctx, ADMISSION_KEY, "admission", parseServiceAdmissionRecord);
-const readIntent = (ctx: Ctx, id: string) => read(ctx, intentKey(id), "intent", parseServiceRequestIntentRecord);
-const readIntentIndex = (ctx: Ctx, endpointName: string, instanceId: string) => read(ctx, intentIndexKey(endpointName, instanceId), "intent-index", parseServiceRequestIntentIndexRecord);
-
-/** One zero-history create (no prior) or exact-revision CAS of a closed record. */
-function put<T>(ctx: Ctx, key: string, row: T, parse: (v: unknown) => T, prior?: { revision: number; bytes: Uint8Array }): Promise<number | "moved"> {
-  return write(ctx, "auth", key, encodeRoundTrip(row, parse), prior ? { revision: prior.revision, preimage: prior.bytes } : { create: true });
-}
-const byProposal = (a: CapEntry, b: CapEntry) => (a.proposalId < b.proposalId ? -1 : a.proposalId > b.proposalId ? 1 : 0);
-const putCapacity = (ctx: Ctx, cap: Read<Capacity>, pending: CapEntry[]) =>
-  put(ctx, CAPACITY_KEY, { v: 1, kind: "service-proposal-capacity", pending: [...pending].sort(byProposal) } satisfies Capacity, parseServiceCapacityRecord,
-    cap.state === "value" ? cap : undefined);
-const isEntry = (proposalId: string, registerRequestId: string) => (e: CapEntry) => e.proposalId === proposalId && e.registerRequestId === registerRequestId;
-/** Canonical expiry only: an entry past `expiresAtMs` is ineligible. No grace is temporal proof. */
-const eligible = (cap: Read<Capacity>, now: number) => (cap.state === "value" ? cap.row.pending.filter((e) => e.expiresAtMs > now) : []);
-
-async function nameOf(ctx: Ctx, endpointName: string): Promise<ServiceNameView | undefined> {
-  const r = await bounded(ctx, () => readNativeServiceName(ctx.h.registry, { accountPublicKey: ctx.h.accountPublicKey, space: ctx.h.space }, endpointName));
-  if (!r.ok) return held("unavailable", ctx.step, "timedOut" in r ? "the service name read timed out" : message(r.error));
-  return r.value;
-}
-
-/** Remove one proposal's capacity entry. True only when a read or this CAS observed it gone; an
- *  unobserved release is debt, never success. */
-async function release(ctx: Ctx, proposalId: string, registerRequestId: string): Promise<boolean> {
-  try {
-    for (let i = 0; i < S2A_MAX_REDECIDE; i++) {
-      const cap = await readCapacity(ctx);
-      if (cap.state === "absent" || !cap.row.pending.some(isEntry(proposalId, registerRequestId))) return true;
-      if ((await putCapacity(ctx, cap, cap.row.pending.filter((e) => !isEntry(proposalId, registerRequestId)(e)))) !== "moved") return true;
-    }
-    return false;
-  } catch (e) {
-    if (e instanceof Held && e.reason !== "readiness" && e.reason !== "post-write-readiness") return false;
-    throw e;
-  }
-}
-
-const isFinal = (p: Progress): p is Final => p.state === "complete" || p.state === "refused" || p.state === "superseded";
-const sameDebt = (a: ServiceHostDebt[], b: ServiceHostDebt[]) => canonicalJson(a) === canonicalJson(b);
-
-/** Re-read and CAS the live operation until `next` is durable or reports nothing to change. A
- *  terminal record is returned as stored. */
-async function updateOp(ctx: Ctx, operationId: string, next: (op: OpLive) => OpLive | undefined): Promise<{ op: Op; wrote: boolean }> {
-  for (let i = 0; i < S2A_MAX_REDECIDE; i++) {
-    const cur = await readOp(ctx, operationId);
-    if (cur.state === "absent") return held("reference-unavailable", ctx.step, "the operation binding is not readable");
-    if (cur.row.kind !== "service-host-operation") return { op: cur.row, wrote: false };
-    const n = next(cur.row);
-    if (n === undefined) return { op: cur.row, wrote: false };
-    if ((await put(ctx, opKey(operationId), n, parseServiceHostOperationRecord, cur)) !== "moved") return { op: n, wrote: true };
-  }
-  return held("contention", ctx.step);
-}
-
-/** Record an outcome (a stored one wins), keep any debt, then compact once no debt remains.
- *  `wrote` is whether this invocation recorded the outcome. */
-async function settle(ctx: Ctx, operationId: string, outcome: Final | undefined, debts: ServiceHostDebt[]): Promise<{ op: Op; wrote: boolean }> {
-  const step = await updateOp(ctx, operationId, (cur) => {
-    const progress = isFinal(cur.progress) ? cur.progress : outcome;
-    if (progress === undefined || (progress === cur.progress && sameDebt(cur.debt, debts))) return undefined;
-    return { ...cur, progress, debt: debts };
-  });
-  const wrote = step.wrote && step.op.kind === "service-host-operation" && outcome !== undefined && step.op.progress === outcome;
-  if (step.op.kind !== "service-host-operation" || !isFinal(step.op.progress) || step.op.debt.length) return { op: step.op, wrote };
-  for (let i = 0; i < S2A_MAX_REDECIDE; i++) {
-    const cur = await readOp(ctx, operationId);
-    if (cur.state === "absent") return held("reference-unavailable", ctx.step, "the operation binding is not readable");
-    if (cur.row.kind !== "service-host-operation") return { op: cur.row, wrote };
-    const live = cur.row;
-    if (!isFinal(live.progress) || live.debt.length) return { op: live, wrote };
-    const terminal: OpTerminal = { v: 1, kind: "service-host-operation-terminal", operationId: live.operationId, requestId: live.requestId,
-      requestDigest: live.requestDigest, operation: live.operation, account: live.account, granter: live.granter, admittedAtMs: live.admittedAtMs,
-      projection: live.projection, outcome: live.progress };
-    if ((await put(ctx, opKey(operationId), terminal, parseServiceHostOperationRecord, cur)) !== "moved") return { op: terminal, wrote };
-  }
-  return held("contention", ctx.step);
-}
-const outcomeOf = (op: Op): Final | undefined => (op.kind === "service-host-operation-terminal" ? op.outcome : isFinal(op.progress) ? op.progress : undefined);
-const debtOf = (op: Op) => (op.kind === "service-host-operation" ? op.debt : []);
-
-/** Retry recorded capacity debt; returns the debt that remains. */
-async function retryDebt(ctx: Ctx, op: Op, registerRequestIdOf: (proposalId: string) => Promise<string | undefined>): Promise<ServiceHostDebt[]> {
-  const left: ServiceHostDebt[] = [];
-  for (const d of debtOf(op)) {
-    const reg = await registerRequestIdOf(d.proposalId);
-    if (d.kind !== "capacity-release" || reg === undefined || !(await release(ctx, d.proposalId, reg))) left.push(d);
-  }
-  return left;
-}
+import { S2A_OPERATION_TTL_MS, S2A_INVOCATION_MS, S2A_PROPOSAL_LIFETIME_MS, S2A_MAX_PROPOSAL_BYTES, S2A_MAX_REDECIDE, ADMISSION_KEY, CAPACITY_KEY, opKey, proposalKey, assignmentKey, intentKey, intentIndexKey, callerIndexKey, cutoffKey, seconds, serviceHostOperationId, expiryOperationId, callerGrantId, expiryRequestDigest, proposalIdOf, approvalDigestOf, type Read, read, readOp, readProposal, readCapacity, readAssignment, readAdmission, readIntent, readIntentIndex, put, putCapacity, isEntry, eligible, nameOf, release, isFinal, sameDebt, updateOp, settle, outcomeOf, debtOf, retryDebt, type Arms, type Inv, denied, finalArm, type Live } from "./service-host-kernel.js";
 
 // ---- engine -------------------------------------------------------------------------------------
 
@@ -359,11 +212,6 @@ interface ServiceRegisterRequest {
 type ServiceRegisterResult = { v: 1; kind: "service-endpoint-host"; operation: "register"; requestId: string; space: string; accountPublicKey: string } & (
   | { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; proposalDigest: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] }
   | Arms);
-type Arms =
-  | { state: "pending"; operationId: string; phase: string; notBefore?: number; assignmentDigest?: string; denyNew?: ServiceDenyNew; root?: "none" | "revoked" | "retained-stamped"; debt?: ServiceHostDebt[] }
-  | { state: "held"; operationId: string; reason: string; phase: string; assignmentDigest?: string; denyNew?: ServiceDenyNew; debt?: ServiceHostDebt[] }
-  | { state: "refused"; operationId: string; reason: ServiceOperationRefusal; boundOperationId?: string; debt?: ServiceHostDebt[] }
-  | { state: "denied"; reason: ServiceHostReason; boundOperationId?: string };
 export interface ServiceHostOperations {
   readonly space: string;
   readonly accountPublicKey: string;
@@ -399,12 +247,6 @@ type ServiceAssignmentState =
   | { state: "approved"; proposalId: string; assignmentDigest: string; approvalDigest: string; registrationRequestId: string | null }
   | { state: "revoking"; proposalId: string; assignmentDigest: string; operationId: string; denyNew: ServiceDenyNew };
 
-interface Inv { host: ServiceCustodyHost; h: HostInternals; writes: ServiceWriteScope; endMs: number; operationId: string; bound: boolean; assignmentDigest?: string; contract?: ContractStoreContext }
-const denied = (reason: ServiceHostReason, boundOperationId?: string): Arms => ({ state: "denied", reason, ...(boundOperationId ? { boundOperationId } : {}) });
-const refusedArm = (operationId: string, reason: ServiceOperationRefusal, debts: ServiceHostDebt[], boundOperationId?: string): Arms =>
-  ({ state: "refused", operationId, reason, ...(boundOperationId ? { boundOperationId } : {}), ...(debts.length ? { debt: debts } : {}) });
-const finalArm = (operationId: string, f: Exclude<Final, { state: "complete" }>, debts: ServiceHostDebt[]): Arms =>
-  f.state === "refused" ? refusedArm(operationId, f.reason, debts) : refusedArm(operationId, "superseded", debts, f.boundOperationId);
 
 function badRequest(detail: string): never { throw new EpEnvelopeError("bad-request", `service host request: ${detail}`); }
 
@@ -665,7 +507,6 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
 
   // ---- shared closes ------------------------------------------------------------------------------
 
-  type Live<T> = Extract<Read<T>, { state: "value" }>;
   const tombstone = (p: ProposalLive, state: ProposalTerminal["state"], operationId: string | null, approvalDigest: string | null, reason: ServiceProposalCloseReason | null): ProposalTerminal => ({
     v: 1, kind: "service-proposal-terminal", proposalId: p.proposalId, proposalDigest: p.proposalDigest, owner: p.owner, endpoint: p.endpoint, instanceId: p.instanceId,
     register: p.register, state, operationId, approvalDigest, reason, atMs: Date.now() });

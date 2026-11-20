@@ -13,7 +13,8 @@ import {
 } from "@cotal-ai/core";
 import type { UserTokenIssuer } from "./issuer.js";
 import type { ServiceHostGranter, ServiceHostRequest, ServiceHostResult, ServiceProposalTombstoneView, ServiceProposalView } from "./service-host-contract.js";
-import { serviceHostOperationId, serviceRegisterHostRequest, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
+import { serviceRegisterHostRequest, type ServiceHostOperations, type ServiceServeOperation, type ServiceServeResult } from "./service-host-ops.js";
+import { serviceHostOperationId } from "./service-host-kernel.js";
 
 export const SERVICE_ENDPOINT_AUTHORITY_PATH = "/service-endpoint-authority";
 /** The authenticated host route: an owner's decisions and reads with a fresh IdP proof on either

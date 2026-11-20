@@ -103,7 +103,8 @@ import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-iss
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { parseServiceHostRequest, type ServiceEndpointHost } from "./service-host-contract.js";
-import { S2A_INVOCATION_MS, openServiceHostEffect, openServiceHostOperations, type ServiceHostEffect, type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions } from "./service-host-ops.js";
+import { openServiceHostEffect, openServiceHostOperations, type ServiceHostEffect, type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions } from "./service-host-ops.js";
+import { S2A_INVOCATION_MS } from "./service-host-kernel.js";
 import { SERVICE_ENDPOINT_AUTHORITY_PATH, SERVICE_ENDPOINT_HOST_PATH, answerServiceAuthority, serviceAuthorityDenied, serviceAuthorityInfo, serviceHostGranterFor, type ServiceAuthorityCaller, type ServiceAuthorityDoor } from "./service-endpoint-authority.js";
 import { validateServiceRenewalProof } from "./service-renewal.js";
 import { openAuthLedgerScannerCandidate } from "./ledger-scanner.js";
