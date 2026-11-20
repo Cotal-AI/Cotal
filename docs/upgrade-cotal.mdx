@@ -364,6 +364,9 @@ A failed install or validation leaves the live prefix unchanged. Interrupted pro
 before the CLI reads extension declarations. Extension imports used for validation remain serial
 so each package's registrations can be attributed and checked independently.
 Every update reads and verifies its own package closure without reusing results from an earlier command.
+On Linux and macOS, self-update stops staging if the download stops making progress or staging
+reaches its five-minute limit. Cotal leaves the installed version and running local spaces unchanged.
+When the registry is reachable again, run `cotal update --self` again.
 If the release is still reaching the registry, it refuses with retry guidance without starting
 the global install or connector reconciliation.
 If npm's install reports `ETARGET` for the selected latest `cotal-ai` version, the command

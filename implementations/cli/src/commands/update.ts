@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { lookup } from "node:dns/promises";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -195,6 +195,7 @@ export interface UpdateRuntime {
     env: NodeJS.ProcessEnv,
     inherit?: boolean,
     windowsVerbatimArguments?: boolean,
+    staging?: string,
   ): Promise<CommandResult>;
   verifyGlobalEntry(root: string, expectedVersion: string): string;
   out(message: string): void;
@@ -1401,7 +1402,7 @@ class DependencyCheckInterrupted extends Error {}
 class DependencyCheckNoSpace extends Error {}
 class RegistryUnavailable extends Error {}
 
-const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
+const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
 
 function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
@@ -1611,7 +1612,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
-      if (!execution && message(error).startsWith("target staging failed: ") && registryNetworkFailure(error)) {
+      if (!execution && (error instanceof RegistryUnavailable || message(error).startsWith("target staging failed: ") && registryNetworkFailure(error))) {
         recordUpdateDeferral(targetVersion, "waiting for registry access", true);
         rt.out("The registry cannot be reached; nothing was changed.");
         return 0;
@@ -1984,14 +1985,28 @@ async function runGlobalProcess(
   env: NodeJS.ProcessEnv,
   inherit = false,
   windowsVerbatimArguments = false,
+  staging?: string,
 ): Promise<CommandResult> {
   const gated = process.platform === "linux";
   const mutation = beginGlobalUpdateChild(root, operation, gated);
   let cache: string | undefined;
   let published = false;
   let preservePending = false;
+  const watchers: FSWatcher[] = [];
+  let elapsed: ReturnType<typeof setTimeout> | undefined;
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  let stopping: Promise<void> | undefined;
   try {
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
+    if (staging !== undefined) {
+      // npm is quiet during a download. Its private cache receives the archive bytes and
+      // the private prefix changes as packages unpack. Neither depends on terminal output.
+      for (const path of [cache, staging]) {
+        const watcher = watch(path, { recursive: true }, () => idle?.refresh());
+        watcher.on("error", () => { clearTimeout(idle); idle = undefined; watcher.close(); });
+        watchers.push(watcher);
+      }
+    }
     // The pipe closes without permission if the parent dies before publishing the PID.
     // exec keeps the published PID and the real child keeps its original argv and stdin.
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
@@ -2022,9 +2037,54 @@ async function runGlobalProcess(
       }
     }
     permit?.end(published ? "run\n" : undefined);
-    const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>
-      child.once("close", (status, signal) => resolveClose({ status, signal })),
-    );
+    let rejectClose: (error: unknown) => void;
+    const close = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
+      rejectClose = reject;
+      child.once("close", (status, signal) => resolveClose({ status, signal }));
+    });
+    if (staging !== undefined && child.pid !== undefined) {
+      const pgid = child.pid;
+      const signalGroup = (signal: NodeJS.Signals) => {
+        try { process.kill(-pgid, signal); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+      };
+      const grace = 2000;
+      const reap = 1000;
+      const stop = () => {
+        if (stopping) return;
+        clearTimeout(elapsed);
+        clearTimeout(idle);
+        stopping = (async () => {
+          signalGroup("SIGTERM");
+          await new Promise(resolve => setTimeout(resolve, grace));
+          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
+          const deadline = performance.now() + reap;
+          while (processGroupMembers(pgid).length) {
+            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        })();
+        void stopping.catch(error => {
+          child.stdin?.destroy();
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          rejectClose(error);
+        });
+      };
+      // Leave room for TERM and KILL within the five-minute staging budget. Idle time
+      // covers three 15-second fetch attempts plus their one- and two-second backoffs.
+      elapsed = setTimeout(stop, 300_000 - grace - reap);
+      idle = setTimeout(stop, 50_000);
+    }
+    const closed = await close;
+    clearTimeout(elapsed);
+    clearTimeout(idle);
+    if (stopping) {
+      await stopping;
+      if (published) mutation.clear();
+      throw new RegistryUnavailable("target staging could not reach the registry");
+    }
     if (published) mutation.complete(
       closed.status,
       closed.signal,
@@ -2034,8 +2094,12 @@ async function runGlobalProcess(
     );
     return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
+    if (e instanceof RegistryUnavailable) throw e;
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
+    for (const watcher of watchers) watcher.close();
+    clearTimeout(elapsed);
+    clearTimeout(idle);
     if (!published && !preservePending) mutation.clear();
     if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
