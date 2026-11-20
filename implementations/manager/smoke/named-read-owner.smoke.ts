@@ -258,6 +258,9 @@ try {
   for (const op of ["attach", "stop", "input"]) {
     const refused = await askManager(client, space, servers, op, { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) }, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat });
     check(`located ${op} refuses stale lifecycle before submission`, !refused.ok && refused.code === "expired" && refused.preSubmitRefusal === true, refused);
+    // The caller also pins the run it chose, and that run was replaced too: its own pin answers first.
+    const replaced = await askManager(client, space, servers, op, { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) }, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat, expectedTarget: { id: loc.expectedSeat!.id, lifecycleUid: loc.expectedSeat!.lifecycleUid } });
+    check(`located ${op} whose chosen run was replaced says so before submission`, !replaced.ok && replaced.code === "not-found" && replaced.error?.includes("was replaced by a new run") === true && replaced.preSubmitRefusal === true && replaced.selectedSeatChanged === true, replaced);
   }
   const staleAttach = await attachSeat({ ...ctx, name: "second" }, { control: staleClient, reconnect: false, onRefusal: "throw", verb: "cotal attach" });
   check("public workspace attach loop refuses the stale located lifecycle", staleAttach.kind === "gone" || staleAttach.kind === "failed" && staleAttach.message.includes("changed lifecycle"), staleAttach);
