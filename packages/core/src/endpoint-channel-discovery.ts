@@ -18,6 +18,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
 import type { AgentCard, ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
  *  never copied, and every method is looked up on the endpoint at call time. */
@@ -197,4 +198,32 @@ export class EndpointChannelDiscovery {
       this.emitRecoverable(new Error(`dropped channel registry entry for key ${JSON.stringify(e.key)}: ${(err as Error).message}`));
     }
   }
+}
+
+/** The deps of one endpoint's {@link EndpointChannelDiscovery}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointChannelDiscoveryDeps(ep: CotalEndpoint): EndpointChannelDiscoveryDeps {
+  return {
+    nc: () => ep["nc"],
+    space: () => ep["space"],
+    card: () => ep["card"],
+    doConsume: () => ep["doConsume"],
+    doWatch: () => ep["doWatch"],
+    doWatchChannels: () => ep["doWatchChannels"],
+    channelKv: () => ep["channelKv"],
+    setChannelWatchIter: (iter) => { ep["channelWatchIter"] = iter; },
+    channelConfigs: () => ep["channelConfigs"],
+    channelDefaults: () => ep["channelDefaults"],
+    setChannelDefaults: (defaults) => { ep["channelDefaults"] = defaults; },
+    channelRead: () => ep["channelRead"],
+    setChannelRead: (read) => { ep["channelRead"] = read; },
+    channelReadGeneration: () => ep["channelReadGeneration"],
+    setChannelReadGeneration: (n) => { ep["channelReadGeneration"] = n; },
+    channelReadApplied: () => ep["channelReadApplied"],
+    setChannelReadApplied: (n) => { ep["channelReadApplied"] = n; },
+    notLiveMsg: () => ep["notLiveMsg"](),
+    bindKvWatch: (kv) => ep["bindKvWatch"](kv),
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
 }

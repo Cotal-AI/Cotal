@@ -12,6 +12,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject } from "./subjects.js";
 import type { AgentCard, ChannelConfig, ChannelDefaults, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot } from "./types.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
@@ -546,4 +547,41 @@ export function membershipConsumerReleased(err: unknown): boolean {
     isJetStreamMissing(err, JetStreamApiCodes.ConsumerNotFound, JetStreamApiCodes.StreamNotFound)
     || isPublishPermissionDenied(err)
   );
+}
+
+/** The deps of one endpoint's {@link EndpointSubscriptions}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointSubscriptionsDeps(ep: CotalEndpoint): EndpointSubscriptionsDeps {
+  return {
+    nc: () => ep["nc"],
+    jsm: () => ep["jsm"],
+    space: () => ep["space"],
+    card: () => ep["card"],
+    stopped: () => ep["stopped"],
+    authed: () => ep["authed"],
+    channels: () => ep["channels"],
+    channelConfigs: () => ep["channelConfigs"],
+    channelDefaults: () => ep["channelDefaults"],
+    chatSubDenied: () => ep["chatSubDenied"],
+    plane3Channels: () => ep["plane3Channels"],
+    readsChannelsOnDemand: () => ep["readsChannelsOnDemand"],
+    membershipFeedKv: () => ep["membershipFeedKv"],
+    setMembershipFeedKv: (kv) => { ep["membershipFeedKv"] = kv; },
+    membershipFeedWatches: () => ep["membershipFeedWatches"],
+    watchDeletePermissions: () => ep["watchDeletePermissions"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    readChannels: () => ep["readChannels"](),
+    armJoin: (channels) => ep["armJoin"](channels),
+    backfillArmed: (frontiers, floorSeq) => ep["backfillArmed"](frontiers, floorSeq),
+    subscribeChat: (channel) => ep["subscribeChat"](channel),
+    unsubscribeChat: (channel) => ep["unsubscribeChat"](channel),
+    confirmChatSub: () => ep["confirmChatSub"](),
+    durableJoinChannel: (channel) => ep["durableJoinChannel"](channel),
+    durableLeaveChannel: (...args) => ep["durableLeaveChannel"](...args),
+    fetchMemberships: (channel) => ep["fetchMemberships"](channel),
+    recordOwnWatchConsumer: (info) => ep["recordOwnWatchConsumer"](info),
+    watchConsumerDeleteDenied: (stream, name, owner) => ep["watchConsumerDeleteDenied"](stream, name, owner),
+    deleteMembershipConsumer: (jsm, stream, name) => ep["deleteMembershipConsumer"](jsm, stream, name),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
 }

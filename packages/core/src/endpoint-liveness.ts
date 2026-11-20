@@ -14,6 +14,7 @@ import {
   type ResponderState,
 } from "./liveness.js";
 import { livenessServeFilter, livenessSubject } from "./subjects.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the liveness component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
@@ -226,4 +227,22 @@ export class EndpointLiveness {
     // the plane, so it is graded like a refusal rather than guessed at.
     return "refused";
   }
+}
+
+/** The deps of one endpoint's {@link EndpointLiveness}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointLivenessDeps(ep: CotalEndpoint): EndpointLivenessDeps {
+  return {
+    nc: () => ep["nc"],
+    space: () => ep["space"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    subs: () => ep["subs"],
+    livenessResponders: () => ep["livenessResponders"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    requestBoundReply: (nc, subject, body, reply, timeoutMs) => ep["requestBoundReply"](nc, subject, body, reply, timeoutMs),
+    isNoResponders: (e) => ep["isNoResponders"](e),
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
 }

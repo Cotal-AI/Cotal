@@ -1204,3 +1204,52 @@ export class EndpointDeliveryPlane {
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
   }
 }
+
+/** The deps of one endpoint's {@link EndpointDeliveryPlane}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointDeliveryPlaneDeps(ep: CotalEndpoint): EndpointDeliveryPlaneDeps {
+  return {
+    ackWaitMs: () => ep["ackWaitMs"],
+    actor: () => ep["actor"],
+    owner: () => ep["owner"],
+    allowSubscribe: () => ep["allowSubscribe"],
+    anycastUnavailable: () => ep["anycastUnavailable"],
+    card: () => ep["card"],
+    js: () => ep["js"],
+    jsm: () => ep["jsm"],
+    nc: () => ep["nc"],
+    ownLifecycleUid: () => ep["ownLifecycleUid"],
+    residentSwap: () => ep["residentSwap"],
+    space: () => ep["space"],
+    stopped: () => ep["stopped"],
+    streamMsgs: () => ep["streamMsgs"],
+    subs: () => ep["subs"],
+    userMode: () => ep["userMode"],
+    watchDeletePermissions: () => ep["watchDeletePermissions"],
+    maxPayload: () => ep["maxPayload"],
+    aclForAlias: (...args) => ep["aclForAlias"](...args),
+    channelHistory: (...args) => ep["channelHistory"](...args),
+    deliveryClassFresh: (...args) => ep["deliveryClassFresh"](...args),
+    durableJoinFor: (...args) => ep["durableJoinFor"](...args),
+    durableLeaveFor: (...args) => ep["durableLeaveFor"](...args),
+    ownerMemberships: (...args) => ep["ownerMemberships"](...args),
+    ownsDeliveryLease: (...args) => ep["ownsDeliveryLease"](...args),
+    readDeliveryLease: (...args) => ep["readDeliveryLease"](...args),
+    readDeliveryLeaseEntry: (...args) => ep["readDeliveryLeaseEntry"](...args),
+    reloadCreds: (...args) => ep["reloadCreds"](...args),
+    serveControl: (...args) => ep["serveControl"](...args),
+    aclRegistry: (...args) => ep["aclRegistry"](...args),
+    membersRegistry: (...args) => ep["membersRegistry"](...args),
+    armAnycastRequests: (...args) => ep["armAnycastRequests"](...args),
+    deliveryAnycast: (...args) => ep["deliveryAnycast"](...args),
+    dropAnycastRequests: (...args) => ep["dropAnycastRequests"](...args),
+    manager: (...args) => ep["manager"](...args),
+    notLiveMsg: (...args) => ep["notLiveMsg"](...args),
+    plane3MsgId: (...args) => ep["plane3MsgId"](...args),
+    publishDinbox: (...args) => ep["publishDinbox"](...args),
+    resolveOwnerByName: (...args) => ep["resolveOwnerByName"](...args),
+    scheduleResidentSwap: (...args) => ep["scheduleResidentSwap"](...args),
+    sendMentionNotice: (...args) => ep["sendMentionNotice"](...args),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
+}

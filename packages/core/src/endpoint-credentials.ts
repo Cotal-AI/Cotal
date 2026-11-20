@@ -10,6 +10,7 @@ import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from 
 import { withDeadline } from "./deadline.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
 import type { AgentCard } from "./types.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the credentials component reads from its endpoint. State is read when it is used, never
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on
@@ -638,4 +639,60 @@ export class EndpointCredentials {
       this.on("transport", seen);
     });
   }
+}
+
+/** The deps of one endpoint's {@link EndpointCredentials}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointCredentialsDeps(ep: CotalEndpoint): EndpointCredentialsDeps {
+  return {
+    nc: () => ep["nc"],
+    bearerSource: () => ep["bearerSource"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    space: () => ep["space"],
+    currentBearer: () => ep["currentBearer"],
+    setCurrentBearer: (value) => { ep["currentBearer"] = value; },
+    bearerAdoptedAtMs: () => ep["bearerAdoptedAtMs"],
+    setBearerAdoptedAtMs: (value) => { ep["bearerAdoptedAtMs"] = value; },
+    bearerRenewalFailures: () => ep["bearerRenewalFailures"],
+    setBearerRenewalFailures: (value) => { ep["bearerRenewalFailures"] = value; },
+    cancelBearerRenewal: () => ep["cancelBearerRenewal"],
+    setCancelBearerRenewal: (value) => { ep["cancelBearerRenewal"] = value; },
+    stopped: () => ep["stopped"],
+    presentedExp: () => ep["presentedExp"],
+    setPresentedExp: (value) => { ep["presentedExp"] = value; },
+    currentCreds: () => ep["currentCreds"],
+    setCurrentCreds: (value) => { ep["currentCreds"] = value; },
+    credsSource: () => ep["credsSource"],
+    connId: () => ep["connId"],
+    overlapOnConnectionRenewal: () => ep["overlapOnConnectionRenewal"],
+    onConnection: () => ep["onConnection"],
+    servers: () => ep["servers"],
+    card: () => ep["card"],
+    token: () => ep["token"],
+    user: () => ep["user"],
+    pass: () => ep["pass"],
+    userMode: () => ep["userMode"],
+    sentinelCreds: () => ep["sentinelCreds"],
+    tls: () => ep["tls"],
+    ownedConnections: () => ep["ownedConnections"],
+    authExpiryReconnectTimer: () => ep["authExpiryReconnectTimer"],
+    setAuthExpiryReconnectTimer: (value) => { ep["authExpiryReconnectTimer"] = value; },
+    credsTxnsRunning: () => ep["credsTxnsRunning"],
+    setCredsTxnsRunning: (value) => { ep["credsTxnsRunning"] = value; },
+    credsTxn: () => ep["credsTxn"],
+    setCredsTxn: (value) => { ep["credsTxn"] = value; },
+    reconnecting: () => ep["reconnecting"],
+    reestablishing: () => ep["reestablishing"],
+    requestsAwaitingReply: () => ep["requestsAwaitingReply"],
+    residentSwap: () => ep["residentSwap"],
+    setResidentSwap: (value) => { ep["residentSwap"] = value; },
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+    kickBackoff: () => ep["kickBackoff"](),
+    armCredsRefresh: (delayMs) => ep["armCredsRefresh"](delayMs),
+    reconnect: () => ep["reconnect"](),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+    on: (event, listener) => { ep["on"](event, listener); },
+    off: (event, listener) => { ep["off"](event, listener); },
+  };
 }

@@ -2,6 +2,7 @@
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
 import { isChannelFamily, isConcreteChannel } from "./subjects.js";
 import type { ControlReply, DeliveryClass } from "./types.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the boot-membership component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
@@ -123,4 +124,22 @@ export class EndpointBootMemberships {
   hasDurableMembership(channel: string): boolean {
     return this.plane3Channels.has(channel);
   }
+}
+
+/** The deps of one endpoint's {@link EndpointBootMemberships}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointBootMembershipsDeps(ep: CotalEndpoint): EndpointBootMembershipsDeps {
+  return {
+    channels: () => ep["channels"],
+    plane3Channels: () => ep["plane3Channels"],
+    pendingBootJoins: () => ep["pendingBootJoins"],
+    stopped: () => ep["stopped"],
+    requestDelivery: (op, args, timeoutMs) => ep["requestDelivery"](op, args, timeoutMs),
+    requireLifecycleUid: (what) => ep["requireLifecycleUid"](what),
+    deliveryClassFresh: (channel) => ep["deliveryClassFresh"](channel),
+    durableJoinChannel: (channel) => ep["durableJoinChannel"](channel),
+    membershipPause: (attempt) => ep["membershipPause"](attempt),
+    isNoResponders: (e) => ep["isNoResponders"](e),
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+  };
 }

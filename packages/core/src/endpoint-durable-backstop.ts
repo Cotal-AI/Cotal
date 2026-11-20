@@ -14,6 +14,7 @@ import { openMembersRegistry, commitMemberRevision, tombstoneMember, activateMem
 import { MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS } from "./streams.js";
 import { chatStream, dinboxSubject, FANOUT_DURABLE, isConcreteChannel, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, managerLeaseKey, memberKey, parsePrincipalKey } from "./subjects.js";
 import type { AgentCard, DeliveryClass, MembershipRecord, Plane3Entry } from "./types.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the durable backstop reads from its endpoint. State is read when it is used, never copied,
  *  and every method is looked up on the endpoint at call time. The connection-scoped handles stay
@@ -508,4 +509,35 @@ export class EndpointDurableBackstop {
     // a newer rejoin (StaleMembershipWrite) — a durable-disable primitive otherwise.
     await tombstoneMember(kv, channel, owner, lifecycleUid, await this.chatFrontier(), this.card.id, expectedGeneration);
   }
+}
+
+/** The deps of one endpoint's {@link EndpointDurableBackstop}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointDurableBackstopDeps(ep: CotalEndpoint): EndpointDurableBackstopDeps {
+  return {
+    nc: () => ep["nc"],
+    js: () => ep["js"],
+    jsm: () => ep["jsm"],
+    setJsm: (manager) => { ep["jsm"] = manager; },
+    space: () => ep["space"],
+    card: () => ep["card"],
+    authed: () => ep["authed"],
+    channelKv: () => ep["channelKv"],
+    presence: () => ep["presence"],
+    deliveryPlane: () => ep["deliveryPlane"],
+    membersKv: () => ep["membersKv"],
+    setMembersKv: (kv) => { ep["membersKv"] = kv; },
+    aclKv: () => ep["aclKv"],
+    setAclKv: (kv) => { ep["aclKv"] = kv; },
+    managerLeaseKv: () => ep["managerLeaseKv"],
+    setManagerLeaseKv: (kv) => { ep["managerLeaseKv"] = kv; },
+    daemonRenewalLeaseRevision: () => ep["daemonRenewalLeaseRevision"],
+    setDaemonRenewalLeaseRevision: (revision) => { ep["daemonRenewalLeaseRevision"] = revision; },
+    notLiveMsg: () => ep["notLiveMsg"](),
+    consumerInfo: (stream, durable) => ep["consumerInfo"](stream, durable),
+    manager: () => ep["manager"](),
+    chatFrontier: () => ep["chatFrontier"](),
+    aclAllows: (owner, lifecycleUid, channel) => ep["aclAllows"](owner, lifecycleUid, channel),
+    catchupCopy: (...args) => ep["catchupCopy"](...args),
+  };
 }

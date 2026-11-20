@@ -5,6 +5,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig } from "./streams.js";
 import { dlvStream, dmDurable, dmStream, taskStream } from "./subjects.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the provisioning component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
@@ -130,4 +131,16 @@ export class EndpointProvisioning {
     const jsm = await this.manager();
     await jsm.consumers.add(taskStream(this.space), taskDurableConfig(this.space, role));
   }
+}
+
+/** The deps of one endpoint's {@link EndpointProvisioning}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointProvisioningDeps(ep: CotalEndpoint): EndpointProvisioningDeps {
+  return {
+    jsm: () => ep["jsm"],
+    space: () => ep["space"],
+    authed: () => ep["authed"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    manager: () => ep["manager"](),
+  };
 }

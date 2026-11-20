@@ -4,6 +4,8 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import type { AgentCard } from "./types.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo } from "./lease.js";
 import { leaseKey } from "./subjects.js";
+import type { CotalEndpoint } from "./endpoint.js";
+import { kvWatchConsumer } from "./endpoint-dial.js";
 
 type LeaseWatch = Awaited<ReturnType<KV["watch"]>>;
 
@@ -304,4 +306,19 @@ export class EndpointDeliveryLease {
     try { return { info: e.json<DeliveryLeaseInfo>(), revision: e.revision }; }
     catch (err) { throw new Error(`delivery lease row "${leaseKey(shardIndex)}" exists but does not parse as a lease record (${(err as Error).message}) - it is unreadable, not absent`); }
   }
+}
+
+/** The deps of one endpoint's {@link EndpointDeliveryLease}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointDeliveryLeaseDeps(ep: CotalEndpoint): EndpointDeliveryLeaseDeps {
+  return {
+    card: () => ep["card"],
+    space: () => ep["space"],
+    connection: () => ep["nc"],
+    epoch: () => ep["presenceEpoch"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    deleteWatchConsumer: (iter) => ep["deleteOwnConsumer"](kvWatchConsumer(iter)),
+    recoverable: (error) => ep["emitRecoverable"](error),
+    emit: (event, error) => ep["emit"](event, error),
+  };
 }

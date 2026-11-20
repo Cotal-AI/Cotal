@@ -12,6 +12,7 @@ import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parse
 import type { AgentCard, AnycastTakeOutcome, MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type JetStreamClient, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the consumers component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
@@ -486,4 +487,47 @@ export class EndpointConsumers {
   async storedBytes(): Promise<number> {
     return (await (await this.manager()).getAccountInfo()).storage;
   }
+}
+
+/** The deps of one endpoint's {@link EndpointConsumers}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointConsumersDeps(ep: CotalEndpoint): EndpointConsumersDeps {
+  return {
+    nc: () => ep["nc"],
+    jsm: () => ep["jsm"],
+    setJsm: (value) => { ep["jsm"] = value; },
+    js: () => ep["js"],
+    space: () => ep["space"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    card: () => ep["card"],
+    authed: () => ep["authed"],
+    channels: () => ep["channels"],
+    ackWaitMs: () => ep["ackWaitMs"],
+    inactiveThresholdMs: () => ep["inactiveThresholdMs"],
+    firstConnect: () => ep["firstConnect"],
+    setFirstConnect: (value) => { ep["firstConnect"] = value; },
+    backfillFloor: () => ep["backfillFloor"],
+    streamMsgs: () => ep["streamMsgs"],
+    taskEpoch: () => ep["taskEpoch"],
+    setTaskEpoch: (value) => { ep["taskEpoch"] = value; },
+    stopped: () => ep["stopped"],
+    dmOnlyInFlight: () => ep["dmOnlyInFlight"],
+    setDmOnlyInFlight: (value) => { ep["dmOnlyInFlight"] = value; },
+    chatSubs: () => ep["chatSubs"],
+    chatSubDenied: () => ep["chatSubDenied"],
+    chatSubRefusals: () => ep["chatSubRefusals"],
+    plane3Channels: () => ep["plane3Channels"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    requireLifecycleUid: (what) => ep["requireLifecycleUid"](what),
+    ensureDmDurable: (owner, actor, lifecycleUid, opts) => ep["ensureDmDurable"](owner, actor, lifecycleUid, opts),
+    pumpDlv: () => ep["pumpDlv"](),
+    armJoin: (channels) => ep["armJoin"](channels),
+    backfillArmed: (frontiers, floorSeq) => ep["backfillArmed"](frontiers, floorSeq),
+    armBootDurableMemberships: () => ep["armBootDurableMemberships"](),
+    takeAnycast: (role, seq, id, count, epoch, nak) => ep["takeAnycast"](role, seq, id, count, epoch, nak),
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+    closeRefusedMembership: (channel, generation) => ep["closeRefusedMembership"](channel, generation),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
 }

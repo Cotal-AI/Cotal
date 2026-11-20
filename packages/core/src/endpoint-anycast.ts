@@ -13,6 +13,7 @@ import type { JetStreamManager, JetStreamClient } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
 import { type NatsConnection, type Subscription, type Msg, NoRespondersError, RequestError } from "@nats-io/transport-node";
 import { randomUUID } from "node:crypto";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the anycast component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
@@ -324,4 +325,37 @@ export class EndpointAnycast {
     return reply.data as AnycastStatus;
   }
 
+}
+
+/** The deps of one endpoint's {@link EndpointAnycast}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointAnycastDeps(ep: CotalEndpoint): EndpointAnycastDeps {
+  return {
+    nc: () => ep["nc"],
+    jsm: () => ep["jsm"],
+    js: () => ep["js"],
+    space: () => ep["space"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    card: () => ep["card"],
+    authed: () => ep["authed"],
+    subs: () => ep["subs"],
+    anycastUnavailable: () => ep["anycastUnavailable"],
+    setAnycastUnavailable: (value) => { ep["anycastUnavailable"] = value; },
+    anycastAuthority: () => ep["anycastAuthority"],
+    setAnycastAuthority: (value) => { ep["anycastAuthority"] = value; },
+    takeServeSub: () => ep["takeServeSub"],
+    setTakeServeSub: (value) => { ep["takeServeSub"] = value; },
+    anycastSweep: () => ep["anycastSweep"],
+    setAnycastSweep: (value) => { ep["anycastSweep"] = value; },
+    takesInFlight: () => ep["takesInFlight"],
+    setTakesInFlight: (value) => { ep["takesInFlight"] = value; },
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+    plane3MayAct: () => ep["plane3MayAct"](),
+    notLiveMsg: () => ep["notLiveMsg"](),
+    ref: () => ep["ref"](),
+    requestBoundReply: (nc, subject, body, reply, timeoutMs) => ep["requestBoundReply"](nc, subject, body, reply, timeoutMs),
+    readTaskEpoch: () => ep["readTaskEpoch"](),
+    requestDelivery: (op, args, timeoutMs) => ep["requestDelivery"](op, args, timeoutMs),
+  };
 }

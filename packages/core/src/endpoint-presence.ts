@@ -7,6 +7,8 @@ import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import { presenceBucket } from "./subjects.js";
 import { isPresenceRow, assertPresenceRow } from "./subjects.js";
+import type { CotalEndpoint } from "./endpoint.js";
+import { isPublishPermissionDenied } from "./endpoint-dial.js";
 
 type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
@@ -893,4 +895,30 @@ function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | 
     && a?.source === b?.source
     && a?.message === b?.message
     && a?.since === b?.since;
+}
+
+/** The deps of one endpoint's {@link EndpointPresence}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointPresenceDeps(ep: CotalEndpoint): EndpointPresenceDeps {
+  return {
+    card: () => ep["card"],
+    space: () => ep["space"],
+    bucket: () => ep["kv"],
+    connection: () => ep["nc"],
+    lifecycleUid: () => ep["ownLifecycleUid"],
+    prompts: () => ep["servedPrompts"](),
+    ttlMs: () => ep["ttlMs"],
+    registers: () => ep["doRegister"],
+    watches: () => ep["doWatch"],
+    readsOnce: () => ep["readOnce"],
+    stopped: () => ep["stopped"],
+    reconnecting: () => ep["reconnecting"],
+    epoch: () => ep["presenceEpoch"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    bindWatch: (kv) => ep["bindKvWatch"](kv),
+    retireWatch: (iter) => ep["retireKvWatch"](iter),
+    emit: (event, value) => ep["emit"](event, value),
+    recoverable: (error) => ep["emitRecoverable"](error),
+    isPublishPermissionDenied,
+  };
 }

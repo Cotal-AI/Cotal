@@ -8,6 +8,7 @@ import type { KV } from "@nats-io/kv";
 import type { TransportState } from "./endpoint-options.js";
 import type { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import type { MembershipFeedWatch } from "./endpoint-subscriptions.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the reconnect component reads from its endpoint. State is read when it is used, never copied, a
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
@@ -217,4 +218,54 @@ export class EndpointReconnect {
       this.membershipPauses.add(wake);
     });
   }
+}
+
+/** The deps of one endpoint's {@link EndpointReconnect}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointReconnectDeps(ep: CotalEndpoint): EndpointReconnectDeps {
+  return {
+    rebuildPromise: () => ep["rebuildPromise"],
+    setRebuildPromise: (value) => { ep["rebuildPromise"] = value; },
+    nc: () => ep["nc"],
+    setNc: (value) => { ep["nc"] = value; },
+    reconnecting: () => ep["reconnecting"],
+    setReconnecting: (value) => { ep["reconnecting"] = value; },
+    membershipFeedWatches: () => ep["membershipFeedWatches"],
+    js: () => ep["js"],
+    setJs: (value) => { ep["js"] = value; },
+    jsm: () => ep["jsm"],
+    setJsm: (value) => { ep["jsm"] = value; },
+    kv: () => ep["kv"],
+    setKv: (value) => { ep["kv"] = value; },
+    channelKv: () => ep["channelKv"],
+    setChannelKv: (value) => { ep["channelKv"] = value; },
+    membersKv: () => ep["membersKv"],
+    setMembersKv: (value) => { ep["membersKv"] = value; },
+    aclKv: () => ep["aclKv"],
+    setAclKv: (value) => { ep["aclKv"] = value; },
+    membershipFeedKv: () => ep["membershipFeedKv"],
+    setMembershipFeedKv: (value) => { ep["membershipFeedKv"] = value; },
+    deliveryLease: () => ep["deliveryLease"],
+    managerLeaseKv: () => ep["managerLeaseKv"],
+    setManagerLeaseKv: (value) => { ep["managerLeaseKv"] = value; },
+    daemonRenewalLeaseRevision: () => ep["daemonRenewalLeaseRevision"],
+    setDaemonRenewalLeaseRevision: (value) => { ep["daemonRenewalLeaseRevision"] = value; },
+    stopped: () => ep["stopped"],
+    retryMs: () => ep["retryMs"],
+    retryAttempt: () => ep["retryAttempt"],
+    setRetryAttempt: (value) => { ep["retryAttempt"] = value; },
+    backoffResolve: () => ep["backoffResolve"],
+    backoffTimer: () => ep["backoffTimer"],
+    setBackoffTimer: (value) => { ep["backoffTimer"] = value; },
+    membershipPauses: () => ep["membershipPauses"],
+    disableLibraryReconnect: (nc) => ep["disableLibraryReconnect"](nc),
+    clearConnectionScoped: () => ep["clearConnectionScoped"](),
+    settleDeliveryLeaseWatches: () => ep["settleDeliveryLeaseWatches"](),
+    settleKvWatches: () => ep["settleKvWatches"](),
+    closeWithoutLibraryReconnect: (nc) => ep["closeWithoutLibraryReconnect"](nc),
+    connectAndBind: () => ep["connectAndBind"](),
+    tearDownIfStopped: () => ep["tearDownIfStopped"](),
+    superviseConnection: () => ep["superviseConnection"](),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
 }

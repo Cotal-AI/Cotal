@@ -19,6 +19,7 @@ import {
   unicastSubject,
 } from "./subjects.js";
 import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the messaging component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
@@ -505,4 +506,23 @@ export function assertPartsSerializable(parts: readonly Part[]): void {
       throw new Error(`cannot publish a data part carrying a non-JSON value (SPEC §5) - ${problem}`);
     }
   }
+}
+
+/** The deps of one endpoint's {@link EndpointMessaging}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointMessagingDeps(ep: CotalEndpoint): EndpointMessagingDeps {
+  return {
+    nc: () => ep["nc"],
+    js: () => ep["js"],
+    jsm: () => ep["jsm"],
+    space: () => ep["space"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    channels: () => ep["channels"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    ref: () => ep["ref"](),
+    publishMsg: (subject, msg) => ep["publishMsg"](subject, msg),
+    streamHistory: (...args) => ep["streamHistory"](...args),
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+  };
 }

@@ -660,3 +660,35 @@ export class EndpointControlPlane {
     }
   }
 }
+
+/** The deps of one endpoint's {@link EndpointControlPlane}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointControlPlaneDeps(ep: CotalEndpoint): EndpointControlPlaneDeps {
+  return {
+    nc: () => ep["nc"],
+    space: () => ep["space"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    stopped: () => ep["stopped"],
+    authed: () => ep["authed"],
+    connId: () => ep["connId"],
+    presentedExp: () => ep["presentedExp"],
+    issuedGeneration: () => ep["issuedGeneration"],
+    acceptedToken: () => ep["acceptedToken"],
+    rebuildPromise: () => ep["rebuildPromise"],
+    subs: () => ep["subs"],
+    resolvedServices: () => ep["resolvedServices"],
+    resolvedCommandServices: () => ep["resolvedCommandServices"],
+    serviceInvocations: () => ep["serviceInvocations"],
+    requestsAwaitingReply: () => ep["requestsAwaitingReply"],
+    activeGoalFollowers: () => ep["activeGoalFollowers"],
+    splitsRecovered: () => ep["splitsRecovered"],
+    setSplitsRecovered: (count) => { ep["splitsRecovered"] = count; },
+    notLiveMsg: () => ep["notLiveMsg"](),
+    requireLifecycleUid: (what) => ep["requireLifecycleUid"](what),
+    reportSubscriptionDenial: (error) => ep["reportSubscriptionDenial"](error),
+    ref: () => ep["ref"](),
+    reconnect: () => ep["reconnect"](),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+  };
+}

@@ -7,6 +7,13 @@ import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing
 import { isPermissionDenied } from "./permission-denied.js";
 import type { CotalMessage, HistoryMessage, Delivery, MessageMeta, ControlReply } from "./types.js";
 import type { HistoryPage } from "./endpoint.js";
+import type { CotalEndpoint } from "./endpoint.js";
+import { historyMessageFromDelivery } from "./endpoint-messages.js";
+import { isRecord } from "./endpoint-inbound.js";
+import { isUsableMessageId } from "./endpoint-messages.js";
+import { isFromSubjectSender } from "./endpoint-messages.js";
+import { authenticatedMessage } from "./endpoint-messages.js";
+import { isPublishPermissionDenied } from "./endpoint-dial.js";
 
 /** Current transport and shared lifecycle operations used by history reads. */
 export interface EndpointHistoryDeps {
@@ -1060,4 +1067,34 @@ export class EndpointHistory {
     }
     return { messages: collected, seqs, dropped, unanswered: false };
   }
+}
+
+/** The deps of one endpoint's {@link EndpointHistory}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointHistoryDeps(ep: CotalEndpoint): EndpointHistoryDeps {
+  return {
+    connection: () => ep["nc"],
+    jetstream: () => ep["js"],
+    manager: () => ep["jsm"],
+    setManager: (manager) => { ep["jsm"] = manager; },
+    space: () => ep["space"],
+    owner: () => ep["owner"],
+    actor: () => ep["actor"],
+    userMode: () => ep["userMode"],
+    connectionId: () => ep["connId"],
+    card: () => ep["card"],
+    notLiveMsg: () => ep["notLiveMsg"](),
+    requireLifecycleUid: (operation) => ep["requireLifecycleUid"](operation),
+    requestDelivery: (op, args) => ep["requestDelivery"](op, args),
+    deleteConsumerIfPresent: (stream, name) => ep["deleteConsumerIfPresent"](stream, name),
+    joinPolicyFresh: (channel) => ep["joinPolicyFresh"](channel),
+    chatMayHaveLost: (subject, sinceSeq) => ep["chatMayHaveLost"](subject, sinceSeq),
+    emit: (event, ...args) => ep["emit"](event, ...args),
+    decodeHistory: historyMessageFromDelivery,
+    isRecord,
+    isUsableMessageId,
+    isFromSubjectSender,
+    authenticatedMessage,
+    isPublishPermissionDenied,
+  };
 }

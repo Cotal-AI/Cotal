@@ -9,6 +9,7 @@ import type { DeliveryClass, Plane3Entry, ControlReply, CotalMessage } from "./t
 import { type JetStreamClient, type JetStreamManager, AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { nanos } from "@nats-io/transport-node";
+import type { CotalEndpoint } from "./endpoint.js";
 
 /** What the durable-membership component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time, so a member a caller replaced on
@@ -172,4 +173,25 @@ export class EndpointDurable {
   pendingDurableLeaves(): string[] {
     return [...this.pendingDurableLeave.keys()];
   }
+}
+
+/** The deps of one endpoint's {@link EndpointDurable}. Every value is read from `ep` when it is used, so a field
+ *  assigned after construction is seen, and a member a caller replaced on the endpoint is the one that runs. */
+export function endpointDurableDeps(ep: CotalEndpoint): EndpointDurableDeps {
+  return {
+    js: () => ep["js"],
+    jsm: () => ep["jsm"],
+    space: () => ep["space"],
+    pendingDurableLeave: () => ep["pendingDurableLeave"],
+    stopped: () => ep["stopped"],
+    plane3Channels: () => ep["plane3Channels"],
+    aclRegistry: () => ep["aclRegistry"](),
+    deliveryClassFresh: (channel) => ep["deliveryClassFresh"](channel),
+    deleteConsumerIfPresent: (stream, durable) => ep["deleteConsumerIfPresent"](stream, durable),
+    publishDinbox: (principal, lifecycleUid, entry) => ep["publishDinbox"](principal, lifecycleUid, entry),
+    requestDelivery: (op, args, timeoutMs) => ep["requestDelivery"](op, args, timeoutMs),
+    requireLifecycleUid: (what) => ep["requireLifecycleUid"](what),
+    emitRecoverable: (err) => ep["emitRecoverable"](err),
+    membershipPause: (attempt) => ep["membershipPause"](attempt),
+  };
 }
