@@ -3,7 +3,7 @@
     "implementations/acp/smoke/agent.smoke.ts",
     "implementations/acp/smoke/frames.smoke.ts"
   ],
-  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing; a thread opened without spawn offers only its agent's model and cannot start another, and new threads start and agents are read where the auth service's manager list allows; a loaded agent keeps its manager as a choice and loads while no manager may start a new one, and a seat-only thread's options do not change",
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing; a thread opened without spawn offers only its agent's model and cannot start another, and new threads start and agents are read where the auth service's manager list allows; a loaded agent keeps its manager as a choice and loads while no manager may start a new one, and a seat-only thread's options do not change; a new thread prefers a manager whose presence is current, an unlisted seat names the deregister command only where people sign in, a seat-only thread never points at /despawn, and a loaded thread's manager stays a described choice after a machine change",
   "command": "pnpm --filter @cotal-ai/acp test",
   "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
   "why": [
@@ -334,7 +334,63 @@
       "file": "implementations/acp/src/agent.ts",
       "find": "offerFor(m, row.managerInstanceId, row.managerInstanceId)",
       "replace": "offerFor(m, row.managerInstanceId)",
-      "expectRed": "a loaded agent's manager stays its current Machine choice beside the launch list"
+      "expectRed": "it loads while no manager may start a new agent, its lists read from the manager that holds it"
+    },
+    {
+      "name": "a new thread starts on the first listed manager whatever its presence",
+      "file": "implementations/acp/src/options.ts",
+      "find": "return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];",
+      "replace": "return managers.find((m) => m.local) ?? managers[0];",
+      "expectRed": "a new thread starts on a manager whose presence is current before the first listed"
+    },
+    {
+      "name": "an unlisted seat offers to remove the manager where people do not sign in",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "${m.userMode ? ` ${deregisterRemedy(m.space, silent)}` : \"\"}",
+      "replace": " ${deregisterRemedy(m.space, silent)}",
+      "expectRed": "where people do not sign in, it does not offer to remove the manager"
+    },
+    {
+      "name": "an unlisted seat never names the deregister command",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "${m.userMode ? ` ${deregisterRemedy(m.space, silent)}` : \"\"}",
+      "replace": "",
+      "expectRed": "where people sign in, it names the command that removes a gone manager's registration"
+    },
+    {
+      "name": "a running seat-only thread points at /despawn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "session.offer.seatOnly ? fixed : ",
+      "replace": "",
+      "expectRed": "choosing another model while its agent runs is refused without sending the person to /despawn"
+    },
+    {
+      "name": "a machine change drops the held manager",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "offerFor(m, next.machine, session.held)",
+      "replace": "offerFor(m, next.machine)",
+      "expectRed": "after /despawn, choosing another machine keeps the held manager as a choice"
+    },
+    {
+      "name": "the held manager is listed by its bare id",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "[...listed, await m.manager(held)]",
+      "replace": "[...listed, { instanceId: held, local: false }]",
+      "expectRed": "and it is described from its presence like the others"
+    },
+    {
+      "name": "personas are read from an unpinned manager",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "m.personas(from)",
+      "replace": "m.personas()",
+      "expectRed": "and its personas are read from that manager too"
+    },
+    {
+      "name": "one manager is offered as a Machine list",
+      "file": "implementations/acp/src/options.ts",
+      "find": "if (offer.managers.length > 1 && offer.managers.length <= MAX_CHOICES)",
+      "replace": "if (offer.managers.length > 0 && offer.managers.length <= MAX_CHOICES)",
+      "expectRed": "with one manager a loaded thread offers no Machine list"
     }
   ]
 }

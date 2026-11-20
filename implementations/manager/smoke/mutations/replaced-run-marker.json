@@ -1,0 +1,29 @@
+{
+  "suite": [
+    "implementations/manager/smoke/named-read-owner.smoke.ts"
+  ],
+  "guard": "a control call whose own chosen run was replaced is refused with that wording before its own presence pin is checked, and the refusal says nothing was submitted",
+  "command": "pnpm smoke:named-read-owner",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/replaced-run-marker.json",
+  "why": [
+    "The smoke builds the manager and the CLI with their dependencies, so each run builds the mutated workspace; the restored source is built again afterwards."
+  ],
+  "mutations": [
+    {
+      "name": "a replaced chosen run is not marked as refused before submission",
+      "file": "packages/workspace/src/control/manager.ts",
+      "find": "refresh the agent list and try again`, preSubmitRefusal: true, selectedSeatChanged: true };",
+      "replace": "refresh the agent list and try again` };",
+      "expectRed": "located stop whose chosen run was replaced says so before submission",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "the caller's own run pin is not checked before the presence pin",
+      "file": "packages/workspace/src/control/manager.ts",
+      "find": "if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id",
+      "replace": "if (false && pin?.expectedTarget && (row.id !== pin.expectedTarget.id",
+      "expectRed": "located stop whose chosen run was replaced says so before submission",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    }
+  ]
+}
