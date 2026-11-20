@@ -242,8 +242,9 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 ```
 
 If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
-version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. The command
-does not repair the corrupt manifest.
+version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
+corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+The version command does not repair the manifest itself.
 
 | Field | Meaning |
 |---|---|
