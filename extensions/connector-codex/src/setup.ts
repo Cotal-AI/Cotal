@@ -5,11 +5,12 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
+import { isConfigProtected } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -33,6 +34,8 @@ function codexMarketplaceDir(): string {
 function codexHome(): string {
   return resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
 }
+
+const pluginCache = () => join(codexHome(), "plugins", "cache", MARKETPLACE, PLUGIN);
 
 /** The files the plugin holds beyond the built assets, bound to the Node runtime running setup:
  *  Codex starts a plugin server with a minimal PATH. */
@@ -130,14 +133,13 @@ function codex(...args: string[]): { status: number | null; output: string } {
 
 function assertWritableConfig(): void {
   const config = join(codexHome(), "config.toml");
-  const stat = statSync(config, { throwIfNoEntry: false });
-  if (stat && (stat.mode & 0o200) === 0) throw new Error(`Codex configuration is read-only: ${config}. Make it writable before changing the Codex plugin.`);
+  if (isConfigProtected(config)) throw new Error(`Codex configuration is read-only: ${config}. Make it writable before changing the Codex plugin.`);
 }
 
 /** Record the marketplace and install the plugin through Codex, then read the install back. */
 function install(version: string, paths: readonly string[] = [], wrote?: ConnectorSetupInput["wrote"]): void {
   const config = join(codexHome(), "config.toml");
-  const cache = join(codexHome(), "plugins", "cache", MARKETPLACE, PLUGIN, version);
+  const cache = join(pluginCache(), version);
   // Codex owns these writes and does not return a list of paths. Compare only known outputs.
   const outputs = wrote ? [config, ...paths.map((path) => join(cache, path))] : [];
   const before = outputs.map(snapshotFile);
@@ -169,11 +171,52 @@ function install(version: string, paths: readonly string[] = [], wrote?: Connect
  * existing or unreadable one must not hide an integration the upgrade cannot verify. */
 function hasCachedPlugin(): boolean {
   try {
-    return readdirSync(join(codexHome(), "plugins", "cache", MARKETPLACE, PLUGIN)).length > 0;
+    return readdirSync(pluginCache()).length > 0;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw new Error("Codex plugin cache could not be read", { cause: error });
   }
+}
+
+/** An installed entry already supplies Codex's enablement preference. `plugin add` would rewrite
+ * it (even re-enabling a disabled plugin), so refresh only publishes the Cotal cache directory. */
+function refreshCache(version: string): void {
+  const cache = pluginCache();
+  if (isConfigProtected(cache)) throw new Error(`Cannot refresh the Cotal plugin cache at ${cache}: it is read-only.`);
+  const scratch = mkdtempSync(join(dirname(cache), ".cotal-refresh-"));
+  const next = join(scratch, "next");
+  const previous = join(scratch, "previous");
+  let keepBackup = false;
+  try {
+    cpSync(join(codexMarketplaceDir(), "plugins", PLUGIN), join(next, version), { recursive: true });
+    renameSync(cache, previous);
+    try { renameSync(next, cache); }
+    catch (error) {
+      keepBackup = true;
+      renameSync(previous, cache);
+      keepBackup = false;
+      throw error;
+    }
+  } finally {
+    if (!keepBackup) rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** Ask Codex which local marketplace its existing config loads, without rewriting the TOML. */
+function configuredMarketplace(): string | undefined {
+  const listed = codex("plugin", "marketplace", "list", "--json");
+  if (listed.status !== 0) throw new Error(`codex plugin marketplace list failed:\n${listed.output}`);
+  const { marketplaces } = JSON.parse(listed.output) as { marketplaces: { name: string; root: string }[] };
+  return marketplaces.find((entry) => entry.name === MARKETPLACE)?.root;
+}
+
+function marketplaceRegistrationStale(marketplace: string | undefined): boolean {
+  const desired = codexMarketplaceDir();
+  return !marketplace || (existsSync(desired) ? realpathSync(desired) : resolve(desired)) !== realpathSync(marketplace);
+}
+
+function protectedRegistration(config: string): string {
+  return `Codex marketplace ${MARKETPLACE} was not repointed to ${codexMarketplaceDir()} because ${config} is read-only. Make that file writable, then run \`cotal update\`.`;
 }
 
 /** The version and state Codex lists for the installed plugin. */
@@ -197,8 +240,13 @@ function withLock<T>(run: () => T): T {
 function statusRow({ version }: ConnectorStatusInput): ConnectorStatusRow {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Codex plugin", state, text });
   let installed: ReturnType<typeof installedPlugin>;
-  try { installed = installedPlugin(); }
-  catch (e) { return row("error", (e as Error).message); }
+  try {
+    installed = installedPlugin();
+    if (installed && marketplaceRegistrationStale(configuredMarketplace())) {
+      const config = join(codexHome(), "config.toml");
+      if (isConfigProtected(config)) return row("warn", protectedRegistration(config));
+    }
+  } catch (e) { return row("error", (e as Error).message); }
   if (!installed) return row("off", "not installed · run `cotal setup`");
   if (installed.disabled) return row("off", "disabled");
   return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", "stale · run `cotal setup`");
@@ -231,19 +279,45 @@ export const codexSetupProvider: ConnectorSetupProvider = {
     run({ cotal }: ConnectorSetupInput) {
       return withLock(() => {
         if (!hasCachedPlugin()) return "not installed";
-        let installed: string | undefined;
+        let installed: ReturnType<typeof installedPlugin>;
         try {
-          installed = installedPlugin()?.version;
+          installed = installedPlugin();
           if (installed === undefined) return "not installed";
         } catch (error) {
           if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
           throw error;
         }
         const version = pluginVersion(pluginFiles(cotal, ""));
-        if (installed !== version) assertWritableConfig();
         materializeCodexPlugin(cotal, version);
-        if (installed !== version) install(version);
-        return `${PLUGIN}@${MARKETPLACE} ${version}; new Codex conversations load it`;
+        const marketplace = configuredMarketplace();
+        const desired = codexMarketplaceDir();
+        const needsRegistration = marketplaceRegistrationStale(marketplace);
+        let deferred: string | undefined;
+        if (installed.version !== version) refreshCache(version);
+        if (needsRegistration) {
+          const config = join(codexHome(), "config.toml");
+          // The config path is only checked when the existing registration really needs an edit.
+          if (isConfigProtected(config)) {
+            deferred = protectedRegistration(config);
+          } else {
+            if (marketplace) {
+              const removed = codex("plugin", "marketplace", "remove", MARKETPLACE);
+              if (removed.status !== 0) throw new Error(`codex plugin marketplace remove failed:\n${removed.output}`);
+            }
+            const added = codex("plugin", "marketplace", "add", desired);
+            if (added.status !== 0) throw new Error(`codex plugin marketplace add failed:\n${added.output}`);
+            const registered = configuredMarketplace();
+            if (!registered || realpathSync(registered) !== realpathSync(desired))
+              throw new Error(`Codex did not register marketplace ${MARKETPLACE} at ${desired}`);
+          }
+        }
+        if (installed.version !== version || needsRegistration) {
+          const current = installedPlugin();
+          if (current?.version !== version || current.disabled !== installed.disabled)
+            throw new Error(`Codex did not retain ${PLUGIN}@${MARKETPLACE} ${version} with its previous enablement`);
+        }
+        const current = `${PLUGIN}@${MARKETPLACE} ${version}; ${installed.disabled ? "remains disabled" : "new Codex conversations load it"}`;
+        return deferred ? `${current}. ${deferred}` : current;
       });
     },
   },

@@ -130,12 +130,11 @@ See [Sandbox options](codex-connector-reference.mdx#sandbox-options) for overrid
 
 `cotal setup` installs the Cotal plugin into Codex with `codex plugin marketplace add` and `codex plugin add`.
 Its JSON receipt lists created or content-changed marketplace, configuration, and installed plugin files. Replacing a file with identical bytes adds no receipt entry.
-Upgrades refresh an installed plugin through Codex. Starting in 0.167.1, refresh leaves the native cache unchanged when Codex already lists the exact plugin version and content digest for this release.
-Same-version reconciliation can therefore succeed with a read-only Codex home. A computer without the plugin needs no Codex executable.
-When an install or refresh would rewrite a read-only `config.toml`, Cotal reports the path and refuses to change the plugin, leaving the file and its permissions unchanged.
+Upgrades refresh Cotal's marketplace files and the installed plugin cache, then verify the version Codex lists. An unchanged marketplace registration needs no write to `config.toml`. The plugin keeps its existing enabled or disabled preference.
+If Cotal needs to move the marketplace registration and `config.toml` is read-only, the update leaves the file and its permissions unchanged. It still refreshes the installed plugin and names the registration it could not change. `cotal status` reports the protected registration while it still needs an edit. Make the file writable and run `cotal update` to finish. A computer without the plugin needs no Codex executable.
 If Codex has been uninstalled, upgrades leave its cached plugin unchanged and report that Codex is not installed.
 The retained cache is not verified as current. Reinstall Codex and run `cotal update` to refresh it.
-An unreadable plugin cache or a stale plugin that an installed Codex cannot update still refuses the upgrade.
+An unreadable or unwritable Cotal plugin cache still prevents an upgrade that needs to replace it.
 Start a new Codex conversation after setup, then ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
 On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 Nothing joins a signed-in space before you approve.

@@ -582,6 +582,11 @@ diagnosis and `cotal ext seed --repair` guidance as the extension command, even 
 extension versions match. Both text and JSON reports exit 4, and JSON reports partial completeness.
 The check leaves the seed state unchanged.
 
+An update that cannot write a read-only application configuration keeps the verified CLI release and
+reports the file and integration change left undone. `cotal status` checks the registration and
+reports when it still needs a change and the file is protected. Make the named file writable and run
+`cotal update` to finish.
+
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
 keep the existing guarded update, continuity checks, download verification and current-generation
