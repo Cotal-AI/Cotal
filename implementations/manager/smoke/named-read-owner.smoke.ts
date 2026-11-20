@@ -258,9 +258,16 @@ try {
   for (const op of ["attach", "stop", "input"]) {
     const refused = await askManager(client, space, servers, op, { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) }, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat });
     check(`located ${op} refuses stale lifecycle before submission`, !refused.ok && refused.code === "expired" && refused.preSubmitRefusal === true, refused);
-    // The caller also pins the run it chose, and that run was replaced too: its own pin answers first.
-    const replaced = await askManager(client, space, servers, op, { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) }, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat, expectedTarget: { id: loc.expectedSeat!.id, lifecycleUid: loc.expectedSeat!.lifecycleUid } });
-    check(`located ${op} whose chosen run was replaced says so before submission`, !replaced.ok && replaced.code === "not-found" && replaced.error?.includes("was replaced by a new run") === true && replaced.preSubmitRefusal === true && replaced.selectedSeatChanged === true, replaced);
+    // The caller also pins the run it chose, with the manager's own row id. A replaced chosen run is
+    // named by its own pin, before the presence pin.
+    const current = await askManager(client, space, servers, "status", { name: "second" }, admin.auth, "any", undefined, { instanceId: loc.instanceId });
+    const row = current.data as { id: string; lifecycleUid: string };
+    const args = { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) };
+    const replaced = await askManager(client, space, servers, op, args, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat, expectedTarget: { id: row.id, lifecycleUid: loc.expectedSeat!.lifecycleUid } });
+    check(`located ${op} whose chosen run was replaced says so before submission`, current.ok && !replaced.ok && replaced.code === "not-found" && replaced.error?.includes("was replaced by a new run") === true && replaced.preSubmitRefusal === true && replaced.selectedSeatChanged === true, { current, replaced });
+    // The run it chose is current and only the presence pin is stale: the presence pin refuses.
+    const chosenCurrent = await askManager(client, space, servers, op, args, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid } });
+    check(`located ${op} whose chosen run is current is still refused by its stale presence pin`, current.ok && !chosenCurrent.ok && chosenCurrent.code === "expired" && chosenCurrent.error?.includes("changed lifecycle") === true && chosenCurrent.preSubmitRefusal === true, chosenCurrent);
   }
   const staleAttach = await attachSeat({ ...ctx, name: "second" }, { control: staleClient, reconnect: false, onRefusal: "throw", verb: "cotal attach" });
   check("public workspace attach loop refuses the stale located lifecycle", staleAttach.kind === "gone" || staleAttach.kind === "failed" && staleAttach.message.includes("changed lifecycle"), staleAttach);

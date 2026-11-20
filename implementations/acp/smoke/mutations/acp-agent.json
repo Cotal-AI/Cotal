@@ -221,7 +221,7 @@
       "file": "implementations/acp/src/options.ts",
       "find": "  return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];",
       "replace": "  return managers.find((m) => m.local);",
-      "expectRed": "with no manager on this machine, session/new reads the first listed manager's lists"
+      "expectRed": "a new thread starts on a manager whose presence is current before the first listed"
     },
     {
       "name": "one silent manager fails the whole list",
@@ -241,7 +241,7 @@
     {
       "name": "a delete while a manager was silent answers as done",
       "file": "implementations/acp/src/agent.ts",
-      "find": "      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed.silent);\n",
+      "find": "      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed);\n",
       "replace": "",
       "expectRed": "deleting such a seat fails the same way and hides nothing"
     },
@@ -297,8 +297,8 @@
     {
       "name": "agents on the space's manager are not read once the person has their own",
       "file": "implementations/acp/src/live-mesh.ts",
-      "find": "return { launch, read: [...remote, ...local], ...(why ? { why } : {}) };",
-      "replace": "return { launch, read: launch, ...(why ? { why } : {}) };",
+      "find": "return { launch, read: [...remote, ...local], own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };",
+      "replace": "return { launch, read: launch, own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };",
       "expectRed": "and agents are read from them and from the space's manager"
     },
     {
@@ -318,14 +318,14 @@
     {
       "name": "a loaded agent's manager is not kept as a choice",
       "file": "implementations/acp/src/agent.ts",
-      "find": "    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, await m.manager(held)];",
+      "find": "    const managers = heldId === undefined || listed.some((x) => x.instanceId === heldId) ? listed : [...listed, typeof held === \"string\" ? await m.manager(held) : held!];",
       "replace": "    const managers = listed;",
       "expectRed": "a loaded agent's manager stays its current Machine choice beside the launch list"
     },
     {
       "name": "a load fails while no manager may start a new agent",
       "file": "implementations/acp/src/agent.ts",
-      "find": "      if (held === undefined || !(e instanceof NoLaunchManager)) throw e;",
+      "find": "      if (heldId === undefined || !(e instanceof NoLaunchManager)) throw e;",
       "replace": "      throw e;",
       "expectRed": "it loads while no manager may start a new agent, its lists read from the manager that holds it"
     },
@@ -344,18 +344,18 @@
       "expectRed": "a new thread starts on a manager whose presence is current before the first listed"
     },
     {
-      "name": "an unlisted seat offers to remove the manager where people do not sign in",
+      "name": "an unlisted seat offers to remove every silent manager",
       "file": "implementations/acp/src/agent.ts",
-      "find": "${m.userMode ? ` ${deregisterRemedy(m.space, silent)}` : \"\"}",
-      "replace": " ${deregisterRemedy(m.space, silent)}",
-      "expectRed": "where people do not sign in, it does not offer to remove the manager"
+      "find": "${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : \"\"}",
+      "replace": "${silent.length ? ` ${deregisterRemedy(m.space, silent)}` : \"\"}",
+      "expectRed": "for a manager that is not the person's own registration, it does not offer to remove it"
     },
     {
       "name": "an unlisted seat never names the deregister command",
       "file": "implementations/acp/src/agent.ts",
-      "find": "${m.userMode ? ` ${deregisterRemedy(m.space, silent)}` : \"\"}",
+      "find": "${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : \"\"}",
       "replace": "",
-      "expectRed": "where people sign in, it names the command that removes a gone manager's registration"
+      "expectRed": "for the person's own registration that did not answer, it names the command that removes it"
     },
     {
       "name": "a running seat-only thread points at /despawn",
@@ -374,8 +374,8 @@
     {
       "name": "the held manager is listed by its bare id",
       "file": "implementations/acp/src/agent.ts",
-      "find": "[...listed, await m.manager(held)]",
-      "replace": "[...listed, { instanceId: held, local: false }]",
+      "find": "typeof held === \"string\" ? await m.manager(held) : held!]",
+      "replace": "{ instanceId: heldId, local: false }]",
       "expectRed": "and it is described from its presence like the others"
     },
     {
@@ -391,6 +391,34 @@
       "find": "if (offer.managers.length > 1 && offer.managers.length <= MAX_CHOICES)",
       "replace": "if (offer.managers.length > 0 && offer.managers.length <= MAX_CHOICES)",
       "expectRed": "with one manager a loaded thread offers no Machine list"
+    },
+    {
+      "name": "a machine change describes the held manager again",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "typeof held === \"string\" ? await m.manager(held) : held!]",
+      "replace": "await m.manager(heldId)]",
+      "expectRed": "the held manager is described once, at the load, not again on a machine change"
+    },
+    {
+      "name": "an offline row still describes a manager",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "?.actor === `manager_${instanceId}` && p.status !== \"offline\");",
+      "replace": "?.actor === `manager_${instanceId}`);",
+      "expectRed": "an offline row makes a manager neither live nor local, and names no host"
+    },
+    {
+      "name": "an unanswered start names the deregister command",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "const READS = new Set([\"managerStatus\", \"models\", \"listPersonas\", \"ps\"]);",
+      "replace": "const READS = new Set([\"managerStatus\", \"models\", \"listPersonas\", \"ps\", \"start\"]);",
+      "expectRed": "an unanswered start does not, since the manager may have accepted it"
+    },
+    {
+      "name": "the space's own manager is offered for removal",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "return instanceId !== undefined && own.has(instanceId) && READS.has(op)",
+      "replace": "return instanceId !== undefined && READS.has(op)",
+      "expectRed": "the space's own manager does not, since it is not the person's registration"
     }
   ]
 }

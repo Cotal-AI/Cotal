@@ -13,9 +13,9 @@
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
-import type { CotalMessage } from "@cotal-ai/core";
+import type { CotalMessage, Presence } from "@cotal-ai/core";
 import { FrameMapper } from "../src/frames.js";
-import { answeredReads, frameOf, managerPlan } from "../src/live-mesh.js";
+import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister } from "../src/live-mesh.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -98,6 +98,29 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("while the space's manager is still read", JSON.stringify(asleep.read) === JSON.stringify(["space"]), asleep);
   const empty = managerPlan([L("space", "local", "not open")]);
   check("a manager that is not a candidate is neither started on nor read", empty.launch.length === 0 && empty.read.length === 0 && typeof empty.why === "string", empty);
+  check("every registration of the person's is their own, whatever its state, and the space's manager is not", JSON.stringify([...both.own].sort()) === JSON.stringify(["gone", "lapa", "lapb"]), both.own);
+}
+
+// A manager as a choice: only a current presence row describes it.
+{
+  const row = (id: string, host: string, status: string) => ({ card: { id: `u_p.manager_${id}`, name: id, meta: { host } }, status }) as unknown as Presence;
+  const roster = [row("a", "here", "idle"), row("b", "there", "offline")];
+  const a = managerChoice("a", roster, "here");
+  check("a manager with a current row is live, takes its host, and is local on that host", a.live === true && a.host === "here" && a.local === true, a);
+  const b = managerChoice("b", roster, "there");
+  check("an offline row makes a manager neither live nor local, and names no host", b.live === false && b.local === false && b.host === undefined, b);
+  const c = managerChoice("c", roster, "here");
+  check("a manager with no row is not live", c.live === false && c.local === false && c.host === undefined, c);
+}
+
+// Which unanswered replies name the deregister command.
+{
+  const own = new Set(["lapa"]);
+  const silence = { ok: false, unanswered: true };
+  check("an unanswered read of the person's own registration names it", namesDeregister("ps", "lapa", own, silence) && namesDeregister("models", "lapa", own, silence));
+  check("an unanswered start does not, since the manager may have accepted it", !namesDeregister("start", "lapa", own, silence));
+  check("the space's own manager does not, since it is not the person's registration", !namesDeregister("ps", "space", own, silence));
+  check("a refusal does not, since the manager answered", !namesDeregister("ps", "lapa", own, { ok: false }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

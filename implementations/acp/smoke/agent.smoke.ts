@@ -66,6 +66,8 @@ class FakeMesh implements Mesh {
   typedTo: (string | undefined)[] = [];
   /** Managers that did not answer the list. */
   silent: string[] = [];
+  /** The silent managers that are the person's own registrations and did not answer. */
+  removable: string[] = [];
   /** The caller may not read the launch lists. */
   launchRefused = false;
   /** What a seat does when its manager types a prompt into it. A throw is the manager's refusal. */
@@ -93,7 +95,9 @@ class FakeMesh implements Mesh {
     return CATALOGS;
   }
   managerList: ManagerChoice[] = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
-  async manager(instanceId: string): Promise<ManagerChoice> { return { instanceId, host: `host-${instanceId}`, local: false }; }
+  /** The managers described one at a time, in order. */
+  described: string[] = [];
+  async manager(instanceId: string): Promise<ManagerChoice> { this.described.push(instanceId); return { instanceId, host: `host-${instanceId}`, local: false }; }
   /** Why no manager may start a new agent, when none may. */
   noLaunch: string | undefined;
   async managers() {
@@ -110,14 +114,14 @@ class FakeMesh implements Mesh {
   async spawn(req: SpawnRequest): Promise<SeatRef> {
     this.spawned.push(req);
     if (this.spawnDelay) await tick(this.spawnDelay);
-    const seat: SeatRef = { name: req.name, owner: "local", actor: `actor-${req.name}`, lifecycleUid: `life-${req.name}`, managerInstanceId: "m1" };
+    const seat: SeatRef = { name: req.name, owner: "local", actor: `actor-${req.name}`, lifecycleUid: `life-${req.name}`, managerInstanceId: req.managerInstanceId ?? "m1" };
     this.present.set(seat.actor, "working");
     for (const e of this.script.before) this.emit(seat, e);
     const after = this.script.after;
     setTimeout(() => { for (const e of after) this.emit(seat, e); }, 10);
     return seat;
   }
-  async seats() { return { rows: this.rows, silent: this.silent }; }
+  async seats() { return { rows: this.rows, silent: this.silent, removable: this.removable }; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
   async input(seat: SeatRef, text: string) {
@@ -337,11 +341,11 @@ check("loading a seat no manager listed while one did not answer names that mana
 const hiddenBefore = hidden.ids.size;
 const unsureDelete = await errorOf(agent.request(methods.agent.session.delete, { sessionId: "ghost" }));
 check("deleting such a seat fails the same way and hides nothing", unsureDelete?.code === -32603 && String(unsureDelete.message).includes("m9") && hidden.ids.size === hiddenBefore, unsureDelete);
-check("where people do not sign in, it does not offer to remove the manager", !String(unsure?.message).includes("deregister"), unsure);
-mesh.userMode = true;
+check("for a manager that is not the person's own registration, it does not offer to remove it", !String(unsure?.message).includes("deregister"), unsure);
+mesh.removable = ["m9"];
 const unsureSignedIn = await errorOf(agent.request(methods.agent.session.load, { sessionId: "ghost", cwd: dir, mcpServers: [] }));
-check("where people sign in, it names the command that removes a gone manager's registration", String(unsureSignedIn?.message).includes("`cotal endpoint deregister manager m9 --space fake --yes`"), unsureSignedIn);
-mesh.userMode = false;
+check("for the person's own registration that did not answer, it names the command that removes it", String(unsureSignedIn?.message).includes("`cotal endpoint deregister manager m9 --space fake --yes`"), unsureSignedIn);
+mesh.removable = [];
 mesh.silent = [];
 
 // A person whose grant does not let them spawn opens their agent and types into it. The agent runs
@@ -405,9 +409,11 @@ check("a new thread is refused with the reason", JSON.stringify(noNew ?? null).i
 mesh.noLaunch = undefined;
 // After /despawn the loaded thread may choose another machine and come back to the one that held it.
 await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
+const describedAtLoad = mesh.described.filter((m) => m === "m3").length;
 await agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "/despawn" }] });
 const toM1 = await agent.request(methods.agent.session.setConfigOption, { sessionId: "held", configId: "machine", value: "m1" });
 check("after /despawn, choosing another machine keeps the held manager as a choice", JSON.stringify(machineOf(toM1)) === JSON.stringify({ current: "m1", choices: ["m1", "m2", "m3"] }), machineOf(toM1));
+check("the held manager is described once, at the load, not again on a machine change", mesh.described.filter((m) => m === "m3").length === describedAtLoad, mesh.described);
 const askedBack = mesh.catalogsAsked.length;
 let backFailed: unknown;
 const backToM3 = await agent.request(methods.agent.session.setConfigOption, { sessionId: "held", configId: "machine", value: "m3" }).catch((e: unknown) => { backFailed = e; return undefined; });
@@ -423,16 +429,17 @@ const alone = await agent.request(methods.agent.session.load, { sessionId: "held
 check("with one manager a loaded thread offers no Machine list", machineOf(alone).current === undefined, machineOf(alone));
 await agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "/despawn" }] });
 mesh.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
-await within(agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "again" }] }));
+const spawnsAlone = mesh.spawned.length;
+const aloneTurn = await within(agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "again" }] }));
 mesh.script = { before: [], after: [] };
-check("and its next agent starts on that manager", mesh.spawned.at(-1)?.managerInstanceId === "m3", mesh.spawned.at(-1));
+check("and its next agent starts on that manager", aloneTurn?.stopReason === "end_turn" && mesh.spawned.length === spawnsAlone + 1 && mesh.spawned.at(-1)?.name === "held" && mesh.spawned.at(-1)?.managerInstanceId === "m3", { aloneTurn, spawned: mesh.spawned.at(-1) });
 // A registration whose computer is gone stays listed, so a new thread prefers a manager whose presence is current.
 mesh.managerList = [{ instanceId: "m1", host: "gone", local: false, live: false }, { instanceId: "m2", host: "there", local: false, live: true }];
-const preferLive = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+const preferLive = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
 check("a new thread starts on a manager whose presence is current before the first listed", machineOf(preferLive).current === "m2" && mesh.catalogsAsked.at(-1) === "m2", { machine: machineOf(preferLive), asked: mesh.catalogsAsked.at(-1) });
-mesh.managerList = [{ instanceId: "m1", host: "here", local: true, live: false }, { instanceId: "m2", host: "there", local: false, live: true }];
-const preferLocal = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
-check("this machine's manager still comes first", machineOf(preferLocal).current === "m1", machineOf(preferLocal));
+mesh.managerList = [{ instanceId: "m1", host: "there", local: false, live: true }, { instanceId: "m2", host: "here", local: true, live: true }];
+const preferLocal = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
+check("this machine's manager comes before another live one listed first", machineOf(preferLocal).current === "m2", machineOf(preferLocal));
 mesh.managerList = listBefore;
 mesh.rows = rowsBefore;
 
