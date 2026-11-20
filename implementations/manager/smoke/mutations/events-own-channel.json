@@ -143,8 +143,8 @@
     {
       "name": "E11 the single selector, swapped",
       "file": "implementations/manager/src/manager.ts",
-      "find": "  private get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"user\";\n    if (this.auth !== undefined) return \"static\";\n    return \"open\";\n  }",
-      "replace": "  private get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"static\";\n    if (this.auth !== undefined) return \"user\";\n    return \"open\";\n  }",
+      "find": "  protected get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"user\";\n    if (this.auth !== undefined) return \"static\";\n    return \"open\";\n  }",
+      "replace": "  protected get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"static\";\n    if (this.auth !== undefined) return \"user\";\n    return \"open\";\n  }",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",
       "cell": "the refusal prints a mint command, naming a profile and a channel",
       "note": "There is exactly ONE selector for all three doors, and this swaps the two non-open arms rather than inverting a boolean (there is no boolean left to invert; the fold in #567 made the selector three-valued so a fourth mode could not fall into an existing arm). The suite runs a STATIC mesh, so under this mutant a static manager reads meshMode as \"user\" and the refusal hands a static operator `cotal actor grant` against a ledger that does not exist, reddening the same cell E9 named. Re-anchored for #567: the prior E11 found the single-line ternary `return this.userMode` the earlier boolean selector used, which #567 replaced with this switch."
