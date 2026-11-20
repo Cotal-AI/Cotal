@@ -17,6 +17,10 @@ including Managers outside the selected space. Each request uses that Manager's 
 identity. `--space`, `--server`, `--creds`, and `--on` narrow the request. Missing or conflicting
 identity records refuse rather than selecting a Manager on another computer.
 
+On Linux, `cotal update` and `cotal update --self` leave a running controller stack's Manager
+alone when its recorded process proves it was launched from a separate installation. This also
+applies when the stack is selected in the current folder.
+
 A local Manager whose launch entry cannot be attributed also refuses the update. The refusal
 reports its start time, working directory, launch entry arguments, and missing paths. Stop that
 process if it is a leftover, or run the update from the installation that owns it. Restore that

@@ -63,9 +63,9 @@ import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { supervisorMayServe } from "../lib/manager-proc.js";
+import { isCliEntry, supervisorMayServe } from "../lib/manager-proc.js";
 import { processGone, readStackJournal, stackScopeRefusals } from "../lib/stack-journal.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { observeServiceProcess, serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import {
   ConnectRefusal,
   isConnectRefusal,
@@ -993,6 +993,33 @@ export async function readUpdateManagerContinuity(
   }
 }
 
+/** Link the answering Manager to the controller's live process before excluding its installation. */
+function isForeignStackManager(target: ControlTarget, status: { instanceId?: unknown; lifecycleUid?: unknown } | undefined, installedEntry?: string): boolean {
+  if (process.platform !== "linux" || !target.root || !status || typeof status.instanceId !== "string" || typeof status.lifecycleUid !== "string") return false;
+  try {
+    const journal = readStackJournal(target.root)?.journal;
+    if (!journal || journal.operation.kind !== "up" || journal.operation.phase !== "completed" || journal.space !== target.space || brokerAddressKey(journal.server) !== brokerAddressKey(target.server)) return false;
+    const member = journal.members.find(row => row.role === "manager");
+    if (!member?.instanceId || !member.process) return false;
+    const instance = serviceInstanceStore(target.space).read(member.instanceId)?.record.value;
+    const native = instance?.adapterReadiness?.native;
+    if (!instance?.process || instance.definition !== member.definition || instance.state !== "running" ||
+        instance.process.pid !== member.process.pid || instance.process.token !== member.process.token ||
+        native?.instanceId !== status.instanceId || native.lifecycleUid !== status.lifecycleUid || observeServiceProcess(instance) !== "running") return false;
+    const argv = readFileSync(`/proc/${instance.process.pid}/cmdline`, "utf8").split("\0");
+    // The controller places only the optional global color flag after its Node entry.
+    const verb = argv.indexOf("__service-manager");
+    const launch = argv[verb - (argv[verb - 1] === "--no-color" ? 2 : 1)];
+    if (!launch || !isAbsolute(launch)) return false;
+    const entry = realpathSync(launch);
+    const own = realpathSync(installedEntry ?? logicalExecutionEntry() ?? entryScript());
+    return entry !== own && isCliEntry(entry) && assertRecordIdentity(instance.process).kind === "match";
+  } catch {
+    // An unreadable record or launch entry cannot prove a different installation.
+    return false;
+  }
+}
+
 export async function readManagerContinuity(flags: Record<string, unknown>, options: { readOnly?: boolean; retainGraph?: boolean; installedEntry?: string } = {}): Promise<"none" | "legacy"> {
   const { readMeshRegistry } = await import("@cotal-ai/workspace");
   const registry = readMeshRegistry();
@@ -1155,6 +1182,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     if (status.unanswered && on === undefined) return "none";
     throw new Error(status.error ?? "manager status request failed");
   }
+  if (typeof flags.creds !== "string" && isForeignStackManager(target, status.data as { instanceId?: unknown; lifecycleUid?: unknown } | undefined, options.installedEntry)) return "none";
   const seats = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth, "owner", undefined, pin);
   if (!seats.ok) throw new Error(seats.error ?? "manager seat inventory request failed");
   if (options.retainGraph) {
