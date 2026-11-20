@@ -1921,7 +1921,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       child.on("exit", (code, signal) => {
         if (killTimer !== undefined) { clearTimeout(killTimer); killTimer = undefined; }
         // A child killed by a signal, or stopped after this foreground spawn received SIGTERM or
-        // SIGHUP, exits 128 plus the signal's number (#7043, #7633).
+        // SIGHUP, exits 128 plus the signal's number.
         const exitSignal = receivedSignal ?? signal;
         process.exitCode = exitSignal ? 128 + osConstants.signals[exitSignal] : (code ?? 0);
         resolve();

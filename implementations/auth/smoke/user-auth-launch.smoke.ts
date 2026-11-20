@@ -351,18 +351,21 @@ try {
   // WORKTREE's connector into the sandbox prefix, never the operator store.
   const extAdd = await cotal(["ext", "add", CLAUDE]);
   check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
+  const nativeBin = join(home, "bin");
+  mkdirSync(nativeBin);
+  writeFileSync(join(nativeBin, "claude"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi\necho COTAL_PLACEMENT_NATIVE_REACHED\n', { mode: 0o700 });
+  const nativeEnv = { PATH: `${nativeBin}:${childEnv.PATH}` };
   // The read list keeps the persona's own `general` (a spawn whose list omits a channel its persona
   // subscribes to is refused on that alone), so `ops.wide` is the only ask beyond the cli grant.
-  // `--foreground`: a bare spawn is a managed launch, which needs a terminal to attach and refuses
-  // before any grant is read.
-  const overSpawn = await cotal(["spawn", "probe", "--foreground", "--allow-subscribe", "general,ops.wide", "--space", SPACE]);
+  // The stand-in passes the connector's PATH preflight so this reaches the grant check.
+  const overSpawn = await cotal(["spawn", "probe", "--foreground", "--allow-subscribe", "general,ops.wide", "--space", SPACE], { env: nativeEnv });
   check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
     overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
   // A persona that names `endpoints`, even an empty list, is refused on a user-auth mesh before any
   // grant is read, pointing at the service owner's grant instead (SPEC 13.15).
   writeFileSync(join(root, ".cotal", "agents", "ep-probe.md"), "---\nname: epprobe\nsubscribe: [general]\nendpoints: []\n---\nprobe persona.\n");
-  const epSpawn = await cotal(["spawn", "ep-probe", "--foreground", "--space", SPACE]);
+  const epSpawn = await cotal(["spawn", "ep-probe", "--foreground", "--space", SPACE], { env: nativeEnv });
   check("a foreground spawn of a persona naming endpoints is refused by name on a user-auth mesh",
     epSpawn.status !== 0 && epSpawn.out.includes("per-user auth mesh endpoint access comes from the service owner's grants") && epSpawn.out.includes("cotal service-endpoint grant"), epSpawn.out);
 
@@ -991,11 +994,8 @@ try {
       check("native placement host explicitly selects the signed-in space", hostSelected.status === 0, hostSelected.out);
       const installed = await cotal(["ext", "add", CLAUDE], { cwd: hostRoot, env: hostEnv });
       check("placement installs the actual native connector", installed.status === 0, installed.out);
-      const nativeBin = join(secondHome, "bin");
-      mkdirSync(nativeBin);
-      writeFileSync(join(nativeBin, "claude"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi\necho COTAL_PLACEMENT_NATIVE_REACHED\n', { mode: 0o700 });
       const { cotalPty, clean } = await import("../../cli/smoke/_console-pty.js");
-      const terminalEnv = Object.fromEntries(Object.entries({ ...childEnv, ...hostEnv, HOME: hostHome, COTAL_NAME: undefined, COTAL_ID: undefined, PATH: `${nativeBin}:${childEnv.PATH}` }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const terminalEnv = Object.fromEntries(Object.entries({ ...childEnv, ...hostEnv, ...nativeEnv, HOME: hostHome, COTAL_NAME: undefined, COTAL_ID: undefined }).filter((entry): entry is [string, string] => entry[1] !== undefined));
       const terminal = cotalPty(["spawn", "--name", "placement_local"], { cwd: hostRoot, env: terminalEnv, cols: 120 });
       let terminalOutput = "", terminalExit: number | undefined;
       terminal.onData((data) => { terminalOutput += data; });
