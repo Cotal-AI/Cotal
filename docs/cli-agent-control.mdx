@@ -521,10 +521,12 @@ answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was se
 **This one is narrower than `stop` or `attach`.** Those two are granted to anything holding
 `spawn`, so an agent can stop and attach to seats under its own owner. `input` is granted to
 operator credentials and, on a user-auth mesh, to your own sign-in for every agent under your owner,
-whatever your scope. No agent holds it. The reason is that a write into a terminal is control of
-whatever is running in it, and the own-owner rule covers every seat under an owner, not only the
-ones a caller launched: a `spawn`-scoped agent could otherwise type into a sibling it never started.
-Your right comes from your ledger row being a person's, so you cannot hand it to an agent you spawn.
+whatever your scope. No agent credential holds it. The reason is that a write into a terminal is
+control of whatever is running in it, and the own-owner rule covers every seat under an owner, not
+only the ones a caller launched: a `spawn`-scoped agent could otherwise type into a sibling it never
+started. Your right comes from your ledger row being a person's, so you cannot hand it to an agent
+you spawn. It rides your sign-in, though: an agent whose shell runs as you, on a machine where you
+are signed in, can run `cotal input` under it.
 Typing into an agent under another owner needs the `admin` scope. Seat locality is still resolved
 for you.
 

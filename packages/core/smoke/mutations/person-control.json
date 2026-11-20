@@ -12,16 +12,23 @@
     {
       "name": "a person's manager view loses its seat rows",
       "file": "packages/core/src/provision-permission-builders.ts",
-      "find": "    ...(opts.ledgerKind === \"interactive\" ? personSeatCapabilities(pr.owner) : []),",
-      "replace": "    ...([] as EpCapability[]),",
+      "find": "      ? [...personSeatCapabilities(pr.owner), ...PERSON_VIEW_READS",
+      "replace": "      ? [...PERSON_VIEW_READS",
       "expectRed": "a person's manager view stops, attaches to, types into and interrupts their own agents"
     },
     {
       "name": "the seat rows key on the spawn scope instead of the row kind",
       "file": "packages/core/src/provision-permission-builders.ts",
-      "find": "    ...(opts.ledgerKind === \"interactive\" ? personSeatCapabilities(pr.owner) : []),",
-      "replace": "    ...(caps.includes(\"spawn\") ? personSeatCapabilities(pr.owner) : []),",
+      "find": "    ...(opts.ledgerKind === \"interactive\"\n",
+      "replace": "    ...(caps.includes(\"spawn\")\n",
       "expectRed": "an agent's manager view gets no input or interrupt row"
+    },
+    {
+      "name": "a person's manager view loses its inspect and ps reads",
+      "file": "packages/core/src/provision-permission-builders.ts",
+      "find": ", ...PERSON_VIEW_READS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command }))]",
+      "replace": "]",
+      "expectRed": "a person's manager view resolves and lists their agents whatever their scope"
     },
     {
       "name": "the seat rows reach every owner",

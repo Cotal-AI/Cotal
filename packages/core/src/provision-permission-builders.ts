@@ -27,6 +27,11 @@ import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
  * the space through the class rail. */
 const SPAWN_VIEW_READS = Object.freeze(["status", "models", "resolve-cwd", "list-dir", "ps"] as const);
 
+/** The reads a person's own manager view carries whatever their scope (SPEC 13.21): `inspect`
+ * resolves a seat's name before every seat command, and `ps` lists their agents. The Manager bounds
+ * both to the caller's owner unless the caller holds admin. */
+const PERSON_VIEW_READS = Object.freeze(["inspect", "ps"] as const);
+
 /** One seat's manager control view. It carries no agent messaging or delivery surface, and every
  * manager request, including describe, is pinned to one exact registered instance. */
 export function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
@@ -46,7 +51,9 @@ export function managerCallerPermissions(space: string, pr: MintPrincipal, opts:
     ...(caps.includes("admin") ? operatorInstrumentCapabilities("admin", pr.owner) : []),
     // A person controls the agents under their own owner (SPEC 13.21), keyed on the ledger row's
     // kind.
-    ...(opts.ledgerKind === "interactive" ? personSeatCapabilities(pr.owner) : []),
+    ...(opts.ledgerKind === "interactive"
+      ? [...personSeatCapabilities(pr.owner), ...PERSON_VIEW_READS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command }))]
+      : []),
   ];
   const caller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) }, opts);
   // The sets overlap on one instance (a person's rows and the spawn set, admin and spawn), and a
