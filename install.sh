@@ -324,12 +324,17 @@ parse_args() {
       --no-modify-path) OPT_MODIFY_PATH=0 ;;
       --vendor-node) OPT_VENDOR_NODE=1 ;;
       --dry-run) OPT_DRY_RUN=1 ;;
-      --version)
-        [ $# -ge 2 ] || die "--version needs a value" "For example: --version 0.14.2"
-        OPT_VERSION="$2"
-        shift
+      --version | --version=*)
+        case "$1" in
+          --version)
+            shift
+            OPT_VERSION="${1-}"
+            ;;
+          *) OPT_VERSION="${1#--version=}" ;;
+        esac
+        [ -n "$OPT_VERSION" ] || die "--version needs a value" \
+          "Provide a version such as --version 0.14.2, or omit --version to install the latest release."
         ;;
-      --version=*) OPT_VERSION="${1#--version=}" ;;
       -h | --help) usage ;;
       *)
         die "Unknown option: $1" "Run with --help to see what this installer accepts."
