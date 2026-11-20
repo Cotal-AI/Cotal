@@ -8,7 +8,8 @@
  *     `terminated`.
  *  B. on a terminal: the `watch`, `chat` and `console` views exit 130 on SIGINT, after the view has
  *     stopped, rather than dying by the signal. The chat view closes its session first. The watch
- *     view exits 143 on SIGTERM. A join exits cleanly on /quit or EOF and refuses incomplete slash commands.
+ *     view exits 143 on SIGTERM. A join exits cleanly on /quit or terminal EOF and refuses incomplete slash commands.
+ *     A headless join stays present with stdin at EOF.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:signal-exits:live
@@ -18,7 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { clean, cotalPty, COTAL, repoRoot } from "./_console-pty.js";
+import { clean, cotalPty, COTAL, repoRoot, wait } from "./_console-pty.js";
 
 const TSX = join(repoRoot, "node_modules", ".bin", "tsx");
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
@@ -43,12 +44,12 @@ const cotal = (...args: string[]) => {
 /** Start `args` on pipes, send `signal` once `ready` shows on stdout (or after 15 s), and resolve
  *  with how it ended and the last JSON record it wrote. */
 const piped = (args: string[], signal: NodeJS.Signals, ready: string) => new Promise<{ code: number | null; signal: string | null; sent: boolean; end?: { reason?: string; data?: { reason?: string } }; out: string }>((done) => {
-  const child = spawn(TSX, [COTAL, ...args], { cwd: s, env, stdio: [args.includes("--no-input") ? "ignore" : "pipe", "pipe", "pipe"] });
+  const child = spawn(TSX, [COTAL, ...args], { cwd: s, env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", sent = false;
   const fire = () => { if (sent) return; sent = true; child.kill(signal); };
   const fallback = setTimeout(fire, 15_000);
-  child.stdout!.on("data", (chunk: Buffer) => { out += chunk; if (out.includes(ready)) setTimeout(fire, 500); });
-  child.stderr!.on("data", (chunk: Buffer) => { out += chunk; });
+  child.stdout.on("data", (chunk: Buffer) => { out += chunk; if (out.includes(ready)) setTimeout(fire, 500); });
+  child.stderr.on("data", (chunk: Buffer) => { out += chunk; });
   child.on("close", (code, killed) => {
     clearTimeout(fallback);
     const last = out.trim().split("\n").reverse().find((line) => line.startsWith("{"));
@@ -95,31 +96,35 @@ try {
   }
   for (const [name, args, ready] of [
     ["history --follow", ["history", "--follow"], "replay to new members"],
-    ["join", ["join", "--no-input", "--name", "signal-exits"], "holding presence"],
+    ["join", ["join", "--name", "signal-exits"], "holding presence"],
     ["console --plain", ["console", "--plain"], "watching space"],
   ] as [string, string[], string][]) {
     const ended = await piped(args, "SIGINT", ready);
     check(`${name} exits 130 on SIGINT`, ended.sent && ended.code === 130, ended);
   }
 
-  const pipeEof = await new Promise<{ code: number | null; out: string }>((done) => {
-    const child = spawn(TSX, [COTAL, "join", "--name", "PipeEof"], { cwd: s, env, stdio: ["pipe", "pipe", "pipe"] });
-    let out = "", sent = false;
-    const deadline = setTimeout(() => child.kill("SIGTERM"), 30_000);
-    child.stdout.on("data", (chunk: Buffer) => {
-      out += chunk;
-      if (!sent && out.includes("holding presence")) {
-        sent = true;
-        child.stdin.end();
-      }
-    });
+  for (const flags of [[], ["--no-input"]]) {
+    const name = flags.length ? "HeadlessNoInput" : "HeadlessEof";
+    const child = spawn(TSX, [COTAL, "join", "--name", name, ...flags], { cwd: s, env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (chunk: Buffer) => { out += chunk; });
     child.stderr.on("data", (chunk: Buffer) => { out += chunk; });
-    child.on("close", (code) => {
+    const exited = new Promise((done) => child.once("close", done));
+    const deadline = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    try {
+      const readyBy = Date.now() + 30_000;
+      while (!out.includes("holding presence") && child.exitCode === null && Date.now() < readyBy) await wait(100);
+      await wait(3_000);
+      const roster = cotal("who", "--plain");
+      check(`headless join${flags.length ? " --no-input" : ""} stays present with stdin at EOF`,
+        child.exitCode === null && child.signalCode === null && out.includes("holding presence") &&
+        roster.status === 0 && roster.out.includes(name), { out, roster });
+    } finally {
+      child.kill("SIGTERM");
+      await exited;
       clearTimeout(deadline);
-      done({ code, out });
-    });
-  });
-  check("join leaves cleanly with exit 0 when piped stdin closes", pipeEof.code === 0 && pipeEof.out.includes("leaving"), pipeEof);
+    }
+  }
 
   console.log("\nB. on a terminal");
   for (const [name, args, ready] of [["watch", ["watch"], "q leave"], ["chat", ["chat"], "Enter send"], ["console", ["console"], "cmd"]] as [string, string[], string][]) {

@@ -773,7 +773,7 @@ if (process.platform === "linux") {
   let manager: ReturnType<typeof startForeground> | undefined;
   let stopped: Awaited<ReturnType<typeof run>>;
   try {
-    peer = startForeground(["join", "--no-input", "--name", "roster-peer", "--channel", "general"]);
+    peer = startForeground(["join", "--name", "roster-peer", "--channel", "general"]);
     let roster = await run(["who", "--plain"], {}, pinned);
     for (let i = 0; i < 20 && !roster.stdout.includes("roster-peer") && peer.child.exitCode === null; i++)
       roster = await run(["who", "--plain"], {}, pinned);

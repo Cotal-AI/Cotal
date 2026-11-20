@@ -824,14 +824,14 @@ try {
       check("offline rig: live provisioned mint succeeds", live.code === 0, live.out);
 
       // #7565: bare join with --expires-in retires cleanly at its requested lifetime instead of exiting 2 AUTH_REQUIRED.
-      const timedJoin = await runCotal(["join", "--no-input", "--space", "offlinecheck", "--name", "alice", "--expires-in", "2"]);
+      const timedJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "alice", "--expires-in", "2"]);
       check("#7565: bare join --expires-in 2 exits 0 cleanly without AUTH_REQUIRED or doctor auth advice",
         timedJoin.code === 0 && /leaving/.test(timedJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(timedJoin.out), timedJoin);
 
-      const absoluteJoin = await runCotal(["join", "--no-input", "--space", "offlinecheck", "--name", "absolute", "--expires-at", String(Math.floor(Date.now() / 1000) + 4)]);
+      const absoluteJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "absolute", "--expires-at", String(Math.floor(Date.now() / 1000) + 4)]);
       check("#7565: bare join --expires-at exits 0 without an authentication refusal",
         absoluteJoin.code === 0 && /leaving/.test(absoluteJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(absoluteJoin.out), absoluteJoin);
-      const longJoin = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--no-input", "--space", "offlinecheck", "--name", "long_join", "--expires-in", "3000000"], { stdio: ["ignore", "pipe", "pipe"] });
+      const longJoin = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "long_join", "--expires-in", "3000000"], { stdio: ["ignore", "pipe", "pipe"] });
       let longOut = "";
       longJoin.stdout.on("data", (c: Buffer) => { longOut += c.toString(); });
       longJoin.stderr.on("data", (c: Buffer) => { longOut += c.toString(); });
@@ -884,7 +884,7 @@ try {
       const newUid = remintLine ? (JSON.parse(remintLine) as { result?: { lifecycleUid?: string | null } }).result?.lifecycleUid ?? "" : "";
       check("#7541: re-minting with --provision allocates and provisions a new lifecycleUid",
         remintedProv.code === 0 && /^[a-z0-9]{26,32}$/.test(newUid), remintedProv.out);
-      const joinChild = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--no-input", "--space", "offlinecheck", "--name", "alice", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"], { stdio: ["ignore", "pipe", "pipe"] });
+      const joinChild = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "alice", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"], { stdio: ["ignore", "pipe", "pipe"] });
       let joinOut = "";
       joinChild.stdout.on("data", (c: Buffer) => { joinOut += c.toString(); });
       joinChild.stderr.on("data", (c: Buffer) => { joinOut += c.toString(); });

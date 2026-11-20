@@ -101,7 +101,7 @@ try {
   await refused("other-channel", other.file, other.uid, /does not grant read access to #general[\s\S]*--allow-subscribe general/);
 
   async function joins(name: string, file: string, uid: string, channel: string) {
-    const run = cli("join", "--no-input", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
+    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
     await until(() => run.output().includes("holding presence") || run.proc.exitCode !== null);
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);

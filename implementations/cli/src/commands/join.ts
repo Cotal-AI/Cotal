@@ -359,9 +359,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       ? `ask the space's owner to grant this identity permission to post to #${channel}`
       : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
-  // Only a terminal gets a command prompt. Headless sessions still leave on EOF unless input is disabled.
-  const noInput = inputDisabledByFlag();
-  const interactive = process.stdin.isTTY === true && !noInput;
+  // A headless join holds presence and logs mesh events without reading stdin.
+  const interactive = process.stdin.isTTY === true && !inputDisabledByFlag();
   let rlClosed = false;
   const rl = interactive
     ? readline.createInterface({
@@ -454,10 +453,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
     process.exit(code);
   };
-  const leaveOnEof = () => void shutdown();
   rl?.once("close", () => {
     rlClosed = true;
-    if (started) leaveOnEof();
+    if (started) void shutdown();
   });
   const checkCredential = () => {
     if (!started || leaving || checking || credential === undefined) return;
@@ -531,7 +529,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     endAtLifetime();
   }
 
-  // `/quit`, EOF and a requested session lifetime leave with 0. A signal leaves the same way with its code.
+  // `/quit`, terminal EOF and a requested session lifetime leave with 0. A signal leaves the same way with its code.
   process.on("SIGINT", () => void shutdown(130));
   process.on("SIGTERM", () => void shutdown(143));
 
@@ -539,19 +537,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     console.log(
       c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
     );
-    if (!noInput) {
-      process.stdin.once("end", leaveOnEof);
-      process.stdin.resume();
-    }
-    try {
-      await Promise.race([whenLost(), sessionFinished]);
-    } finally {
-      if (!noInput) {
-        process.stdin.off("end", leaveOnEof);
-        process.stdin.pause();
-      }
-    }
-    return;
+    return Promise.race([whenLost(), sessionFinished]); // park; event handlers do the work
   }
 
   console.log(
