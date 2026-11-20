@@ -219,7 +219,7 @@
     {
       "name": "a new session with no local manager stays unpinned",
       "file": "implementations/acp/src/options.ts",
-      "find": "  return managers.find((m) => m.local) ?? managers[0];",
+      "find": "  return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];",
       "replace": "  return managers.find((m) => m.local);",
       "expectRed": "with no manager on this machine, session/new reads the first listed manager's lists"
     },
@@ -241,7 +241,7 @@
     {
       "name": "a delete while a manager was silent answers as done",
       "file": "implementations/acp/src/agent.ts",
-      "find": "      if (rows.length === 0 && listed.silent.length > 0) throw notListed(params.sessionId, listed.silent);\n",
+      "find": "      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed.silent);\n",
       "replace": "",
       "expectRed": "deleting such a seat fails the same way and hides nothing"
     },
@@ -311,14 +311,14 @@
     {
       "name": "a seat-only thread takes a changed option",
       "file": "implementations/acp/src/agent.ts",
-      "find": "      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection))\n",
-      "replace": "      if (false)\n",
+      "find": "      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection)) throw RequestError.invalidParams(undefined, fixed);\n",
+      "replace": "",
       "expectRed": "choosing another model there is refused, since no agent can start with it"
     },
     {
       "name": "a loaded agent's manager is not kept as a choice",
       "file": "implementations/acp/src/agent.ts",
-      "find": "    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, { instanceId: held, local: false }];",
+      "find": "    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, await m.manager(held)];",
       "replace": "    const managers = listed;",
       "expectRed": "a loaded agent's manager stays its current Machine choice beside the launch list"
     },
