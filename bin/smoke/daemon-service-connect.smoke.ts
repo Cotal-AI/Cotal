@@ -2273,7 +2273,9 @@ process.stdin.once('data', () => {
       };
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
+        // A mode that pins PATH in the unit runs the daemon with that PATH, as the native service does,
+        // so an application installed into a directory only the terminal has stays unseen until setup refreshes it.
+        const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") || process.argv.includes("--setup-no-connectors-repro") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         let recoveryRestarts = 0;
         const launch = () => spawn(cliNode, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
