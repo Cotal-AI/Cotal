@@ -3,7 +3,7 @@
     "implementations/acp/smoke/agent.smoke.ts",
     "implementations/acp/smoke/frames.smoke.ts"
   ],
-  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing; a thread opened without spawn offers only its agent's model and cannot start another, and new threads start and agents are read where the auth service's manager list allows",
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing; a thread opened without spawn offers only its agent's model and cannot start another, and new threads start and agents are read where the auth service's manager list allows; a loaded agent keeps its manager as a choice and loads while no manager may start a new one, and a seat-only thread's options do not change",
   "command": "pnpm --filter @cotal-ai/acp test",
   "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
   "why": [
@@ -307,6 +307,34 @@
       "find": "listed.filter((m) => m.placement === placement && m.state === \"candidate\")",
       "replace": "listed.filter((m) => m.placement === placement)",
       "expectRed": "a manager that is not a candidate is neither started on nor read"
+    },
+    {
+      "name": "a seat-only thread takes a changed option",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection))\n",
+      "replace": "      if (false)\n",
+      "expectRed": "choosing another model there is refused, since no agent can start with it"
+    },
+    {
+      "name": "a loaded agent's manager is not kept as a choice",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, { instanceId: held, local: false }];",
+      "replace": "    const managers = listed;",
+      "expectRed": "a loaded agent's manager stays its current Machine choice beside the launch list"
+    },
+    {
+      "name": "a load fails while no manager may start a new agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (held === undefined || !(e instanceof NoLaunchManager)) throw e;",
+      "replace": "      throw e;",
+      "expectRed": "it loads while no manager may start a new agent, its lists read from the manager that holds it"
+    },
+    {
+      "name": "a load does not pass the manager that holds its agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "offerFor(m, row.managerInstanceId, row.managerInstanceId)",
+      "replace": "offerFor(m, row.managerInstanceId)",
+      "expectRed": "a loaded agent's manager stays its current Machine choice beside the launch list"
     }
   ]
 }
