@@ -1239,11 +1239,16 @@ async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): P
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
-function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
+function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
   const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
+    // Reconciliation supplies first-party peers from the target CLI, not the registry's latest tag.
+    // Constrain npm to that verified release graph without skipping third-party peers.
+    writeFileSync(join(staging, "package.json"), JSON.stringify({
+      overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
+    }));
     const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
     if (result.status !== 0) {
@@ -1258,7 +1263,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
 
 /** Fetch the target's first-party install closure through npm, including integrity verification.
  *  A private cache forces a registry read without changing the installed packages or running scripts. */
-async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise<void> {
+async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise<ReadonlySet<string>> {
   const cache = mkdtempSync(join(tmpdir(), "cotal-release-check-"));
   const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online"];
   const pending = new Set(["cotal-ai"]);
@@ -1313,6 +1318,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
       const archive = await rt.npmAsync(["cache", "add", ...specs, "--json", "--ignore-scripts", ...options], cache);
       if (archive.status !== 0) throw releaseReadError(archive, `archives for ${specs.join(", ")} could not be downloaded and verified`);
     }
+    return pending;
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -1406,18 +1412,18 @@ function releaseReadError(result: CommandResult, detail: string): Error {
   return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
 }
 
-async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<boolean> {
+async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<ReadonlySet<string> | undefined> {
   const now = rt.now ?? Date.now;
   const deadline = now() + 10 * 60_000;
   for (;;) {
-    try { await checkReleaseArchives(version, rt); return true; }
+    try { return await checkReleaseArchives(version, rt); }
     catch (error) {
       if (!(error instanceof ReleaseNotAvailable)) throw error;
       const remaining = deadline - now();
       if (remaining <= 0) {
         recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
         rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
-        return false;
+        return undefined;
       }
       rt.out(`Waiting for cotal-ai@${version} release archives to reach the registry (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
       await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
@@ -1466,9 +1472,10 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   const releaseChecksStarted = Date.now();
   try {
     rt.out(`Checking cotal-ai@${targetVersion} release archives`);
-    if (!await waitForReleaseArchives(targetVersion, current, rt)) return 0;
+    const releasePackages = await waitForReleaseArchives(targetVersion, current, rt);
+    if (!releasePackages) return 0;
     rt.out(`Checking installed extension dependencies for ${targetVersion}`);
-    checkInstalledClosure(targetVersion, rt);
+    checkInstalledClosure(targetVersion, releasePackages, rt);
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
     if (!rt.prepareExecution) {
       rt.out(`Checking cotal-ai@${current} recovery archives`);
