@@ -124,7 +124,10 @@ command when its returned tokens are safe to put in a shell command. Preparation
 after a denied or uncertain start. Unknown outcomes are not retried; the setup heading is not
 shown as healthy and the next command inspects the original startup before attachment. JSON stdout has
 one envelope. A confirmed local startup refusal keeps its code and diagnostic in
-`result.startup.failure` and the setup report. Interrupted startup or an incomplete child result
+`result.startup.failure` and the setup report. If a self-hosted broker does not answer, setup
+reports that it sent no launch and keeps preparation saved. Start or restore the broker where the
+space runs before trying again. Inspect the registration with `cotal space show <name>`.
+Interrupted startup or an incomplete child result
 remains unknown. Native startup output is not parsed or echoed as readiness evidence. Fresh prepared
 static-auth, open and plain-loopback user-auth roots use the controller stack described under `up`.
 Manifest startup retains its native launch path.
@@ -144,7 +147,9 @@ out.
 
 A rerun with the same answers changes nothing and is a `no-op`; a space already prepared, started or
 registered at that root is reported, not refused. A space name or root another space holds is
-`CONFLICT`. An application whose host tool is not on PATH leaves the rest saved and the result
+`CONFLICT`. If the local space is already prepared in an existing folder, rerun setup with that
+folder as `--project`, or choose another `--space` name for the new folder.
+An application whose host tool is not on PATH leaves the rest saved and the result
 `partial` (exit 4), naming the tool; an application action that does not finish does the same.
 `cotal status` reports the machine's state, and it points
 stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. See
