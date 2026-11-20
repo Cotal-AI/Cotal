@@ -42,6 +42,36 @@ assert.equal(existsSync(before),true);
 `], { env: { ...childEnv, XDG_CONFIG_HOME: freshConfig, COTAL_HOME: join(root, "fresh-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(fresh.status, 0, `${fresh.stdout}${fresh.stderr}`);
   passed++;
+  const repair = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+import assert from 'node:assert/strict';
+import {chmodSync,readFileSync,readdirSync,statSync,writeFileSync} from 'node:fs';
+import {dirname,join} from 'node:path';
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
+const {connectorConfigDir,retainConnectorConfig,repairConnectorSelection}=await import(${JSON.stringify(module)});
+const old = retainConnectorConfig();
+const keep = join(old, 'keep');
+writeFileSync(keep, 'preserved');
+const selections = [join(dirname(old), 'selection.json'), join(dirname(dirname(old)), 'current.json')];
+const corrupt = ['{"v":2}', '{bad json'];
+for (const [i, file] of selections.entries()) { writeFileSync(file, corrupt[i]); chmodSync(file, 0o400); }
+assert.throws(() => repairConnectorSelection(() => { throw new Error('source check refused'); }), /source check refused/);
+for (const [i, file] of selections.entries()) assert.equal(readFileSync(file, 'utf8'), corrupt[i]);
+repairConnectorSelection(() => {});
+const repaired = connectorConfigDir();
+assert.notEqual(repaired, old);
+assert.equal(readFileSync(keep, 'utf8'), 'preserved');
+for (const [i, file] of selections.entries()) {
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).root, repaired);
+  const folder = dirname(file), name = file.slice(folder.length + 1);
+  const backups = readdirSync(folder).filter(file => file.startsWith(name + '.corrupt.'));
+  assert.equal(backups.length, 1);
+  const backup = join(folder, backups[0]);
+  assert.equal(readFileSync(backup, 'utf8'), corrupt[i]);
+  assert.equal(statSync(backup).mode & 0o777, 0o400);
+}
+`], { env: { ...childEnv, XDG_CONFIG_HOME: join(root, "repair-config"), COTAL_HOME: join(root, "repair-home") }, encoding: "utf8", timeout: 30_000 });
+  assert.equal(repair.status, 0, `${repair.stdout}${repair.stderr}`);
+  passed++;
   for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });

@@ -146,6 +146,14 @@ export function pruneRetainedConnectorConfig(holders: readonly (string | undefin
 
 interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string; readonly snapshot?: string }
 
+function writeSelection(path: string, record: Selection): void {
+  const pending = join(dirname(path), `.selection-${randomBytes(8).toString("hex")}`);
+  try {
+    writeFileSync(pending, JSON.stringify(record), { flag: "wx", mode: 0o600 });
+    renameSync(pending, path);
+  } finally { rmSync(pending, { force: true }); }
+}
+
 export class UnreadableConnectorSelection extends Error {
   constructor(path: string, reason: string) {
     super(`connector retention selection at ${path} is unreadable: ${reason}. Run \`cotal ext seed --repair\` to repair the connectors.`);
@@ -384,7 +392,50 @@ export function retainConnectorConfig(): string {
   return selectConnectorConfig(id);
 }
 
-function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>): string {
+/** Explicit seed repair may set aside unreadable records, never their retained connector trees. */
+export function repairConnectorSelection(checkSource: () => void): void {
+  const id = identity();
+  if (!id) return;
+  const release = claimUpdateClosureAccess();
+  try {
+    const local = join(id.path, "selection.json");
+    const lineage = join(dirname(id.path), "current.json");
+    const unreadable = [local, lineage].filter(path => {
+      const bytes = readLocalRecordSource(path, 8192, true);
+      if (!bytes) return false;
+      ownedAncestors(dirname(path));
+      try { parseSelection(bytes, path); return false; }
+      catch (error) {
+        if (!(error instanceof UnreadableConnectorSelection)) throw error;
+        return true;
+      }
+    });
+    if (!unreadable.length) return;
+    const backups: [string, string][] = [];
+    try {
+      for (const path of unreadable) {
+        const aside = `${path}.corrupt.${randomBytes(4).toString("hex")}`;
+        renameSync(path, aside);
+        backups.push([path, aside]);
+      }
+      checkSource();
+      const root = selectConnectorConfig(id, true);
+      // When either pointer already identifies the current graph, restore the missing names
+      // without copying or replacing that graph.
+      const record: Selection = { v: 1, entry: id.entry, version: id.version, root };
+      for (const [path] of backups) {
+        if (!lstatSync(path, { throwIfNoEntry: false })) writeSelection(path, record);
+      }
+    } catch (error) {
+      for (const [path, aside] of backups) {
+        if (!lstatSync(path, { throwIfNoEntry: false })) renameSync(aside, path);
+      }
+      throw error;
+    }
+  } finally { release(); }
+}
+
+function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, preserveUnknown = false): string {
   recoverRetiredCanonical(id.path);
   const selected = currentConfig(id);
   if (selected !== undefined) return selected;
@@ -426,7 +477,9 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>): st
     let root = join(id.path, "cotal");
     // Without a snapshot, neither selection names this set. Its unpublished copy
     // can be rebuilt, but any live or unproven seat holder must remain protected.
-    if (!snapshot && readdirSync(id.path).length) {
+    if (preserveUnknown && readdirSync(id.path).length) {
+      root = join(id.path, `cotal-${randomBytes(8).toString("hex")}`);
+    } else if (!snapshot && readdirSync(id.path).length) {
       if (setHasHolders(id.path, true)) throw new Error(`unfinished retained connector state has seat holders: ${root}`);
       const stat = lstatSync(root, { throwIfNoEntry: false });
       if (stat) ownedDirectory(root);

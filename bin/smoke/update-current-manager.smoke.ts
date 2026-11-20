@@ -2,7 +2,7 @@ import "../../implementations/cli/smoke/update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -184,7 +184,8 @@ console.log('LEGACY_READS=' + legacyReads);
 
       const sets = join(env.XDG_CONFIG_HOME!, "cotal", "installs", createHash("sha256").update(entry).digest("hex"), "sets");
       const selection = join(sets, version, "selection.json");
-      const saved = readFileSync(selection);
+      const current = join(sets, "current.json");
+      const saved = readFileSync(selection), savedCurrent = readFileSync(current);
       const unknown = '{"v":2,"futureSelection":true}\n';
       writeFileSync(selection, unknown);
       try {
@@ -224,7 +225,30 @@ console.log('LEGACY_READS=' + legacyReads);
         }
         assert.equal(readFileSync(selection, "utf8"), unknown);
         console.log("unknown connector selection: installed version, status, self-update and down remain available");
-      } finally { writeFileSync(selection, saved); }
+        // Leave one trusted pointer at a time. Repair must keep the existing connector graph.
+        for (const record of [selection, current]) {
+          writeFileSync(record, unknown, { mode: 0o600 });
+          chmodSync(record, 0o400);
+          const repaired = cli("ext", "seed", "--repair");
+          assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+          const folder = dirname(record), name = record.slice(folder.length + 1);
+          const backups = readdirSync(folder).filter(file => file.startsWith(`${name}.corrupt.`));
+          assert.equal(backups.length, 1);
+          const backup = join(folder, backups[0]!);
+          assert.equal(readFileSync(backup, "utf8"), unknown);
+          assert.equal(statSync(backup).mode & 0o777, 0o400);
+          assert.equal(JSON.parse(readFileSync(record, "utf8")).root, JSON.parse(saved.toString()).root);
+          const after = cli("status");
+          assert.match(after.stdout, /This machine/);
+          assert.doesNotMatch(after.stderr, /connector retention selection.*unreadable/);
+        }
+        console.log("connector selection repair: kept unreadable bytes and mode and restored clean status without replacing the graph");
+      } finally {
+        for (const [path, bytes] of [[selection, saved], [current, savedCurrent]] as const) {
+          chmodSync(path, 0o600);
+          writeFileSync(path, bytes);
+        }
+      }
     } finally {
       const down = stackStarted ? cli("down", "--yes") : undefined;
       if (daemon?.exitCode === null) { daemon.kill("SIGTERM"); await daemonExit; }
