@@ -58,35 +58,53 @@ export function patternsOverlap(a: string, b: string): boolean {
 }
 
 // A token no pattern can name: channel tokens are `[A-Za-z0-9_-]`, NATS subject tokens never hold a
-// NUL. It stands for every token the patterns under test do not name at that position.
+// NUL. It stands for every token the patterns under test do not name at that position, and for every
+// longer tail: past the longest pattern, no fixed-length entry matches and every `>` entry has already
+// decided, so one token more than the longest pattern reaches every case a longer subject could.
 const FRESH = "\u0000";
 
-/** Does every subject `pattern` matches also match some entry of `union`? */
+/** Most search states one {@link patternCoveredBy} call may visit. Whether a pattern lies inside a
+ *  union of patterns is a covering problem that can grow exponentially with adversarial input (many
+ *  overlapping entries over many tokens); real grants visit a few dozen states. Past this budget the
+ *  call throws, so a grant too complex to decide is refused, never accepted on a guess. */
+export const PATTERN_SEARCH_BUDGET = 100_000;
+
+/** Does every subject `pattern` matches also match some entry of `union`? Exact; throws past
+ *  {@link PATTERN_SEARCH_BUDGET}. */
 export function patternCoveredBy(pattern: string, union: readonly string[]): boolean {
   const p = tokensOf(pattern);
   const qs = union.map(tokensOf);
   const pEnd = p[p.length - 1] === ">" ? p.length - 1 : -1; // index of p's '>', or -1
   const limit = Math.max(p.length, ...qs.map((q) => q.length)) + 1;
+  // The outcome below a node depends only on its depth and which entries still match its prefix.
+  const seen = new Map<string, boolean>();
+  let visits = 0;
 
-  // Does some subject that starts with `s` and matches `p` escape every entry of `union`?
-  const escapes = (s: string[], alive: readonly string[][]): boolean => {
-    const n = s.length;
-    // An entry whose '>' already has a token under it matches every extension of `s`, and `s`.
-    if (alive.some((q) => q[q.length - 1] === ">" && q.length - 1 < n)) return false;
-    const complete = pEnd < 0 ? n === p.length : n > pEnd;
-    if (complete && !alive.some((q) => q.length === n && q[n - 1] !== ">")) return true;
-    if (pEnd < 0 ? n >= p.length : n >= limit) return false;
-    const fixed = pEnd < 0 || n < pEnd ? p[n] : "*";
-    const candidates = fixed !== "*"
-      ? [fixed]
-      : [...new Set(alive.map((q) => q[n]).filter((t): t is string => t !== undefined && t !== "*" && t !== ">")), FRESH];
-    for (const t of candidates) {
-      const next = alive.filter((q) => n < q.length && (q[n] === "*" || q[n] === ">" || q[n] === t));
-      if (escapes([...s, t], next)) return true;
-    }
-    return false;
+  // Does some subject that matches `p`, and whose first `n` tokens the `alive` entries match, escape
+  // every entry of `union`?
+  const escapes = (n: number, alive: readonly number[]): boolean => {
+    const key = `${n}:${alive.join(",")}`;
+    const known = seen.get(key);
+    if (known !== undefined) return known;
+    if (++visits > PATTERN_SEARCH_BUDGET)
+      throw new Error(`"${pattern}" against [${union.join(", ")}] is too complex to decide within ${PATTERN_SEARCH_BUDGET} search states; refused rather than guessed`);
+    const result = ((): boolean => {
+      // An entry whose '>' already has a token under it matches every extension, and the prefix itself.
+      if (alive.some((i) => qs[i][qs[i].length - 1] === ">" && qs[i].length - 1 < n)) return false;
+      const complete = pEnd < 0 ? n === p.length : n > pEnd;
+      if (complete && !alive.some((i) => qs[i].length === n && qs[i][n - 1] !== ">")) return true;
+      if (pEnd < 0 ? n >= p.length : n >= limit) return false;
+      const fixed = pEnd < 0 || n < pEnd ? p[n] : "*";
+      const candidates = fixed !== "*"
+        ? [fixed]
+        : [...new Set(alive.map((i) => qs[i][n]).filter((t): t is string => t !== undefined && t !== "*" && t !== ">")), FRESH];
+      return candidates.some((t) =>
+        escapes(n + 1, alive.filter((i) => n < qs[i].length && (qs[i][n] === "*" || qs[i][n] === ">" || qs[i][n] === t))));
+    })();
+    seen.set(key, result);
+    return result;
   };
-  return !escapes([], qs);
+  return !escapes(0, qs.map((_, i) => i));
 }
 
 // ---- grants ----------------------------------------------------------------------------------------
@@ -96,11 +114,13 @@ export function patternCoveredBy(pattern: string, union: readonly string[]): boo
 export function assertExclusions(allow: readonly string[], exclude: readonly string[], field: string): void {
   for (const x of exclude) assertValidChannel(x);
   exclude.forEach((x, i) => {
-    if (!allow.some((a) => patternsOverlap(a, x)))
+    // What the exclusion removes is its overlap with the allow entries; only that part counts.
+    const removes = allow.map((a) => patternMeet(a, x)).filter((m): m is string => m !== undefined);
+    if (removes.length === 0)
       throw new Error(`${field}: exclusion "${x}" overlaps no entry of [${allow.join(", ")}], so it removes nothing`);
     const others = exclude.filter((_, j) => j !== i);
-    if (patternCoveredBy(x, others))
-      throw new Error(`${field}: exclusion "${x}" is already removed by [${others.join(", ")}]; list it once`);
+    if (removes.every((m) => patternCoveredBy(m, others)))
+      throw new Error(`${field}: exclusion "${x}" removes nothing that [${others.join(", ")}] does not already remove; list each exclusion once`);
   });
   if (exclude.length)
     for (const a of allow)

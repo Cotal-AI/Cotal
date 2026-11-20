@@ -28,9 +28,10 @@ const throws = (name: string, fn: () => unknown, match: RegExp) => {
 
 console.log("pattern algebra against brute force");
 {
-  // Patterns of up to three tokens over {a, b}; subjects of up to four tokens over {a, b, c}, where c
-  // stands for every token no pattern names. Longer subjects behave as four-token ones do, so this
-  // subject set decides every case exactly.
+  // Patterns of up to three tokens over {a, b}; subjects of up to five tokens over {a, b, c, d}. The
+  // search folds every unnamed token into one fresh token and stops one token past the longest
+  // pattern; this reference uses two unnamed tokens and goes one token further, so it can disagree
+  // with the search if that argument is wrong.
   let seed = 1120;
   const rnd = (n: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
   const pattern = (): string => {
@@ -42,7 +43,7 @@ console.log("pattern algebra against brute force");
   const subjects: string[] = [];
   const grow = (prefix: string[]) => {
     if (prefix.length) subjects.push(prefix.join("."));
-    if (prefix.length < 4) for (const t of ["a", "b", "c"]) grow([...prefix, t]);
+    if (prefix.length < 5) for (const t of ["a", "b", "c", "d"]) grow([...prefix, t]);
   };
   grow([]);
   const set = (p: string) => subjects.filter((s) => subjectMatches(p, s));
@@ -64,6 +65,13 @@ console.log("pattern algebra against brute force");
   ok("a union covers what no single entry does", patternCoveredBy("team.>", ["team.*", "team.*.>"]) && !patternCoveredBy("team.>", ["team.*"]));
   ok("a '>' entry does not cover its bare prefix", !patternCoveredBy("team", ["team.>"]));
   throws("a malformed pattern is refused, never guessed", () => patternCoveredBy("a.>.b", ["a.>"]), /not a subject pattern/);
+  // A covering problem built to explode: 16 single-token wildcards against cubes that each fix one
+  // position. It must refuse loudly within its budget rather than run unbounded or guess.
+  const wide = Array.from({ length: 16 }, () => "*").join(".");
+  const cubes = Array.from({ length: 16 }, (_, i) => ["x", "y"].map((l) => Array.from({ length: 16 }, (_, j) => (j === i ? l : "*")).join("."))).flat();
+  const t0 = Date.now();
+  throws("an adversarial covering problem is refused within its budget", () => patternCoveredBy(wide, cubes), /too complex to decide/);
+  ok("the refusal is prompt", Date.now() - t0 < 10_000, Date.now() - t0);
 }
 
 console.log("grant shape");
@@ -83,8 +91,12 @@ console.log("grant shape");
   throws("an exclusion equal to its only entry is refused", () => assertExclusions(["team.secret"], ["team.secret"], "f"), /both allowed/);
   throws("a pattern exclusion covering a concrete entry is refused", () => assertExclusions(["team.>", "team.a.private"], ["team.*.private"], "f"), /"team.a.private" is both allowed/);
   throws("exclusions that together cover a wildcard entry are refused", () => assertExclusions(["team.>"], ["team.*", "team.*.>"], "f"), /"team.>" is both allowed/);
-  throws("a duplicated exclusion is refused", () => assertExclusions([">"], ["a", "a"], "f"), /already removed/);
-  throws("an exclusion inside another is refused", () => assertExclusions(["team.>"], ["team.secret.>", "team.secret.x"], "f"), /"team.secret.x" is already removed by \[team.secret.>\]/);
+  throws("a duplicated exclusion is refused", () => assertExclusions([">"], ["a", "a"], "f"), /removes nothing that/);
+  throws("an exclusion inside another is refused", () => assertExclusions(["team.>"], ["team.secret.>", "team.secret.x"], "f"), /"team.secret.x" removes nothing that \[team.secret.>\]/);
+  throws("an exclusion whose overlap with the allow list another already removes is refused",
+    () => assertExclusions(["team.>"], ["team.*.>", "*.a.x"], "f"), /"\*.a.x" removes nothing that/);
+  ok("an exclusion that reaches outside the allow list but removes something new is kept",
+    (() => { assertExclusions(["team.>"], ["*.secret"], "f"); return true; })());
   throws("a malformed exclusion is refused", () => assertExclusions([">"], ["a..b"], "f"), /invalid channel/);
 }
 
@@ -100,6 +112,8 @@ console.log("channelInGrant");
   ok("siblings of pattern exclusions are within", channelInGrant(allow, ex, "team.secret") && channelInGrant(allow, ex, "team.a.public") && channelInGrant(allow, ex, "team.a.private.x"));
   ok("a pattern join excluded in full is refused", !patternInGrant(allow, ex, "team.secret.>") && !patternInGrant(allow, ex, "team.*.private"));
   ok("a pattern join that partly overlaps is admitted", patternInGrant(allow, ex, "team.a.*") && patternInGrant(allow, ex, "team.>"));
+  ok("team.private.> only partly overlaps team.*.private, so it is admitted", patternInGrant(allow, ex, "team.private.>"));
+  ok("a concrete channel the pattern covers is excluded", !channelInGrant(allow, ex, "team.a.private") && !patternInGrant(allow, ex, "team.*.private"));
   ok("a pattern join outside the allow is refused", !patternInGrant(allow, ex, "ops.>"));
 }
 
@@ -206,6 +220,13 @@ console.log("static spawn bound (grantOverreach)");
   ok("pattern (d) team.a.private is refused", JSON.stringify(pover({ allowSubscribe: ["team.a.private"] })) === '["allowSubscribe:team.a.private"]');
   ok("pattern (e) the parent's own pattern exclusion is within", pover({ allowSubscribe: ["team.>"], excludeSubscribe: ["team.*.private"] }).length === 0);
   ok("pattern (f) a wider child exclusion is within", pover({ allowSubscribe: ["team.>"], excludeSubscribe: ["team.*.>"] }).length === 0);
+
+  // Static mode keeps its single-row check when the child carries no exclusion: a child entry that
+  // only the union of two parent rows covers is refused there, narrower than the exact user-mode
+  // bound (grantOverreachOf above admits it), never wider.
+  const uparent = evidence({ allowSubscribe: ["team.*", "team.*.>"] });
+  ok("static mode without child exclusions refuses a child only a union of parent rows covers",
+    JSON.stringify(grantOverreach(space, caller, uparent, { allowSubscribe: ["team.>"] }).map((p) => p.value)) === '["team.>"]');
 }
 
 console.log(`channel-exclusions.smoke: ${pass} passed, ${fail} failed`);
