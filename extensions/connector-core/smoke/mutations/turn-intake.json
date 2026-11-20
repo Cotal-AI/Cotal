@@ -43,7 +43,7 @@
     },
     {
       "name": "a lifecycle idle is routed through the turn boundary",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-presence.ts",
       "find": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.inOrder(async () => {\n    await this.requireConnected();\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      this._status = status;\n    }\n    });\n  }",
       "replace": "  async resetStatus(status: PresenceStatus, activity?: string): Promise<void> {\n    await this.setStatus(status, activity);\n  }",
       "expectRed": "a lifecycle idle mid-turn yields nothing: a compaction is not a turn ending",
@@ -52,7 +52,7 @@
     },
     {
       "name": "the status is assigned before its presence write, so a failed write swallows the boundary",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-presence.ts",
       "find": "    const prev = this.turnStatus;\n    try {\n      if (prev !== \"working\" && status === \"working\") await this.ep.setCondition(null);\n      await this.publishStatus(status, activity);\n    } finally {",
       "replace": "    const prev = this.turnStatus;\n    if (prev !== \"working\" && status === \"working\") await this.ep.setCondition(null);\n    this._status = status;\n    await this.publishStatus(status, activity);\n    if (prev === \"working\" && status === \"idle\") this.onTurnBoundary();\n    if (false) {",
       "expectRed": "a failed presence write does not swallow the boundary",
