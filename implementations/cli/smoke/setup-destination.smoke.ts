@@ -28,7 +28,7 @@
  * Run: pnpm smoke:setup-destination
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
@@ -382,6 +382,60 @@ if (process.platform !== "win32") {
   const rejected = await json([...FULL("project-file", file), "--yes"]);
   check("--yes still refuses an existing non-directory without changing it",
     refused(rejected, 1, "USAGE_INVALID") && readFileSync(file, "utf8") === "keep", shown(rejected));
+}
+
+// ── Persona preparation stops after saving the space ────────────────────────────────────────────
+{
+  const dir = project("blocked-persona");
+  const control = join(dir, ".cotal");
+  const agents = join(control, "agents");
+  const persona = join(agents, "default.md");
+  const args = [...FULL("blocked-persona", "."), "--configure-only", "--yes"];
+  mkdirSync(control);
+  writeFileSync(agents, "keep this file");
+
+  const blocked = await json(args, dir);
+  const prepared = findPreparedSpace("blocked-persona");
+  const receipt = blocked.env?.result;
+  check("blocked persona setup is partial, with the saved space and failed path in its receipt",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL" &&
+      blocked.env.target?.space === "blocked-persona" && blocked.env.target?.path === agents &&
+      receipt?.spaceState === "created" && receipt.project === dir && prepared?.root === dir &&
+      receipt.written.length === 1 && receipt.written[0]?.what === "prepared space" &&
+      JSON.stringify(blocked.env.changed) === JSON.stringify(receipt.written) && existsSync(receipt.written[0].path), shown(blocked));
+  check("the blocking entry is preserved and setup does not continue past persona preparation",
+    readFileSync(agents, "utf8") === "keep this file" && !existsSync(persona) &&
+      harnessOf("blocked-persona") === undefined && !existsSync(join(control, "setup.log")) &&
+      receipt?.actions.length === 0 && receipt.runtimes.length === 0 && receipt.startup.state === "not-requested" && !receipt.startup.stackAttempted, shown(blocked));
+  check("setup points to moving the blocker aside and rerunning instead of starting the space",
+    blocked.env?.error?.remedy?.includes(`move the blocking entry at \`${agents}\` aside`) &&
+      blocked.env.error.remedy.endsWith("run the same setup again") && receipt?.next.command === `${commandPrefix} space show blocked-persona`, shown(blocked));
+  const show = await run(["space", "show", "blocked-persona", "--plain"], dir);
+  check("space show confirms the prepared space without a broker",
+    show.status === 0 && /space:\s+blocked-persona/.test(show.stdout) && /broker:\s+not started/.test(show.stdout), shown(show));
+
+  const human = await run([...args, "--plain"], dir);
+  check("plain setup says persona preparation is incomplete and does not advise startup",
+    human.status === 4 && /saved blocked-persona.*persona setup did not finish/.test(human.stdout) &&
+      human.stderr.includes(agents) && /run the same setup again/.test(human.stderr.replace(/\s+/g, " ")) && !/\bcotal up\b/.test(human.stdout), shown(human));
+  renameSync(agents, `${agents}.blocking`);
+  const recovered = await json(args, dir);
+  check("rerunning after repair seeds the default persona and leaves the original space record intact",
+    recovered.status === 0 && recovered.env?.outcome === "ok" && recovered.env.result.spaceState === "prepared" &&
+      existsSync(persona) && findPreparedSpace("blocked-persona")?.ts === prepared?.ts, shown(recovered));
+}
+
+if (process.platform !== "freebsd") { // FreeBSD allows readFileSync on directories.
+  const dir = project("blocked-demo");
+  const agents = join(dir, ".cotal", "agents");
+  const blocker = join(agents, "david.md");
+  mkdirSync(blocker, { recursive: true });
+  const blocked = await json([...FULL("blocked-demo", dir), "--demo", "--start", "--detach", "--yes"]);
+  check("a failed demo persona retains the default persona write and prevents requested startup",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL" &&
+      blocked.env.target?.path === blocker && blocked.env.result.written.map((w: { what: string }) => w.what).join() === "prepared space,default persona" &&
+      blocked.env.result.startup.requested && blocked.env.result.startup.state === "preparation-incomplete" && !blocked.env.result.startup.stackAttempted &&
+      statSync(blocker).isDirectory() && existsSync(join(agents, "default.md")) && harnessOf("blocked-demo") === undefined, shown(blocked));
 }
 
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────

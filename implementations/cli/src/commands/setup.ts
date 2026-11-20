@@ -663,11 +663,39 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     spaceState = plan.space.state;
   }
 
-  const persona = seedDefaultPersona(inputs.project);
-  if (persona) wrote(persona.what, persona.path);
-  if (opts.demo) {
-    const agents = personaDir(inputs.project);
-    for (const [name, body] of Object.entries(DEMO_AGENTS)) writeDemoAgent(join(agents, `${name}.md`), body, wrote);
+  const startup: SetupStartup = { requested: opts.start, requestedManagerInstanceId: opts.managerInstanceId ?? null, state: "not-requested", stackAttempted: false, stack: null, agent: null, joinedAt: null, failure: null };
+  const baseResult = { kind: "setup" as const, destination: inputs.destination, space: inputs.space, project: inputs.project, spaceState, written, startup };
+  const harness = (failed: ActionFailure | null): SetupResult["harness"] => ({
+    name: candidate.value, missing: candidate.missing,
+    unavailable: candidate.unavailable && (candidate.connector.requires ?? []).every((bin) => !!resolveOnPath(bin)), failed,
+  });
+  const inspectSpace = (): SetupResult["next"] => ({ command: `${displayCmd()} space show ${shellWord(inputs.space)}`, cwd: null });
+
+  const agents = personaDir(inputs.project);
+  let personaPath = join(agents, "default.md");
+  try {
+    const persona = seedDefaultPersona(inputs.project);
+    if (persona) wrote(persona.what, persona.path);
+    if (opts.demo) {
+      for (const [name, body] of Object.entries(DEMO_AGENTS)) {
+        personaPath = join(agents, `${name}.md`);
+        writeDemoAgent(personaPath, body, wrote);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const { code, path = personaPath, syscall } = error as NodeJS.ErrnoException;
+    if (code === undefined) throw error;
+    const blocked = (code === "EEXIST" && syscall === "mkdir") || code === "EISDIR";
+    const remedy = `${blocked ? `move the blocking entry at ${codeSpan(path)} aside` : `fix the reported problem at ${codeSpan(path)}`}, then run the same setup again`;
+    const failureTarget = { ...target, path };
+    const failure = new CommandFailure("partial", "OPERATION_PARTIAL", `the space ${inputs.space} is saved, but persona preparation stopped: ${error.message}`, {
+      target: failureTarget, changed: written, native: { code }, cause: error, remedy,
+    });
+    if (opts.start) startup.state = "preparation-incomplete";
+    const result: SetupResult = { ...baseResult, harness: harness(null), actions: [], runtimes: [], next: inspectSpace() };
+    writeResult(opts.presentation, { command: "setup", target: failureTarget, result, warnings, failure }, (r) => setupView(r, "persona-incomplete"));
+    return;
   }
   if (writePreference({ space: inputs.space }, "harness", inputs.harness, readPreferences().revision).changed) wrote(`harness preference of ${inputs.space}`, preferencesPath());
   // A space prepared later without setup takes the application from your own value. One you
@@ -711,18 +739,11 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
 
   const failed = actions.failed ?? null;
   const local = inputs.destination === "local" && spaceState !== "started";
-  const startup: SetupStartup = { requested: opts.start, requestedManagerInstanceId: opts.managerInstanceId ?? null, state: "not-requested", stackAttempted: false, stack: null, agent: null, joinedAt: null, failure: null };
   const result: SetupResult = {
-    kind: "setup",
-    destination: inputs.destination,
-    space: inputs.space,
-    project: inputs.project,
-    spaceState,
-    harness: { name: candidate.value, missing: candidate.missing, unavailable: candidate.unavailable && (candidate.connector.requires ?? []).every((bin) => !!resolveOnPath(bin)), failed },
+    ...baseResult,
+    harness: harness(failed),
     actions: actions.ran,
     runtimes: runtimes.rows,
-    written,
-    startup,
     next: candidate.missing.length > 0
       ? { command: `install or repair ${candidate.missing.join(", ")}, then run the same setup again`, cwd: inputs.project }
       : local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
@@ -779,8 +800,8 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
         : connection ? known?.remedy ?? "fix the connection problem, then run the same setup again"
         : "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried";
       const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", message, { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy });
-      const reported = connection ? { ...result, next: { command: `${displayCmd()} space show ${shellWord(inputs.space)}`, cwd: null } } : result;
-      writeResult(opts.presentation, { command: "setup", target, result: reported, warnings, failure }, (r) => setupView(r, connection !== undefined));
+      const reported = connection ? { ...result, next: inspectSpace() } : result;
+      writeResult(opts.presentation, { command: "setup", target, result: reported, warnings, failure }, (r) => setupView(r, connection ? "connection-refused" : undefined));
       return;
     }
   }
@@ -910,9 +931,11 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
   registered: "already registered",
 };
 
-function setupView(r: SetupResult, connectionRefused = false): Report {
+function setupView(r: SetupResult, issue?: "connection-refused" | "persona-incomplete"): Report {
   const unready = r.runtimes.filter((x) => x.selected && (x.state === "left-out" || x.error !== null || x.reachable === false)).map((x) => x.name);
-  const head: Cell = r.startup.failure
+  const head: Cell = issue === "persona-incomplete"
+    ? { text: `saved ${r.space}; persona setup did not finish`, tone: "waiting", mark: "!" }
+    : r.startup.failure
     ? { text: `saved ${r.space}; requested startup ${r.startup.state}`, tone: "waiting", mark: "!" }
     : r.harness.missing.length > 0 || r.harness.failed
     ? { text: `saved ${r.space}; ${r.harness.name} is not set up yet`, tone: "waiting", mark: "!" }
@@ -947,7 +970,7 @@ function setupView(r: SetupResult, connectionRefused = false): Report {
   ];
   const agent = r.startup.agent;
   const concrete = agent && [agent.name, agent.managerInstanceId, r.space].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
-  const nextCommand = connectionRefused ? r.next.command : r.startup.failure ? `${displayCmd()} status --space ${r.space}`
+  const nextCommand = issue ? r.next.command : r.startup.failure ? `${displayCmd()} status --space ${r.space}`
     : agent ? concrete ? `${displayCmd()} attach ${agent.name} --space ${r.space} --on ${agent.managerInstanceId}` : `${displayCmd()} attach <name> --space <space> --on <manager-instance>`
     : r.next.command;
   return {
@@ -956,7 +979,7 @@ function setupView(r: SetupResult, connectionRefused = false): Report {
       ...(prepared.length ? [{ title: "Prepared", blocks: [{ kind: "lines" as const, lines: prepared }] }] : []),
       ...(leftOut.length ? [{ blocks: [{ kind: "lines" as const, lines: [{ text: `Left out: ${leftOut.join(", ")}. Existing runtime installations were kept.`, tone: "hint" as const }] }] }] : []),
       startupSection(r.startup),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: nextCommand, description: connectionRefused ? "Inspect the registered space and its broker address" : r.startup.failure ? "Inspect the selected space and original startup before requesting another launch" : agent ? concrete ? "Return to the joined agent's exact manager" : "Use the full identities recorded above" : r.next.cwd === null ? "Continue from this setup" : `Run from ${r.next.cwd}` }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: nextCommand, description: issue === "persona-incomplete" ? "Inspect the saved space" : issue === "connection-refused" ? "Inspect the registered space and its broker address" : r.startup.failure ? "Inspect the selected space and original startup before requesting another launch" : agent ? concrete ? "Return to the joined agent's exact manager" : "Use the full identities recorded above" : r.next.cwd === null ? "Continue from this setup" : `Run from ${r.next.cwd}` }] }] },
     ],
   };
 }

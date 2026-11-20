@@ -90,6 +90,9 @@ Otherwise, the result names the next command: `cotal up` in the project for a lo
 writes Cotal records. For Codex, this includes new or content-changed marketplace files, Codex
 configuration, and cached plugin files. The receipt does not inventory every write made by
 programs that setup calls.
+If persona preparation hits a filesystem error after setup saves the space, setup exits 4 with
+`OPERATION_PARTIAL`. The result retains the confirmed writes and names the path to fix before
+running setup again. Setup does not configure the application or start anything on this path.
 
 Setup needs an installed connector. When `--harness` names a built-in connector that is not
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
