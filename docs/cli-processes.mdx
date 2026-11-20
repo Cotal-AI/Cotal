@@ -565,6 +565,9 @@ object in JSON and desktop status replies. Its fields are `current`, `latest`, `
 `lastResult`, `nextAttempt`, `automatic`, `notify`, `failures` and `channel`. The channel is `npm` for
 standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
 checks but report automatic installation off and direct updates to the signed app installer.
+During native service verification, status reports enabled automatic updates as on and names the
+verification in `lastResult`. An explicit off preference still reports off. The daemon cannot
+install an automatic update until it verifies ownership of the native service.
 Older daemons may omit the object, channel or notification preference.
 The closed local request `update-settings` reads the shared preferences and accepts optional
 Boolean `auto` and `notify` fields. It uses the same preferences as the update CLI.
