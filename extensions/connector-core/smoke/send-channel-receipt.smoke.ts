@@ -14,7 +14,8 @@
  * Run: `pnpm smoke:send-channel-receipt`
  */
 import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
-import { closeChannelNames, MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
+import { MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
+import { closeChannelNames } from "../src/agent-messaging.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
 
