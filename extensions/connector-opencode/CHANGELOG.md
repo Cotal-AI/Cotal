@@ -1,5 +1,12 @@
 # @cotal-ai/connector-opencode
 
+## 0.172.0
+
+### Patch Changes
+
+- d4ae15d: When OpenCode is too old to start, the connector tells you to replace the executable it checked, not a non-executable file found earlier on PATH.
+- 61f6891: Spawning OpenCode with an unsupported `opencode` on PATH now ends in one line that names the file, its version, the supported lines and how to install a supported OpenCode. It no longer prints a line of the bundled connector and a stack trace. Any other launch refusal also ends in its one-line reason.
+
 ## 0.171.5
 
 No changes in this release.

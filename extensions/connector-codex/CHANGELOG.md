@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.172.0
+
+### Patch Changes
+
+- 2df89cb: Keep verified Cotal updates installed when a Codex or Claude configuration file is read-only, refresh the connector files that can be updated, and report any remaining configuration work.
+
 ## 0.171.5
 
 ### Patch Changes
