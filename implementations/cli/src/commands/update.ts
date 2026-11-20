@@ -3,11 +3,11 @@ import { lookup } from "node:dns/promises";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
-  cmdSpawnSpec,
+  cmdSpawnSpec, oneLine,
   beginGlobalUpdateChild,
   processGroupMembers,
   processStartToken,
@@ -619,8 +619,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
         return 1;
       }
+      if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
+        rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
+        return 1;
+      }
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-      else if (latest.npmResult && await npmProxyRefused(latest.npmResult, rt.env)) {
+      else if (await npmProxyRefused(latest.npmResult, rt.env)) {
         rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
         return 1;
       }
@@ -1951,7 +1955,7 @@ async function runNpmAsync(args: string[], archiveCache?: string): Promise<Comma
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
-      windowsVerbatimArguments, windowsHide: true,
+      cwd: parse(homedir()).root, windowsVerbatimArguments, windowsHide: true,
       ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
@@ -1979,9 +1983,10 @@ async function runNpmAsync(args: string[], archiveCache?: string): Promise<Comma
 function runNpm(args: string[], inherit = false): CommandResult {
   try {
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
-    const result = spawnSync(file, spawnArgs, inherit
-      ? { stdio: "inherit", windowsVerbatimArguments }
-      : { encoding: "utf8", windowsVerbatimArguments });
+    const result = spawnSync(file, spawnArgs, {
+      cwd: parse(homedir()).root, windowsVerbatimArguments,
+      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
+    });
     return {
       status: result.status,
       signal: result.signal,
@@ -2039,6 +2044,8 @@ async function runGlobalProcess(
     // exec keeps the published PID and the real child keeps its original argv and stdin.
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-update", file, ...args] : args, {
+      // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
+      ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
       env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.

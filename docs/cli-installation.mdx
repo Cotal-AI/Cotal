@@ -286,6 +286,8 @@ continuity claim for that space. A renamed project does not block the software u
 restoring internal identity files. This also applies to a selected prepared space whose project
 folder was deleted before it ever started. Update keeps its saved selection and preparation record.
 Update runs from the surviving project root, or the filesystem root when no project is present.
+It runs npm for the installation and its extensions outside the project, so the project's package
+manager does not affect the update.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -462,6 +464,8 @@ keeps a single attempt. If npm reports a refused connection to the proxy set by 
 `HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
 proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
 without a confirmed proxy refusal remains a no-op.
+If the latest-version check fails for a non-network reason, `cotal update --self` reports npm's
+first diagnostic line and exits with status 1.
 
 Missing release archives wait up to ten minutes before keeping the installed
 version. Invalid metadata, integrity failures and scoped registry access errors refuse before global

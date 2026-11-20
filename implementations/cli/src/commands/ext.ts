@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -124,13 +125,14 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
-async function npm(args: string[], cwd: string, seeding = false): Promise<{ status: number | null; output: string }> {
+async function npm(args: string[], prefix: string, seeding = false): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
   // The prefix verifier requires every host-compatible dependency, including native optional
   // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--include=optional"]);
+  // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--prefix", prefix, "--include=optional"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const seedGroup = seeding && process.platform === "linux";
@@ -139,7 +141,7 @@ async function npm(args: string[], cwd: string, seeding = false): Promise<{ stat
   let preservePending = false;
   let stopForwarding = () => {};
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd, env, windowsVerbatimArguments, detached: seedGroup }));
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: parse(homedir()).root, env, windowsVerbatimArguments, detached: seedGroup }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {
