@@ -84,8 +84,9 @@ or available, start a local static-auth space with `cotal up` in its project fol
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
 Conflicting current-folder and selected-root accounts refuse before issuance.
 After a local static space is stopped, its retained broker configuration and validated signing
-trust still resolve file-only fixed-profile minting. No repeated `--server` or running broker is
-needed. Provisioning and endpoint discovery still require the selected broker.
+trust still resolve file-only fixed-profile minting from its project folder, including when you
+name that space with `--space <space>`. No repeated `--server` or running broker is needed.
+Provisioning and endpoint discovery still require the selected broker.
 
 A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
 takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
