@@ -36,14 +36,29 @@ writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }),
 const child = spawn(process.execPath, [entry, "daemon", "serve"], { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
 let output = ""; child.stdout.on("data", bytes => output += bytes); child.stderr.on("data", bytes => output += bytes);
 try {
-  for (let i = 0; !existsSync(marker); i++) { assert.ok(i < 300 && child.exitCode === null, `native verification never started: ${output}`); await delay(25); }
+  const startupDeadline = Date.now() + 30_000;
+  while (!existsSync(marker)) { assert.ok(Date.now() < startupDeadline && child.exitCode === null, `native verification never started: ${output}`); await delay(25); }
   assert.ok(!existsSync(finished), "probe begins while the real native tool is still running");
   const started = Date.now();
   const reply = await Promise.race([queryDaemon({ paths }), delay(500).then(() => { throw new Error("client status blocked while native ownership check is running"); })]);
   assert.ok(reply.ok && reply.result?.state === "ready", "actual bundled client reads ready daemon during native check");
+  assert.equal(reply.result.update?.automatic, true, "default automatic updates remain on during native verification");
+  assert.equal(reply.result.update?.lastResult, "verifying native service ownership");
+  const settings = join(home, "update-settings.json");
+  writeFileSync(settings, JSON.stringify({ v: 1, auto: false, notify: true }), { mode: 0o600 });
+  const disabled = await queryDaemon({ paths });
+  assert.ok(disabled.ok && disabled.result.update?.automatic === false, "explicit off survives pending verification");
+  assert.equal(disabled.result.update?.lastResult, "not checked");
+  writeFileSync(settings, JSON.stringify({ v: 1, auto: true, notify: true }), { mode: 0o600 });
   assert.ok(!existsSync(finished), "client reply precedes native check completion");
   console.log(`PASS real client status answered in ${Date.now() - started}ms while native verification is running`);
   if (!pending) await delay(1600);
+  if (!retry) {
+    assert.ok(output.includes("native ownership owned: verified"));
+    const verified = await queryDaemon({ paths });
+    assert.ok(verified.ok && verified.result.update?.automatic === true, "verified automatic updates stay on");
+    assert.equal(verified.result.update?.lastResult, "not checked", "verified status restores the actual update result");
+  }
   assert.equal(readFileSync(count, "utf8").trim().split("\n").length, 1, "native ownership observation runs once");
   console.log("PASS exact native ownership observation runs once");
   if (retry) {

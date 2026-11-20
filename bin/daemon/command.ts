@@ -521,10 +521,13 @@ async function serve(args: ParsedArgs): Promise<void> {
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;
+  let ownershipPending = process.env.COTAL_DAEMON_NATIVE_SERVICE === "1";
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
   const observe = async (): Promise<DaemonOwnershipObservation> => {
-    const result = await observeDaemonOwnedService(paths, home, provenance.signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    const signal = provenance.signal;
+    const result = await observeDaemonOwnedService(paths, home, signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    if (!signal.aborted) ownershipPending = false;
     if (result.state === "owned") owned = true;
     if (!loggedReasons.has(result.reason)) {
       loggedReasons.add(result.reason);
@@ -551,7 +554,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
-  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && (owned || (ownershipPending ? "pending" : false)), prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
     // The helper stays in this unit's cgroup. NotifyAccess=all permits its readiness
     // message, and the default notification barrier waits for systemd to consume it.

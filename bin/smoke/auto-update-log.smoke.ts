@@ -36,8 +36,15 @@ Reflect.set(globalThis, identity, Object.freeze({
 }));
 rmSync(join(home, "update-attempt.log"));
 writeFileSync(join(home,"update-attempt.json"),JSON.stringify({version:"99.0.0",failures:0,result:"due",next:0}));
-const staged = automaticUpdates({version:"1.0.0",eligible:()=>true,prepare:async()=>{},abort:async()=>{},report:()=>{}});
+let eligibility: true | "pending" = "pending";
+let preparations = 0;
+const staged = automaticUpdates({version:"1.0.0",eligible:()=>eligibility,prepare:async()=>{ preparations++; },abort:async()=>{},report:()=>{}});
 try {
+ assert.equal(staged.status().automatic, true, "a due update is reported as enabled while verification runs");
+ await new Promise(resolve=>setTimeout(resolve,31000));
+ assert.equal(preparations, 0, "pending ownership does not admit a due update");
+ assert.equal(existsSync(startedInstalled), false, "pending ownership does not launch the updater");
+ eligibility = true;
  await new Promise(resolve=>setTimeout(resolve,33000));
  assert.equal(readFileSync(startedInstalled, "utf8"), "update --self", "the updater starts at the installed entry");
  assert.equal(existsSync(startedGeneration), false, "the retained generation's own bootstrap is not started");
