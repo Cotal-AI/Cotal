@@ -5605,14 +5605,14 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with \\`cotal up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`cotal up\\` again`",
+      "anchor": "`start this stack at another address with \\`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`${displayCmd()} up\\` again`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare \\`cotal up\\` from ${root}; this stack keeps its recorded address`",
+      "anchor": "`${stopHolder}, then run bare \\`${displayCmd()} up\\` from ${root}; this stack keeps its recorded address`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -6004,21 +6004,21 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "tal down\", description: `Stop the stack${where}` });\n  else if (status.m",
+      "anchor": "md} down`, description: `Stop the stack${where}` });\n  else if (status.m",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "ve-state\", description: `Stop the stack${where}` });\n  else items.push({",
+      "anchor": "ve-state`, description: `Stop the stack${where}` });\n  else items.push({",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`cotal up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
+      "anchor": "`${cmd} up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
       "class": "non-render/control",
       "rationale": "Up result recovery command uses the recorded stack root, not agent presence or work progress."
     },

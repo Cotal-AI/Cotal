@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import { displayCmd } from "../lib/self-exec.js";
 import { drainAndClose } from "@cotal-ai/core";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve as resolvePath } from "node:path";
@@ -166,6 +167,11 @@ function namedStopArguments(args: ParsedArgs): ParsedArgs {
  *  set selection, reservation and impact preflight. Legacy bare-stack integration stays separate. */
 export function validateDownArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  for (const flag of ["file", "run"] as const) {
+    const value = args.values[flag];
+    if (typeof value === "string" && !value.trim())
+      throw new CommandFailure("refused", "USAGE_INVALID", `--${flag} is empty, so it names no ${flag === "file" ? "manifest" : "deployment run"}; nothing was stopped or written`, { remedy: `name a ${flag === "file" ? "manifest with --file <cotal.yaml>" : "deployment with --run <id>"}, or omit --${flag} to stop the folder's stack` });
+  }
   if (args.positionals.length) {
     for (const name of args.positionals) localRecordName(name);
     if (args.values["with-agents"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "named down does not accept --with-agents; no flag was dropped", { remedy: "use `cotal service stop <manager-name> --instance <full-id> --with-agents` for the exact owned manager and its native impact review" });
@@ -200,7 +206,14 @@ export function validateDownArguments(args: ParsedArgs): void {
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (args.values.file === undefined || typeof args.values.file === "string" && recordedStackPreview())) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || readMaintenanceJournal(cotalRoot())?.state === "ready" || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || readMaintenanceJournal(cotalRoot())?.state === "ready" || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) {
+    // A missing stop target keeps its diagnosis in every presentation mode.
+    if (bareStop(args.values)) {
+      const absent = noOwnedStack(canonicalRoot(cotalRoot()));
+      if (absent.code === "TARGET_NOT_FOUND") throw absent;
+    }
+    throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run \`${displayCmd()} down\` from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
+  }
 }
 
 /** A bare `down` stops only the stack of the folder it runs in. When this folder's root holds no
@@ -376,8 +389,8 @@ function noStackHere(target: { root: string; space?: string }, action: "stop" | 
   if (records) return records;
   let elsewhere: boolean;
   try { elsewhere = loadMeshes().some((mesh) => mesh.origin !== "manual" && mesh.origin !== "catalog"); } catch { elsewhere = true; }
-  if (!elsewhere) return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to ${action}`, { target, remedy: "run `cotal up` in a project" });
-  return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, so there is nothing to ${action}`, { target, remedy: `run \`cotal down${action === "preview" ? " --dry-run" : ""}\` from the folder where \`cotal up\` started the stack` });
+  if (!elsewhere) return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to ${action}`, { target, remedy: `run \`${displayCmd()} up\` in a project` });
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no stack at this folder's root, so there is nothing to ${action}`, { target, remedy: `run \`${displayCmd()} down${action === "preview" ? " --dry-run" : ""}\` from the folder where \`${displayCmd()} up\` started the stack` });
 }
 
 /** Why bare down found no stack of its own at this root, with the one step that moves it on. */
@@ -662,7 +675,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if (args.values.yes !== true) {
     const target = { root: folderCtx().root, space: guarded.space };
     if (!canPrompt()) {
-      const command = values["with-agents"] ? "cotal down --with-agents" : "cotal down";
+      const command = `${displayCmd()} down${values["with-agents"] ? " --with-agents" : ""}`;
       throw new ConfirmationRequired(yesRequired("stopping the whole local stack", false), { target, remedy: `run \`${command} --yes\` to stop it. \`${command} --dry-run\` shows its local records` });
     }
     const records = () => selected.map((component) => {
@@ -807,7 +820,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} up`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still

@@ -145,10 +145,11 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
 
 /** Bind a broker address's listener once and release it: the OS error when that fails, "timeout"
  *  when the bind does not finish, or undefined when the address is free. */
-export async function listenerBindError(server: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
+export async function listenerBindError(server: string, bindHost?: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
   const target = brokerListenAddress(server);
   // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
-  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host;
+  const requestedHost = bindHost ?? target.host;
+  const host = requestedHost.startsWith("[") ? requestedHost.slice(1, -1) : requestedHost;
   const probe = createServer();
   let timer: NodeJS.Timeout | undefined;
   const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {

@@ -120,6 +120,15 @@ const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UN
 const before = run(["whoami", "--json"]);
 check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
 
+sandbox(root);
+const missingText = runDown(["down"], root);
+for (const mode of ["--json", "--plain"]) {
+  const missing = runDown(["down", mode], root);
+  check(`down ${mode} keeps the missing-stack diagnosis and next step`, missing.status === 2 && (mode === "--json"
+    ? missing.envelope?.error?.code === "TARGET_NOT_FOUND" && JSON.stringify(missing.envelope.target) === JSON.stringify({ root }) && missingText.stderr.includes(missing.envelope.error.message) && missingText.stderr.includes(missing.envelope.error.remedy ?? "missing remedy")
+    : missing.stderr === missingText.stderr), shown(missing));
+}
+
 const now = new Date().toISOString();
 const member = (role: string, definition: string, state: string) => ({ role, definition, instanceId: null, state });
 writeFileSync(join(root, ".cotal", "stack-controller.json"), JSON.stringify({

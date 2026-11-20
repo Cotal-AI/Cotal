@@ -9,6 +9,7 @@
  *  unknown with the members it changed; nothing already started is rolled back. */
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { displayCmd } from "../lib/self-exec.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
@@ -532,8 +533,8 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
-      managed ? { command: `cotal spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `cotal up --root ${shellWord(root)}` : "cotal up", description: "Add the manager to this stack" },
-      { command: "cotal down", description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
+      managed ? { command: `${displayCmd()} spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `${displayCmd()} up --root ${shellWord(root)}` : `${displayCmd()} up`, description: "Add the manager to this stack" },
+      { command: `${displayCmd()} down`, description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
     const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
@@ -563,12 +564,13 @@ function reusedWithoutJetStream(caught: unknown, brokerReused: boolean, root: st
 /** What holds a stopped stack's recorded broker address, as bare up's own bind check finds it, with
  *  the listening processes of this account named. Undefined while the address is free, could not be
  *  checked, or this stack's broker runs there. */
-async function recordedAddressHeld(space: string, server: string): Promise<{ says: string; frees: string } | undefined> {
+async function recordedAddressHeld(space: string, server: string, bindHost?: string): Promise<{ says: string; frees: string } | undefined> {
   const brokerRows = serviceInstances(space, STACK_DEFINITION.broker);
   if (brokerRows.length === 1 && observeServiceProcess(brokerRows[0]!.record.value) === "running") return undefined;
-  const bindError = await listenerBindError(server);
+  const bindError = await listenerBindError(server, bindHost);
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return undefined;
-  const { host, port } = brokerListenAddress(server);
+  const { host: dialHost, port } = brokerListenAddress(server);
+  const host = bindHost ?? dialHost;
   const held = addressHolder("that address", host, port);
   const holders = loopbackListeners(server).map((pid) => {
     const command = readProcessCommand(pid);
@@ -793,7 +795,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // No command moves a stack that ran to another address. While another program holds the recorded
   // one, bare up refuses too, so the refusal names that holder rather than sending the operator there.
   if (previous && canonicalServer(previous.journal.server) !== canonicalServer(request.server)) {
-    const held = await recordedAddressHeld(space, previous.journal.server);
+    const held = await recordedAddressHeld(space, previous.journal.server, brokerHost);
     throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is recorded at ${previous.journal.server}, and this up asked for ${request.server}; a recorded stack is not moved to another address${held ? `, and ${held.says}` : ""}`, { target: recordedTarget, remedy: held ? `${held.frees}, then run bare \`cotal up\` from ${root}; no command moves a stack that ran to another address, so it starts only at ${previous.journal.server}` : `run bare \`cotal up\` from ${root} to start it at ${previous.journal.server}` });
   }
   // The broker service's own address rules run before anything is written, so an address it would
@@ -823,7 +825,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // start refuses before any write and names the signal that resumes it.
   const brokerPid = serviceInstances(space, STACK_DEFINITION.broker).map((row) => row.record.value).find((value) => observeServiceProcess(value) === "running")?.process?.pid;
   if (brokerPid !== undefined && processStopped(brokerPid))
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${previous?.journal.server ?? request.server} and never answers; nothing was started or written`, { target: { root, space, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run \`cotal up\` again` });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${previous?.journal.server ?? request.server} and never answers; nothing was started or written`, { target: { root, space, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run \`${displayCmd()} up\` again` });
   // An earlier up or down that never recorded its outcome is settled from its members' process
   // evidence under the held maintenance lock. Only a preserve or resume can remain unsettled here.
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
@@ -942,21 +944,22 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       throw new CommandFailure("refused", "CONFLICT", `something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : ""}, without this stack's broker instance; it was not adopted or stopped`, {
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
-          ? `start this stack at another address with \`cotal up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${stopHolder} and run \`cotal up\` again`
-          : `${stopHolder}, then run bare \`cotal up\` from ${root}; this stack keeps its recorded address`,
+          ? `start this stack at another address with \`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${stopHolder} and run \`${displayCmd()} up\` again`
+          : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
     // A program that holds the address without answering NATS, such as a web server, is refused here
     // too, before any broker instance is recorded, so a first start names another address.
-    const bindError = brokerRunning ? undefined : await listenerBindError(server);
+    const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
     if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
-      const { host, port } = brokerListenAddress(server), address = new URL(server);
+      const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
+      const host = brokerHost ?? dialHost;
       const { says, frees } = addressHolder("the stack's broker address", host, port);
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined
-          ? `start this stack at another address with \`cotal up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and run \`cotal up\` again`
-          : `${frees}, then run bare \`cotal up\` from ${root}; this stack keeps its recorded address`,
+          ? `start this stack at another address with \`${displayCmd()} up${brokerHost === undefined ? "" : ` --host ${shellWord(brokerHost)}`} --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and retry this start`
+          : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;

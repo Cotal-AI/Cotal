@@ -657,7 +657,7 @@ try {
   mkdirSync(join(neverRoot, ".cotal"), { recursive: true });
   const never = await bareDownIn(neverRoot);
   check("a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
-    never.error?.code === "TARGET_NOT_FOUND" && /where `cotal up` started/.test(never.error.remedy ?? ""), never);
+    never.error?.code === "TARGET_NOT_FOUND" && /where `(?:pnpm )?cotal up` started/.test(never.error.remedy ?? ""), never);
   writeFileSync(join(stoppedRoot, ".cotal", "nats.pid"), "not-a-pid\n", { mode: 0o600 });
   const unexplained = await bareDownIn(stoppedRoot);
   check("a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
@@ -882,7 +882,7 @@ try {
     for (const [flag, again] of [["yes", "cotal down --yes"], ["dry-run", "cotal down --dry-run"]] as const) {
       const r = await bareDownIn(sa, { space: "sb", [flag]: true });
       check(`down --${flag} --space sb in another stack's folder refuses CONFLICT, naming sb's root, this folder's stack, and \`${again}\` from sb's root`,
-        r.error?.code === "CONFLICT" && Boolean(r.error.message?.includes(elsewhere)) && Boolean(r.error.message?.includes("this folder's stack is sa")) && r.error.remedy === `run \`${again}\` from ${sb}`, r);
+        r.error?.code === "CONFLICT" && Boolean(r.error.message?.includes(elsewhere)) && Boolean(r.error.message?.includes("this folder's stack is sa")) && [again, `pnpm ${again}`].some((command) => r.error?.remedy === `run \`${command}\` from ${sb}`), r);
     }
     const unknown = await bareDownIn(sa, { space: "nosuch", yes: true });
     check("a --space no local stack holds names this folder's stack and the step to stop it",
@@ -900,7 +900,7 @@ try {
     writeFileSync(join(leftover, ".cotal", "server-open.conf"), "# rendered by a start that failed\n", { mode: 0o600 });
     const fromLeftover = await bareDownIn(leftover, { space: "sb", yes: true });
     check("down --yes --space sb in a folder whose .cotal holds no stack refuses TARGET_NOT_FOUND, naming sb's root and the down to run there",
-      fromLeftover.error?.code === "TARGET_NOT_FOUND" && Boolean(fromLeftover.error.message?.includes(elsewhere)) && fromLeftover.error.remedy === `run \`cotal down --yes\` from ${sb}`, fromLeftover);
+      fromLeftover.error?.code === "TARGET_NOT_FOUND" && Boolean(fromLeftover.error.message?.includes(elsewhere)) && ["cotal", "pnpm cotal"].some((prefix) => fromLeftover.error?.remedy === `run \`${prefix} down --yes\` from ${sb}`), fromLeftover);
     const own = await bareDownIn(leftover);
     check("a bare down there still answers for the folder's own root", own.error === undefined && own.exitCode === 0 && /is not running/.test(own.out), own);
     // A stack the legacy launcher started writes no journal, and `cotal down` in its own root stops
@@ -920,7 +920,7 @@ try {
     for (const { label, again, values } of bareCases) {
       const r = await bareDownIn(empty, values);
       check(`${label} in an empty folder names the selected legacy stack's space, its root and \`${again}\` there`,
-        r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && r.error.remedy === `run \`${again}\` from ${lg}`, r);
+        r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && [again, `pnpm ${again}`].some((command) => r.error?.remedy === `run \`${command}\` from ${lg}`), r);
     }
     setCurrent("sa");
     removeMesh("lgs");
