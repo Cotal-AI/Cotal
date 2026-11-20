@@ -45,7 +45,24 @@ try {
   const healthyShow = json(other, "space", "show", space);
   check("before the move, status connects and the registered root is intact", healthy.status === 0 && healthy.envelope.result?.selected?.connection === "ok" && healthy.envelope.result.selected.rootGone === false);
   check("before the move, space show does not diagnose a missing root", healthyShow.status === 0 && healthyShow.envelope.result?.rootGone !== true);
+  const nested = join(root, "nested"), copy = join(scratch, "copy");
+  mkdirSync(nested);
+  check("clear the selection while the controller stack is running", cli(other, "use", "--clear").status === 0);
+  const beforeMove = cli(nested, "space", "show", "--plain");
+  check("bare show finds the running registration before the move", beforeMove.status === 0 && /broker: +reachable/.test(beforeMove.stdout));
+  mkdirSync(join(copy, ".cotal"), { recursive: true });
+  cpSync(join(root, ".cotal", "stack-controller.json"), join(copy, ".cotal", "stack-controller.json"));
+  check("bare show does not use a copy of the journal while the original is still present", json(copy, "space", "show").status === 2);
   renameSync(root, moved);
+  const movedNested = join(moved, "nested");
+  const implicitShow = cli(movedNested, "space", "show", "--plain");
+  check("bare show finds the running registration and diagnoses the move from a subfolder",
+    implicitShow.status === 0 && /broker: +reachable/.test(implicitShow.stdout) && implicitShow.stdout.includes(`${root} - folder was moved or deleted`) && implicitShow.stdout.includes(`\`cotal down --space ${space} --yes\``));
+  const secondHome = join(scratch, "other-cotal-home");
+  mkdirSync(secondHome, { mode: 0o700 });
+  const noRecord = spawnSync(process.execPath, [bin, "space", "show", "--plain"], { cwd: movedNested, env: { ...env, COTAL_HOME: secondHome }, encoding: "utf8", timeout: 120_000 });
+  check("without a matching registration, show names the moved stack instead of a missing selection",
+    noRecord.status === 2 && noRecord.stderr.includes("TARGET_NOT_FOUND") && noRecord.stderr.includes(`"${space}"`) && noRecord.stderr.includes(root) && noRecord.stderr.includes(moved) && !noRecord.stderr.includes("no space is selected"));
   const inside = json(moved, "status", "--space", space);
   check("inside the renamed folder, the existing moved-folder diagnosis remains", inside.envelope.result?.selected?.code === "moved-folder" && inside.envelope.result.selected.message?.includes(root) === true);
   for (const recreated of [false, true]) {

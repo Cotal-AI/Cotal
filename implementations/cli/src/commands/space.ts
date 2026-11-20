@@ -219,10 +219,22 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     } else if (current !== null && recorded !== undefined && recorded.space !== current) {
       noteFolderSpaceShown(recorded.space, recorded.state, current);
     }
-    const movedSpace = rest[0] === undefined && folder === undefined && moved !== undefined && findPreparedSpace(moved.journal.space)?.root === moved.recordedRoot ? moved.journal.space : undefined;
+    let movedSpace: string | undefined;
+    if (rest[0] === undefined && folder === undefined && moved !== undefined) {
+      const { journal, recordedRoot } = moved;
+      const mesh = findMesh(journal.space);
+      if (mesh !== undefined
+        ? mesh.origin !== "manual" && mesh.origin !== "catalog" && mesh.root === recordedRoot && mesh.server === journal.server
+        : findPreparedSpace(journal.space)?.root === recordedRoot) movedSpace = journal.space;
+    }
     const name = rest[0] ?? folder ?? movedSpace ?? current;
-    if (name === null)
+    if (name === null) {
+      if (moved !== undefined) {
+        const { journal, recordedRoot } = moved;
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `this folder (${project}) holds the stack journal of "${journal.space}" and was moved from ${recordedRoot}, but no matching local space record was found`, { remedy: `see the spaces recorded here with ${codeSpan(`${displayCmd()} space`)}` });
+      }
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
+    }
     const m = findMesh(name);
     if (!m) {
       const p = findPreparedSpace(name);
@@ -423,7 +435,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
-  if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with \`cotal down --space ${s.space} --yes\``, tone: "waiting" });
+  if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with ${codeSpan(`${displayCmd()} down --space ${shellWord(s.space)} --yes`)}`, tone: "waiting" });
   if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: \`cotal space forget ${s.space}\`, then \`cotal space add ${s.space} --server ${s.server} --root ${s.root}\``, tone: "hint" });
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
