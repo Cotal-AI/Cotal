@@ -349,6 +349,8 @@ The manager these verbs act on is the space's one manager service: `manager` whe
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
 stack's manager, and `cotal manager start` reports it running and starts no second one.
+Without `--instance`, `cotal manager status` reports a running stack manager even if an older
+saved `manager` service is stopped. `--instance` still selects the named saved service instance.
 `cotal manager restart` does not restart a stack's manager by itself: it refuses `LIFECYCLE_BLOCKED`
 and names `cotal manager stop --yes`, then `cotal up`, which starts the manager again and reuses the
 running broker. When the stack's manager is stopped, `cotal manager start` refuses the same way and
