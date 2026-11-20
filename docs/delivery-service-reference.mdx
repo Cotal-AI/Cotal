@@ -173,9 +173,10 @@ registration gate, and the verified eviction a restart performs all go over the 
 `ctl.delivery` rail, and so do their mediated history reads. An agent whose read grant has an
 exclusion holds no history consumer for the allow entry it overlaps, so it reads that history with
 `readRange`. The daemon re-reads the agent's read registry row on every call, drops excluded posts
-before it cuts the page, and pages by count, size and a scan budget, with the caller carrying the
-position ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)). A daemon older than this request refuses
-it. Both are `ctl` subjects that [SPEC §13.11](../SPEC.md#1311-the-hard-cut)
+before it cuts the page, and pages by count, size, a scan budget and a two-second time budget, with
+the caller carrying the position ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)). A channel purge
+during the read ends the scan. A daemon older than this request refuses it, and the agent's backfill
+then fails instead of reading as empty. Both are `ctl` subjects that [SPEC §13.11](../SPEC.md#1311-the-hard-cut)
 retires; the reference implementation still serves them (see
 [the control surface](control-surface.mdx)). A manager that starts while the daemon is still binding, or while the
 daemon re-checks who owns its lease, waits up to 60 seconds for the rail to answer. Only a request

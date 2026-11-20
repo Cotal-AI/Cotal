@@ -776,10 +776,13 @@ before it cuts the page. The response is `{ items: [{ seq, message }], untilSeq,
 messages in ascending stream order with their sequence and subject-authenticated sender; `untilSeq`,
 the upper bound resolved on the first page, which the caller passes back on later pages; `next`, the
 next sequence to scan, past every message the page looked at, kept or not; and `done`, true once
-`untilSeq` is reached. A page ends at `limit` (at most 200), at the reply's payload budget, or after a
-scan budget, and a single message larger than the budget is refused, never skipped. The service holds
-no cursor between calls. A delivery service that predates the request refuses it as unknown, so an
-older service never serves a range.
+`untilSeq` is reached or no matching message is left. A page ends at `limit` (at most 200), at the
+reply's payload budget, after a scan budget, or after a time budget, and a single message larger than
+the payload budget is refused, never skipped. A page that scanned nothing within its time budget is
+refused. The service holds no cursor between calls. A delivery service that predates the request
+refuses it as unknown, so an older service never serves a range. A client MUST NOT read a refused
+range as an empty one: a backfill or recall the service refuses fails, as a broker permission denial
+on a direct read does.
 
 In the reference, fan-out writes a post on a concrete channel for every member whose row is that
 channel or a family covering it, and each copy's `Nats-Msg-Id` is `<id>:<principal>:<lifecycleUid>`,
