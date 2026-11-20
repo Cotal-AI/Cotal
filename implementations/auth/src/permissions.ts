@@ -47,7 +47,7 @@ export type ListingIssuer = (args: {
  *  callout (`cotal up`), so this package stays free of any ledger/persona storage concern. */
 export type AclResolver = (
   t: ValidatedUserToken,
-) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid" | "eventPayloads"> & {
+) => Pick<MintOpts, "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish" | "role" | "lifecycleUid" | "eventPayloads"> & {
   /** The actor's CURRENT capability grant (the row's scope), so the mint can re-contain the
    *  bearer's capabilities against the row AS OF THE MINT, not only as of the connect gate. */
   scope: string[];
@@ -63,7 +63,9 @@ export type AclResolver = (
  * `permissionsFor("agent", …)`. `connId` here is the CLIENT-CHOSEN inbox nonce the callout reads from
  * `req.connect_opts.name` (NOT `req.user_nkey`, which the client cannot know pre-connect); it scopes the
  * reply inbox `_INBOX_<connId>.>`. `readerId` is the connection's server-assigned history-reader id
- * (core's `calloutReaderId`), which keys the admin view's reader deletes.
+ * (core's `calloutReaderId`), which keys the admin view's reader deletes. `brokerVersion` is the
+ * signed request's `server_id.version`: an agent grant with an exclusion mints only with it, at or
+ * above the exclusion broker floor.
  *
  * Invariants enforced HERE (not in core):
  *  - the owner is a DERIVED owner (`u_…`) — user mode never accepts the reserved dev `local` owner;
@@ -71,29 +73,29 @@ export type AclResolver = (
  *    have them agree, else it is rejected (the confused-authority guard the Q4 review required closed the
  *    moment `permissionsFor(validated)` became production).
  */
-export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown>;
+export function calloutPermissions(resolveAcl: AclResolver): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
   issueUserCaller: UserCallerIssuer,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
   verifySession: SessionVerifier,
   issueUserCaller: UserCallerIssuer,
   resolveEndpointCaller: EndpointCallerResolver,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>,
@@ -101,7 +103,7 @@ export function calloutPermissions(
   issueUserCaller: UserCallerIssuer,
   resolveEndpointCaller: EndpointCallerResolver,
   issueListing: ListingIssuer,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
@@ -109,8 +111,8 @@ export function calloutPermissions(
   issueUserCaller?: UserCallerIssuer,
   resolveEndpointCaller?: EndpointCallerResolver,
   issueListing?: ListingIssuer,
-): (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
-  return (t, connId, readerId) => {
+): (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion?: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
+  return (t, connId, readerId, brokerVersion) => {
     if (t.act.view === "service-endpoint")
       throw new Error("callout permissions: service-endpoint requires native service authorization; ordinary actor profiles refuse it");
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
@@ -217,9 +219,14 @@ export function calloutPermissions(
     // The principal-route rows key on the row's kind, never a scope token (SPEC 13.21): a parent can
     // hand its scope tokens to the agents it spawns, and it cannot hand them its row kind. A
     // principal found in no ledger row space, such as a chat session, carries no kind and gets none.
+    // An exclusion is minted only for the node this client connects to, by the version the signed
+    // request names (SPEC §9): core refuses an exclusion-bearing mint without it or below the floor.
     const mint = (endpointCapabilities: NonNullable<MintOpts["endpointCapabilities"]> = [], listing?: ListingBinding) => permissionsFor(
       "agent", t.space, { ...principal, lifecycleUid: acl.lifecycleUid },
-      { ...aclOpts, capabilities: minted, endpointCapabilities, ...(listing ? { listing } : {}), ...(kind !== undefined ? { ledgerKind: kind } : {}) },
+      {
+        ...aclOpts, capabilities: minted, endpointCapabilities, ...(listing ? { listing } : {}), ...(kind !== undefined ? { ledgerKind: kind } : {}),
+        ...(brokerVersion !== undefined ? { brokerVersion } : {}),
+      },
     );
     // The listing generation is decided on the complete set this connection is minted, endpoint
     // caller rights included, so its evidence is that set.

@@ -242,8 +242,10 @@ export interface StartAuthCalloutOpts {
    *  nkey pre-connect; core's `assertInboxConnId` rejects a nonce with subject metacharacters, so it
    *  cannot widen the grant. An absent/invalid nonce makes the builder throw → a signed deny.
    *  `readerId` is core's `calloutReaderId` of this connection, which keys the observer and admin
-   *  profiles' history-reader deletes: the client chooses the nonce, so the nonce cannot key them. */
-  permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+   *  profiles' history-reader deletes: the client chooses the nonce, so the nonce cannot key them.
+   *  `brokerVersion` is the signed request's `server_id.version`, the node the client is connecting
+   *  to, or undefined when the request names none; a grant with an exclusion is refused without it. */
+  permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string, brokerVersion: string | undefined) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** REQUIRED: durably record the minted JWT's broker user key (`req.user_nkey`) against the validated
    *  principal BEFORE the response leaves (SPEC 13.1 `natkey.`). Awaited; a throw becomes the signed
    *  deny and the minted JWT is never sent. A thrown record write may still have landed: evidence of
@@ -523,7 +525,7 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       // deletes of that connection's readers. A request without a client id throws → signed deny.
       const readerId = calloutReaderId(req.server_id.id, req.client_info?.id as number);
       const { [SESSION_EXP]: sessionExp, [ENDPOINT_CALLER_EXP]: endpointExp, [ENDPOINT_CALLER_RECHECK]: endpointRecheck, ...perms } =
-        await step(c, "policy", () => opts.permissionsFor(validated, inboxNonce, readerId));
+        await step(c, "policy", () => opts.permissionsFor(validated, inboxNonce, readerId, req.server_id.version));
       // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
       // and only when the permission builder vouched for it from the live session row.
       const exp = validated.act.view === "session-caller" ? sessionExp : endpointExp === undefined ? validated.exp : Math.min(validated.exp, endpointExp as number);
