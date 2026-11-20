@@ -115,6 +115,27 @@ function abortReason(signal: AbortSignal | undefined): Error {
     : new DOMException("This operation was aborted", "AbortError");
 }
 
+/** `p`, or the caller's abort reason as soon as `signal` fires. A delivery request cannot be
+ *  withdrawn once sent, so an abort stops the caller waiting and paging; the late reply is dropped
+ *  when its reply subscription ends. */
+function abortable<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+      (e: unknown) => { signal.removeEventListener("abort", onAbort); reject(e); },
+    );
+  });
+}
+
+/** The delivery daemon answered a mediated read and refused it, or answered with a page this
+ *  endpoint cannot accept. It is the mediated twin of a broker permission denial on a direct read:
+ *  history is unreadable, which is not the same answer as history being empty. */
+class MediatedReadRefused extends Error {}
+
 /** Retained-history reads and private reader allocation for one endpoint. */
 export class EndpointHistory {
 
@@ -185,11 +206,11 @@ export class EndpointHistory {
     const limit = opts?.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1)
       throw new Error("channelHistoryPage limit must be a positive safe integer");
-    if (this.mediated(channel)) return this.readHistory(channel, { limit });
-    if (!this.nc || !this.js) throw new Error(this.deps.notLiveMsg());
-    const jsm = this.jsm ??= await jetstreamManager(this.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
     signal.throwIfAborted();
+    if (this.mediated(channel)) return this.readHistory(channel, { limit, signal });
+    if (!this.nc || !this.js) throw new Error(this.deps.notLiveMsg());
+    const jsm = this.jsm ??= await jetstreamManager(this.nc);
     const stream = chatStream(this.space);
     const name = chatHistDurable(this.owner, this.actor, this.deps.requireLifecycleUid("channelHistoryPage"));
     const subject = chatSubject(this.space, "*", "*", channel);
@@ -382,8 +403,9 @@ export class EndpointHistory {
    *  Chat channels only — DM history is deliberately not served here (it is god-view-only today, a
    *  different authorization model, and one handler with two authz paths is the wrong shape on the
    *  surface where a mistake exposes messages). */
-  async readHistory(channel: string, opts?: { limit?: number }): Promise<HistoryPage> {
-    const reply = await this.deps.requestDelivery("readHistory", { channel, limit: opts?.limit });
+  async readHistory(channel: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryPage> {
+    opts?.signal?.throwIfAborted();
+    const reply = await abortable(this.deps.requestDelivery("readHistory", { channel, limit: opts?.limit }), opts?.signal);
     if (!reply.ok) throw new Error(reply.error ?? "readHistory failed");
     const data = reply.data as { items?: unknown; complete?: unknown } | undefined;
     // Validate rather than coerce. A malformed reply must not be massaged into a plausible page:
@@ -410,33 +432,35 @@ export class EndpointHistory {
    *  absent) or `limit` rows. `sinceMs` bounds the start by age when `fromSeq` is 1. The daemon
    *  authenticates each row's sender and channel from its subject and drops what this caller may
    *  not read; a row outside `filter` or this endpoint's own grant is refused here as a daemon fault.
-   *  A refusal or a malformed page throws: it is never read as an empty history. */
+   *  A refusal or a malformed page throws: it is never read as an empty history. `signal` stops the
+   *  drain: no further page is asked for, and the call rejects with the signal's reason. */
   async readRange(
     filter: string,
-    opts: { fromSeq: number; untilSeq?: number; sinceMs?: number; limit?: number },
+    opts: { fromSeq: number; untilSeq?: number; sinceMs?: number; limit?: number; signal?: AbortSignal },
   ): Promise<{ seq: number; message: CotalMessage }[]> {
     const out: { seq: number; message: CotalMessage }[] = [];
     const allow = this.deps.allowSubscribe() ?? [], exclude = this.deps.excludeSubscribe();
     let fromSeq = opts.fromSeq, untilSeq = opts.untilSeq;
     for (;;) {
-      const reply = await this.deps.requestDelivery("readRange", {
+      opts.signal?.throwIfAborted();
+      const reply = await abortable(this.deps.requestDelivery("readRange", {
         filter, fromSeq,
         ...(untilSeq !== undefined ? { untilSeq } : {}),
         ...(fromSeq === 1 && opts.sinceMs !== undefined ? { sinceMs: opts.sinceMs } : {}),
         ...(opts.limit !== undefined ? { limit: opts.limit - out.length } : {}),
-      });
-      if (!reply.ok) throw new Error(reply.error ?? "readRange failed");
+      }), opts.signal);
+      if (!reply.ok) throw new MediatedReadRefused(reply.error ?? "readRange failed");
       const data = reply.data as { items?: unknown; untilSeq?: unknown; next?: unknown; done?: unknown } | undefined;
       const seq = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
       if (!Array.isArray(data?.items) || !seq(data.untilSeq) || !seq(data.next) || typeof data.done !== "boolean"
         || (!data.done && data.next <= fromSeq))
-        throw new Error("readRange: the delivery daemon returned a malformed page (expected { items, untilSeq, next, done } that advances)");
+        throw new MediatedReadRefused("readRange: the delivery daemon returned a malformed page (expected { items, untilSeq, next, done } that advances)");
       for (const item of data.items as unknown[]) {
         const row = item as { seq?: unknown; message?: unknown };
         const channel = this.deps.isRecord(row?.message) ? row.message.channel : undefined;
         if (!seq(row?.seq) || row.seq < fromSeq || row.seq > data.untilSeq || typeof channel !== "string"
           || !subjectMatches(filter, channel) || !channelInGrant(allow, exclude, channel))
-          throw new Error(`readRange: the delivery daemon served a row outside "${filter}" or this grant - refused`);
+          throw new MediatedReadRefused(`readRange: the delivery daemon served a row outside "${filter}" or this grant - refused`);
         out.push({ seq: row.seq, message: row.message as CotalMessage });
       }
       if (data.done || (opts.limit !== undefined && out.length >= opts.limit)) return out;
@@ -626,25 +650,28 @@ export class EndpointHistory {
    *  The page starts at `fromSeq` (or `sinceMs` ago when `fromSeq` is 1) and ends at `untilSeq`. With
    *  no `untilSeq` the newest matching sequence is resolved and returned, so a caller paging on passes
    *  it back and a busy stream cannot extend the read. A page stops at `limit` kept rows, at `budget`
-   *  encoded bytes, or after `scanLimit` scanned rows, so a stretch of rows the caller may not read
-   *  still ends the call. `next` is the first sequence not yet scanned and moves past every row looked
-   *  at, kept or not; `done` says the scan reached `untilSeq`. A kept row larger than `budget` throws,
-   *  because it can never be sent, and a read the stream cuts short throws rather than passing for a
-   *  short page. */
+   *  encoded bytes, after `scanLimit` scanned rows, or once `timeMs` has passed, so neither a stretch
+   *  of rows the caller may not read nor a slow stream holds the daemon. `next` is the first sequence
+   *  not yet scanned and moves past every row looked at, kept or not; `done` says the scan reached
+   *  `untilSeq` or no matching row is left. A kept row larger than `budget` throws, because it can
+   *  never be sent, and so does a page that scanned nothing in its time. Rows are pulled in bounded
+   *  fetches, so rows removed during the read (a channel purge) end the scan instead of leaving it
+   *  waiting for them. */
   async readChatRange(
     subject: string,
     opts: {
       fromSeq: number; untilSeq?: number; sinceMs?: number;
-      limit: number; budget: number; scanLimit: number;
+      limit: number; budget: number; scanLimit: number; timeMs: number;
       keep: (msg: HistoryMessage) => boolean;
     },
   ): Promise<{ rows: { seq: number; message: HistoryMessage }[]; untilSeq: number; next: number; done: boolean }> {
     if (!this.nc) throw new Error(this.deps.notLiveMsg());
     const nc = this.nc;
+    const deadline = Date.now() + opts.timeMs;
     const rows: { seq: number; message: HistoryMessage }[] = [];
     const reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), chatStream(this.space));
     try {
-      const untilSeq = opts.untilSeq ?? await this.lastMatchingSeq(reader, [subject]);
+      const untilSeq = opts.untilSeq ?? await this.lastMatchingSeq(reader, [subject], AbortSignal.timeout(opts.timeMs));
       if (untilSeq < opts.fromSeq) return { rows, untilSeq, next: opts.fromSeq, done: true };
       const since = opts.fromSeq === 1 && opts.sinceMs !== undefined ? Date.now() - opts.sinceMs : undefined;
       const consumer = await this.openHistoryReader(reader, {
@@ -656,11 +683,15 @@ export class EndpointHistory {
       try {
         const pending = (await consumer.info(true)).num_pending;
         if (pending === 0) return { rows, untilSeq, next: untilSeq + 1, done: true };
-        const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });
         const enc = new TextEncoder();
         let delivered = 0, bytes = 0, next = opts.fromSeq, done = false, full = false;
-        try {
+        while (!done && !full && Date.now() < deadline) {
+          const want = Math.min(256, opts.scanLimit - delivered);
+          // `expires` has a 1 s floor in the client, so a page may overrun `timeMs` by up to that.
+          const iter = await consumer.fetch({ max_messages: want, expires: Math.max(1_000, deadline - Date.now()) });
+          let got = 0;
           for await (const m of iter) {
+            got++;
             delivered++;
             if (m.info.deliverySequence !== delivered)
               throw new Error(`history: delivery ${m.info.deliverySequence} arrived where ${delivered} was due on ${subject} - the range has a gap, so the page is not served`);
@@ -678,11 +709,14 @@ export class EndpointHistory {
             if (m.seq === untilSeq || delivered >= pending) { done = true; break; }
             if (delivered >= opts.scanLimit) { full = true; break; }
           }
-        } finally {
-          iter.stop();
+          // A short fetch with nothing left to deliver means the remaining rows were removed.
+          if (!done && !full && got < want && (await consumer.info(true)).num_pending === 0) done = true;
         }
-        if (!done && !full)
-          throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the range was cut short, not empty`);
+        if (!done && !full) {
+          if (delivered === 0)
+            throw new Error(`history: no message on ${subject} arrived within ${opts.timeMs}ms - the page is refused, not served as empty`);
+          full = true;
+        }
         return { rows, untilSeq, next: done ? untilSeq + 1 : next, done };
       } finally {
         await this.closeHistoryReader(reader);
@@ -1112,7 +1146,10 @@ export class EndpointHistory {
       try {
         rows = await this.readRange(channel, { fromSeq: floorSeq !== undefined ? floorSeq + 1 : 1, untilSeq: upToSeq, ...(floorSeq === undefined && sinceMs !== undefined ? { sinceMs } : {}) });
       } catch (e) {
+        // As on the direct path below: a refusal throws, and only a request that went unanswered
+        // reads as nothing backfilled.
         this.deps.emit("error", e as Error);
+        if (e instanceof MediatedReadRefused) throw e;
         return 0;
       }
       let n = 0;
@@ -1190,6 +1227,7 @@ export class EndpointHistory {
         }
       } catch (e) {
         this.deps.emit("error", e as Error);
+        if (e instanceof MediatedReadRefused) throw e;
         return { messages: [], seqs: [], dropped: true, unanswered: true };
       }
       return this.recallVerdict(channel, sinceSeq, collected, seqs);

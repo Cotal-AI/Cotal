@@ -58,6 +58,10 @@ const READ_HISTORY_MAX_LIMIT = 200;
  *  still ends the call, and `next` carries the caller past it. */
 const READ_RANGE_SCAN_LIMIT = 1_000;
 
+/** How long one mediated range page may read before it answers with what it has. Range reads share
+ *  the daemon's in-order control chain with joins and leaves, and the caller waits 5 s for a reply. */
+const READ_RANGE_TIME_MS = 2_000;
+
 /** The largest reply envelope a range page wraps its items in, so the items' budget leaves room for
  *  it whatever the sequences are. */
 const READ_RANGE_ENVELOPE = new TextEncoder().encode(JSON.stringify({
@@ -604,6 +608,7 @@ export class EndpointDeliveryPlane {
         limit: Math.min(asked, READ_HISTORY_MAX_LIMIT),
         budget: this.maxPayload - READ_RANGE_ENVELOPE,
         scanLimit: READ_RANGE_SCAN_LIMIT,
+        timeMs: READ_RANGE_TIME_MS,
         keep,
       });
       return { ok: true, data: { items: page.rows, untilSeq: page.untilSeq, next: page.next, done: page.done } };

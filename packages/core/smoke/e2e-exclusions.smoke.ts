@@ -14,6 +14,14 @@
  *   7. recall drains more than one mediated page past excluded rows
  *   8. durable delivery: copies on the excluded channel are never handed to the offline agent
  *   9. an endpoint that does not know its exclusions (an older client) fails to start, never served
+ *  10. channelHistory is a view route: every agent credential is refused, a view reads by publisher
+ *  11. a mediated page honors its abort signal, before and during the read
+ *  12. the range read: a family page over 1000 excluded rows, the pinned frontier, the payload split
+ *  13. live ACL changes: a narrowed channel's join is refused and its copies and mentions withheld;
+ *      a live row that drops every exclusion still keeps the credential's own
+ *  14. a resume floor bounds the mediated boot backfill
+ *  15. a purge during a range read ends the scan, and another principal's join is still served
+ *  16. a row too large for any reply is refused loudly
  *
  * Run: pnpm smoke:e2e:exclusions
  */
@@ -26,8 +34,9 @@ import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable, loadAgentFile,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, mintLifecycleUid, CotalEndpoint,
   chatStream, chatSubject, chatHistDurable, DEV_OWNER,
-  type CotalMessage, type Delivery, type MessageMeta,
+  type CotalMessage, type Delivery, type MessageMeta, type ControlReply,
 } from "../src/index.js";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -57,6 +66,7 @@ try {
   if (!up) throw new Error("auth nats-server did not come up");
   const versionNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(mgrCreds)) });
   const brokerVersion = versionNc.info?.version;
+  const maxPayload = versionNc.info?.max_payload ?? 1024 * 1024;
   await versionNc.close();
   console.log(`broker ${brokerVersion}`);
 
@@ -167,8 +177,8 @@ try {
   const page = await X.ep.channelHistoryPage("team.a", { limit: 10 });
   check("the sibling page is read through the daemon", page.items.some((m) => textOf(m) === "a-1"), page.items.map(textOf));
   check("the excluded page is refused, not empty", await refusal(X.ep.channelHistoryPage("team.secret", { limit: 10 })) !== undefined);
-  const recallSecret = await X.ep.recallChannel("team.secret", 0);
-  check("recall of the excluded channel answers nothing", recallSecret.unanswered && recallSecret.messages.length === 0, recallSecret);
+  const recallSecret = await X.ep.recallChannel("team.secret", 0).then((r) => ({ resolved: r }), (e: Error) => ({ refused: e.message }));
+  check("recall of the excluded channel is refused, as a direct read's permission denial is", "refused" in recallSecret, recallSecret);
 
   console.log("[7] recall drains several pages past excluded rows");
   const before = (await X.ep.recallChannel("team.a", 0)).seqs.at(-1) ?? 0;
@@ -206,6 +216,158 @@ try {
   check("its start is broker-refused at the backfill, never served", boot !== undefined && /permission/i.test(boot), boot);
   check("it read no excluded row", !Y.got.some((g) => ["s-1", "p-1"].includes(g.text)), Y.got);
   await Y.ep.stop().catch(() => {});
+
+  const rawConn = async (profile: "admin" | "channel-purger") => {
+    const id = newIdentity();
+    return connect({ servers: SERVERS, inboxPrefix: `_INBOX_${id.id}`, authenticator: credsAuthenticator(enc(await mintCreds(auth, id, profile))) });
+  };
+  const adminNc = await rawConn("admin");
+  const adminJsm = await jetstreamManager(adminNc);
+  const lastSeq = async () => (await adminJsm.streams.info(chatStream(space))).state.last_seq;
+  type Row = { seq: number; message: CotalMessage };
+  type RangePage = { items: Row[]; untilSeq: number; next: number; done: boolean };
+  const rowsOf = (rows: Row[]) => JSON.stringify(rows.map((r) => [r.seq, textOf(r.message).slice(0, 12)]));
+  const reach = (ep: CotalEndpoint) => ep as unknown as {
+    requestDelivery(op: string, args: Record<string, unknown>): Promise<ControlReply>;
+    history: { readRange(filter: string, opts: { fromSeq: number; untilSeq?: number }): Promise<Row[]> };
+  };
+  X = mkEp({ routed: true });
+  await X.ep.start();
+  await sleep(800);
+  const range = async (args: Record<string, unknown>) => {
+    const r = await reach(X.ep).requestDelivery("readRange", args);
+    return { ...r, page: r.data as RangePage };
+  };
+
+  console.log("[10] channelHistory is a view route");
+  const viewOnly = await refusal(X.ep.channelHistory("team.a", { limit: 5 }));
+  check("the agent's channelHistory is broker-refused, as for every agent credential", viewOnly !== undefined && /permission/i.test(viewOnly), viewOnly);
+  const obsId = newIdentity();
+  const obs = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, obsId, "observer"), card: { id: obsId.id, name: "obs", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
+  await obs.start();
+  const byXena = (await obs.channelHistory("team.a", { limit: 5, publisher: X.ep.principal })).map(textOf);
+  check("an observer view reads the channel by publisher", JSON.stringify(byXena) === JSON.stringify(["x-a"]), byXena);
+  await obs.stop();
+
+  console.log("[11] a mediated page honors its signal");
+  const pre = await refusal(X.ep.channelHistoryPage("team.a", { limit: 5, signal: AbortSignal.abort(new Error("caller gave up")) }));
+  check("an aborted signal rejects with the caller's reason", pre === "caller gave up", pre);
+  const ac = new AbortController();
+  const inflight = X.ep.channelHistoryPage("team.a", { limit: 5, signal: ac.signal });
+  ac.abort(new Error("caller left mid-read"));
+  const mid = await refusal(inflight);
+  check("an abort during the read rejects with its reason", mid === "caller left mid-read", mid);
+
+  console.log("[12] the mediated range read");
+  const s0 = (await lastSeq()) + 1;
+  for (let i = 0; i < 550; i++) {
+    await poster.multicast(`gap-s-${i}`, { channel: "team.secret" });
+    await poster.multicast(`gap-p-${i}`, { channel: "team.f.private" });
+  }
+  await poster.multicast("after-gap", { channel: "team.a" });
+  const gapEnd = await lastSeq();
+  const g1 = await range({ filter: "team.>", fromSeq: s0 });
+  check("a family page over 1000 excluded rows stops at the scan budget with no row and moves past them",
+    g1.ok && g1.page.items.length === 0 && !g1.page.done && g1.page.next === s0 + 1000 && g1.page.untilSeq === gapEnd, { ...g1, s0, gapEnd });
+  const drained = await reach(X.ep).history.readRange("team.>", { fromSeq: s0 });
+  check("the drain returns only the sibling after the excluded stretch, at its sequence", rowsOf(drained) === JSON.stringify([[gapEnd, "after-gap"]]), rowsOf(drained));
+  const f0 = (await lastSeq()) + 1;
+  for (const t of ["pin-1", "pin-2", "pin-3"]) await poster.multicast(t, { channel: "team.a" });
+  const q1 = await range({ filter: "team.a", fromSeq: f0, limit: 1 });
+  check("a one-row page pins the frontier at the newest row",
+    q1.ok && rowsOf(q1.page.items) === JSON.stringify([[f0, "pin-1"]]) && q1.page.untilSeq === f0 + 2 && q1.page.next === f0 + 1 && !q1.page.done, { ...q1, f0 });
+  await poster.multicast("pin-late", { channel: "team.a" });
+  const q2 = await range({ filter: "team.a", fromSeq: q1.page.next, untilSeq: q1.page.untilSeq });
+  check("the next page stops at the pinned frontier, without the later post",
+    q2.ok && rowsOf(q2.page.items) === JSON.stringify([[f0 + 1, "pin-2"], [f0 + 2, "pin-3"]]) && q2.page.done, q2);
+  const big = "b".repeat(Math.floor(maxPayload * 0.4));
+  const b0 = (await lastSeq()) + 1;
+  for (const t of ["big-1", "big-2", "big-3"]) await poster.multicast(`${t} ${big}`, { channel: "team.big" });
+  const split: number[][] = [];
+  for (let from = b0, until: number | undefined; split.length < 5;) {
+    const r = await range({ filter: "team.big", fromSeq: from, ...(until !== undefined ? { untilSeq: until } : {}) });
+    if (!r.ok) { split.push([-1]); break; }
+    split.push(r.page.items.map((i) => i.seq));
+    if (r.page.done) break;
+    from = r.page.next; until = r.page.untilSeq;
+  }
+  check("rows that do not fit one reply are split across pages, none lost", JSON.stringify(split) === JSON.stringify([[b0, b0 + 1], [b0 + 2]]), split);
+
+  console.log("[13] live ACL changes");
+  const principal = `${DEV_OWNER}.${ident.id}`;
+  await poster.multicast("d-1", { channel: "team.d" });
+  await mgr.commitAcl(principal, uid, ["team.>"], ["team.secret", "team.*.private", "team.d"]);
+  await sleep(300);
+  const narrowed = await X.ep.joinChannel("team.d").then((r) => ({ resolved: r }), (e: Error) => ({ refused: e.message }));
+  check("a join of a channel the live row now excludes is refused, never an empty backfill", "refused" in narrowed, narrowed);
+  await X.ep.stop();
+  await sleep(300);
+  await poster.multicast("d-narrowed", { channel: "team.d", mentions: ["xena"] });
+  await poster.multicast("a-narrowed", { channel: "team.a", mentions: ["xena"] });
+  await sleep(600);
+  X = mkEp({ routed: true });
+  await X.ep.start();
+  await sleep(1500);
+  const afterNarrow = X.got.map((g) => g.text);
+  check("the sibling copy and mention are delivered", afterNarrow.includes("a-narrowed"), afterNarrow.filter((t) => /narrowed/.test(t)));
+  check("the narrowed channel's copy and mention are withheld", !afterNarrow.includes("d-narrowed") && !afterNarrow.includes("d-1"), afterNarrow.filter((t) => /^d-/.test(t)));
+  await mgr.commitAcl(principal, uid, ["team.>"], []);
+  await sleep(300);
+  const widened = await reach(X.ep).history.readRange("team.>", { fromSeq: s0 });
+  check("a live row that drops every exclusion still keeps the credential's own", !widened.some((r) => /^gap-/.test(textOf(r.message))) && widened.some((r) => textOf(r.message) === "after-gap"), widened.length);
+  check("the excluded page stays refused", await refusal(X.ep.channelHistoryPage("team.secret", { limit: 5 })) !== undefined);
+
+  console.log("[14] a resume floor bounds the mediated boot backfill");
+  await X.ep.stop();
+  const floored = new CotalEndpoint({
+    space, servers: SERVERS, creds, card: { name: "xena", kind: "agent", id: ident.id }, channels: ["team.>"], lifecycleUid: uid,
+    allowSubscribe: def.allowSubscribe, excludeSubscribe: def.excludeSubscribe, backfillFloor: f0,
+  });
+  const flooredGot: string[] = [];
+  floored.on("error", () => {});
+  floored.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => { if (meta?.historical) flooredGot.push(textOf(m).slice(0, 12)); d.ack(); });
+  await floored.start();
+  await sleep(1200);
+  check("the backfill starts after the floor", !flooredGot.includes("pin-1") && !flooredGot.includes("a-1") && flooredGot.includes("pin-2") && flooredGot.includes("pin-late"), flooredGot.filter((t) => !t.startsWith("big-")));
+  await floored.stop();
+
+  console.log("[15] a purge during a range read");
+  X = mkEp({ routed: true });
+  await X.ep.start();
+  const zId = newIdentity(), zUid = mintLifecycleUid();
+  const zCreds = await provisionAgent(mgr, auth, zId, { subscribe: [], allowSubscribe: ["zone.>"], allowPublish: [], brokerVersion, lifecycleUid: zUid });
+  const Z = new CotalEndpoint({ space, servers: SERVERS, creds: zCreds, card: { name: "zed", kind: "agent", id: zId.id }, channels: [], lifecycleUid: zUid, watchPresence: false, registerPresence: false });
+  Z.on("error", () => {});
+  await Z.start();
+  const purgerNc = await rawConn("channel-purger");
+  const purgerJsm = await jetstreamManager(purgerNc);
+  const purgeTrace: unknown[] = [];
+  let served = true;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const p0 = (await lastSeq()) + 1;
+    for (let i = 0; i < 900; i++) await poster.multicast(`purged-${attempt}-${i}`, { channel: "team.secret" });
+    const read = range({ filter: "team.>", fromSeq: p0 }).then((r) => (r.ok ? "answered" : `refused: ${r.error}`), (e: Error) => `failed: ${e.message}`);
+    await sleep(attempt * 3);
+    await purgerJsm.streams.purge(chatStream(space), { filter: chatSubject(space, "*", "*", "team.secret") });
+    const outcome = await read;
+    const zJoin = await Z.joinChannel(`zone.z${attempt}`);
+    purgeTrace.push({ attempt, outcome, zDurable: zJoin.durable, reason: zJoin.reason });
+    if (/failed/.test(outcome) || !zJoin.durable) { served = false; break; }
+  }
+  check("every range read answers and another principal's join keeps its durable row", served, purgeTrace);
+  await Z.stop();
+  await purgerNc.close();
+
+  console.log("[16] a row too large for any reply");
+  // The largest post the broker takes, once wrapped with its sequence, exceeds the reply budget.
+  let huge: number | undefined;
+  for (let n = maxPayload - 200; n > maxPayload - 3000 && huge === undefined; n -= 25) {
+    try { await poster.multicast("h".repeat(n), { channel: "team.huge" }); huge = await lastSeq(); } catch { /* larger than the broker takes */ }
+  }
+  const h = huge === undefined ? undefined : await range({ filter: "team.huge", fromSeq: huge });
+  check("it is refused loudly, never skipped", h !== undefined && !h.ok && /exceeds the reply budget/.test(h.error ?? ""), { huge, ok: h?.ok, error: h?.error });
+  await X.ep.stop();
+  await adminNc.close();
 
   console.log(`\nE2E EXCLUSIONS ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
   await Promise.all([dlv.stop(), poster.stop(), mgr.stop()]);
