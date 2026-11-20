@@ -209,10 +209,11 @@ async function askManagerEp(
         return { ...refused, preSubmitRefusal: true, managerInstanceId: info.responder.instanceId, managerEpoch: info.responder.epoch, error: `could not resolve "${name}": ${refused.error}` };
       }
       const row = info.reply.data as { id: string; lifecycleUid: string };
-      if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
-        return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
+      // The caller's own pin is checked first, so a run the caller chose that was replaced says so.
       if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
         return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
+      if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
+        return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
       // target block's subject arity). Mode `any` spans owners (operator reach); mode `owner` pins
@@ -358,8 +359,10 @@ export function describeUnanswered(reply: ManagerReply): boolean {
 export interface ManagerPin {
   instanceId?: string;
   /** The seat row that selected this manager before minting its caller instrument: a live presence
-   *  row, or the row the pinned manager listed. It skips the presence lookup by name, and the
-   *  manager's own `inspect` must still answer this id and lifecycle before anything is sent. */
+   *  row, or the row the pinned manager listed. It skips the presence lookup by name. The manager's
+   *  own `inspect` still finds the seat by `name`, which must be the manager's exact name for it, and
+   *  the answer must carry this id and lifecycle before anything is sent. An `expectedTarget` is
+   *  checked first. */
   expectedSeat?: { name: string; id: string; lifecycleUid: string };
   /** A picker-selected incarnation, checked after name resolution and before publication. */
   expectedTarget?: { id: string; lifecycleUid: string };
