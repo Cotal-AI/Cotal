@@ -22,7 +22,7 @@
   "mutations": [
     {
       "name": "C1 drop the inline persona from the spawn arguments",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "join: opts?.join, persona: opts?.persona, callerAcl",
       "replace": "join: opts?.join, callerAcl",
       "expectRed": "cotal_spawn tool forwards the inline persona whole, beside its first-turn prompt",
@@ -46,7 +46,7 @@
     },
     {
       "name": "C4 audit only the top-level model",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "const pinned = requested || opts?.persona?.model;",
       "replace": "const pinned = requested;",
       "expectRed": "an inline persona's model the manager did not record is refused like an override",
@@ -70,7 +70,7 @@
     },
     {
       "name": "C7 trim the inline model before its audit",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "const pinned = requested || opts?.persona?.model;",
       "replace": "const pinned = requested || opts?.persona?.model?.trim();",
       "expectRed": "an inline model the manager recorded as sent is not reported as a dropped pin",

@@ -19,21 +19,21 @@
   "mutations": [
     {
       "name": "J1 drop join at the manager command boundary",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl:",
       "replace": "runtime: opts?.runtime, persona: opts?.persona, callerAcl:",
       "expectRed": "MeshAgent.spawn forwards join"
     },
     {
       "name": "J2 drop the caller's ACL from the spawn command",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish }, once: opts?.once };",
       "replace": "persona: opts?.persona, once: opts?.once };",
       "expectRed": "the spawn carries the caller's own ACL as callerAcl"
     },
     {
       "name": "J3 skip the read-ACL bound on join",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "      if (!channelInAllow(this.config.allowSubscribe, ch))\n        return { ok: false, error: `join:",
       "replace": "      if (false)\n        return { ok: false, error: `join:",
       "expectRed": "a join outside the caller's read ACL is refused before invoke"
