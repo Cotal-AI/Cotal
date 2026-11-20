@@ -4,6 +4,7 @@ import { CotalEndpoint, provisionAgentDurables, EpEnvelopeError, mintCreds, newI
 import { authorizeRemoteRetainedAgentValidation } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, resolveRemoteSpawner, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus } from "./managed-agent-enrollment.js";
 import { resolveReadAcl } from "@cotal-ai/core";
+import { assertWithinRunDelegation, assertWithinSpawnerGrant, findManagedActor, revokeManagedActorIf, withManagedGrantTransaction } from "./ledger.js";
 import type { managerGateReads } from "./callout-authority.js";
 import type { AuthorityClientOpts } from "./authority-client.js";
 import type { managedRetirementAuthority } from "./service-managed-retirement.js";
@@ -23,6 +24,7 @@ export interface ManagedAgentDeps {
   readRunStarterAdmission: (runId: string) => Promise<Awaited<ReturnType<typeof readRunAdmission>>["admission"]>;
   deprovisionManagedFootprint: (owner: string, actor: string, lifecycleUid: string, memberChannels: string[]) => Promise<void>;
   managedRetirement: ReturnType<typeof managedRetirementAuthority>;
+  serializedForAlias: <T>(dir: string, owner: string, actor: string, fn: () => Promise<T>) => Promise<T>;
   opts: OpenAuthAuthorityPlaneOptions;
   onConnection: AuthorityClientOpts["onConnection"] | undefined;
 }
@@ -30,7 +32,7 @@ export interface ManagedAgentDeps {
 /** The plane's managed-agent operations (retained validation, enrollment and its verification,
  *  prepare-retirement verification and the runtime check), over the closure's deps. */
 export function managedAgentAuthority(deps: ManagedAgentDeps): Pick<AuthAuthorityPlane, "validateRetainedAgent" | "verifyManagedAgentEnrollment" | "verifyManagedAgentPrepareRetirement" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "verifyManagedAgentRuntime"> {
-  const { server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, opts, onConnection } = deps;
+  const { server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection } = deps;
   return {
     validateRetainedAgent: async (holder) => {
       refuseIfFenced();

@@ -121,15 +121,10 @@ import { type RegistryService } from "@cotal-ai/core";
 import { AUTH_SERVICE_ENDPOINT, authClusterArtifacts, authContractArtifactValues } from "./auth-service-contract.js";
 import { drainTargetForEndpoint, openAdmissionMediator } from "./admission-mediator.js";
 import {
-  assertWithinRunDelegation,
-  assertWithinSpawnerGrant,
   findInteractiveActor,
-  findManagedActor,
   findActorUnified,
   ledgerActorSourceIsLive,
   ledgerAuthorizeGrant,
-  revokeManagedActorIf,
-  withManagedGrantTransaction,
 } from "./ledger.js";
 import {
   AUTH_PROVIDER_NAME,
@@ -1096,7 +1091,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       });
     },
     ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection }),
-    ...managedAgentAuthority({ server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, opts, onConnection }),
+    ...managedAgentAuthority({ server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection }),
     scanManagerGoalIndex: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
