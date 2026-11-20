@@ -119,10 +119,15 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
     }
     const sets = dirname(id.path);
     ownedAncestors(sets);
+    // The reconcile child can borrow the update lock before final execution verification.
+    // Keep the set that contains the parent's rollback snapshot until the journal is cleared.
+    const snapshot = readUpdateRecovery()?.snapshot;
+    const rollbackConfig = snapshot && /^\.update-snapshot-/.test(basename(snapshot)) ? dirname(resolve(snapshot)) : undefined;
+    const rollbackSet = rollbackConfig && /^cotal(?:-[a-f0-9]{16})?$/.test(basename(rollbackConfig)) ? dirname(rollbackConfig) : undefined;
     for (const name of readdirSync(sets)) {
       if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
       const path = join(sets, name);
-      if (path === id.path || keep.has(name)) continue;
+      if (path === id.path || keep.has(name) || resolve(path) === rollbackSet) continue;
       try { ownedAncestors(path); if (setHasHolders(path)) continue; rmSync(path, { recursive: true, force: true }); }
       catch { console.error(`connector set cleanup: could not remove ${name}; the update remains selected`); }
     }
