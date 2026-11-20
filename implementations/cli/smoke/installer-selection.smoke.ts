@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -293,14 +294,17 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 version=\${spec#*@}
-mkdir -p "$prefix/lib/node_modules/cotal-ai/dist" "$prefix/bin"
-printf '{"name":"cotal-ai","version":"%s"}\\n' "$version" > "$prefix/lib/node_modules/cotal-ai/package.json"
+[ "$version" != older ] || version=0.0.9-rc.2
+pkg="$prefix/lib/node_modules/cotal-ai"
+mkdir -p "$pkg/dist" "$pkg/node_modules/@cotal-ai" "$prefix/bin"
+ln -s "$FIXTURE_WORKSPACE" "$pkg/node_modules/@cotal-ai/workspace"
+printf '{"name":"cotal-ai","version":"%s","bin":{"cotal":"./dist/cotal.js"}}\\n' "$version" > "$pkg/package.json"
 if [ "$version" = 0.0.2 ]; then
-  printf '#!/usr/bin/env node\\nthrow new Error("requested release cannot start");\\n' > "$prefix/lib/node_modules/cotal-ai/dist/cotal.js"
+  printf '#!/usr/bin/env node\\nthrow new Error("requested release cannot start");\\n' > "$pkg/dist/cotal.js"
 else
-  printf '#!/usr/bin/env node\\nif(process.argv[2]!=="update")console.log("cotal-ai %s");\\n' "$version" > "$prefix/lib/node_modules/cotal-ai/dist/cotal.js"
+  printf '#!/usr/bin/env node\\nif(process.argv[2]==="--version"){if(process.env.FIXTURE_WARN)console.error("benign startup warning");console.log("cotal-ai %s");}\\nif(process.argv[2]==="update" && process.env.FIXTURE_FAIL_SELECTION){require("node:fs").writeFileSync(process.env.FIXTURE_FAIL_SELECTION,"reconciliation changed the selection");process.exitCode=1;}\\n' "$version" > "$pkg/dist/cotal.js"
 fi
-chmod 755 "$prefix/lib/node_modules/cotal-ai/dist/cotal.js"
+chmod 755 "$pkg/dist/cotal.js"
 ln -s "../lib/node_modules/cotal-ai/dist/cotal.js" "$prefix/bin/cotal"
 `);
   chmodSync(npmFixture, 0o755);
@@ -309,8 +313,9 @@ ln -s "../lib/node_modules/cotal-ai/dist/cotal.js" "$prefix/bin/cotal"
 resolve_node() { NODE_BIN="$FIXTURE_NODE"; NPM_BIN="$FIXTURE_NPM"; NODE_LABEL="fixture runtime"; }
 main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
 `);
-  const stagingEnv = { ...staged.env, PATH: `${staged.newBin}:${toolPath}`, FIXTURE_NPM: npmFixture, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" };
-  const stageRun = (target: string) => spawnSync("/bin/sh", [stagingDriver, library], { env: { ...stagingEnv, FIXTURE_TARGET: target }, encoding: "utf8", timeout: 90_000 });
+  const config = join(staged.home, "config with spaces");
+  const stagingEnv = { ...staged.env, PATH: `${staged.newBin}:${toolPath}`, XDG_CONFIG_HOME: config, FIXTURE_NPM: npmFixture, FIXTURE_WORKSPACE: resolve(import.meta.dirname, "../../../packages/workspace"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" };
+  const stageRun = (target: string, warn = false) => spawnSync("/bin/sh", [stagingDriver, library], { env: { ...stagingEnv, FIXTURE_TARGET: target, ...(warn ? { FIXTURE_WARN: "1" } : {}) }, encoding: "utf8", timeout: 90_000 });
   const working = stageRun("0.0.1");
   assert.equal(working.status, 0, output(working));
   const launcher = join(staged.newBin, "cotal"), prefix = join(staged.home, ".local/share/cotal");
@@ -350,6 +355,66 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   const missingNode = spawnSync(launcher, ["--version"], { env: switchedEnv, encoding: "utf8" });
   assert.equal(missingNode.status, 1, output(missingNode));
   assert.match(missingNode.stderr, /Repair it by re-running the installer/);
+
+  const seeded = stageRun("0.0.10", true);
+  assert.equal(seeded.status, 0, output(seeded));
+  assert.match(seeded.stderr, /benign startup warning/);
+  const installedEntry = realpathSync(join(prefix, "lib/node_modules/cotal-ai/dist/cotal.js"));
+  const sets = join(config, "cotal/installs", createHash("sha256").update(installedEntry).digest("hex"), "sets");
+  const selection = (version: string) => {
+    const connectorRoot = join(sets, version, "cotal");
+    mkdirSync(join(connectorRoot, "seed"), { recursive: true, mode: 0o700 });
+    const record = JSON.stringify({ v: 1, entry: installedEntry, version, root: connectorRoot });
+    writeFileSync(join(sets, version, "selection.json"), record, { mode: 0o600 });
+    return { record, stamp: join(connectorRoot, "seed/stamp.json") };
+  };
+  const { record, stamp } = selection("0.0.10");
+  writeFileSync(join(sets, "current.json"), record, { mode: 0o600 });
+  const stampBefore = JSON.stringify({ generation: "0.0.9-rc.10+seed" });
+  writeFileSync(stamp, stampBefore);
+  const runtimeBeforeRefusal = readlinkSync(join(prefix, "nodebin/node"));
+  const incompatible = stageRun("older");
+  assert.equal(incompatible.status, 1, output(incompatible));
+  assert.match(output(incompatible), /generation 0\.0\.9-rc\.10\+seed, newer than the requested release 0\.0\.9-rc\.2/);
+  assert.match(output(incompatible), /Cotal 0\.0\.10 was kept/);
+  assert.equal(readFileSync(stamp, "utf8"), stampBefore);
+  assert.equal(readFileSync(launcher, "utf8"), launcherBefore);
+  assert.equal(readlinkSync(join(prefix, "nodebin/node")), runtimeBeforeRefusal);
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.10");
+  writeFileSync(stamp, '{"generation":"unreadable"}');
+  const unknown = stageRun("older");
+  assert.equal(unknown.status, 1, output(unknown));
+  assert.match(output(unknown), /invalid version "unreadable"/);
+  assert.match(output(unknown), /Cotal 0\.0\.10 was kept/);
+  rmSync(stamp);
+  const targetStamp = selection("0.0.9-rc.2").stamp;
+  writeFileSync(targetStamp, stampBefore);
+  const targetTooNew = stageRun("older");
+  assert.equal(targetTooNew.status, 1, output(targetTooNew));
+  assert.match(output(targetTooNew), /generation 0\.0\.9-rc\.10\+seed, newer than the requested release 0\.0\.9-rc\.2/);
+  assert.equal(readFileSync(join(sets, "current.json"), "utf8"), record);
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.10");
+  writeFileSync(stamp, stampBefore);
+  writeFileSync(targetStamp, JSON.stringify({ generation: "0.0.9-rc.2" }));
+  const failedReconcile = spawnSync("/bin/sh", [stagingDriver, library], {
+    env: { ...stagingEnv, FIXTURE_NODE: join(systemBin, "node-24"), FIXTURE_TARGET: "older", FIXTURE_FAIL_SELECTION: join(sets, "current.json") },
+    encoding: "utf8", timeout: 90_000,
+  });
+  assert.equal(failedReconcile.status, 1, output(failedReconcile));
+  assert.match(output(failedReconcile), /Cotal 0\.0\.10 was restored/);
+  assert.equal(readFileSync(join(sets, "current.json"), "utf8"), record);
+  assert.equal(readFileSync(launcher, "utf8"), launcherBefore);
+  assert.equal(readlinkSync(join(prefix, "nodebin/node")), runtimeBeforeRefusal);
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.10");
+  assert(!readdirSync(prefix).some(name => name.startsWith(".install-stage.")), "rollback cleans its private prefix");
+  const compatible = stageRun("older");
+  assert.equal(compatible.status, 0, output(compatible));
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.9-rc.2");
+  rmSync(stamp);
+  const unseeded = stageRun("0.0.8");
+  assert.equal(unseeded.status, 0, output(unseeded));
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.8");
+  assert(!existsSync(join(prefix, "lib/.cotal-generations")), "a probe leaves no execution store behind");
 
   // Real runtime discovery and linking, including relative links and nodebin on PATH.
   const runtimeHome = join(root, "runtime home's");
@@ -423,7 +488,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 114 : 93, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 141 : 120, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

@@ -42,9 +42,14 @@ wget -qO- https://get.cotal.ai | sh -s -- --no-setup
 
 Run the installer as your own user, without sudo.
 Rerunning it installs the selected release and runs `cotal update` to reconcile the existing installation.
-`--version <target-version>` keeps that release installed instead of selecting latest again.
+`--version <target-version>` selects a specific release without updating it to latest.
 The installer stages and starts the requested release before replacing the active package,
 runtime links or launcher. If that startup check fails, the previous installation still works.
+Before a downgrade, the installer checks the connector seed store the requested release would use.
+That release uses its own retained connector set when one exists. If the applicable store is newer
+than the requested release, the installer keeps the installed release. Use it, or restore compatible
+connector state from a backup before retrying the downgrade.
+If an older release starts but reconciliation fails, the installer restores the previous release.
 You can rerun it with Cotal's `nodebin` directory on PATH without replacing its runtime links with links to themselves.
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
 It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.

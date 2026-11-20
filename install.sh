@@ -177,11 +177,16 @@ spin_stop() {
 TMPDIR_SELF=""
 STAGED_INSTALL=""
 LOCKDIR=""
+DOWNGRADE_PENDING=0
+KEEP_STAGE=0
 # shellcheck disable=SC2329,SC2317  # invoked from the EXIT/INT/TERM/HUP traps set in main
 cleanup() {
   spin_stop
+  if ! restore_downgrade; then
+    warn_line "Could not restore the previous Cotal installation. The recovery files are in $(shquote "$STAGED_INSTALL")."
+  fi
   [ -n "$TMPDIR_SELF" ] && [ -d "$TMPDIR_SELF" ] && rm -rf "$TMPDIR_SELF"
-  [ -n "$STAGED_INSTALL" ] && [ -d "$STAGED_INSTALL" ] && rm -rf "$STAGED_INSTALL"
+  [ "$KEEP_STAGE" = 0 ] && [ -n "$STAGED_INSTALL" ] && [ -d "$STAGED_INSTALL" ] && rm -rf "$STAGED_INSTALL"
   [ -n "$LOCKDIR" ] && [ -L "$LOCKDIR" ] && rm -f "$LOCKDIR"
   return 0
 }
@@ -731,6 +736,181 @@ read_installed_version() {
     "$_pkg" 2>/dev/null || true
 }
 
+check_connector_downgrade() {
+  [ -n "$PREVIOUS_VERSION" ] && [ "$PREVIOUS_VERSION" != "$1" ] || return 0
+  if ! COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 DO_NOT_TRACK=1 \
+    "$NODE_BIN" - "$PREVIOUS_VERSION" "$1" "$INSTALL_DIR/lib/node_modules/$COTAL_PKG" \
+    "$STAGED_INSTALL" <<'NODE'
+const { spawnSync } = require('node:child_process');
+const { createHash, randomBytes } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [previous, requested, installed, stage] = process.argv.slice(2);
+
+// The bootstrap has no dependencies of its own. Compare release and prerelease identifiers
+// from the installed packages, rather than the requested npm tag or range.
+function versionParts(version) {
+  const parts = typeof version === 'string' && /^(\d+\.\d+\.\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!parts || parts[0] !== version) throw new Error(`invalid version ${JSON.stringify(version)}`);
+  const release = parts[1].split('.'), pre = parts[2]?.split('.') ?? [];
+  if ([...release, ...pre].some(part => /^0\d+$/.test(part)))
+    throw new Error(`invalid version ${JSON.stringify(version)}`);
+  return [release, pre];
+}
+
+function compareIdentifiers(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] === b[i]) continue;
+    const an = /^\d+$/.test(a[i]), bn = /^\d+$/.test(b[i]);
+    if (an !== bn) return an ? -1 : 1;
+    if (an && a[i].length !== b[i].length) return a[i].length - b[i].length;
+    return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length - b.length;
+}
+
+function compare(a, b) {
+  const [releaseA, preA] = versionParts(a), [releaseB, preB] = versionParts(b);
+  return compareIdentifiers(releaseA, releaseB) ||
+    (preA.length && preB.length ? compareIdentifiers(preA, preB) : Number(!preA.length) - Number(!preB.length));
+}
+
+function targetExtensions(logicalEntry) {
+  const modules = fs.realpathSync.native(path.dirname(installed));
+  const packageName = path.basename(installed);
+  const staged = path.join(stage, 'lib/node_modules', packageName);
+  const store = path.join(path.dirname(modules), '.cotal-generations');
+  let created = false;
+  try { fs.mkdirSync(store, { mode: 0o700 }); created = true; }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const info = fs.lstatSync(store);
+  if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o022))
+    throw new Error(`the execution store is not an owned, protected directory: ${store}`);
+  const probe = path.join(store, randomBytes(16).toString('hex'));
+  const candidate = path.join(probe, packageName);
+  fs.mkdirSync(probe, { mode: 0o700 });
+  try {
+    // The target's resolver keys connector state by logical entry, not by the physical stage.
+    // Use the existing retained layout, without publishing an execution descriptor or running
+    // a command that can inherit or seed a set.
+    fs.renameSync(staged, candidate);
+    try {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { realpathSync } from 'node:fs';
+        const loadedEntry = realpathSync.native('dist/cotal.js');
+        const workspace = import.meta.resolve('@cotal-ai/workspace');
+        // Resolve package imports from the stage, but relative config paths as at launch.
+        process.chdir(process.argv[2]);
+        Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), {
+          value: Object.freeze({ logicalEntry: process.argv[1], loadedEntry }),
+        });
+        const { extensionsDir } = await import(workspace);
+        process.stdout.write(extensionsDir());
+      `, logicalEntry, process.cwd()], { cwd: candidate, encoding: 'utf8', timeout: 30000, killSignal: 'SIGKILL' });
+      if (result.error || result.status !== 0)
+        throw new Error(`could not resolve the requested release's extension prefix: ${result.error?.message ?? (result.stderr.trim() || `exit ${result.status}`)}`);
+      if (!result.stdout || path.basename(result.stdout) !== 'extensions')
+        throw new Error('the requested release did not resolve an extension prefix');
+      return result.stdout;
+    } finally { fs.renameSync(candidate, staged); }
+  } finally {
+    fs.rmdirSync(probe);
+    if (created) fs.rmdirSync(store);
+  }
+}
+
+function readRecord(file, privateFile = false) {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+  const bytes = Buffer.alloc(8193);
+  let fd;
+  try { fd = fs.openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || (privateFile && (stat.uid !== process.getuid() || (stat.mode & 0o077))))
+      throw new Error(`not an owned, private connector record: ${file}`);
+    let length = 0;
+    for (let count; length < bytes.length && (count = fs.readSync(fd, bytes, length, bytes.length - length)); ) length += count;
+    if (length === bytes.length) throw new Error(`connector record is too large: ${file}`);
+    return bytes.subarray(0, length);
+  } finally { fs.closeSync(fd); }
+}
+
+try {
+  if (compare(requested, previous) >= 0) process.exit(0);
+  const logicalEntry = fs.realpathSync.native(path.join(installed, 'dist/cotal.js'));
+  const extensions = targetExtensions(logicalEntry);
+  const stamp = path.join(path.dirname(extensions), 'seed', 'stamp.json');
+  const state = readRecord(stamp);
+  if (state) {
+    const { generation } = JSON.parse(state);
+    if (compare(generation, requested) > 0)
+      throw new Error(`the connector seed store is at generation ${generation}, newer than the requested release ${requested}: ${path.dirname(stamp)}`);
+  }
+  const config = path.resolve(process.env.XDG_CONFIG_HOME?.trim() || path.join(process.env.HOME, '.config'), 'cotal');
+  const key = createHash('sha256').update(logicalEntry).digest('hex');
+  const current = path.join(config, 'installs', key, 'sets/current.json');
+  const selection = readRecord(current, true);
+  if (selection) fs.writeFileSync(path.join(stage, 'previous-connectors'), selection, { mode: 0o600 });
+  fs.writeFileSync(path.join(stage, 'connector-selection'), current);
+} catch (error) {
+  console.error(error.message);
+  process.exitCode = 1;
+}
+NODE
+  then
+    die "Could not select Cotal $1. Cotal $PREVIOUS_VERSION was kept." \
+      "Keep using the installed release, or restore compatible connector state from a backup before retrying the older release."
+  fi
+}
+
+# The staging directory already holds the previous package. Keep the other cutover
+# paths there too, until the selected release has started and reconciled.
+save_downgrade_links() {
+  mkdir "$STAGED_INSTALL/links" || return 1
+  _saved=0
+  for _path in "$BIN_DIR/cotal" "$INSTALL_DIR/bin/cotal" "$INSTALL_DIR/nodebin/node" "$INSTALL_DIR/nodebin/npm" "$INSTALL_DIR/nodebin/npx"; do
+    _saved=$((_saved + 1))
+    if [ -e "$_path" ] || [ -L "$_path" ]; then
+      cp -pP "$_path" "$STAGED_INSTALL/links/$_saved" || return 1
+    fi
+  done
+}
+
+restore_downgrade() {
+  [ "$DOWNGRADE_PENDING" = 1 ] || return 0
+  DOWNGRADE_PENDING=0
+  [ -e "$STAGED_INSTALL/previous" ] || [ -L "$STAGED_INSTALL/previous" ] || return 0
+  KEEP_STAGE=1
+  _restore_package="$INSTALL_DIR/lib/node_modules/$COTAL_PKG"
+  if [ -e "$_restore_package" ] || [ -L "$_restore_package" ]; then
+    mv "$_restore_package" "$STAGED_INSTALL/rejected" || return 1
+  fi
+  mv "$STAGED_INSTALL/previous" "$_restore_package" || return 1
+  _saved=0
+  for _path in "$BIN_DIR/cotal" "$INSTALL_DIR/bin/cotal" "$INSTALL_DIR/nodebin/node" "$INSTALL_DIR/nodebin/npm" "$INSTALL_DIR/nodebin/npx"; do
+    _saved=$((_saved + 1))
+    _backup="$STAGED_INSTALL/links/$_saved"
+    if [ -e "$_backup" ] || [ -L "$_backup" ]; then
+      # POSIX mv treats a symlink to a directory as a directory destination.
+      if [ -L "$_path" ]; then rm -f "$_path" || return 1; fi
+      mv -f "$_backup" "$_path" || return 1
+    else
+      rm -f "$_path" || return 1
+    fi
+  done
+  _selection=$(cat "$STAGED_INSTALL/connector-selection") || return 1
+  if [ -f "$STAGED_INSTALL/previous-connectors" ]; then
+    if ! cmp -s "$STAGED_INSTALL/previous-connectors" "$_selection"; then
+      _restore_temp=$(mktemp "${_selection}.restore.XXXXXX") || return 1
+      cp -p "$STAGED_INSTALL/previous-connectors" "$_restore_temp" && mv -f "$_restore_temp" "$_selection" || return 1
+    fi
+  else
+    rm -f "$_selection" || return 1
+  fi
+  KEEP_STAGE=0
+}
+
 install_cotal() {
   PREVIOUS_VERSION=$(read_installed_version)
   STAGED_INSTALL=$(mktemp -d "$INSTALL_DIR/.install-stage.XXXXXX")
@@ -759,7 +939,7 @@ install_cotal() {
   spin_stop
 
   # The active package and launcher stay intact until the requested release can start.
-  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG/dist/cotal.js" --version 2>&1); then
+  if ! _version_output=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG/dist/cotal.js" --version); then
     printf '%s\n' "$_version_output" >&2
     if [ "$OPT_VERSION" != latest ]; then
       die "The installed Cotal could not start." \
@@ -770,13 +950,22 @@ install_cotal() {
   fi
   [ -x "$STAGED_INSTALL/bin/cotal" ] || [ -L "$STAGED_INSTALL/bin/cotal" ] ||
     die "$COTAL_PKG installed without its cotal executable."
+  _staged_version=$(printf '%s\n' "$_version_output" | sed -n '1s/^cotal-ai //p')
+  [ -n "$_staged_version" ] || die "The staged Cotal did not report its version."
+  check_connector_downgrade "$_staged_version"
   mkdir -p "$INSTALL_DIR/lib/node_modules" "$INSTALL_DIR/bin"
   _active="$INSTALL_DIR/lib/node_modules/$COTAL_PKG"
   if [ -e "$_active" ] || [ -L "$_active" ]; then
+    if [ -f "$STAGED_INSTALL/connector-selection" ]; then
+      save_downgrade_links || die "Could not save the current Cotal launcher and runtime links. The installation was not changed."
+      DOWNGRADE_PENDING=1
+    fi
     mv "$_active" "$STAGED_INSTALL/previous"
   fi
   if ! mv "$STAGED_INSTALL/lib/node_modules/$COTAL_PKG" "$_active"; then
-    [ ! -e "$STAGED_INSTALL/previous" ] && [ ! -L "$STAGED_INSTALL/previous" ] || mv "$STAGED_INSTALL/previous" "$_active"
+    if [ "$DOWNGRADE_PENDING" = 0 ]; then
+      [ ! -e "$STAGED_INSTALL/previous" ] && [ ! -L "$STAGED_INSTALL/previous" ] || mv "$STAGED_INSTALL/previous" "$_active"
+    fi
     die "Could not select the verified Cotal package."
   fi
   ln -sf "../lib/node_modules/$COTAL_PKG/dist/cotal.js" "$INSTALL_DIR/bin/cotal"
@@ -1322,14 +1511,26 @@ main() {
     die "The latest Cotal release could not start." \
       "Report the error above at https://github.com/Cotal-AI/Cotal/issues."
   fi
-  ok_line "Cotal $INSTALLED_VERSION"
-
   if [ -n "$PREVIOUS_VERSION" ] || [ -e "${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json" ]; then
     if ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
+      if [ "$DOWNGRADE_PENDING" = 1 ]; then
+        if ! restore_downgrade; then
+          die "Reconciliation failed and the previous Cotal installation could not be restored." \
+            "The recovery files are in $(shquote "$STAGED_INSTALL")."
+        fi
+        if [ -f "$_daemon_receipt" ] && ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
+          die "Reconciliation failed. Cotal $PREVIOUS_VERSION was restored, but its daemon did not reconcile." \
+            "Run $(shquote "$BIN_DIR/cotal") daemon status to inspect the service."
+        fi
+        die "Reconciliation failed. Cotal $PREVIOUS_VERSION was restored." \
+          "Keep using the installed release, or address the error above before retrying the older release."
+      fi
       die "Cotal was installed, but reconciliation did not complete." \
         "Run $(shquote "$BIN_DIR/cotal") update to finish this update."
     fi
   fi
+  DOWNGRADE_PENDING=0
+  ok_line "Cotal $INSTALLED_VERSION"
   setup_path
   report_path_setup
   report_path_selection
