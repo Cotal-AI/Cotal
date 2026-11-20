@@ -51,7 +51,7 @@
     },
     {
       "name": "R7 clearConnectionScoped no longer moves the epoch, so an old epoch's late bind overwrites the fresh epoch's watch after a reconnect",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    this.streamMsgs.length = 0;\n    this.presenceEpoch++;\n    this.presence.cancelRebind();\n",
       "replace": "    this.streamMsgs.length = 0;\n",
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch",
@@ -107,7 +107,7 @@
     },
     {
       "name": "F1 the SPEC §13.12 broker-floor gate is dropped from the dial, so a below-floor bind is never refused",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    requireBrokerFloor(this.nc);\n",
       "replace": "",
       "expectRed": "4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",

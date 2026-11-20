@@ -51,7 +51,7 @@ import { openAuthorityClient } from "../src/authority-client.js";
 import { ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { parseServiceRequestIntentIndexRecord } from "../src/service-host-ops.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks } from "./_service-custody-fixture.js";
 import { MemoryStore, startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 

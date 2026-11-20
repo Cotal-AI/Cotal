@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,9 +123,16 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(p, "utf8"));
+    if (!statSync(p).isFile()) throw new Error("not a regular file");
+    const fd = openSync(p, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    try {
+      if (!fstatSync(fd).isFile()) throw new Error("not a regular file");
+      parsed = JSON.parse(readFileSync(fd, "utf8"));
+    } finally {
+      closeSync(fd);
+    }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { extensions: [] };
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
     if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message}. ${repair}`);
   }
@@ -149,7 +156,7 @@ export function saveExtensionsManifest(m: ExtensionsManifest): void {
  *  of wedging on the same unreadable read. Returns the quarantine path, or undefined if none existed. */
 export function quarantineExtensionsManifest(): string | undefined {
   const path = extensionsManifestPath();
-  if (!existsSync(path)) return undefined;
+  if (!lstatSync(path, { throwIfNoEntry: false })) return undefined;
   const aside = `${path}.corrupt.${randomBytes(4).toString("hex")}`;
   renameSync(path, aside);
   return aside;

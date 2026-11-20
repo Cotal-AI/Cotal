@@ -606,19 +606,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
-    if (latest.ok && rt.isCurrent?.()) {
-      try {
-        const custody = await rt.reportRunningManager(target);
-        rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
-        if (custody === "legacy") rt.out("A later update will require stopping the agents listed above before replacing packages.");
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
-        reportVersion(current, latest.version, rt, false);
-        return 0;
-      } catch (error) {
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
-        rt.err(c.red(`✗ running manager continuity check: ${refusal(error)}`));
-        return 1;
-      }
+    if (rt.isCurrent?.()) {
+      rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
+      reportVersion(current, latest.version, rt, false);
+      return 0;
     }
 
     return reconcileCurrent(current, rt, target, (reconciled, deferred) => {
@@ -814,14 +806,18 @@ export async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
   return assertEndpointUnreachable(target.server).then(() => true, () => false);
 }
 
-/** A prepared controller that completed ordinary down is cold only while its own instance records
- *  prove every process gone, no supervisor may serve it, and its recorded broker has no listener.
+/** A prepared controller that completed down or failed to start any member is cold only while its
+ *  own instance records prove every process gone, no supervisor may serve it, and its broker has no listener.
  *  The target resolver refuses before returning a MeshTarget for this lifecycle. */
 async function stoppedController(d: MeshTargetErrorDetails, server: string | undefined): Promise<boolean> {
   if (typeof d.space !== "string" || typeof d.root !== "string" || !d.stopped ||
       d.rootMissing === true || d.unsettled !== undefined || d.home !== undefined || d.stackSpace !== undefined) return false;
   const journal = readStackJournal(d.root)?.journal;
-  if (!journal || journal.space !== d.space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return false;
+  if (!journal || journal.space !== d.space) return false;
+  const completedDown = journal.operation.kind === "down" && journal.operation.phase === "completed";
+  const failedStart = journal.operation.kind === "up" && journal.operation.phase === "failed" &&
+    journal.members.every(member => (member.state === "failed" || member.state === "not-attempted") && !member.process && !member.replacement);
+  if (!completedDown && !failedStart) return false;
   if (server !== undefined && brokerUrlKey(server) !== brokerUrlKey(journal.server)) return false;
   const instances = serviceInstances(d.space);
   if (journal.members.some((member) => member.instanceId !== null &&

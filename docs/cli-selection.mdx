@@ -797,7 +797,11 @@ reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its 
 or is not a prepared space record refuses only a command about the space its file is named for, such
 as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
-`meshes.unreadable` and exits 4. A record removed between listing and reading
+`meshes.unreadable` and exits 4. A record this account cannot read, such as one left owned by root,
+is reported as `<file> could not be read`, not as damaged. A command about its space refuses
+`PERMISSION_DENIED`, exit 2, and keeps the record. That refusal and the skip warning name the step
+that gives the file back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, in place of the
+forget. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
 the directory for an older-format record of the same space. Any error listing the directory for

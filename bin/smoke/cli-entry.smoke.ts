@@ -360,6 +360,48 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
   check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
 
+  const cfg = mkdtempSync(join(tmpdir(), "cotal-entry-version-"));
+  cleanup.push(cfg);
+  const manifest = join(cfg, "cotal", "extensions", "extensions.json");
+  mkdirSync(dirname(manifest), { recursive: true });
+  const versionRun = (args: string[]) => cotal(args, undefined, { XDG_CONFIG_HOME: cfg });
+  const partialVersion = (name: string, args: string[], reason: RegExp) => {
+    const result = versionRun(args);
+    const docs = envelopes(result);
+    const [report] = docs;
+    check(name, result.status === 4 && result.stderr === "" && docs.length === 1 && report?.command === "version"
+      && report.outcome === "partial" && report.completeness === "partial" && report.error?.code === "OPERATION_PARTIAL"
+      && report.result?.version === env?.result?.version && Array.isArray(report.result?.extensions) && report.result.extensions.length === 0
+      && report.warnings?.length === 1 && report.warnings[0]?.code === "EXTENSIONS_UNREADABLE"
+      && reason.test(report.warnings[0]?.message ?? ""), shown(result));
+  };
+  writeFileSync(manifest, "{}\n");
+  partialVersion("version --json reports a corrupt manifest as partial", ["version", "--json"], /no "extensions" array/);
+  partialVersion("leading JSON and the version alias also produce the partial envelope", ["-j", "-V"], /no "extensions" array/);
+  check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
+  const strict = versionRun(["ext", "list"]);
+  check("ext list still refuses the corrupt manifest", strict.status === 1 && strict.stdout === "" && /no "extensions" array/.test(strict.stderr), shown(strict));
+
+  const pin = { pkg: "sample-extension", version: "1.2.3", provides: [{ kind: "runtime", name: "sample" }] };
+  writeFileSync(manifest, JSON.stringify({ extensions: [pin] }));
+  partialVersion("version --json refuses to call a malformed extension row complete", ["version", "--json"], /invalid extension inventory entry/);
+  writeFileSync(manifest, JSON.stringify({ extensions: [{ ...pin, commands: [] }] }));
+  const installed = versionRun(["version", "--json"]);
+  const [installedReport] = envelopes(installed);
+  check("version --json still lists a valid installed pin", installed.status === 0 && installed.stderr === ""
+    && installedReport?.completeness === "complete" && installedReport.result?.extensions[0]?.package === pin.pkg
+    && installedReport.result.extensions[0].version === pin.version, shown(installed));
+  rmSync(manifest);
+  if (process.platform !== "win32") {
+    symlinkSync("missing.json", manifest);
+    partialVersion("version --json distinguishes a dangling manifest link from absence", ["version", "--json"], /ENOENT/);
+    rmSync(manifest);
+    const fifo = spawnSync("mkfifo", [manifest]);
+    check("rig: create a writerless manifest FIFO", fifo.status === 0, fifo.error);
+    partialVersion("version --json reports a writerless manifest FIFO without waiting", ["version", "--json"], /not a regular file/);
+    rmSync(manifest, { force: true });
+  }
+
   // Under --json the envelope alone reports a refusal: its message is the reason, and stderr stays empty.
   const refusedJson = (name: string, r: Run, reason: RegExp) =>
     check(name, r.status === 1 && r.stderr === "" && reason.test(envelopes(r)[0]?.error?.message ?? "") && r.wrote.length === 0, shown(r));

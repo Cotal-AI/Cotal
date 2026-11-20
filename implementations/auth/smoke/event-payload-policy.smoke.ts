@@ -1,4 +1,5 @@
-import { composeUserBundle, runAuthService } from "../src/service.js";
+import { composeUserBundle } from "../src/service.js";
+import { runAuthService } from "../src/service-host.js";
 import type { ParsedArgs } from "@cotal-ai/core";
 import type { AuthServiceRuntimeOptions } from "../src/service.js";
 import assert from "node:assert/strict";

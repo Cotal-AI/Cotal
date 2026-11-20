@@ -33,7 +33,7 @@
   "mutations": [
     {
       "name": "the wire getter is unchecked again (the reported defect: internal reconnects read the raw cache)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
       "replace": "creds: this.credsSource ? () => this.currentCreds! : this.currentCreds",
       "expectRed": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
@@ -60,7 +60,7 @@
     },
     {
       "name": "the dial gate tests the cached cred for TRUTHINESS again (an empty credential dials anonymously)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
       "replace": "creds: this.currentCreds || this.credsSource ? () => this.presentCreds() : undefined",
       "expectRed": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
