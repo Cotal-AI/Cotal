@@ -14,8 +14,7 @@
  *     channel field that inherits it `(default)` instead of "not declared".
  *  E. rows that do not apply are left out: no "Durable delivery on open" row for a static space,
  *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
- *  F. `team boot` on the stack that is up says so and offers `team deploy` with the same file, or
- *     `cotal down`, instead of naming the stop the stack lacks.
+ *  F. `team boot` on a running stack names inspection, stop preview and ordinary restart.
  *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
@@ -203,8 +202,9 @@ try {
   const blocked = envelope(second.stdout)?.error;
   check("team boot on the running stack refuses LIFECYCLE_BLOCKED and says the space is already up",
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
-  check("its Next offers team deploy with the same manifest, or cotal down",
-    blocked?.remedy === `add this manifest's channels and agents to the running stack with \`cotal team deploy ${join(s, "live.yaml")}\`, or stop it with \`cotal down\` before a team boot`, blocked);
+  const remedy = blocked?.remedy ?? "";
+  check("its Next offers inspection, stop preview and ordinary restart",
+    remedy.includes(`cotal service --space ${SPACE}`) && remedy.includes("cotal down --dry-run") && remedy.includes("`cotal up`") && !remedy.includes("team deploy"), blocked);
 
   console.log("\nG. a fresh boot's records in words");
   check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);
@@ -212,6 +212,11 @@ try {
   const booted = cotal(b, "team", "boot", "boot.yaml");
   check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
     booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
+  const repeat = cotal(b, "team", "boot", "boot.yaml", "--foreground");
+  check("repeating the actual boot refuses without recommending deployment of the cards it seeded",
+    repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeat.stderr.includes("cotal down --dry-run") && !repeat.stderr.includes("team deploy"), repeat.out);
+  check("the printed inspection and stop preview both work while the booted stack runs",
+    cotal(b, "service", "--space", SPACE_B).status === 0 && cotal(b, "down", "--dry-run").status === 0);
   const bootId = /cotal team show ([0-9a-f]{16})/.exec(booted.stdout)?.[1] ?? "";
   const freshShow = cotal(b, "team", "show", bootId);
   check("team show <boot id> names its kind, state, next action and auth mode in words",

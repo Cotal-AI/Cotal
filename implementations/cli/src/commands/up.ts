@@ -1663,7 +1663,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: `add the manifest's channels and agents to the running stack with \`cotal team deploy ${values.file}\`, or stop it with \`cotal down --yes\` and start the manifest through the controller with \`cotal team boot ${values.file}\``,
+      remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${shellWord(controller.journal.space)}`)} or start it with ${codeSpan(`cotal up --root ${shellWord(meshRoot)} --space ${shellWord(controller.journal.space)}`)}; to boot this manifest without using that stack, prepare a separate project root and space`,
     });
     if (values["dry-run"]) {
       await upManifest(values.file, {
@@ -3806,7 +3806,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     // This folder's own mesh for the manifest's space is named as running, as a bare `up` names it,
     // with the routes that change it instead of the advice for a foreign broker.
     if (loadMeshes().some((row) => row.server === server && row.root === cotalRoot() && row.space === m.space)) {
-      stderrLine("✗ ", `mesh "${m.space}" is already running at ${brokerAddressForDisplay(server) ?? "its address"} from this folder - \`up -f\` boots a fresh mesh and does not apply a manifest to a running one; \`cotal team deploy ${file}\` adds all-new channels and agents to it, or \`cotal down\` it first, then \`cotal up -f ${file}\``, c.red);
+      stderrLine("✗ ", `mesh "${m.space}" is already running at ${brokerAddressForDisplay(server) ?? "its address"} from this folder - \`up -f\` boots a fresh mesh and does not apply a manifest to a running one; stop it with \`cotal down\`, then retry your original command`, c.red);
       process.exit(1);
     }
     stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);

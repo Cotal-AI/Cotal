@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { resolveAuthProvider, type BrokerTransport } from "@cotal-ai/core";
 import {
   CommandFailure, acquireMaintenanceLock, codeSpan, getCurrent, isCommandFailure, readMaintenanceJournal, releaseMaintenanceLock,
-  workspaceSecretStore, writeResult, type OutputWarning, type Report,
+  workspaceSecretStore, writeResult, type MaintenanceLock, type OutputWarning, type Report,
 } from "@cotal-ai/workspace";
 import { buildLaunchSpec, genRunId, manifestToChannels, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
@@ -94,9 +94,9 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   if (!recorded) plan = await prepareFreshTeamBoot(request.file, { space: request.space, transport: request.transport });
   else {
     // A stack whose last operation started it is up. Say so before the resume checks name the stop
-    // it lacks, and offer the route that adds a manifest to a running stack.
+    // it lacks. This manifest may already own cards on the running stack.
     if (recorded.space === request.space && recorded.operation.kind === "up" && recorded.operation.phase === "completed")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `add this manifest's channels and agents to the running stack with ${codeSpan(`cotal team deploy ${shellWord(request.file)}`)}, or stop it with \`cotal down\` before a team boot` });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `"${request.space}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, { target: { root: recorded.root, space: request.space, operation: recorded.operation.id }, remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${shellWord(request.space)}`)}, or preview a stop with \`cotal down --dry-run\`; after stopping it, restart the recorded stack with \`cotal up\`` });
     binding = stackResumeEligibility(recorded.root, request.space, { server: recorded.server, mode: recorded.mode });
     plan = await prepareResumeTeamBoot(request.file, { space: request.space, transport: request.transport, recorded: { server: binding.server, mode: binding.mode, ...(binding.broker.host ? { host: binding.broker.host } : {}) } });
   }
@@ -118,6 +118,22 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
   const lock = acquireMaintenanceLock(plan.root);
+  let starting = false;
+  const start = () => {
+    starting = true;
+    return startTeamBoot(request, plan, binding, lock);
+  };
+  try {
+    if (request.foreground) await holdForegroundStack(plan.root, start);
+    else await start();
+  } finally {
+    // A failed foreground claim never entered startTeamBoot to release the lock.
+    if (!starting) releaseMaintenanceLock(lock);
+  }
+}
+
+/** Run the pinned boot and release its lock before the foreground hold can stop the stack. */
+async function startTeamBoot(request: ControllerTeamBootRequest, plan: FreshTeamBootPlan, binding: StackResumeBinding | undefined, lock: MaintenanceLock): Promise<void> {
   let result!: ControllerTeamBootResult;
   let journal!: StackJournal;
   let storeWarnings: OutputWarning[] = [];
@@ -185,5 +201,4 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
   // With no agents requested, no join is left unchecked and the receipt is complete.
   const joins = result.requestedAgents.length > 0;
   writeResult(request.presentation, { command: "team boot", target: { space: result.space, root: result.root, deploymentId: result.deploymentId }, result, ...(joins ? { completeness: "partial" as const, partial: { message: "Agent joins are not checked by this receipt." } } : {}), warnings: [...storeWarnings, ...plan.prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message }))] }, (data) => bootView(data, journal));
-  if (request.foreground) await holdForegroundStack(plan.root);
 }
