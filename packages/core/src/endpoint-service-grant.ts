@@ -475,7 +475,7 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
 export async function authorizeGuestServeGrant(args: {
   /** The pinned DATA-account public key of the authority the result came from. */
   accountPublicKey: string;
-  /** The `credential` result as {@link parseServiceAuthorityResult} returned it, or the renewal
+  /** The `credential` result as `parseServiceAuthorityResult` in remote-service-authority.ts returned it, or the renewal
    *  source's copy of it without the renewal material; the seam reads no renewal field. */
   result: ServiceEndpointCredential;
   /** The guest's embedded closure: the registration it submitted. */
@@ -699,7 +699,7 @@ export interface EpIssuanceGate {
  *  ledger rows the superseded surface authorized, revokes/evicts them, then reopens at the
  *  successor coordinate (advancing the dimension it changed). Both halves are exported TOGETHER
  *  so core never publishes an independently-callable unsafe writer beside the fence: the spec
- *  writer {@link registerServiceInstance} drives this seam and has no bare spec-key advance. */
+ *  writer `registerServiceInstance` in endpoint-service.ts drives this seam and has no bare spec-key advance. */
 export interface EpIssuanceBarrier {
   /** Stable operation id for this registration attempt. A fresh authority retry reuses it. */
   readonly operationId?: string;
