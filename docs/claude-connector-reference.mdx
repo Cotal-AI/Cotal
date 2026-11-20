@@ -52,7 +52,8 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `--opt permission-mode=default` (or another mode); the connector adds the default only when the
   launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. A foreground
   `cotal spawn` runs in your terminal, so it keeps Claude's own permission mode and you answer its
-  prompts there. Claude refuses
+  prompts there. With a mode that asks, on a signed-in space, a remote session can also answer each
+  tool permission ([Tool permissions](#tool-permissions)). Claude refuses
   the bypass mode as root and under a policy that disables it; such a host must pass a mode.
   Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
   Cotal never answers it. A managed seat that stops on it fails at the startup bound, and the error
@@ -674,6 +675,50 @@ can enter, and a hook that finds the directory open to others connects to nothin
 [hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
 plugin registers, with their matchers, are listed in the
 [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
+
+## Tool permissions [#tool-permissions]
+
+On a signed-in space, a seat that Cotal launched serves Claude's tool permissions on its own `agent`
+endpoint ([SPEC §13.22](../SPEC.md#1322-the-agent-endpoint)). The agent's owner can read and answer
+them from another session. No Manager has to run, and nothing is stored on the broker. A managed seat
+launches with `bypassPermissions` and asks nothing, so pass `--opt permission-mode=default` or another
+mode that asks.
+
+The plugin registers `PermissionRequest` with a timeout of 2147483 seconds, the longest Claude
+accepts. The hook relay keeps its 2-second deadline for the dial and the connector's proof, and then
+waits for the reply with no deadline. Claude's own dialog stays open the whole time.
+
+Each permission opens a `permission` prompt. It shows the tool's name and input, the session's
+directory, and the MCP server of an `mcp__*` tool, and it offers `allow` and `deny` with an optional
+note. It is offered for 7 days. An answer reaches Claude as the hook's decision, and a deny's note
+reaches Claude as its message. The relay's receipt for that decision moves the prompt to `delivered`.
+When the input would take the prompt over its 262144-byte content limit, the prompt shows the
+input as omitted with its size and offers only `deny`. Claude's dialog alone answers `AskUserQuestion` and `ExitPlanMode`. It also answers a
+permission that arrives before the endpoint is served or while 32 prompts are open or sent.
+
+Claude's permission hook names no tool call, so nothing Claude sends later can be tied to one prompt.
+The seat keeps a match key for each prompt: its scope, which is the hook's `agent_id` and absent in
+the main thread, the tool name, and the SHA-256 of the RFC 8785 canonical JSON of the input. It
+reports only what that key can show:
+
+| Prompt | What the seat sees | Outcome |
+| --- | --- | --- |
+| open | the hook's connection closed | `withdrawn`, nothing seen |
+| open | a `PostToolBatch` of its scope lists a call with its key | `withdrawn`, a call with this subject seen |
+| open | `Stop`, `StopFailure` or `SubagentStop` ends its scope's turn | `withdrawn`, nothing seen |
+| answered | a `PostToolBatch` of its scope lists a call with its key | `unconfirmed`, a call with this subject seen |
+| answered | its scope's turn ended | `unconfirmed`, nothing seen |
+| answered | the hook's connection closed with no receipt | stays `sent` until a batch, a turn end or 15 minutes |
+
+A call with the same name and input can belong to another request, so the seat never says that a
+prompt's own call ran or did not run, and it never reports `confirmed` or `local`. A prompt that
+closes while Claude still waits gives the hook no decision, and Claude's dialog goes on alone.
+`SessionEnd` and the connector stopping close every prompt.
+
+On Windows the seat serves no tool permissions yet. The hook answers each one with no decision before
+it reads the control endpoint, the connector warns once at start, and the connector does not declare
+`prompts` to the Manager. The agent endpoint itself is still served for the agent's commands, so the
+seat's presence still carries `prompts`, with `open` at 0.
 
 ## Event plane
 
