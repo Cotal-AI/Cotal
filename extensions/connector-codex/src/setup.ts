@@ -5,9 +5,9 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, registry, type ConnectorSetupInput, type ConnectorSetupProvider, type ConnectorStatusInput, type ConnectorStatusRow } from "@cotal-ai/core";
 import { isConfigProtected } from "@cotal-ai/connector-core";
@@ -19,6 +19,11 @@ export const PLUGIN = "cotal";
 /** What the plugin carries from this package's build. */
 const ASSETS = ["dist/personal.js", "dist/docs-bundle.bin", "dist/docs-index.bin"] as const;
 const DOCS_URL = "https://github.com/Cotal-AI/Cotal/blob/main/docs/connect-codex.mdx";
+const MARKETPLACE_MANIFEST = ".agents/plugins/marketplace.json";
+const marketplaceManifest = Buffer.from(`${JSON.stringify({
+  name: MARKETPLACE,
+  plugins: [{ name: PLUGIN, source: { source: "local", path: `./plugins/${PLUGIN}` }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }],
+}, null, 2)}\n`);
 
 function cotalHome(): string {
   if (process.env.COTAL_HOME) return process.env.COTAL_HOME;
@@ -106,14 +111,10 @@ function materializeCodexPlugin(cotal: readonly string[], version: string, wrote
   }
   rmSync(old, { recursive: true, force: true });
   mkdirSync(join(market, ".agents", "plugins"), { recursive: true });
-  const manifest = join(market, ".agents", "plugins", "marketplace.json");
-  const manifestBytes = Buffer.from(`${JSON.stringify({
-    name: MARKETPLACE,
-    plugins: [{ name: PLUGIN, source: { source: "local", path: `./plugins/${PLUGIN}` }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }],
-  }, null, 2)}\n`);
+  const manifest = join(market, MARKETPLACE_MANIFEST);
   const previousManifest = wrote ? snapshotFile(manifest) : undefined;
-  writeFileSync(manifest, manifestBytes);
-  if (wrote && !previousManifest?.equals(manifestBytes)) wrote("Codex marketplace manifest", manifest);
+  writeFileSync(manifest, marketplaceManifest);
+  if (wrote && !previousManifest?.equals(marketplaceManifest)) wrote("Codex marketplace manifest", manifest);
   return paths;
 }
 
@@ -220,8 +221,7 @@ function protectedRegistration(config: string): string {
 }
 
 /** The version and state Codex lists for the installed plugin. */
-function installedPlugin(): { version: string; disabled: boolean } | undefined {
-  const listed = codex("plugin", "list");
+function installedPlugin(listed = codex("plugin", "list")): { version: string; disabled: boolean } | undefined {
   if (listed.status !== 0) throw new Error(`codex plugin list failed:\n${listed.output}`);
   const row = listed.output.split("\n").find((line) => line.startsWith(`${PLUGIN}@${MARKETPLACE} `));
   if (!row) return undefined;
@@ -229,6 +229,34 @@ function installedPlugin(): { version: string; disabled: boolean } | undefined {
   const states = status?.split(",").map((state) => state.trim());
   if (!version || !states?.includes("installed")) return undefined;
   return { version, disabled: states.includes("disabled") };
+}
+
+function missingMarketplace(listed: ReturnType<typeof codex>): string | undefined {
+  if (listed.status === 0 || !listed.output.includes("Error: failed to load configured marketplace snapshot(s):")) return;
+  return listed.output.match(/^- `cotal-mesh` at (.+): marketplace root does not contain a supported manifest$/m)?.[1];
+}
+
+/** Both Codex list commands fail before returning data when a marketplace root is missing. */
+function repairMovedMarketplace(previous: string): string | undefined {
+  const desired = resolve(codexMarketplaceDir());
+  const config = join(codexHome(), "config.toml");
+  const remedy = `Restore the Cotal marketplace at ${previous}, then run \`cotal update\`.`;
+  try {
+    if (!isAbsolute(previous) || basename(previous) !== basename(desired) || resolve(previous) === desired ||
+        lstatSync(previous, { throwIfNoEntry: false })) return remedy;
+    const plugin = join(desired, "plugins", PLUGIN);
+    if (!snapshotFile(join(desired, MARKETPLACE_MANIFEST))?.equals(marketplaceManifest) ||
+        ![...ASSETS, ".codex-plugin/plugin.json", ".mcp.json", `dist/${CLI_RECORD}`].every((path) =>
+          statSync(join(plugin, path), { throwIfNoEntry: false })?.isFile())) {
+      return `${remedy} If you moved it, put the complete codex-plugin directory at ${desired} before running the update.`;
+    }
+    if (isConfigProtected(config)) return protectedRegistration(config);
+    // Adding the same named local marketplace updates its source without changing plugin enablement.
+    const added = codex("plugin", "marketplace", "add", desired);
+    if (added.status !== 0) return `${remedy}\n${added.output}`;
+  } catch (error) {
+    return `${remedy}\n${(error as Error).message}`;
+  }
 }
 
 function withLock<T>(run: () => T): T {
@@ -281,7 +309,18 @@ export const codexSetupProvider: ConnectorSetupProvider = {
         if (!hasCachedPlugin()) return "not installed";
         let installed: ReturnType<typeof installedPlugin>;
         try {
-          installed = installedPlugin();
+          let listed = codex("plugin", "list");
+          // Codex's diagnostic identifies the failing registration even when no listing is available.
+          const missing = missingMarketplace(listed);
+          if (missing) {
+            const deferred = repairMovedMarketplace(missing);
+            if (deferred) return `Codex marketplace ${MARKETPLACE} could not be refreshed. ${deferred}`;
+            listed = codex("plugin", "list");
+            if (missingMarketplace(listed)) {
+              return `Codex still cannot load marketplace ${MARKETPLACE}. Restore the Cotal marketplace at ${missing}, then run \`cotal update\`.`;
+            }
+          }
+          installed = installedPlugin(listed);
           if (installed === undefined) return "not installed";
         } catch (error) {
           if (((error as Error).cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return "Codex not installed; cached plugin left unchanged";
