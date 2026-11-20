@@ -237,20 +237,37 @@ try {
   check("all unjoined processes are gone after the acknowledged stops", unjoinedAfter.status === 0 && unjoinedSeats.every(n => !unjoinedAfter.out.includes(n)), unjoinedAfter);
 
   console.log("\n3. NEGATIVE CONTROL: a name that exists nowhere must fail after a complete manager census");
-  const ghost = await cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS], root1);
+  const other = join(dir, "other-project");
+  mkdirSync(other);
+  const prepared = await cotal(["space", "create", "otheraudit"], other);
+  const selected = await cotal(["use", "otheraudit"], other);
+  const wrongRoster = await cotal(["ps"], other);
+  check("another prepared space is selected and bare ps cannot list its agents", prepared.status === 0 && selected.status === 0 && wrongRoster.status === 2 && /Mesh: otheraudit/.test(wrongRoster.out), wrongRoster);
+  const route = ["--space", space, "--server", SERVERS];
+  const roster = `cotal ps ${route.join(" ")}`;
+  const ghost = await cotal(["stop", "--name", "no-such-seat", ...route], other);
   check("stop on a nonexistent name exits non-zero", ghost.status !== 0, { status: ghost.status, out: ghost.out.slice(-300) });
   check("...and the error names both managers searched",
     /no managed agent .* on any of the 2 reachable manager/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2), ghost.out.slice(-600));
   // The same miss with `--on` refuses TARGET_NOT_FOUND, exit 2; the unpinned form refuses the same way.
-  check("...as a TARGET_NOT_FOUND refusal, exit 2, with `cotal ps` as the next read",
-    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes("run `cotal ps` to see the agents each manager runs"), ghost.out.slice(-600));
+  check("...as a TARGET_NOT_FOUND refusal, exit 2, with a roster read in the same space and broker",
+    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes(`run \`${roster}\` to see the agents each manager runs`), ghost.out.slice(-600));
   const misses = await Promise.all([
     cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS, "--json"], root1),
     cotal(["input", "no-such-seat", "hello", "--space", space, "--server", SERVERS, "--json"], root1),
-    cotal(["attach", "no-such-seat", "--space", space, "--server", SERVERS], root1),
+    cotal(["attach", "no-such-seat", ...route], other),
   ]);
   check("stop --json and input --json print the refusal envelope, and attach refuses the same way, each exit 2",
     misses.every((r) => r.status === 2 && /TARGET_NOT_FOUND/.test(r.out)) && misses.slice(0, 2).every((r) => r.out.includes('"outcome":"refused"')), misses.map((r) => ({ status: r.status, out: r.out.slice(-400) })));
+  check("attach names the same roster read as stop", misses[2]!.out.includes(`run \`${roster}\` to see the agents each manager runs`), misses[2]);
+  const follow = await cotal(["ps", ...route], other);
+  check("the suggested roster lists both managers instead of the selected space", follow.status === 0 && follow.out.includes(IID1) && follow.out.includes(IID2), follow);
+  const pinned = await cotal(["attach", "no-such-seat", "--on", IID1, ...route], other);
+  const pinnedRoster = pinned.out.match(/run `([^`]+)` to see the agents the manager runs/)?.[1];
+  // The quoted broker URL is one shell argument. Compare the command before following its argv.
+  check("a pinned attach miss names the same space, broker and manager", pinned.status === 2 && /TARGET_NOT_FOUND/.test(pinned.out) && pinnedRoster === `cotal ps --on ${IID1} --space ${space} --server '${SERVERS}'`, pinned);
+  const pinnedFollow = await cotal(["ps", "--on", IID1, ...route], other);
+  check("the pinned roster lists only the named manager", pinnedFollow.status === 0 && pinnedFollow.out.includes(IID1) && !pinnedFollow.out.includes(IID2), pinnedFollow);
 
   console.log(`\n4. THE CLAIM: bare \`cotal stop --name <seat>\` locates each seat and stops it (x${SEATS.length})`);
   const results: { seat: string; status: number | null; out: string }[] = [];
