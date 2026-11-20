@@ -359,9 +359,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       ? `ask the space's owner to grant this identity permission to post to #${channel}`
       : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
-  // Interactive only when attached to a real terminal; headless when spawned
-  // detached (manager) — then we just hold presence and log mesh events.
-  const interactive = process.stdin.isTTY === true && !inputDisabledByFlag();
+  // Only a terminal gets a command prompt. Headless sessions still leave on EOF unless input is disabled.
+  const noInput = inputDisabledByFlag();
+  const interactive = process.stdin.isTTY === true && !noInput;
   let rlClosed = false;
   const rl = interactive
     ? readline.createInterface({
@@ -370,9 +370,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         prompt: c.dim(`${name}> `),
       })
     : undefined;
-  rl?.on("close", () => {
-    rlClosed = true;
-  });
 
   const print = (line: string) => {
     if (rl && !rlClosed) {
@@ -457,6 +454,11 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
     process.exit(code);
   };
+  const leaveOnEof = () => void shutdown();
+  rl?.once("close", () => {
+    rlClosed = true;
+    if (started) leaveOnEof();
+  });
   const checkCredential = () => {
     if (!started || leaving || checking || credential === undefined) return;
     checking = true;
@@ -517,6 +519,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     throw joinAuthFailure(e, space, values.creds ? { lifecycleUid: lifecycleUid!, channel } : undefined) ?? e;
   }
   started = true;
+  if (rlClosed) return shutdown();
   if (mintedFrom !== undefined && expiresAt !== undefined) {
     const endAtLifetime = () => {
       if (leaving) return;
@@ -528,7 +531,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     endAtLifetime();
   }
 
-  // `/quit` and a requested session lifetime leave with 0; a signal leaves the same way and exits with its code.
+  // `/quit`, EOF and a requested session lifetime leave with 0. A signal leaves the same way with its code.
   process.on("SIGINT", () => void shutdown(130));
   process.on("SIGTERM", () => void shutdown(143));
 
@@ -536,7 +539,19 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     console.log(
       c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
     );
-    return Promise.race([whenLost(), sessionFinished]); // park; event handlers do the work
+    if (!noInput) {
+      process.stdin.once("end", leaveOnEof);
+      process.stdin.resume();
+    }
+    try {
+      await Promise.race([whenLost(), sessionFinished]);
+    } finally {
+      if (!noInput) {
+        process.stdin.off("end", leaveOnEof);
+        process.stdin.pause();
+      }
+    }
+    return;
   }
 
   console.log(
@@ -544,7 +559,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   );
   console.log(
     c.dim(
-      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n`,
+      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n`,
     ),
   );
   setTimeout(() => {
@@ -586,15 +601,17 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
-      else if (line.startsWith("/working"))
+      else if (/^\/working(?:\s|$)/.test(line))
         await setStatus("working", line.slice(8).trim() || undefined);
-      else if (line.startsWith("/waiting"))
+      else if (/^\/waiting(?:\s|$)/.test(line))
         await setStatus("waiting", line.slice(8).trim() || undefined);
-      else if (line.startsWith("/me "))
-        await ep.setActivity(line.slice(4).trim()).then(() => print(c.dim("(activity updated)")));
-      else if (line.startsWith("/dm ")) {
-        const rest = line.slice(4).trim();
-        const sp = rest.indexOf(" ");
+      else if (/^\/me(?:\s|$)/.test(line)) {
+        const activity = line.slice(3).trim();
+        if (!activity) print(c.red("usage: /me <activity>"));
+        else await ep.setActivity(activity).then(() => print(c.dim("(activity updated)")));
+      } else if (/^\/dm(?:\s|$)/.test(line)) {
+        const rest = line.slice(3).trim();
+        const sp = rest.search(/\s/);
         if (sp < 1) print(c.red("usage: /dm <name> <message>"));
         else {
           const target = rest.slice(0, sp);
@@ -614,9 +631,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
             for (const cand of e.candidates) print(c.dim(`  ${joinPeerLabel({ name: cand.name, id: cand.id })} (${cand.status})  ${cand.id}`));
           }
         }
-      } else if (line.startsWith("/anycast ")) {
-        const rest = line.slice(9).trim();
-        const sp = rest.indexOf(" ");
+      } else if (/^\/anycast(?:\s|$)/.test(line)) {
+        const rest = line.slice(8).trim();
+        const sp = rest.search(/\s/);
         if (sp < 1) print(c.red("usage: /anycast <role> <message>"));
         else {
           const service = rest.slice(0, sp);

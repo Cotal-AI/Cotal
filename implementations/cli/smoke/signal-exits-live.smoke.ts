@@ -8,7 +8,7 @@
  *     `terminated`.
  *  B. on a terminal: the `watch`, `chat` and `console` views exit 130 on SIGINT, after the view has
  *     stopped, rather than dying by the signal. The chat view closes its session first. The watch
- *     view exits 143 on SIGTERM. A join exits cleanly when /quit is pasted after a status command.
+ *     view exits 143 on SIGTERM. A join exits cleanly on /quit or EOF and refuses incomplete slash commands.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:signal-exits:live
@@ -43,12 +43,12 @@ const cotal = (...args: string[]) => {
 /** Start `args` on pipes, send `signal` once `ready` shows on stdout (or after 15 s), and resolve
  *  with how it ended and the last JSON record it wrote. */
 const piped = (args: string[], signal: NodeJS.Signals, ready: string) => new Promise<{ code: number | null; signal: string | null; sent: boolean; end?: { reason?: string; data?: { reason?: string } }; out: string }>((done) => {
-  const child = spawn(TSX, [COTAL, ...args], { cwd: s, env, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(TSX, [COTAL, ...args], { cwd: s, env, stdio: [args.includes("--no-input") ? "ignore" : "pipe", "pipe", "pipe"] });
   let out = "", sent = false;
   const fire = () => { if (sent) return; sent = true; child.kill(signal); };
   const fallback = setTimeout(fire, 15_000);
-  child.stdout.on("data", (chunk: Buffer) => { out += chunk; if (out.includes(ready)) setTimeout(fire, 500); });
-  child.stderr.on("data", (chunk: Buffer) => { out += chunk; });
+  child.stdout!.on("data", (chunk: Buffer) => { out += chunk; if (out.includes(ready)) setTimeout(fire, 500); });
+  child.stderr!.on("data", (chunk: Buffer) => { out += chunk; });
   child.on("close", (code, killed) => {
     clearTimeout(fallback);
     const last = out.trim().split("\n").reverse().find((line) => line.startsWith("{"));
@@ -95,12 +95,31 @@ try {
   }
   for (const [name, args, ready] of [
     ["history --follow", ["history", "--follow"], "replay to new members"],
-    ["join", ["join", "--name", "signal-exits"], "holding presence"],
+    ["join", ["join", "--no-input", "--name", "signal-exits"], "holding presence"],
     ["console --plain", ["console", "--plain"], "watching space"],
   ] as [string, string[], string][]) {
     const ended = await piped(args, "SIGINT", ready);
     check(`${name} exits 130 on SIGINT`, ended.sent && ended.code === 130, ended);
   }
+
+  const pipeEof = await new Promise<{ code: number | null; out: string }>((done) => {
+    const child = spawn(TSX, [COTAL, "join", "--name", "PipeEof"], { cwd: s, env, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "", sent = false;
+    const deadline = setTimeout(() => child.kill("SIGTERM"), 30_000);
+    child.stdout.on("data", (chunk: Buffer) => {
+      out += chunk;
+      if (!sent && out.includes("holding presence")) {
+        sent = true;
+        child.stdin.end();
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => { out += chunk; });
+    child.on("close", (code) => {
+      clearTimeout(deadline);
+      done({ code, out });
+    });
+  });
+  check("join leaves cleanly with exit 0 when piped stdin closes", pipeEof.code === 0 && pipeEof.out.includes("leaving"), pipeEof);
 
   console.log("\nB. on a terminal");
   for (const [name, args, ready] of [["watch", ["watch"], "q leave"], ["chat", ["chat"], "Enter send"], ["console", ["console"], "cmd"]] as [string, string[], string][]) {
@@ -111,24 +130,33 @@ try {
   const term = await onTerminal(["watch"], "SIGTERM", "q leave");
   check("the watch view exits 143 on SIGTERM, not by the signal", term.code === 143 && term.signal === undefined, term);
 
-  const pasted = await new Promise<{ code: number; out: string }>((done) => {
-    const pty = cotalPty(["join", "--name", "PasteAudit", "--channel", "general"], { cwd: s, env });
+  const joinTerminal = (name: string, input: string) => new Promise<{ code: number; out: string }>((done) => {
+    const pty = cotalPty(["join", "--name", name, "--channel", "general"], { cwd: s, env });
     let out = "", sent = false;
     const deadline = setTimeout(() => (pty.kill as (signal?: string) => void)("SIGKILL"), 60_000);
     pty.onData((data) => {
       out += data;
       const text = clean(out);
-      if (sent || !text.includes("Type to broadcast.") || !text.endsWith("PasteAudit> ")) return;
+      if (sent || !text.includes("Type to broadcast.") || !text.endsWith(`${name}> `)) return;
       sent = true;
-      pty.write("/working audit\n/quit\n");
+      pty.write(input);
     });
     pty.onExit(({ exitCode }) => {
       clearTimeout(deadline);
       done({ code: exitCode, out: clean(out) });
     });
   });
+  const pasted = await joinTerminal("PasteAudit", "/working audit\n/quit\n");
   check("join exits 0 when /working and /quit arrive in one paste",
     pasted.code === 0 && pasted.out.includes("leaving") && !/ERR_USE_AFTER_CLOSE|connection closed/.test(pasted.out), pasted);
+  const bare = await joinTerminal("SlashAudit", "/dm\n/anycast\n/me\n/quit\n");
+  check("bare /dm, /anycast and /me print local usage", bare.code === 0 && [
+    "usage: /dm <name> <message>", "usage: /anycast <role> <message>", "usage: /me <activity>",
+  ].every((usage) => bare.out.includes(usage)), bare);
+  const history = cotal("history", "general", "--grep", "/", "--json");
+  check("no incomplete slash command reached channel history", history.status === 0 && JSON.parse(history.out).result.items.length === 0, history.out);
+  const ttyEof = await joinTerminal("TerminalEof", "\x04");
+  check("join leaves cleanly with exit 0 on terminal Ctrl-D", ttyEof.code === 0 && ttyEof.out.includes("leaving"), ttyEof);
 } finally {
   if (up) {
     const down = cotal("down", "--yes");
