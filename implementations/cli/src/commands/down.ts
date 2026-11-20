@@ -6,6 +6,7 @@ import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  codeSpan,
   ConfirmationRequired,
   isCommandFailure,
   localRecordName,
@@ -129,6 +130,7 @@ import { cliControl } from "../lib/control.js";
 import { canPrompt } from "./meshes-wizard.js";
 import * as prompts from "../lib/prompts.js";
 import { yesRequired } from "../lib/confirmation-required.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -192,6 +194,11 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
+  if (args.values["preserve-state"] === true) {
+    if (args.values["with-agents"]) throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");
+    if (args.values.file || args.values.run || args.values["dry-run"] || args.values.space)
+      throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
+  }
   if (typeof args.values.file === "string" && args.values.run === undefined && recordedStackPreview()) {
     if (args.values["dry-run"] === true) {
       const reason = manifestRead(args.values.file);
@@ -211,6 +218,14 @@ export function validateDownArguments(args: ParsedArgs): void {
     if (bareStop(args.values)) {
       const absent = noOwnedStack(canonicalRoot(cotalRoot()));
       if (absent.code === "TARGET_NOT_FOUND") throw absent;
+    }
+    if (args.values["preserve-state"] === true) {
+      const { "store-dir": storeDir, "session-store": sessionStores } = args.values as { "store-dir"?: string; "session-store"?: string[] };
+      const retry = [sameDown(args.values), ...(storeDir === undefined ? [] : [`--store-dir=${shellWord(storeDir)}`]),
+        ...(sessionStores ?? []).map((path) => `--session-store=${shellWord(path)}`)].join(" ");
+      throw new CommandFailure("refused", "UNSUPPORTED", "this stack's preserved cut does not support --json or --plain, and nothing was stopped", {
+        remedy: `run ${codeSpan(retry)} from this root`,
+      });
     }
     throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run \`${displayCmd()} down\` from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
@@ -631,13 +646,9 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     if (values.space) refuseSpaceElsewhere(cotalRoot(), values.space, true);
     return previewWholeStack(args);
   }
-  if (values["preserve-state"] && values["with-agents"])
-    throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state cannot be combined with --with-agents");
   if (values["with-agents"] && (values.file || values.run || values.space))
     throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents is bare-whole-stack only and cannot be combined with components, --space, --file, or --run");
   if (values["preserve-state"]) {
-    if (values.file || values.run || values["dry-run"] || values.space)
-      throw new CommandFailure("refused", "USAGE_INVALID", "--preserve-state is bare-whole-stack only and cannot be combined with components, --space, --file, --run, or --dry-run");
     assertSingleSpaceBroker(authDir(cotalRoot()), "cotal down");
     await preserveStateDown(values["store-dir"], assertSessionStores(values["session-store"] ?? []));
     return;
