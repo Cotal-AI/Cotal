@@ -1,34 +1,12 @@
 import { UserProvision, userProvisionDeps, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
 import { TurnRelay, goalKey, TURN_ANSWER_RETENTION_MS, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
 import { createHash } from "node:crypto";
-import { drainAndClose } from "@cotal-ai/core";
-import { hostname } from "node:os";
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-  CotalEndpoint,
-  accountFromCreds,
-  credsClaims,
-  DEFAULT_SERVER,
-  DEV_OWNER,
-  MANAGER_LEASE_RENEW_MS,
-  STANDING_RENEWABLE_TTL_SEC,
-  injectedSecretStoreIdentity,
-  type DeprovisionResourceAccounting,
-  mintCreds,
-  type IssuedBinding,
-  type IssuedStore,
-  mintLifecycleUid,
-  newIdentity,
-  oneLine,
-  parsePrincipalKey,
-  principalKey,
-  probeConnect,
-  resolveAuthProvider,
-} from "@cotal-ai/core";
+import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, oneLine, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry } from "@cotal-ai/workspace";
-import { agentSecretKeyForFile, authDir, claimIdentityRecord, DEFAULT_SEAT_CAP, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, createManagerInstanceIdentity, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
+import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
 import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, ManagerLeaseInfo, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -44,8 +22,6 @@ export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "
 import { ServePlane, servePlaneDeps } from "./serve-plane.js";
 import { NamesCapacity, namesCapacityDeps, type Occupancy } from "./names-capacity.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
-import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { ManagedStaticLifecycle, managedStaticLifecycleDeps, STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { credRenewIntervalMs } from "./credential-renewal.js";
@@ -68,10 +44,10 @@ import { ConnectorInventory, connectorInventoryDeps } from "./connector-inventor
 import { Preservation, preservationDeps } from "./preservation.js";
 import { PreservedResume, preservedResumeDeps, bearerEntryArgv } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
-import { CredentialRenewal, credentialRenewalDeps, credRenewIntervalMs } from "./credential-renewal.js";
+import { CredentialRenewal, credentialRenewalDeps } from "./credential-renewal.js";
 import { SeatLaunch, seatLaunchDeps, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
+import { ManagerBoot, bootDeps } from "./boot.js";
 import { withTimeout } from "./manager-timeout.js";
-import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { inlineSnapshotPath } from "./launch.js";
 import { authorizeNamedControl } from "./authorize.js";
 import { RunHosting } from "./run-hosting.js";
@@ -80,9 +56,7 @@ import { readReleasedSeatReference, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver } from "./transcript-receive.js";
 // The static §13.1 lifecycle executor: the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the terminal) — see static-lifecycle.ts.
-import { jetstreamManager } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
-import { recordsBucket, ensureAuthorityStores, standaloneConnectOpts, type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
+import { type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-ai/core";
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
@@ -90,7 +64,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
@@ -123,10 +97,6 @@ const RETIREMENT_CONCURRENCY = 8;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
-/** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
- * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
- * a reuse. */
-const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
 
 
 export interface ManagerOptions {
@@ -563,7 +533,7 @@ export class Manager {
   /** The broker ws listener port (loopback) `cotal up` allocated, for the console session
    *  client's wsUrl. Undefined ⇒ no console session client (POST /session 503s). */
   protected readonly wsPort?: number;
-  private readonly name: string;
+  protected readonly name: string;
   protected readonly workspaceRoot: string;
   protected readonly eventsRequired: boolean;
   protected readonly eventPayloadsWithheld: boolean;
@@ -615,8 +585,8 @@ export class Manager {
   protected managerServeIdentity!: Identity;
   /** The local instance identity {@link admitExecutionState} already resolved. The ordinary start
    *  adopts it instead of reading the same record again. */
-  private admittedLocalIdentity?: ManagerInstanceIdentity;
-  private readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
+  protected admittedLocalIdentity?: ManagerInstanceIdentity;
+  protected readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
   /** The manager's v0.4 service-endpoint serve state — the serve handle +
    *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
    *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
@@ -737,7 +707,7 @@ export class Manager {
   private retirementsRunning = 0;
   /** Retirements waiting for a slot, oldest first. */
   private readonly retirementQueue: Array<() => void> = [];
-  private readonly attach: AttachEndpoint;
+  protected readonly attach: AttachEndpoint;
   protected ep!: CotalEndpoint;
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
    *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
@@ -771,15 +741,15 @@ export class Manager {
   }
   protected readonly retirement = new Retirement(retirementDeps(this));
   private readonly lease = new LeaseKeeper(leaseKeeperDeps(this));
-  private get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
-  private set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
-  private get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
-  private set leaseRevision(revision: number | undefined) { this.lease.leaseRevision = revision; }
-  private get leaseTimer(): ReturnType<typeof setInterval> | undefined { return this.lease.leaseTimer; }
-  private set leaseTimer(timer: ReturnType<typeof setInterval> | undefined) { this.lease.leaseTimer = timer; }
+  protected get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
+  protected set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
+  protected get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
+  protected set leaseRevision(revision: number | undefined) { this.lease.leaseRevision = revision; }
+  protected get leaseTimer(): ReturnType<typeof setInterval> | undefined { return this.lease.leaseTimer; }
+  protected set leaseTimer(timer: ReturnType<typeof setInterval> | undefined) { this.lease.leaseTimer = timer; }
   private get leaseRenewTask(): Promise<void> | undefined { return this.lease.leaseRenewTask; }
-  private acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> { return this.lease.acquireInstanceLease(info); }
-  private renewLease(): Promise<void> { return this.lease.renewLease(); }
+  protected acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> { return this.lease.acquireInstanceLease(info); }
+  protected renewLease(): Promise<void> { return this.lease.renewLease(); }
   private releaseOwnManagerLease(): Promise<void> { return this.lease.releaseOwnManagerLease(); }
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
@@ -802,7 +772,7 @@ export class Manager {
    *  another store or the challenge refused. Without it the heartbeat re-takes the lease the claim
    *  just released and holds it against every manager and `doctor auth --fix` that can remint. */
   protected daemonRenewalEligible = false;
-  private daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
+  protected daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   protected maintenanceState: ManagerMaintenanceState = "active";
   protected lifecycleInFlight = 0;
   private lifecycleDrainWaiters: Array<() => void> = [];
@@ -910,6 +880,9 @@ export class Manager {
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
   private readonly seatLaunch = new SeatLaunch(seatLaunchDeps(this));
+
+  /** Manager boot: execution admission, connect, registration and lease. Every dependency reads through at its use. */
+  private readonly bootComponent = new ManagerBoot(bootDeps(this));
 
   constructor(opts: ManagerOptions) {
     if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)
@@ -1096,7 +1069,7 @@ export class Manager {
     return this.managerStatusData(undefined).stopImpact?.preservation;
   }
 
-  private serviceIdentityObservation(): ManagerServiceIdentity {
+  protected serviceIdentityObservation(): ManagerServiceIdentity {
     if (!this.managerInstanceId || !this.managerServeIdentity) throw new Error("manager native service identity has not been selected");
     const principal: EpCaller = this.remoteAuthority
       ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
@@ -1190,409 +1163,16 @@ export class Manager {
     return wrapped;
   }
 
-  private executionRecordPath(instanceId: string): string {
+  protected executionRecordPath(instanceId: string): string {
     return join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${instanceId}.json`);
   }
 
-  private claimExecutionRecord(instanceId: string): void {
-    const record = claimIdentityRecord(this.executionRecordPath(instanceId), "manager execution capability", (raw) => {
-      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
-      const r = raw as Record<string, unknown>;
-      return Object.keys(r).sort().join(",") === "execution,instanceId,space,v" && r.v === 1 && r.space === this.space &&
-        r.instanceId === instanceId && (r.execution === "none" || r.execution === "runtime") ? r : undefined;
-    }, () => ({ v: 1, space: this.space, instanceId, execution: this.execution }));
-    if (record.execution !== this.execution)
-      throw new Error("manager execution capability differs from its retained instance record; execution cannot change across restart");
-  }
+  /** {@link ManagerBoot.claimExecutionRecord}. */
+  private claimExecutionRecord(...args: Parameters<ManagerBoot["claimExecutionRecord"]>): ReturnType<ManagerBoot["claimExecutionRecord"]> { return this.bootComponent.claimExecutionRecord(...args); }
 
-  private async admitExecutionState(): Promise<void> {
-    if (!this.remoteAuthority) {
-      let local = this.admittedLocalIdentity;
-      this.admittedLocalIdentity = undefined;
-      if (this.execution === "none") {
-        const recorded = loadMeshes().find((m) => m.space === this.space);
-        const auth = hasUserAuthState(this.workspaceRoot, this.space) && recorded?.mode === "user"
-          ? await getSpaceAuth(this.secrets, this.space) : undefined;
-        if (!auth)
-          throw new Error("execution: none requires a genuine hosting user-auth root and its user-mode mesh record");
-        if (!local) local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
-        if (local && !existsSync(this.executionRecordPath(local.instanceId)))
-          throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
-        if (!local) {
-          const proposed = { instanceId: mintLifecycleUid(), serveIdentity: newIdentity() };
-          local = createManagerInstanceIdentity(this.workspaceRoot, this.space, () => proposed);
-          if (local.instanceId !== proposed.instanceId)
-            throw new Error("execution: none refuses a concurrently claimed unclassified manager identity");
-        }
-        const localInstanceId = local.instanceId;
-        this.claimExecutionRecord(localInstanceId);
-        const nc = await this.dial({ ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
-        try {
-          const kvm = new Kvm(nc);
-          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-          const entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
-          if (entries.some((entry) => entry.iid === localInstanceId && (entry.allocated !== undefined || entry.note !== undefined)))
-            throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
-        } finally { await drainAndClose(nc); }
-        this.admittedLocalIdentity = local;
-      } else {
-        local ??= createManagerInstanceIdentity(this.workspaceRoot, this.space, () => ({ instanceId: mintLifecycleUid(), serveIdentity: newIdentity() }));
-        this.claimExecutionRecord(local.instanceId);
-        this.admittedLocalIdentity = local;
-      }
-      return;
-    }
-    if (this.remoteAuthority) {
-      if (this.execution === "none" && (await localTrustOfSpace(this.secrets, this.space)).present)
-        throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
-      // Execution is fixed for a registered instance. An older instance with no capability
-      // record might own retained seats/runs, so it cannot be converted to none by omission.
-      const remote = this.remoteAuthority;
-      const path = this.executionRecordPath(remote.instanceId);
-      if (this.execution === "none" && !existsSync(path) && remote.serveGrant.epoch !== 0)
-        throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
-      if (this.execution === "none") {
-        const entries = await remote.scanGoalIndex();
-        if (entries.some((entry) => entry.iid === remote.instanceId && (entry.allocated !== undefined || entry.note !== undefined)))
-          throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
-      }
-      if (this.execution === "none" || existsSync(path)) this.claimExecutionRecord(remote.instanceId);
-    }
-  }
 
-  private async runStart(): Promise<void> {
-    await this.admitExecutionState();
-    this.staticLifecycle.start();
-    await this.inspectConnectorsAtBoot();
-    await this.attach.start();
-    // In auth mode the manager is just another user in the space's account — it mints
-    // itself creds from the same signing key it uses for the agents it spawns. The signer comes
-    // through the SecretStore seam (`this.secrets` — the injected `ManagerOptions.secretStore`, or
-    // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
-    // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
-    //
-    // REMOTE AUTHORITY (#1944): a manager holding host-issued remote authority mints nothing from a
-    // local signer, so it never composes or validates local trust. It asks ONE question of the
-    // store — does THIS space's own local signing trust exist (`localTrustOfSpace`) — because that
-    // alone is the conflict of authorities a supervisor refuses. The stock behaviour this replaces
-    // read the whole root's trust chain (`getSpaceAuth`): with no records for this space it fell
-    // back to the legacy monolith of an UNRELATED static tenant and reported that bundle as
-    // "corrupt or mislabeled". Other tenants' records — split (their account + the shared
-    // per-root broker record) or monolith — are not this space's trust and never refuse; an
-    // unreadable record on a key that is read refuses loud with the store's own parse message.
-    //
-    // An OPEN mesh mints nothing, also in a root that still holds a static stack's accounts. A
-    // credential minted there joins this instance's family in the open account, and the next open
-    // boot could re-register only by verify-evicting it through a delivery daemon that an open mesh
-    // does not run.
-    const recorded = loadMeshes().find((m) => m.space === this.space);
-    if (this.remoteAuthority) {
-      if ((await localTrustOfSpace(this.secrets, this.space)).present)
-        throw new Error("remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback");
-      this.auth = undefined;
-    } else {
-      this.auth = recorded?.mode === "open" ? undefined : await getSpaceAuth(this.secrets, this.space);
-    }
-    // USER-MODE detection is FAIL-CLOSED on the on-disk marker (the space-scoped state dir), never
-    // on the mutable mesh registry alone — registry drift/tamper must not let a user-auth space
-    // take the static self-mint branch. A marker/registry disagreement is a refused start with the
-    // repair, not a guess.
-    this.userMode = this.remoteAuthority !== undefined || hasUserAuthState(this.workspaceRoot, this.space);
-    if (!this.remoteAuthority && recorded && (recorded.mode === "user") !== this.userMode)
-      throw new Error(
-        `mesh registry says space "${this.space}" is ${recorded.mode}-mode but the on-disk user-auth marker ${this.userMode ? "exists" : "is missing"} (${userAuthStateDir(this.workspaceRoot, this.space)}) - \`cotal down\` and re-\`cotal up\` this space to reconcile before running a manager`,
-      );
-    if (!this.remoteAuthority && this.userMode && !recorded)
-      throw new Error(
-        `space "${this.space}" has user-auth state on disk but no mesh registry entry - a user-mode manager needs the authoritative record (\`cotal up\` writes it before the control plane); \`cotal up --user-auth\` this space, or remove the stale ${userAuthStateDir(this.workspaceRoot, this.space)}`,
-      );
-    if (!this.remoteAuthority && this.userMode && !this.auth)
-      throw new Error(
-        `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} - the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
-      );
-    // SPEC 13.6 item 7: the LOGICAL instance id + serve identity PERSIST across restart
-    // (a space-scoped manager identity file under .cotal). A restart re-registers the SAME id with an
-    // ADVANCED epoch (the successor fences the predecessor); a fresh mint over a malformed file is
-    // refused loud (no-fallbacks - a restart never silently becomes a fresh instance). A second
-    // manager in a DIFFERENT workspace root is a DIFFERENT logical id by construction (its own state
-    // dir) - two managers in ONE space are two workspace roots.
-    //
-    // First mint on a fresh root is exclusive create (#1263). Two processes that both observe no
-    // file must not keep different in-memory ids: of N concurrent starts exactly one publishes the
-    // file by hard link and the others adopt that identity before taking a lease, or refuse with
-    // identity-record-create-lost. A filesystem without hard links refuses the first start with
-    // atomic-publish-unsupported. Atomic rename is not enough, because the loser
-    // of a replace would still serve under the id it minted.
-    {
-      if (this.remoteAuthority) {
-        this.managerInstanceId = this.remoteAuthority.instanceId;
-        this.managerServeIdentity = this.remoteAuthority.identities.serve;
-      } else {
-        // Admission already resolved this identity, including the first mint. A second claim here
-        // would stat the same record again.
-        const claimed = this.admittedLocalIdentity;
-        if (!claimed) throw new Error("manager start has no admitted local identity");
-        this.admittedLocalIdentity = undefined;
-        this.managerInstanceId = claimed.instanceId;
-        this.managerServeIdentity = claimed.serveIdentity;
-      }
-    }
-    await this.onServiceIdentity?.(this.serviceIdentityObservation());
-    let creds: (() => Promise<string>) | undefined;
-    let id: string | undefined;
-    if (this.remoteAuthority) {
-      const remote = this.remoteAuthority;
-      id = remote.identities.supervisor.id;
-      creds = async () => this.remoteSupervisorCreds!;
-    } else if (this.auth) {
-      const identity = newIdentity();
-      const auth = this.auth;
-      id = identity.id;
-      // The long-lived SUPERVISOR cred (closure (ii), residual 2): serve the three control tiers, hold the
-      // singleton lease (open-only), publish + watch presence — and nothing else. Provisioning runs on an
-      // EPHEMERAL provisioner connection per spawn (withProvisioner); destructive purge mints a PURGER per
-      // call. So the always-on daemon holds no DM/DLV read, no consumer-create, no stream-admin tamper.
-      //
-      // STANDING RENEWAL (class 1): the manager holds the DATA signing seed, so it is its
-      // own renewal owner — the cred rides the endpoint's SOURCE seam and self-remints (same identity,
-      // pinned by the endpoint) ahead of each bounded supervisor JWT's expiry. A copied supervisor
-      // cred is broker-dead within the matrix TTL.
-      creds = () => mintCreds(auth, identity, "supervisor");
-    }
-    this.ep = new CotalEndpoint({
-      space: this.space,
-      servers: this.servers,
-      channels: [],
-      creds,
-      // The supervisor registers on the roster, and an authed presence-registering endpoint is
-      // lifecycle-keyed (SPEC 13.1, fail-before-presence). The manager process is the top of its
-      // own launch chain (the operator command IS its launcher): its incarnation uid is the
-      // per-process `managerLifecycleUid` field (also the `managerInstance` audit coordinate on
-      // every static activation).
-      lifecycleUid: this.remoteAuthority?.lifecycleUid ?? this.managerLifecycleUid,
-      // The supervisor serves control + watches presence; it never consumes chat/dm/task
-      // (no message handler). consume:false avoids binding consumers it doesn't use — and
-      // under auth avoids trying to bind its own DM/task durables that nothing pre-created.
-      // It still pre-creates OTHERS' durables via provisionDmInbox/provisionTaskQueue (lazy jsm).
-      consume: false,
-      // It also never reads the channel registry (it provisions + serves control, no channel
-      // pull/display), so skip the channel-registry watch — the supervisor cred (residual 2) then
-      // holds no channel-KV read grant. Presence (the roster) is still watched.
-      watchChannels: false,
-      // `host` says which machine runs this manager, as an agent's card does: an owner with several
-      // managers tells them apart by it. Advisory display metadata, never a routing input.
-      card: { id, ...(this.remoteAuthority ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.supervisor } : {}), name: this.name, role: "manager", kind: "endpoint", meta: { host: hostname(), terminal: this.streamsTerminal ? "stream" : "none" } },
-    });
-    // Raw failures ride error; conditions the endpoint is already surviving ride warning. Both
-    // matter to a supervisor operator, especially a failed standing-credential renewal.
-    const reportEndpoint = (e: Error) => console.error(`! manager endpoint: ${e.message}`);
-    this.ep.on("error", reportEndpoint);
-    this.ep.on("warning", reportEndpoint);
-    // Every roster change and every view transition, so a seat that is offline in a fresh snapshot
-    // (recorded with no presence event) is logged the moment the view can support the verdict.
-    this.ep.on("roster", () => this.logSeatMeshTransitions());
-    this.ep.on("presence-view", () => this.logSeatMeshTransitions());
-    console.error("manager startup: connecting the supervisor endpoint");
-    await this.ep.start();
-    await this.ep.setActivity(`supervisor (${this.runtimeKind})`);
-    // Per-instance liveness lease (the old per-space singleton is DEMOTED). Acquire
-    // THIS logical instance's own key (atomic CAS create). A DIFFERENT instance (a second manager in a
-    // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
-    // when the SAME instance id is already live (a same-root double-start, or a restart racing the
-    // crashed predecessor's not-yet-expired key). A double-start REFUSES loud; a restart whose
-    // predecessor is provably dead on this host waits for that key's bucket TTL to remove it (#4092,
-    // {@link acquireInstanceLease}). Losing the key LATER ends this process only when another process holds it; otherwise
-    // the renew loop puts it back or keeps retrying ({@link renewLease}).
-    this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtimeKind, root: resolve(this.workspaceRoot), pid: process.pid };
-    try {
-      console.error("manager startup: acquiring the instance liveness lease");
-      this.leaseRevision = await this.acquireInstanceLease(this.leaseInfo);
-    } catch (e) {
-      await this.ep.stop();
-      await this.attach.stop();
-      throw e;
-    }
-    this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_RENEW_MS);
-    this.leaseTimer.unref?.();
-    // THE PEER-READABLE LIVENESS RESPONDER for the manager plane (#1577). Bound HERE — after the
-    // lease, before registration — precisely so it is up during the window in which the manager is
-    // NOT yet serving. A responder that only appeared once everything worked could never report the
-    // broken state it exists to report, which is the reported defect in a new place.
-    //
-    // WHAT IT GRADES is `serviceServe`, the v0.4 service endpoint's serve handle, which is assigned
-    // only after `serveEndpoint` has bound this instance's rails, AND that handle's connection. A
-    // closed serve connection holds no subscriptions, while `onServeConnectionClosed` keeps the
-    // handle through its re-dial waits, so the handle alone would answer `bound` with every rail
-    // gone. The re-dial swaps in the fresh connection and handle together, so `bound` returns only
-    // once the rails are served again. A DISCONNECTED serve connection is the same fault without the
-    // close: it reconnects without limit, so it stays open while the broker holds none of its rails,
-    // and this probe arrives on the separate supervisor connection that is still up. So the grade
-    // also requires the serve transport to be connected. That is a RESPONDER fact. It is
-    // deliberately NOT "this process is alive": this process is trivially alive whenever it answers
-    // at all, so grading on that would make the surface a `pgrep` that also lies in both directions
-    // — the exact instrument the reporter's evidence table indicts. Between lease acquisition and a
-    // successful registration the honest answer is `unbound`, and that is what a peer is told.
-    //
-    // The lease row is never consulted and never sent: presence is the whole ask, and the row
-    // carries the operator's workspace root and pid.
-    this.ep.serveLiveness("manager", () => {
-      const s = this.serviceServe;
-      return s?.handle && !s.nc.isClosed() && !this.transportDown.has(s.nc) ? "bound" : "unbound";
-    });
-    // Static §13.1: after this instance holds its lease, collect the durable static rows
-    // now, but do not let their exact-op terminals make the whole space unreachable. The service
-    // comes up below, then the sweep overlaps the remaining registration work. Two-window
-    // heal-then-register is slower than one executor, but the overlap is still the no-outage
-    // property: `reconcilingAliases` refuses spawn or attach of THAT alias until its terminal
-    // attempt returns.
-    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
-    if (startupReconcile)
-      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
-    // A default stop records a user-mode seat it released while the seat was still running. This
-    // start adopts that seat, or retires it when the runtime proves it gone. Static seats stay on
-    // the sweep above.
-    if (this.userMode)
-      void this.adoptReleasedSeats().catch((e) => console.error(`! a released seat was not adopted: ${rejectionText(e)}`));
-    // The manager serves NO ctl tiers - its whole control surface is the v0.4
-    // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
-    // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
-    // plane) are separate services and keep their rails.
-    // Class 2: the manager is the CLASS-2 RENEWAL OWNER — the one control-plane process
-    // that is resident in EVERY mesh mode (foreground `up`, `up --detach`, same-root refresh) and
-    // holds the signer. Ordered initial pass NOW (ensureControlPlane starts delivery BEFORE the
-    // manager, so the daemon's launch-time creds write always precedes this — no write race), then
-    // every half-TTL: re-sign the daemon creds files for their EXISTING nkeys, request the explicit
-    // `reloadCreds` adoption on the delivery-admin rail, and persist the audit record doctor renders.
-    if (this.auth) {
-      // #1634: a space may be served by several managers, so ownership of the daemon's credential
-      // renewal is decided here rather than by being the only manager able to start. #871: a daemon
-      // that is still binding or re-acquiring its lease leaves this challenge unanswered for a few
-      // seconds, so boot waits that out instead of exiting over a daemon about to answer.
-      await this.claimDaemonRenewalOwnership(DELIVERY_ADMIN_BOOT_WAIT_MS);
-      // ARMED BEFORE the first remint, not after. That first `renewDaemonCreds()` re-signs through
-      // the SecretStore, and a slow or contended store makes the one pass outlast the lease's
-      // MANAGER_LEASE_TTL_MS. Arming afterwards leaves the whole first remint unprotected: the lease
-      // expires mid-pass, a second manager's CAS create succeeds, and both remint into one store.
-      this.daemonRenewalLeaseTimer = setInterval(() => { void this.keepDaemonRenewalLease(); }, MANAGER_LEASE_RENEW_MS);
-      this.daemonRenewalLeaseTimer.unref?.();
-      await this.renewDaemonCreds();
-      this.credRenewTimer = setInterval(() => { void this.renewDaemonCreds(); }, credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC));
-      this.credRenewTimer.unref?.();
-    } else if (this.remoteAuthority) {
-      if (this.remoteAuthority.renewStandingBundle) await this.renewRemoteStandingBundle();
-      else await this.renewRemoteExecutor();
-      let standingTtl = STANDING_RENEWABLE_TTL_SEC;
-      if (this.remoteSupervisorCreds) {
-        try {
-          const claims = credsClaims(this.remoteSupervisorCreds);
-          if (typeof claims.exp === "number" && typeof claims.iat === "number" && claims.exp > claims.iat) {
-            standingTtl = claims.exp - claims.iat;
-          }
-        } catch {}
-      }
-      // A refused family needs another pass inside the final quarter of its lifetime.
-      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), Math.max(1, Math.floor(standingTtl * 1000 / 8)));
-      this.resumeCredRenewal = () => {
-        if (this.credRenewTimer || this.leaseStopping) return;
-        this.credRenewTimer = setInterval(async () => {
-          try {
-            if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
-            else await this.renewRemoteExecutor();
-          } catch (e) {
-            console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
-          }
-          try {
-            await this.runHosting?.renew();
-          } catch (e) {
-            console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
-          }
-        }, intervalMs);
-        this.credRenewTimer.unref?.();
-      };
-      this.resumeCredRenewal();
-    }
-    // stop() fences before it waits for an accepted startup reconciliation terminal. Once that
-    // terminal drains, start() and stop() resume from the same await boundary; start must observe
-    // the fence before it can publish a fresh service registration after shutdown.
-    if (this.staticLifecycle.stopping) return;
-    // Register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
-    // and serve its typed command surface on the ep rails - the ONLY control door, in
-    // EVERY mesh mode. Static + user meshes mint the scoped executor + endpoint-serve credential;
-    // an open mesh runs the same gate/registration ceremony over bare connections and never mints
-    // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
-    // trust). Fail-loud: a manager that cannot register does not start half-registered.
-    console.error("manager startup: binding the service endpoint");
-    await this.registerManagerService();
-    if (this.staticLifecycle.stopping) return;
-    // Stand up the standing goal-writer connection for spawn-as-action — AFTER
-    // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
-    await this.startGoalWriter();
-    // Stand up the ONE §13.6 session plane for `attach` — AFTER registration too (it
-    // rides the serve grant's epoch + the family-staged session-ledger cred), on its own standing
-    // connection disjoint from both the serve and goal-writer creds.
-    await this.startSessionPlane();
-    // Reconcile any accepted-but-unterminal goals inherited from a predecessor
-    // BEFORE spawn-as-action begins accepting (the goalReconcileDone gate) — a fresh incarnation
-    // never drops a goal a dead predecessor accepted. Never fatal; the gate opens either way.
-    console.error("manager startup: reconciling predecessor goals");
-    await this.reconcileGoalIndex();
-    // SPEC 14.3: the manager hosts workflow runs. Stood up AFTER registration (it names this
-    // instance's coordinates) and reconciled AFTER the goal index, for the same reason: a fresh
-    // incarnation takes back every run a dead predecessor was driving before it accepts new ones.
-    // The serve surface is already live by here, so the family itself holds the gate: `runHost()`
-    // refuses `run-start`/`run-resume` as `unavailable` until the host exists and `RunHosting`
-    // refuses them until its reconcile has returned. A remote user-auth manager uses its four
-    // registered issuer callbacks instead of holding a signer; a local user mesh stands none up.
-    const remoteRuns = this.remoteAuthority?.runHosting;
-    if (this.execution !== "none" && this.remoteAuthority && remoteRuns) {
-      this.runHosting = new RunHosting({
-        space: this.space,
-        servers: this.servers,
-        endpoint: MANAGER_ENDPOINT,
-        instanceId: this.managerInstanceId,
-        holder: { id: this.remoteAuthority.identities.supervisor.id, lifecycleUid: this.managerLifecycleUid },
-        auth: undefined,
-        log: (line) => console.error(line),
-        admitRun: remoteRuns.admitRun,
-        submitRun: remoteRuns.submitRun,
-        revokeRun: remoteRuns.revokeRun,
-        cancelRun: remoteRuns.cancelRun,
-        issueAttempt: remoteRuns.issueAttempt,
-        issueOperator: remoteRuns.issueOperator,
-        renewRun: remoteRuns.renewRun,
-      });
-      await this.runHosting.reconcile();
-    } else if (!this.remoteAuthority && !this.userMode) {
-      this.runHosting = new RunHosting({
-        space: this.space,
-        servers: this.servers,
-        endpoint: MANAGER_ENDPOINT,
-        instanceId: this.managerInstanceId,
-        holder: { id: this.ep.ref().id, lifecycleUid: this.managerLifecycleUid },
-        auth: this.auth,
-        log: (line) => console.error(line),
-      });
-      await this.runHosting.reconcile();
-    }
-    // A carried resume (#1499) needs this instance's transfer reader: minted from the space's signing
-    // seed, issued by the host to a remote manager, or none on an open mesh.
-    if (this.execution !== "none" && (!this.remoteAuthority || this.remoteAuthority.mintTransferReader)) {
-      this.transcripts = new TranscriptReceiver({
-        space: this.space,
-        instanceId: this.managerInstanceId,
-        workspaceRoot: this.workspaceRoot,
-        withReader: (fn) => this.withTransferReader(fn),
-        log: (line) => console.error(line),
-      });
-      await this.transcripts.start();
-    }
-    for (const note of this.bootNotes.splice(0)) console.error(note);
-    // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
-    // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
-    // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
-    // manager records each agent's read ACL at spawn (`commitAcl`, in provisionAgent) so the daemon can
-    // re-authorize it; that is the only Plane-3 state the manager touches, and it rides minting.
-  }
+  /** {@link ManagerBoot.runStart}. */
+  private runStart(...args: Parameters<ManagerBoot["runStart"]>): ReturnType<ManagerBoot["runStart"]> { return this.bootComponent.runStart(...args); }
 
   /** The delivery shard whose lease names the process that reloads the standing credentials.
    *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
@@ -1601,9 +1181,9 @@ export class Manager {
   /** {@link CredentialRenewal.absentByLeaseRow}. */
   absentByLeaseRow(...args: Parameters<CredentialRenewal["absentByLeaseRow"]>): ReturnType<CredentialRenewal["absentByLeaseRow"]> { return this.credentialRenewal.absentByLeaseRow(...args); }
   /** {@link CredentialRenewal.keepDaemonRenewalLease}. */
-  private keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
+  protected keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
   /** {@link CredentialRenewal.claimDaemonRenewalOwnership}. */
-  private claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
+  protected claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
   /** {@link CredentialRenewal.scheduleServeRenewal}. */
   protected scheduleServeRenewal(...args: Parameters<CredentialRenewal["scheduleServeRenewal"]>): ReturnType<CredentialRenewal["scheduleServeRenewal"]> { return this.credentialRenewal.scheduleServeRenewal(...args); }
 
@@ -1700,7 +1280,7 @@ export class Manager {
   private releaseManagedAgents(...args: Parameters<Preservation["releaseManagedAgents"]>): ReturnType<Preservation["releaseManagedAgents"]> { return this.preservationComponent.releaseManagedAgents(...args); }
 
   /** {@link Preservation.adoptReleasedSeats}. */
-  private adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
+  protected adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
 
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -2163,7 +1743,7 @@ export class Manager {
   protected logSeatReaped(...args: Parameters<SeatStop["logSeatReaped"]>): ReturnType<SeatStop["logSeatReaped"]> { return this.seatStopComponent.logSeatReaped(...args); }
 
   /** {@link SeatStop.logSeatMeshTransitions}. */
-  private logSeatMeshTransitions(...args: Parameters<SeatStop["logSeatMeshTransitions"]>): ReturnType<SeatStop["logSeatMeshTransitions"]> { return this.seatStopComponent.logSeatMeshTransitions(...args); }
+  protected logSeatMeshTransitions(...args: Parameters<SeatStop["logSeatMeshTransitions"]>): ReturnType<SeatStop["logSeatMeshTransitions"]> { return this.seatStopComponent.logSeatMeshTransitions(...args); }
 
   /** {@link SeatStop.isOwnPresence}. */
   protected isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence { return this.seatStopComponent.isOwnPresence(a, p); }
@@ -2291,7 +1871,7 @@ export class Manager {
   protected connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
   /** {@link ConnectorInventory.inspectConnectorsAtBoot}. */
-  private inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
+  protected inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
 
   /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
   protected async prepareClaudeWake(): Promise<string | undefined> {
@@ -2482,73 +2062,29 @@ export class Manager {
     return this.staticLifecycle.staticReconciliationStatus();
   }
 
-  /** Complete a crashed predecessor's FROZEN registration gate before this incarnation starts a
-   *  new one (#783 item 3 / #871). The CLI `cotal reconcile-gate` already does this; a successor
-   *  that cannot register is exactly the state that command exists to repair, so boot must run
-   *  the SAME composition rather than waiting for an operator.
-   *
-   *  Admit only `gone` AND `sweepComplete=true` (the probe mapping already folds an incomplete
-   *  `gone` into `unestablishable`). Live / unknown / unestablishable / wrong-op-kind stay loud
-   *  refusals. No TTL: request-ingress has no process-epoch fence, so a clock would either let a
-   *  superseded serve credential keep consuming ingress or just rename the freeze. An open gate
-   *  is a no-op (the successor's own freeze comes next). A committed spec under that freeze is
-   *  finished at the committed registrationRevision; only a definite no-commit abort-reopens. */
-  protected async healFrozenRegistrationGate(authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV): Promise<void> {
-    const key = epgateKey(MANAGER_ENDPOINT, instanceId);
-    const entry = await authKv.get(key);
-    if (!entry || entry.operation !== "PUT") return;
-    const row = parseEndpointGate(entry.value, key);
-    if (row.state !== "frozen") return;
-    const servers = this.servers ?? DEFAULT_SERVER;
-    const log = (line: string) => console.error(`  ${line}`);
-    let report;
-    try {
-      report = await reconcileEndpointGate({
-        kv: authKv, space: this.space, endpoint: MANAGER_ENDPOINT, instanceId,
-        probeHolder: makeManagerHolderLivenessProbe({ space: this.space, servers, auth, log, unreachableWaitMs: DELIVERY_ADMIN_BOOT_WAIT_MS }),
-        evictHolders: makeManagerEndpointHolderEvictor({ space: this.space, servers, auth, log }),
-        log,
-        recordsKv,
-      });
-    } catch (e) {
-      // We observed frozen, then a concurrent reconciler finished first. If the gate is now open,
-      // this incarnation continues the takeover. Every other refusal — including raced-but-still-
-      // frozen — stays loud.
-      if (e instanceof GateReconcileRefused && (e.condition === "not-frozen" || e.condition === "raced")) {
-        const latest = await authKv.get(key);
-        if (latest && latest.operation === "PUT" && parseEndpointGate(latest.value, key).state === "open") {
-          console.error(`boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} is open after ${e.condition}; continuing the normal takeover`);
-          return;
-        }
-      }
-      throw e;
-    }
-    console.error(
-      `✓ boot self-heal: ${MANAGER_ENDPOINT}/${instanceId} registration gate reopened at generation ${
-        report.reopenedAtGeneration} (processEpoch ${report.after.processEpoch}, registrationRevision ${report.after.registrationRevision}; freeze-holder gone, sweepComplete=true). Continuing the normal takeover.`,
-    );
-  }
+  /** {@link ManagerBoot.healFrozenRegistrationGate}. */
+  protected healFrozenRegistrationGate(...args: Parameters<ManagerBoot["healFrozenRegistrationGate"]>): ReturnType<ManagerBoot["healFrozenRegistrationGate"]> { return this.bootComponent.healFrozenRegistrationGate(...args); }
   protected dialServeConnection(
     state: { nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string },
     readCreds: () => string = () => state.creds!,
     deadline?: number,
   ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> { return this.servePlane.dialServeConnection(state, readCreds, deadline); }
-  private registerManagerService(): Promise<void> { return this.servePlane.registerManagerService(); }
+  protected registerManagerService(): Promise<void> { return this.servePlane.registerManagerService(); }
 
   /** {@link GoalWriter.mintAndStageGoalWriter}. */
   protected mintAndStageGoalWriter(...args: Parameters<GoalWriter["mintAndStageGoalWriter"]>): ReturnType<GoalWriter["mintAndStageGoalWriter"]> { return this.goalWriterComponent.mintAndStageGoalWriter(...args); }
 
   /** {@link GoalWriter.startGoalWriter}. */
-  private startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
+  protected startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
   /** {@link GoalWriter.stopGoalWriter}. */
   private stopGoalWriter(...args: Parameters<GoalWriter["stopGoalWriter"]>): ReturnType<GoalWriter["stopGoalWriter"]> { return this.goalWriterComponent.stopGoalWriter(...args); }
   protected mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
-  private startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
+  protected startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
   private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
   /** {@link GoalWriter.reconcileGoalIndex}. */
-  private reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
+  protected reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
 
   /** {@link GoalWriter.emitGoalProgress}. */
   protected emitGoalProgress(...args: Parameters<GoalWriter["emitGoalProgress"]>): ReturnType<GoalWriter["emitGoalProgress"]> { return this.goalWriterComponent.emitGoalProgress(...args); }
@@ -2858,7 +2394,7 @@ export class Manager {
   protected withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withProvisioner(fn); }
 
   /** {@link BrokerTransport.withTransferReader}. */
-  private withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
+  protected withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
 
   /** {@link SeatStop.opPurge}. */
   protected opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }

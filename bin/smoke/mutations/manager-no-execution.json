@@ -57,7 +57,7 @@
     },
     {
       "name": "retained allocated inventory ignored",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "if (entries.some((entry) => entry.iid === remote.instanceId && (entry.allocated !== undefined || entry.note !== undefined)))",
       "replace": "if (entries.some((entry) => entry.iid === remote.instanceId && entry.note !== undefined))",
       "expectRed": "seat native retained inventory refuses boot",
@@ -66,7 +66,7 @@
     },
     {
       "name": "immutable execution mismatch ignored",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "if (record.execution !== this.execution)",
       "replace": "if (false)",
       "expectRed": "none instance cannot restart as runtime",
@@ -75,7 +75,7 @@
     },
     {
       "name": "older unclassified instance is accepted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "if (this.execution === \"none\" && !existsSync(path) && remote.serveGrant.epoch !== 0)",
       "replace": "if (false)",
       "expectRed": "unclassified later epoch refuses none boot",
