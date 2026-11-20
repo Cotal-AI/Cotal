@@ -642,6 +642,24 @@ try {
     preview.error === undefined && envelope(preview.out)?.outcome === "no-op" && envelope(preview.out)?.result?.kind === "stack-not-running", preview);
   const plain = await bareDownIn(stoppedRoot, { plain: true });
   check("--plain shows the same no-op", plain.error === undefined && plain.exitCode === 0 && /is not running/.test(plain.out), plain);
+  const preparedRoot = mkdtempSync(join(scratch, "prepared-"));
+  mkdirSync(join(preparedRoot, ".cotal"));
+  const { recordPreparedSpace, removePreparedSpace } = await import("@cotal-ai/workspace");
+  recordPreparedSpace({ space: "example", root: preparedRoot, ts: new Date().toISOString() });
+  try {
+    for (const flag of ["dry-run", "yes"]) {
+      const bare = await bareDownIn(preparedRoot, { [flag]: true, json: true });
+      const scoped = await bareDownIn(preparedRoot, { space: "example", [flag]: true, json: true });
+      check(`down --space example --${flag} reports the same JSON no-op as bare down before the first up`,
+        scoped.error === undefined && scoped.exitCode === 0 && envelope(scoped.out)?.outcome === "no-op" &&
+        envelope(scoped.out)?.result?.kind === "stack-not-running" && scoped.out === bare.out, scoped);
+      const wrong = await bareDownIn(preparedRoot, { space: "wrong", [flag]: true, json: true });
+      check(`down --space wrong --${flag} refuses before the first up`,
+        wrong.error?.code === (flag === "dry-run" ? "TARGET_NOT_FOUND" : "UNSUPPORTED"), wrong);
+    }
+  } finally {
+    removePreparedSpace("example");
+  }
   const reap = await bareDownIn(stoppedRoot, { "with-agents": true });
   check("--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
     reap.error?.code === "LIFECYCLE_BLOCKED" && /cotal up/.test(reap.error.remedy ?? ""), reap);

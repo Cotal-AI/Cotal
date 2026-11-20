@@ -290,7 +290,9 @@ reached the project journal. Missing launch evidence does not mean that nothing 
 
 A bare `down` in a folder whose stack is already stopped stops nothing. It reports that the stack
 in that folder is not running and names `cotal up`, outcome `no-op`, exit 0, and writes nothing,
-so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. A controller stack
+so it needs no `--yes`. `--dry-run`, `--json` and `--plain` show the same. Before the first `up`,
+`down --space <name>` gives the same no-op when the name matches the space prepared in this folder.
+A different name is refused. A controller stack
 counts as stopped when its last whole-stack operation was a completed `down` and no member and no
 other service instance of its space runs. That check reads no process record under the root; those
 are read only as described below. A stack that stopped any other way takes the full stop, which
