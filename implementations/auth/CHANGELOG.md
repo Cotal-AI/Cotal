@@ -1,5 +1,29 @@
 # @cotal-ai/auth
 
+## 0.171.5
+
+### Patch Changes
+
+- 3e30fce: Move the service host's caller policy (caller grants, caller revocation and the policy reads) out of `service-host-ops.ts` into an internal `service-host-caller.ts`. The package surface is unchanged.
+- 77d17ea: Move the service host's decisions (the shared proposal closes, decide and revoke) out of `service-host-ops.ts` into an internal `service-host-decisions.ts`. The package surface is unchanged.
+- ae52379: Move the service host's S2-A record kernel (record keys and ids, keyed reads and writes, capacity release, operation settlement and debt, and the result arms) out of `service-host-ops.ts` into an internal `service-host-kernel.ts`. The package surface is unchanged.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/lang@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes

@@ -1,5 +1,24 @@
 # @cotal-ai/workspace
 
+## 0.171.5
+
+### Patch Changes
+
+- 3accd52: Keep the previous CLI and its matching connectors usable when a self-update is interrupted during the final version check.
+- 88313a0: Wait a full hour before automatically installing a newly seen npm release, even if npm changes the latest version during another release's hold.
+- 8281e1d: Repair writable connector paths before self-update, identify missing or interrupted npm, and make interrupted connector seeds and updates safe to retry.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- 9f948a3: Use the current CLI launcher in stopped-space restart hints and related space recovery commands.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [2fdf963]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes

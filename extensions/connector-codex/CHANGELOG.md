@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.171.5
+
+### Patch Changes
+
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+
 ## 0.171.4
 
 No changes in this release.

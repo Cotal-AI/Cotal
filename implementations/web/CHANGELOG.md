@@ -1,5 +1,11 @@
 # @cotal-ai/web
 
+## 0.171.5
+
+### Patch Changes
+
+- 3b5ce0c: Repeating a loopback dashboard start refreshes the private single-use link even without a display or with `--no-open`, while existing browser sessions stay signed in.
+
 ## 0.171.4
 
 No changes in this release.

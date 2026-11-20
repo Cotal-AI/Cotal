@@ -1,5 +1,27 @@
 # @cotal-ai/runtime
 
+## 0.171.5
+
+### Patch Changes
+
+- 41108ac: Move the mesh handler's conclaves (planning, executing and releasing a conclave, and the channel, members and ACL registry handles they share) out of `mesh-handler.ts` into an internal `mesh-conclave.ts` component that owns the open conclave plans and the registry handles. The package surface is unchanged.
+- 0e46c2b: Move the mesh handler's `spawn` action (cwd resolution, the worktree claim and release, the submission and its terminal await, and `spawnArgs`) out of `mesh-handler.ts` into an internal `mesh-spawn.ts` component that reads the handler's members through its dependencies. The package surface is unchanged.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/lang@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes

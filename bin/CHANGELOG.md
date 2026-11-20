@@ -1,5 +1,67 @@
 # cotal-ai
 
+## 0.171.5
+
+### Patch Changes
+
+- 3b5ce0c: Repeating a loopback dashboard start refreshes the private single-use link even without a display or with `--no-open`, while existing browser sessions stay signed in.
+- fb2bff5: The shell installer keeps the previous Cotal release when a downgrade is incompatible with its connector state or fails during reconciliation.
+- 3d6a37f: The launch watcher reclaims temporary files without spinning when the agent's `PATH` does not include `sleep` or `rm`.
+- 6291f81: `cotal manager status` now reports the running stack manager instead of a previously stopped manager service.
+- 88313a0: Wait a full hour before automatically installing a newly seen npm release, even if npm changes the latest version during another release's hold.
+- 8281e1d: Repair writable connector paths before self-update, identify missing or interrupted npm, and make interrupted connector seeds and updates safe to retry.
+- dda2455: Repair a verified Linux background service whose recorded program is missing, without starting it if it was disabled.
+- 2f532c1: Stop the shell installer before it changes anything if a directory occupies the launcher path, and explain how to choose another location.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- 6ad5fee: Self-update writes journals atomically and names damaged journals while cleaning abandoned staging without removing journals needed for recovery.
+- e3563bc: Self-update checks extension peers against the selected Cotal release so a missing archive from a newer release cannot block the update.
+- 8708701: A session on a websocket mesh now reconnects after its connection dies without a reset, such as during a laptop sleep, and `cotal_disconnect` no longer hangs while the mesh is unreachable. When the ping check finds such a connection stale, the client stops waiting for the unanswered closing handshake after 5 seconds and reconnects. A failed websocket dial now names the URL it dialed, whether the socket had opened, how long it had been trying or open, and any reason given, where it used to say only `ConnectionError`. A Claude Code disconnect waits at most 3 seconds for the event plane before it stops the connection, so `cotal_connect` can connect the conversation again. A failed `cotal_reconnect` now advises calling it again, where it used to name `/reconnect`, a command Claude Code does not have.
+- Updated dependencies [3e30fce]
+- Updated dependencies [77d17ea]
+- Updated dependencies [ae52379]
+- Updated dependencies [bcb2f8e]
+- Updated dependencies [07f89b7]
+- Updated dependencies [6ba51a8]
+- Updated dependencies [dbc7fc8]
+- Updated dependencies [d0affc2]
+- Updated dependencies [13fbb58]
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3b5ce0c]
+- Updated dependencies [6f94063]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [cf8aa51]
+- Updated dependencies [4471d1c]
+- Updated dependencies [56b1500]
+- Updated dependencies [87ae094]
+- Updated dependencies [59bee02]
+- Updated dependencies [6291f81]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2f532c1]
+- Updated dependencies [2fdf963]
+- Updated dependencies [41108ac]
+- Updated dependencies [0e46c2b]
+- Updated dependencies [e3563bc]
+- Updated dependencies [9f948a3]
+- Updated dependencies [c2b0250]
+- Updated dependencies [8671af5]
+- Updated dependencies [8708701]
+  - @cotal-ai/auth@0.171.5
+  - @cotal-ai/cli@0.171.5
+  - @cotal-ai/connector-core@0.171.5
+  - @cotal-ai/delivery@0.171.5
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/manager@0.171.5
+  - @cotal-ai/runtime@0.171.5
+  - @cotal-ai/registry@0.171.5
+  - @cotal-ai/seat@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes
