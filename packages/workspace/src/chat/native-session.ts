@@ -17,12 +17,13 @@
  */
 import {
   EpEnvelopeError,
-  channelInAllow,
+  channelInGrant,
   isConcreteChannel,
   isConsumerNotFound,
   isPublishPermissionDenied,
   parsePrincipalKey,
   partsToText,
+  patternInGrant,
   resolvePeer,
   type CotalEndpoint,
   type CotalMessage,
@@ -102,11 +103,13 @@ const GAP_COALESCE_MS = 1_000;
 /**
  * Refuse a channel outside the session's read or post grant before any effect, so the broker's
  * refusal and its subject never reach the caller. A session opened on no channel holds no grant.
- * Either refusal ends with the front end's way to open a session that holds the channel. The broker
- * remains the enforcement point.
+ * `exclude` holds the channels or patterns the grant removes (SPEC §9): a concrete channel under one
+ * is refused, and a pattern is refused when it is not inside one grant entry or the exclusions cover
+ * all of it. Either refusal ends with the front end's way to open a session that holds the channel.
+ * The broker remains the enforcement point.
  */
-export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", words: ChatWords): Refused | undefined {
-  if (channelInAllow([...grant], channel)) return undefined;
+export function grantRefusal(grant: readonly string[], channel: string, use: "read" | "post", words: ChatWords, exclude: readonly string[] = []): Refused | undefined {
+  if (isConcreteChannel(channel) ? channelInGrant(grant, exclude, channel) : patternInGrant(grant, exclude, channel)) return undefined;
   const message = grant.length === 0
     ? `this session was opened on no channel, so it cannot ${use === "read" ? "read" : "post to"} #${channel}. ${words.reopen(channel)}`
     : `#${channel} is outside this session's ${use} grant. ${words.reopen(channel)}`;
@@ -311,7 +314,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async send(text: string, channel: string, mentions: readonly string[], replyTo?: string): Promise<PublishResult> {
     if (!isConcreteChannel(channel)) return refusedUsage("a send needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words);
+    const outside = grantRefusal(this.inputs.identity.allowPublish, channel, "post", this.inputs.words, this.inputs.identity.excludePublish);
     if (outside) return outside;
     const gone = await this.beforePublish();
     if (gone) return gone;
@@ -385,7 +388,7 @@ export class NativeChatSession implements AdmittedChatSession {
 
   async setChannelMode(channel: string, mode: "quiet" | "muted" | "normal"): Promise<Result<void>> {
     if (!isConcreteChannel(channel)) return refusedUsage("a channel mode needs a concrete channel");
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words);
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words, this.inputs.identity.excludeSubscribe);
     if (outside) return outside;
     // Local first, as for attention; the presence mirror is advisory (endpoint.ts:2874-2877).
     this.engine.setChannelMode(channel, mode);
@@ -393,7 +396,7 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
-    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words);
+    const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words, this.inputs.identity.excludeSubscribe);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
   }
@@ -428,8 +431,8 @@ export class NativeChatSession implements AdmittedChatSession {
         ...(cfg?.instructions ? { instructions: cfg.instructions } : {}),
         replay: ep.channelReplay(channel),
         // Local view of the session's accepted ceilings; the broker remains the enforcement point.
-        readable: channelInAllow([...this.inputs.identity.allowSubscribe], channel),
-        postable: channelInAllow([...this.inputs.identity.allowPublish], channel),
+        readable: channelInGrant(this.inputs.identity.allowSubscribe, this.inputs.identity.excludeSubscribe ?? [], channel),
+        postable: channelInGrant(this.inputs.identity.allowPublish, this.inputs.identity.excludePublish ?? [], channel),
       },
     };
   }

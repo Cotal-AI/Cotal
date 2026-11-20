@@ -329,6 +329,7 @@
     "smoke:manager-launch-reads": "tsx implementations/manager/smoke/launch-reads.smoke.ts",
     "smoke:manager-chat-session": "tsx implementations/manager/smoke/chat-session.smoke.ts",
     "smoke:static-chat-pure": "tsx packages/workspace/smoke/static-chat-pure.smoke.ts",
+    "smoke:channel-exclusions-workspace": "tsx packages/workspace/smoke/channel-exclusions-workspace.smoke.ts",
     "smoke:chat-compose": "tsx packages/workspace/smoke/chat-compose.smoke.ts",
     "smoke:chat-open:live": "tsx packages/workspace/smoke/chat-open-live.smoke.ts",
     "smoke:chat-transport:live": "tsx implementations/cli/smoke/chat-transport-live.smoke.ts",

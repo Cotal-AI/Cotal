@@ -1,6 +1,7 @@
 // A managed launch: the request a surface sends to a manager's `start` command and the joined
 // result it reads back. The `@cotal-ai/workspace/launch` subpath is this module. Flags, prompts,
 // refusal remedies and the printed report belong to each surface.
+import { channelGrantField, parseChannelGrant } from "@cotal-ai/core";
 import type { ManagerRequestIntent, ManagerRequestReceipt } from "./control/manager.js";
 import { CommandFailure } from "./output.js";
 
@@ -30,6 +31,10 @@ export interface ManagedLaunchRequest {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Channels or patterns removed from `allowSubscribe` / `allowPublish` (SPEC §9). Each travels
+   *  with its list as `{ allow, exclude }`, so it needs that list beside it. */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   /** Whether the agent publishes an event plane. Absent leaves it to the manager and the space's policy. */
   events?: boolean;
   eventPayloads?: boolean;
@@ -41,8 +46,15 @@ export interface ManagedLaunchRequest {
 export type ManagerStart<R> = (args: Record<string, unknown>) => Promise<R>;
 
 /** Send `request` to a manager as its `start` command. The reply comes back unread, so the caller
- *  can settle a held name or report a refusal before {@link readManagedLaunch} reads the join. */
+ *  can settle a held name or report a refusal before {@link readManagedLaunch} reads the join. A list
+ *  with exclusions is sent as `{ allow, exclude }`, which a manager that predates exclusions refuses. */
 export function requestManagedLaunch<R>(request: ManagedLaunchRequest, start: ManagerStart<R>): Promise<R> {
+  const grant = (field: string, allow: string[] | undefined, exclude: string[] | undefined) => {
+    if (exclude?.length && !allow) throw new Error(`a managed launch's ${field} exclusions need its ${field} list, the one they remove channels from`);
+    return allow && channelGrantField(allow, exclude);
+  };
+  const allowSubscribe = grant("allowSubscribe", request.allowSubscribe, request.excludeSubscribe);
+  const allowPublish = grant("allowPublish", request.allowPublish, request.excludePublish);
   return start({
     name: request.persona,
     identity: request.identity,
@@ -60,8 +72,8 @@ export function requestManagedLaunch<R>(request: ManagedLaunchRequest, start: Ma
     prompt: request.prompt,
     shareTools: request.shareTools,
     subscribe: request.subscribe,
-    allowSubscribe: request.allowSubscribe,
-    allowPublish: request.allowPublish,
+    allowSubscribe,
+    allowPublish,
     events: request.events,
     eventPayloads: request.eventPayloads,
     ...(request.runtime !== undefined ? { runtime: request.runtime } : {}),
@@ -100,19 +112,28 @@ export interface ManagedLaunchResult {
   acl: ManagedLaunchAcl | null;
 }
 
+/** One side of {@link ManagedLaunchAcl}: the read and post lists, each with the channels or patterns
+ *  it removes (SPEC §9), empty when it removes none. */
+export interface ManagedLaunchGrants { allowSubscribe: string[]; allowPublish: string[]; excludeSubscribe: string[]; excludePublish: string[] }
+
 /** A managed agent's read and post channels as asked for and as granted. */
 export interface ManagedLaunchAcl {
-  requested: { allowSubscribe: string[]; allowPublish: string[] };
-  effective: { allowSubscribe: string[]; allowPublish: string[] };
+  requested: ManagedLaunchGrants;
+  effective: ManagedLaunchGrants;
 }
 
-/** The manager's `acl` launch field: null when the manager sent none, undefined when it cannot be read. */
+/** The manager's `acl` launch field: null when the manager sent none, undefined when it cannot be read.
+ *  Each list is a plain array or `{ allow, exclude }` (SPEC §9). */
 export function managedLaunchAcl(value: unknown): ManagedLaunchAcl | null | undefined {
   if (value === undefined) return null;
-  const lists = (raw: unknown) => {
+  const lists = (raw: unknown): ManagedLaunchGrants | undefined => {
     const { allowSubscribe, allowPublish } = (raw ?? {}) as { allowSubscribe?: unknown; allowPublish?: unknown };
-    const channels = (list: unknown): list is string[] => Array.isArray(list) && list.every((channel) => typeof channel === "string");
-    return channels(allowSubscribe) && channels(allowPublish) ? { allowSubscribe: [...allowSubscribe], allowPublish: [...allowPublish] } : undefined;
+    try {
+      const read = parseChannelGrant(allowSubscribe, "allowSubscribe"), post = parseChannelGrant(allowPublish, "allowPublish");
+      return { allowSubscribe: [...read.allow], allowPublish: [...post.allow], excludeSubscribe: [...read.exclude], excludePublish: [...post.exclude] };
+    } catch {
+      return undefined;
+    }
   };
   const requested = lists((value as { requested?: unknown } | null)?.requested), effective = lists((value as { effective?: unknown } | null)?.effective);
   return requested && effective ? { requested, effective } : undefined;

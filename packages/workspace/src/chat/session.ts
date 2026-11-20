@@ -34,6 +34,9 @@ export interface SessionIdentity {
    *  broker remains the enforcement point. */
   readonly allowSubscribe: readonly string[];
   readonly allowPublish: readonly string[];
+  /** Channels or patterns removed from each ceiling (SPEC §9). Absent means none. */
+  readonly excludeSubscribe?: readonly string[];
+  readonly excludePublish?: readonly string[];
   /** Absolute end of the opening in epoch ms, when the authority set one. */
   readonly expiresAt?: number;
 }

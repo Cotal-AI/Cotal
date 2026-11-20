@@ -16,7 +16,7 @@
  * `cotal use` or registry change cannot move the retirement to another mesh.
  */
 import {
-  CotalEndpoint, DEV_OWNER, EP_UNANSWERED, SealRecipient, assertLifecycleToken, assertValidChannel, idFromCreds, isCurvePublicKey, principalKey, resolveReadAcl,
+  CotalEndpoint, DEV_OWNER, EP_UNANSWERED, SealRecipient, assertExclusions, assertLifecycleToken, assertValidChannel, channelGrantField, idFromCreds, isCurvePublicKey, principalKey, resolveReadGrant,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { isConnectRefusal, mintControlInstrument, preflightOrThrow } from "../connect.js";
@@ -132,7 +132,9 @@ async function askPinned(control: ControlClient, mesh: PinnedMesh, op: string, a
 
 /** Open one static chat session on `target`, which the caller resolved once. The three lists are
  *  a spawn's, under its rules: `subscribe` the initial channels, `allowSubscribe` the read ceiling
- *  (empty means `subscribe`), `allowPublish` the post list (empty means none). `instanceId`
+ *  (empty means `subscribe`), `allowPublish` the post list (empty means none). `excludeSubscribe` and
+ *  `excludePublish` remove channels or patterns from the ceilings (SPEC §9) and travel with them as
+ *  `{ allow, exclude }`; a read exclusion needs an explicit `allowSubscribe`. `instanceId`
  *  (`--on`) chooses the admitting manager; retirement always goes to the instance that answered
  *  the open. `control` asks the manager both at the open and at the retirement. */
 export async function openStaticChatSession(target: MeshTarget, options: {
@@ -140,6 +142,8 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   readonly subscribe?: readonly string[];
   readonly allowSubscribe?: readonly string[];
   readonly allowPublish?: readonly string[];
+  readonly excludeSubscribe?: readonly string[];
+  readonly excludePublish?: readonly string[];
   readonly instanceId?: string;
   readonly words: ChatWords;
   readonly control: ControlClient;
@@ -148,11 +152,13 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     throw new CommandFailure("refused", "UNSUPPORTED", "the static chat adapter requires a recorded static-auth target with its trust material; no other admission was attempted", { target: { space: target.space } });
   const subscribe = [...(options.subscribe ?? [])];
   const allowPublish = [...(options.allowPublish ?? [])];
+  const excludeSubscribe = [...(options.excludeSubscribe ?? [])], excludePublish = [...(options.excludePublish ?? [])];
   let allowSubscribe: string[];
   try {
     if (!options.label || options.label.length > 128) throw new Error("the label must be 1 to 128 characters");
     for (const channel of [...subscribe, ...(options.allowSubscribe ?? []), ...allowPublish]) assertValidChannel(channel);
-    allowSubscribe = resolveReadAcl(subscribe, [...(options.allowSubscribe ?? [])]);
+    allowSubscribe = resolveReadGrant(subscribe, options.allowSubscribe?.length ? [...options.allowSubscribe] : undefined, excludeSubscribe);
+    assertExclusions(allowPublish, excludePublish, "allowPublish");
   } catch (e) {
     throw new CommandFailure("refused", "USAGE_INVALID", `chat could not be opened: ${(e as Error).message}`);
   }
@@ -164,7 +170,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   let reply: ManagerReply;
   try {
     reply = await askPinned(control, mesh, "chatSessionOpen", {
-      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,
+      subscribe, allowSubscribe: channelGrantField(options.allowSubscribe ?? [], excludeSubscribe), allowPublish: channelGrantField(allowPublish, excludePublish), label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,
     }, options.instanceId, "admit a chat session");
   } catch (e) {
     recipient.clear();
@@ -199,6 +205,8 @@ export async function openStaticChatSession(target: MeshTarget, options: {
   const identity: SessionIdentity = {
     mode: "static", space: mesh.space, principal: principalKey(DEV_OWNER, slot.actor).key, lifecycleUid: slot.lifecycleUid, label: options.label,
     allowSubscribe, allowPublish, expiresAt: slot.expiresAt,
+    ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+    ...(excludePublish.length ? { excludePublish } : {}),
   };
   const retire = async (): Promise<CloseReport> => {
     let answer: ManagerReply;
@@ -220,6 +228,7 @@ export async function openStaticChatSession(target: MeshTarget, options: {
     // A copy: the endpoint edits its list on /leave and /join, and the read grant may be this array.
     channels: [...subscribe],
     allowSubscribe: [...allowSubscribe],
+    excludeSubscribe,
   });
   // The participant listeners are installed here, before the endpoint starts.
   const session = new NativeChatSession({ endpoint, identity, retire, words: options.words });

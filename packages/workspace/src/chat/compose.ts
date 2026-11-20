@@ -293,8 +293,14 @@ export function describeConnection(c: ConnectionReport): string[] {
   return [
     `${c.state} as ${oneLine(c.identity.principal)} (session …${c.identity.lifecycleUid.slice(-6)}, ${c.identity.mode})`,
     `joined: ${c.joinedChannels.map((ch) => `#${oneLine(ch)}`).join(" ") || "none"} · attention ${c.attention} · buffered ${c.bufferedInbox}`,
-    `may read: ${c.identity.allowSubscribe.map(oneLine).join(" ") || "none"} · may post: ${c.identity.allowPublish.map(oneLine).join(" ") || "none"}`,
+    `may read: ${grantLine(c.identity.allowSubscribe, c.identity.excludeSubscribe)} · may post: ${grantLine(c.identity.allowPublish, c.identity.excludePublish)}`,
   ];
+}
+
+/** One grant ceiling as `/whoami` shows it, with the channels it removes (SPEC §9). */
+function grantLine(allow: readonly string[], exclude: readonly string[] = []): string {
+  if (!allow.length) return "none";
+  return `${allow.map(oneLine).join(" ")}${exclude.length ? ` except ${exclude.map(oneLine).join(" ")}` : ""}`;
 }
 
 /**
