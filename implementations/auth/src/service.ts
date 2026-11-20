@@ -88,7 +88,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteManagerRenewal, isRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { assertCurrentManagerGate, assertCurrentManagerRegistration, authorizeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
-import { authorizeRemoteManagedAgentEnrollment, resolveRemoteSpawner, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
+import { authorizeRemoteManagedAgentEnrollment, launchTargetGrant, resolveRemoteSpawner, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
@@ -118,7 +118,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
 import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observation.js";
-import { jitteredBackoffMs, readCancellationAdmission, resolveReadAcl, type RunDelegation } from "@cotal-ai/core";
+import { channelGrantField, jitteredBackoffMs, readCancellationAdmission, type RunDelegation } from "@cotal-ai/core";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { registerSelfAuthorizedInstance } from "./service-registration.js";
 import { openAuthRegistry } from "./registry-host.js";
@@ -1078,7 +1078,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const ledgerDelegation = (owner: string, actor: string): RunDelegation | undefined => {
     if (!isDerivedOwner(owner)) return undefined;
     const row = findActorUnified(opts.dir, owner, actor);
-    return row && { scope: [...row.scope], allowSubscribe: [...row.allowSubscribe], allowPublish: [...row.allowPublish] };
+    return row && { scope: [...row.scope], allowSubscribe: channelGrantField(row.allowSubscribe, row.excludeSubscribe), allowPublish: channelGrantField(row.allowPublish, row.excludePublish) };
   };
   const takeObservedRunRequest = async (subject: string): Promise<ObservedRunRequest | undefined> => {
     // The broker queued the request to this connection before the manager could read it, and a
@@ -1672,7 +1672,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // the set the enrollment provisions; any other list the target omits is measured as empty.
       const t = r.target;
       const spawner = await resolveRemoteSpawner({ request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission });
-      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe), allowPublish: t.allowPublish ?? [], role: t.role };
+      const { subscribe: _subscribe, ...lists } = launchTargetGrant(t);
+      const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], ...lists, role: t.role };
       if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper);
       assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, "spawn");
       return { request: r, parent: spawner.parent };
@@ -1692,10 +1693,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       refuseIfFenced();
       const r = await authorizeRemoteManagedAgentEnrollment({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate: observeLegacyManagerGate });
       const t = r.target;
-      const subscribe = t.subscribe ?? [];
       // An omitted or empty read list reads the subscribe set, so the bound, the row and the
-      // footprint all take the read set it resolves to.
-      const allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);
+      // footprint all take the read set it resolves to, with its exclusions.
+      const { subscribe, allowSubscribe, allowPublish, excludeSubscribe, excludePublish } = launchTargetGrant(t);
+      const sameSet = (a: readonly string[], b: readonly string[]) => new Set(a).size === new Set(b).size && a.every((ch) => b.includes(ch));
+      const readText = (allow: readonly string[], exclude: readonly string[]) => `[${allow.join(", ")}]${exclude.length ? ` minus [${exclude.join(", ")}]` : ""}`;
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
         // The custody this enrollment attests: the instance the authorized request names, checked
         // against its current registration above. Never a field of the participant's target.
@@ -1724,8 +1726,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           // A retry provisions the read this request resolves to, so it is this enrollment only if
           // that read is the one its grant records. A grant an older host wrote for a target that
           // named only a subscribe set records no read.
-          if (held !== undefined && !(new Set(held.allowSubscribe).size === new Set(allowSubscribe).size && held.allowSubscribe.every((ch) => allowSubscribe.includes(ch))))
-            throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid} to read [${held.allowSubscribe.join(", ")}], and this retry reads [${allowSubscribe.join(", ")}]; prepare that lifecycle's retirement and enroll it again`);
+          if (held !== undefined && !(sameSet(held.allowSubscribe, allowSubscribe) && sameSet(held.excludeSubscribe ?? [], excludeSubscribe)))
+            throw new EpEnvelopeError("conflict", `managed agent "${t.actor}" is enrolled at lifecycle ${held.lifecycleUid} to read ${readText(held.allowSubscribe, held.excludeSubscribe ?? [])}, and this retry reads ${readText(allowSubscribe, excludeSubscribe)}; prepare that lifecycle's retirement and enroll it again`);
           // A retry walks the held grant again: its spawner chain may have narrowed since the
           // first answer, and provisioning would restore what it took away.
           if (held !== undefined) {
@@ -1738,7 +1740,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           // walk over the starter's current row below.
           if (spawner.run !== undefined)
             assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, {
-              owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe, allowPublish: t.allowPublish ?? [], role: t.role,
+              owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe, allowPublish, excludeSubscribe, excludePublish, role: t.role,
             });
           // A fresh uid is never one a retirement tombstoned, and only the host can make that
           // promise. The grant's envelope walk refuses an over-wide request before any durable exists.
@@ -1748,7 +1750,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             actor: t.actor,
             scope: t.capabilities ?? [],
             allowSubscribe,
-            allowPublish: t.allowPublish ?? [],
+            allowPublish,
+            ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+            ...(excludePublish.length ? { excludePublish } : {}),
             ...(t.eventPayloads === false || opts.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}),
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),
@@ -1776,7 +1780,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           });
           await provisioner.start();
           try {
-            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe, role: row.role });
+            await provisionAgentDurables(provisioner, { owner, actor: t.actor, lifecycleUid }, { subscribe, allowSubscribe, excludeSubscribe, role: row.role });
           } finally {
             await provisioner.stop();
           }
@@ -1811,8 +1815,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           lifecycleUid,
           sentinelCreds,
           subscribe,
-          allowSubscribe,
-          allowPublish: row.allowPublish,
+          allowSubscribe: channelGrantField(allowSubscribe, excludeSubscribe),
+          allowPublish: channelGrantField(row.allowPublish, row.excludePublish),
           agentBearerExchangeUrl,
         },
       };

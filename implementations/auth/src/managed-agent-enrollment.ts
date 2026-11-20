@@ -21,6 +21,9 @@ import {
   parseRemoteManagedAgentPrepareRetirementRequest,
   parseRemoteManagedAgentRuntimeCreateRequest,
   parseRemoteManagedAgentRuntimeStatusRequest,
+  parseChannelGrant,
+  resolveReadGrant,
+  type DelegatedUserLaunchTarget,
   type EpGateState,
   type RemoteManagedAgentEnrollmentRequest,
   type RemoteManagedAgentPrepareRetirementRequest,
@@ -56,6 +59,28 @@ export async function authorizeRemoteManagedAgentEnrollment(
     throw new EpEnvelopeError("permission-denied", 'managed agent enrollment needs scope "supervise"; spawn/admin do not imply it');
   await assertCurrentManagerRegistration(r, r.serveEpoch, args, "manager enrollment");
   return r;
+}
+
+/** The grant lists a launch target asks for, as a ledger row holds them. An omitted or empty read
+ *  list reads the subscribe set; an exclusion needs an explicit read list (SPEC §9). */
+export function launchTargetGrant(t: DelegatedUserLaunchTarget): {
+  subscribe: string[];
+  allowSubscribe: string[];
+  allowPublish: string[];
+  excludeSubscribe: string[];
+  excludePublish: string[];
+} {
+  const subscribe = t.subscribe ?? [];
+  const read = t.allowSubscribe === undefined ? undefined : parseChannelGrant(t.allowSubscribe, "target.allowSubscribe");
+  const post = parseChannelGrant(t.allowPublish ?? [], "target.allowPublish");
+  const excludeSubscribe = [...(read?.exclude ?? [])];
+  return {
+    subscribe,
+    allowSubscribe: resolveReadGrant(subscribe, read && [...read.allow], excludeSubscribe),
+    allowPublish: [...post.allow],
+    excludeSubscribe,
+    excludePublish: [...post.exclude],
+  };
 }
 
 /** Who a hosted enrollment's helper is delegated by (SPEC 13.6): the parent its managed row records,

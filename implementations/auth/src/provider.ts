@@ -16,7 +16,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { assertDerivedOwnerToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, channelGrantField, isCredentialTransportUrl, parseChannelGrant, registry, type ChannelGrantField, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -675,8 +675,8 @@ export const cotalAuthProvider: AuthProvider = {
       grant: row
         ? {
             scope: row.scope,
-            allowSubscribe: row.allowSubscribe,
-            allowPublish: row.allowPublish,
+            allowSubscribe: channelGrantField(row.allowSubscribe, row.excludeSubscribe),
+            allowPublish: channelGrantField(row.allowPublish, row.excludePublish),
             ...(row.role ? { role: row.role } : {}),
             ...(row.label ? { label: row.label } : {}),
           }
@@ -701,7 +701,7 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, eventPayloads, role, parent, label, lifecycleUid, fresh, custody }) {
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, excludeSubscribe, excludePublish, eventPayloads, role, parent, label, lifecycleUid, fresh, custody }) {
     // Async work first: the callout material is loaded before the transaction, never inside it.
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
@@ -721,6 +721,8 @@ export const cotalAuthProvider: AuthProvider = {
         scope,
         allowSubscribe,
         allowPublish,
+        ...(excludeSubscribe?.length ? { excludeSubscribe } : {}),
+        ...(excludePublish?.length ? { excludePublish } : {}),
         ...(eventPayloads === false ? { eventPayloads } : {}),
         ...(role ? { role } : {}),
         ...(parent ? { parent } : {}),
@@ -1107,17 +1109,23 @@ function exchangeAuthority(out: { owner?: unknown; grant?: unknown }, source: st
     throw new Error(`${source} returned malformed authority - its build may be stale`);
   assertDerivedOwnerToken(out.owner);
   const grant = out.grant as Record<string, unknown>;
-  const strings = (field: "scope" | "allowSubscribe" | "allowPublish"): string[] => {
-    const value = grant[field];
-    if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
-      throw new Error(`${source} returned malformed authority.${field} - its build may be stale`);
-    return [...value];
+  const scope = grant.scope;
+  if (!Array.isArray(scope) || scope.some((item) => typeof item !== "string"))
+    throw new Error(`${source} returned malformed authority.scope - its build may be stale`);
+  // A channel list is a plain list or, when the row removes channels, `{ allow, exclude }` (SPEC §9).
+  const channels = (field: "allowSubscribe" | "allowPublish"): ChannelGrantField => {
+    try {
+      const g = parseChannelGrant(grant[field], `authority.${field}`);
+      return channelGrantField(g.allow, g.exclude);
+    } catch (e) {
+      throw new Error(`${source} returned malformed authority.${field} (${(e as Error).message}) - its build may be stale`);
+    }
   };
   if (grant.dmHistory !== "own") throw new Error(`${source} returned malformed authority.dmHistory - its build may be stale`);
   const current: UserAuthGrant = {
-    scope: strings("scope"),
-    allowSubscribe: strings("allowSubscribe"),
-    allowPublish: strings("allowPublish"),
+    scope: [...scope],
+    allowSubscribe: channels("allowSubscribe"),
+    allowPublish: channels("allowPublish"),
     dmHistory: "own",
   };
   return { authority: { owner: out.owner, grant: current } };

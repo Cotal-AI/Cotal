@@ -9,7 +9,8 @@
  *   never a follower Direct Get). Any head movement (re-grant, revoke, takeover epoch advance)
  *   moves it, so every later check refuses.
  * - `rowDigest` is SHA-256 over the RFC 8785 canonical JSON of the row's authority fields
- *   `{owner, actor, scope, allowSubscribe, allowPublish, role?, lifecycleUid}`. It is defense in
+ *   `{owner, actor, scope, allowSubscribe, allowPublish, role?, lifecycleUid}`, each list in its
+ *   wire shape (`{ allow, exclude }` when the row removes channels, SPEC §9). It is defense in
  *   depth against an out-of-band file edit, which only this digest bounds.
  *
  * Every check here is a READ. A read is never a fence: the residual is that the parent head and the
@@ -21,9 +22,10 @@ import type { JetStreamManager } from "@nats-io/jetstream";
 import {
   EpEnvelopeError,
   canonicalJson,
+  channelGrantField,
+  grantOverreachOf,
   lifecycleHeadKey,
   parseLifecycleHead,
-  patternInAllow,
   readRecordLeader,
   type LifecycleMapping,
 } from "@cotal-ai/core";
@@ -36,16 +38,18 @@ export const CHAT_PARENT_ACTOR = "cli";
 const sha256Hex = (s: string): string => createHash("sha256").update(s, "utf8").digest("hex");
 
 /** `rowDigest`: the normative field list and canonicalization. `role` is included only when
- *  present (RFC 8785 cannot carry `undefined`); `label`, `parent` and `grantedAt` are excluded. */
-function chatParentRowDigest(row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid">): string {
+ *  present (RFC 8785 cannot carry `undefined`); `label`, `parent` and `grantedAt` are excluded. A
+ *  list without exclusions hashes as the plain list it always was, so a pin taken before exclusions
+ *  existed still matches, and adding or removing an exclusion moves the digest. */
+function chatParentRowDigest(row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish" | "role" | "lifecycleUid">): string {
   if (typeof row.lifecycleUid !== "string" || row.lifecycleUid === "")
     throw new EpEnvelopeError("permission-denied", `the parent row "${row.owner}.${row.actor}" carries no lifecycleUid; re-grant it before opening a chat session`);
   return sha256Hex(canonicalJson({
     owner: row.owner,
     actor: row.actor,
     scope: row.scope,
-    allowSubscribe: row.allowSubscribe,
-    allowPublish: row.allowPublish,
+    allowSubscribe: channelGrantField(row.allowSubscribe, row.excludeSubscribe),
+    allowPublish: channelGrantField(row.allowPublish, row.excludePublish),
     ...(row.role !== undefined ? { role: row.role } : {}),
     lifecycleUid: row.lifecycleUid,
   }));
@@ -94,11 +98,12 @@ export function buildChatParentPin(row: ActorRow, head: { mapping: LifecycleMapp
   return { actor: CHAT_PARENT_ACTOR, lifecycleUid: head.mapping.lifecycleUid, headRevision: head.revision, rowDigest: chatParentRowDigest(row) };
 }
 
-/** Containment: every requested entry is contained in the parent's CURRENT
- *  list. Nothing is added: no `>` the user did not name, no default. */
-export function assertChatListsContained(row: Pick<ActorRow, "allowSubscribe" | "allowPublish">, lists: { read: string[]; post: string[] }): void {
-  const overRead = lists.read.filter((ch) => !patternInAllow(row.allowSubscribe, ch));
-  const overPost = lists.post.filter((ch) => !patternInAllow(row.allowPublish, ch));
+/** Containment: every requested entry is contained in the parent's CURRENT grant, its exclusions
+ *  applied exactly. Nothing is added: no `>` the user did not name, no default, and no exclusion,
+ *  so a pattern that reaches a channel the parent excludes is refused. */
+export function assertChatListsContained(row: Pick<ActorRow, "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish">, lists: { read: string[]; post: string[] }): void {
+  const overRead = grantOverreachOf({ allow: lists.read, exclude: [] }, { allow: row.allowSubscribe, exclude: row.excludeSubscribe ?? [] });
+  const overPost = grantOverreachOf({ allow: lists.post, exclude: [] }, { allow: row.allowPublish, exclude: row.excludePublish ?? [] });
   if (overRead.length || overPost.length)
     throw new EpEnvelopeError("permission-denied", `the chat session would exceed the parent grant: ${[
       overRead.length ? `read [${overRead.join(", ")}]` : "",

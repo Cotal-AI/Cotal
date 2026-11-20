@@ -26,7 +26,7 @@
 export function grantCommandLine(
   owner: string,
   actor: string,
-  row: { scope: string[]; allowSubscribe: string[]; allowPublish: string[]; role?: string; label?: string },
+  row: { scope: string[]; allowSubscribe: string[]; allowPublish: string[]; excludeSubscribe?: string[]; excludePublish?: string[]; role?: string; label?: string },
 ): string {
   const shq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
   const parts = [
@@ -35,6 +35,9 @@ export function grantCommandLine(
     `--allow-subscribe ${shq(row.allowSubscribe.join(","))}`,
     `--allow-publish ${shq(row.allowPublish.join(","))}`,
   ];
+  // An exclusion is part of the row: a line that dropped one would widen the row it repairs.
+  if (row.excludeSubscribe?.length) parts.push(`--exclude-subscribe ${shq(row.excludeSubscribe.join(","))}`);
+  if (row.excludePublish?.length) parts.push(`--exclude-publish ${shq(row.excludePublish.join(","))}`);
   if (row.role) parts.push(`--role ${shq(row.role)}`);
   if (row.label) parts.push(`--label ${shq(row.label)}`);
   return parts.join(" ");

@@ -14,6 +14,7 @@ import {
   generateSigningKey,
   grantActor,
   loadPinnedIdp,
+  revokeActor,
   USER_AUTH_TRUST_SCHEME,
 } from "../src/index.js";
 
@@ -148,6 +149,18 @@ try {
   const narrowed = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
   check("authority narrowing changes the fingerprint", narrowed.value !== first.value);
 
+  // An exclusion is authority (SPEC §9): adding one changes the fingerprint and removing it
+  // returns the value a row without one always had.
+  const poster = (excludePublish?: string[]) => grantActor(dir, { owner: OWNER, actor: "poster", scope: [], allowSubscribe: [], allowPublish: ["team.>"], ...(excludePublish ? { excludePublish } : {}) });
+  poster();
+  const unexcluded = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
+  poster(["team.secret"]);
+  const excluded = await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE });
+  check("adding an exclusion changes the fingerprint", excluded.value !== unexcluded.value);
+  poster();
+  check("removing it restores the fingerprint", (await cotalAuthProvider.trustFingerprint({ store, dir, space: SPACE })).value === unexcluded.value);
+  revokeActor(dir, OWNER, "poster");
+
   // Restore the original authority before validating the retained child envelope.
   grantActor(dir, {
     owner: OWNER,
@@ -158,6 +171,9 @@ try {
   });
 
   console.log("B. retained managed principal");
+  const excludedAgent = await cotalAuthProvider.grantAgent({ custody: { kind: "foreground" }, store, dir, space: SPACE, owner: OWNER, actor: "excluded",
+    scope: [], allowSubscribe: ["team.>"], excludeSubscribe: ["team.secret"], allowPublish: ["team.>"], excludePublish: ["team.*.private"],
+    parent: `${OWNER}.cli`, lifecycleUid: mintLifecycleUid() });
   const beforeReads = snapshot(dir);
   const authority = await cotalAuthProvider.validateRetainedAgent({
     store,
@@ -174,6 +190,11 @@ try {
       authority.parent === `${OWNER}.cli` && authority.scope.join(",") === "spawn",
     authority,
   );
+  check("a retained grant without exclusions keeps its plain lists", Array.isArray(authority.allowSubscribe) && Array.isArray(authority.allowPublish), authority);
+  const excludedAuthority = await cotalAuthProvider.validateRetainedAgent({ store, dir, space: SPACE, owner: OWNER, actor: "excluded", actorToken: excludedAgent.actorToken, sentinelCreds: excludedAgent.sentinelCreds });
+  check("retained authority carries a grant's exclusions in the { allow, exclude } form",
+    JSON.stringify([excludedAuthority.allowSubscribe, excludedAuthority.allowPublish]) ===
+      JSON.stringify([{ allow: ["team.>"], exclude: ["team.secret"] }, { allow: ["team.>"], exclude: ["team.*.private"] }]), excludedAuthority);
   await rejects(
     "a wrong retained agent token is refused without rotation",
     () => cotalAuthProvider.validateRetainedAgent({ store, dir, space: SPACE, owner: OWNER, actor: "worker", actorToken: "wrong", sentinelCreds: retained.sentinelCreds }),

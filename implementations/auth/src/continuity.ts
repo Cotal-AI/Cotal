@@ -5,7 +5,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { decode, type Account } from "@nats-io/jwt";
 import { fromCurveSeed, fromSeed } from "@nats-io/nkeys";
-import type { AuthTrustFingerprint, RetainedAgentAuthority, SecretStore } from "@cotal-ai/core";
+import { channelGrantField, type AuthTrustFingerprint, type RetainedAgentAuthority, type SecretStore } from "@cotal-ai/core";
 import { ledgerAuthorizeAgentExchange, loadActorLedger } from "./ledger.js";
 import {
   loadCalloutAuth,
@@ -84,8 +84,10 @@ export async function userAuthTrustFingerprint(store: SecretStore, dir: string, 
       owner: row.owner,
       actor: row.actor,
       scope: sortedUnique(row.scope),
-      allowSubscribe: sortedUnique(row.allowSubscribe),
-      allowPublish: sortedUnique(row.allowPublish),
+      // Each list in its wire shape: a row without exclusions commits to the same value as before
+      // they existed, and adding or removing one changes the fingerprint.
+      allowSubscribe: channelGrantField(sortedUnique(row.allowSubscribe), sortedUnique(row.excludeSubscribe ?? [])),
+      allowPublish: channelGrantField(sortedUnique(row.allowPublish), sortedUnique(row.excludePublish ?? [])),
       role: row.role ?? null,
       parent: row.parent ?? null,
       tokenHash: row.kind === "managed-agent" ? row.tokenHash! : null,
@@ -159,8 +161,8 @@ export async function validateRetainedManagedAgent(input: {
     actor: row.actor,
     lifecycleUid: row.lifecycleUid,
     scope: [...row.scope],
-    allowSubscribe: [...row.allowSubscribe],
-    allowPublish: [...row.allowPublish],
+    allowSubscribe: channelGrantField(row.allowSubscribe, row.excludeSubscribe),
+    allowPublish: channelGrantField(row.allowPublish, row.excludePublish),
     ...(row.role ? { role: row.role } : {}),
     ...(row.parent ? { parent: row.parent } : {}),
   };

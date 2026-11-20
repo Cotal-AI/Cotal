@@ -39,18 +39,25 @@ import { join, resolve } from "node:path";
 import {
   acquireLock,
   assertDerivedOwnerToken,
+  assertExclusions,
   assertManagedGrantCustody,
   assertValidChannel,
   assertValidOwnerToken,
   capabilityWithin,
+  channelGrantField,
+  channelInGrant,
   eventChannel,
+  grantOverreachOf,
   mintLifecycleUid,
   mkSecretDir,
   parseActorLedgerSource,
+  parseChannelGrant,
   parsePrincipalKey,
-  patternInAllow,
+  patternCoveredBy,
   sameManagedGrantCustody,
   writeSecretFile,
+  type ChannelGrant,
+  type ChannelGrantField,
   type IssuedSourceRef,
   type ManagedGrantCustody,
   type RunDelegation,
@@ -64,6 +71,10 @@ import type { AclResolver } from "./permissions.js";
 const ACTORS_DIR = "actors";
 const MANAGED_DIR = "managed-actors";
 const LEDGER_VER = 1;
+/** A row that carries an exclusion (SPEC §9). A reader that predates exclusions refuses it by its
+ *  version, and refuses its `{ allow, exclude }` lists by their shape. A row without one stays
+ *  version 1, byte-identical to what that reader accepts. */
+const LEDGER_VER_EXCLUSIONS = 2;
 
 /** The two row spaces. The KIND is the directory — never a field a partial write could flip. */
 export type ActorKind = "interactive" | "managed-agent";
@@ -97,6 +108,11 @@ export interface ActorRow {
    *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant --full` supplies `>` for an
    *  omitted `--allow-publish`. */
   allowPublish: string[];
+  /** Channels or patterns removed from {@link ActorRow.allowSubscribe} (SPEC §9). Absent or empty
+   *  means none. Stored with the list as `{ allow, exclude }` in a version 2 row. */
+  excludeSubscribe?: string[];
+  /** Channels or patterns removed from {@link ActorRow.allowPublish}, stored the same way. */
+  excludePublish?: string[];
   /** Durable restriction used by every native credential mint and renewal. */
   eventPayloads?: false;
   /** Role (scopes the TASK-queue consumer), when the actor serves one. */
@@ -127,9 +143,12 @@ export interface ActorRow {
   grantedAt: string;
 }
 
-interface RowFile extends ActorRow {
+/** A row as stored: each list in its wire shape, the version saying which shapes may appear. */
+type RowFile = Omit<ActorRow, "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish"> & {
   ver: number;
-}
+  allowSubscribe: ChannelGrantField;
+  allowPublish: ChannelGrantField;
+};
 
 function spaceDir(dir: string, kind: ActorKind): string {
   return join(dir, kind === "interactive" ? ACTORS_DIR : MANAGED_DIR);
@@ -169,14 +188,28 @@ function readRow(path: string, kind: ActorKind): ActorRow {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
-  if (parsed === null || typeof parsed !== "object" || parsed.ver !== LEDGER_VER)
-    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
+  if (parsed === null || typeof parsed !== "object" || (parsed.ver !== LEDGER_VER && parsed.ver !== LEDGER_VER_EXCLUSIONS))
+    throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER} or ${LEDGER_VER_EXCLUSIONS}) - refusing to guess at an authorization row`);
   assertDerivedOwnerToken(parsed.owner);
   if (parsed.eventPayloads !== undefined && parsed.eventPayloads !== false)
     throw new Error(`${path}: eventPayloads restriction must be false`);
   assertValidOwnerToken(parsed.actor);
-  if (!Array.isArray(parsed.scope) || !Array.isArray(parsed.allowSubscribe) || !Array.isArray(parsed.allowPublish))
+  // Exclusions are stored only inside their list, so a sibling field is a row no writer produced.
+  if ("excludeSubscribe" in parsed || "excludePublish" in parsed)
+    throw new Error(`${path}: actor grant carries a separate exclusion field - exclusions are stored in their list as { allow, exclude }`);
+  // A version 1 row holds plain lists only; the { allow, exclude } form is read only in version 2.
+  if (!Array.isArray(parsed.scope) || (parsed.ver === LEDGER_VER && (!Array.isArray(parsed.allowSubscribe) || !Array.isArray(parsed.allowPublish))))
     throw new Error(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
+  let read: ChannelGrant = { allow: parsed.allowSubscribe as string[], exclude: [] };
+  let post: ChannelGrant = { allow: parsed.allowPublish as string[], exclude: [] };
+  if (parsed.ver === LEDGER_VER_EXCLUSIONS) {
+    try {
+      read = parseChannelGrant(parsed.allowSubscribe, "allowSubscribe");
+      post = parseChannelGrant(parsed.allowPublish, "allowPublish");
+    } catch (e) {
+      throw new Error(`${path}: actor grant has a malformed channel list (${e instanceof Error ? e.message : String(e)}) - fix or remove the row`);
+    }
+  }
   if (kind === "interactive" && parsed.tokenHash !== undefined)
     throw new Error(`${path}: an interactive grant must not carry an agent token hash - it was written by the wrong path; remove the row and re-grant (\`cotal actor grant\`)`);
   if (kind === "managed-agent" && !(typeof parsed.tokenHash === "string" && /^[0-9a-f]{64}$/.test(parsed.tokenHash)))
@@ -188,7 +221,13 @@ function readRow(path: string, kind: ActorKind): ActorRow {
     catch (e) { throw new Error(`${path}: managed-agent grant has a malformed custody record (${e instanceof Error ? e.message : String(e)}) - respawn the agent to rewrite it`); }
   }
   const { ver: _ver, ...row } = parsed;
-  return row;
+  return {
+    ...row,
+    allowSubscribe: [...read.allow],
+    allowPublish: [...post.allow],
+    ...(read.exclude.length ? { excludeSubscribe: [...read.exclude] } : {}),
+    ...(post.exclude.length ? { excludePublish: [...post.exclude] } : {}),
+  };
 }
 
 /** Every granted row in BOTH spaces, read fresh, tagged with its kind. Missing dirs = EMPTY ledger
@@ -264,7 +303,11 @@ function writeRow(dir: string, kind: ActorKind, row: ActorRow): void {
   mkSecretDir(dir);
   mkSecretDir(spaceDir(dir, kind));
   const tmp = `${path}.${process.pid}.tmp`;
-  writeSecretFile(tmp, JSON.stringify({ ver: LEDGER_VER, ...row } satisfies RowFile, null, 2));
+  // Each list keeps its place in the row; it is an object only when it carries an exclusion.
+  const { excludeSubscribe = [], excludePublish = [], ...rest } = row;
+  const ver = excludeSubscribe.length + excludePublish.length > 0 ? LEDGER_VER_EXCLUSIONS : LEDGER_VER;
+  const file: RowFile = { ver, ...rest, allowSubscribe: channelGrantField(row.allowSubscribe, excludeSubscribe), allowPublish: channelGrantField(row.allowPublish, excludePublish) };
+  writeSecretFile(tmp, JSON.stringify(file, null, 2));
   renameSync(tmp, path);
 }
 
@@ -291,6 +334,13 @@ function assertRowInputs(row: Omit<ActorRow, "grantedAt">): void {
   // core `permissionsFor`): a row's ACL lists are the delegation envelope for everything under it,
   // so a malformed entry (`a.>.b`) must never be stored where containment would later read it.
   for (const ch of [...row.allowSubscribe, ...row.allowPublish]) assertValidChannel(ch);
+  // Exclusions are validated against the list they remove from (SPEC §9): each removes something,
+  // none repeats another, and none removes a whole allow entry.
+  for (const [field, list] of [["excludeSubscribe", row.excludeSubscribe], ["excludePublish", row.excludePublish]] as const)
+    if (list !== undefined && (!Array.isArray(list) || !list.every((x) => typeof x === "string")))
+      throw new Error(`grantActor: ${field} must be a list of channels when present`);
+  assertExclusions(row.allowSubscribe, row.excludeSubscribe ?? [], "allowSubscribe");
+  assertExclusions(row.allowPublish, row.excludePublish ?? [], "allowPublish");
   // Scope entries are capability TOKENS (compared by equality, embedded in bearers and repair
   // commands) — an open vocabulary (`spawn`, `admin`, `role:<r>`, …), but a closed grammar: no
   // whitespace, no shell/subject metacharacters, nothing `--scope` CSV can't round-trip.
@@ -348,7 +398,7 @@ function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): Act
 
 /** Delegation attenuation — the ENVELOPE rule: everything under an owner stays within the
  *  spawner's own grant. A spawn-scoped actor can delegate only a SUBSET of what it holds — channel
- *  ACLs by NATS-pattern containment ({@link patternInAllow}), capability scope by set inclusion —
+ *  ACLs by exact containment with exclusions applied ({@link grantOverreachOf}), capability scope by set inclusion —
  *  never more; a spawner whose row carries `admin` is the operator authority and is exempt, and a
  *  row with NO parent is an operator/roster boot (the operator is the authority). Enforced at BOTH
  *  managed-row boundaries: authorship ({@link grantManagedActor}) and every agent bearer exchange
@@ -356,7 +406,7 @@ function rawGrantInteractive(dir: string, row: Omit<ActorRow, "grantedAt">): Act
  *  their next refresh (≤ {@link AGENT_BEARER_TTL_SEC}s), instead of leaving them orphaned. */
 export function assertWithinSpawnerGrant(
   dir: string,
-  row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "parent" | "role">,
+  row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish" | "parent" | "role">,
   boundary: "spawn" | "exchange",
 ): void {
   // Walk the WHOLE delegation chain, not just the immediate link: per-link containment composes
@@ -393,17 +443,24 @@ export function assertWithinSpawnerGrant(
       throw new Error(
         `agent "${childKey}" cannot be delegated by spawner "${parentKey}" of a different owner - cross-owner spawns are operator (admin) launches only`,
       );
-    const { overScope, overSub, overPub, needRole } = overreachOf(parent, child);
-    if (overScope.length || overSub.length || overPub.length || needRole) {
-      const wrongs = describeOverreach({ overScope, overSub, overPub, needRole }, parent, child.role);
-      const widen = widenGrantCommand(pOwner, pActor, parent, [...overScope, ...(needRole ? [needRole] : [])], overSub, overPub);
+    const o = overreachOf(parent, child);
+    if (o.overScope.length || o.overSub.length || o.overPub.length || o.needRole) {
+      const wrongs = describeOverreach(o, parent, child.role);
       const who = deep ? `agent "${leaf}": its ancestor "${childKey}"` : `agent "${leaf}"`;
+      // Widening the spawner admits only what lies outside its allow lists. A part its exclusions
+      // remove is never widened on the child's behalf: the child leaves it out.
+      const remedies = [
+        ...(o.overScope.length || o.needRole || o.beyondSub.length || o.beyondPub.length
+          ? [`the mesh operator widens the spawner with \`${widenGrantCommand(pOwner, pActor, parent, [...o.overScope, ...(o.needRole ? [o.needRole] : [])], o.beyondSub, o.beyondPub)}\``]
+          : []),
+        ...(o.overSub.length > o.beyondSub.length || o.overPub.length > o.beyondPub.length ? ["the agent's grant leaves out what the spawner's exclusions remove"] : []),
+      ];
       throw new Error(
         (boundary === "spawn"
           ? `${who} would exceed its spawner's grant - delegation only narrows: `
           : `${who} exceeds its spawner's CURRENT grant (narrowed since spawn): `) +
           wrongs.join("; ") +
-          ` - the mesh operator widens the spawner with \`${widen}\`` +
+          ` - ${remedies.join(", and ")}` +
           (boundary === "spawn" ? ", then respawn" : ", or respawn within it"),
       );
     }
@@ -411,37 +468,57 @@ export function assertWithinSpawnerGrant(
   }
 }
 
-/** What a child's grant asks for beyond its spawner's, part by part: the per-link envelope rule. */
+/** One grant's channel lists, as the bound compares them. */
+type GrantLists = Pick<ActorRow, "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish">;
+
+/** What a child's grant asks for beyond its spawner's, part by part: the per-link envelope rule.
+ *  Channels are compared exactly with exclusions applied ({@link grantOverreachOf}): `overSub` and
+ *  `overPub` name each child entry that reaches past the parent, and `beyondSub` and `beyondPub` the
+ *  ones that lie outside the parent's allow lists, the only part widening the parent admits. */
 function overreachOf(
-  parent: { owner: string; actor: string; scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
-  child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
-): { overScope: string[]; overSub: string[]; overPub: string[]; needRole?: string } {
+  parent: { owner: string; actor: string; scope: readonly string[] } & GrantLists,
+  child: Pick<ActorRow, "owner" | "actor" | "scope" | "role"> & GrantLists,
+): { overScope: string[]; overSub: string[]; overPub: string[]; beyondSub: string[]; beyondPub: string[]; needRole?: string } {
   // `run` carries the whole spawn set, so a run holder hands on `spawn` too (the token rule core
   // shares with the static bound). The vocabulary stays open: any token the parent lists is within.
   const overScope = child.scope.filter((s) => !capabilityWithin(parent.scope, s));
-  const overSub = child.allowSubscribe.filter((ch) => !patternInAllow([...parent.allowSubscribe], ch));
+  const read = { allow: child.allowSubscribe, exclude: child.excludeSubscribe ?? [] };
+  const parentRead = { allow: parent.allowSubscribe, exclude: parent.excludeSubscribe ?? [] };
+  const overSub = grantOverreachOf(read, parentRead);
   // A spawner that may post its own events may hand each child that child's own event channel
   // and no other. The channel names the child, so it reaches nothing the spawner holds, and the
   // walk still checks the spawner's own event channel against its parent up to the root.
-  const ownEvents = patternInAllow([...parent.allowPublish], eventChannel({ owner: parent.owner, actor: parent.actor })) ? eventChannel(child) : undefined;
-  const overPub = child.allowPublish.filter((ch) => ch !== ownEvents && !patternInAllow([...parent.allowPublish], ch));
+  const parentPost = { allow: parent.allowPublish, exclude: parent.excludePublish ?? [] };
+  const ownEvents = channelInGrant(parentPost.allow, parentPost.exclude, eventChannel({ owner: parent.owner, actor: parent.actor })) ? eventChannel(child) : undefined;
+  const post = { allow: child.allowPublish.filter((ch) => ch !== ownEvents), exclude: child.excludePublish ?? [] };
+  const overPub = grantOverreachOf(post, parentPost);
+  const beyond = (g: { allow: readonly string[]; exclude: readonly string[] }, parentAllow: readonly string[]) =>
+    g.allow.filter((a) => !patternCoveredBy(a, [...parentAllow, ...g.exclude]));
   // A role is RECEIVE reach (bind/consume the shared `svc_<role>` task queue), so it is a
   // delegated capability like any other: the spawner's scope must carry `role:<r>` to hand it
   // down. Rides the scope list — no extra row field, and scope's own per-link inclusion makes
   // role delegation transitive for free.
   const needRole = child.role && !parent.scope.includes(`role:${child.role}`) ? `role:${child.role}` : undefined;
-  return { overScope, overSub, overPub, ...(needRole !== undefined ? { needRole } : {}) };
+  return {
+    overScope, overSub, overPub, beyondSub: beyond(read, parentRead.allow), beyondPub: beyond(post, parentPost.allow),
+    ...(needRole !== undefined ? { needRole } : {}),
+  };
+}
+
+/** A grant list for a sentence: its allow entries, then what its exclusions remove. */
+function grantText(allow: readonly string[], exclude: readonly string[] = []): string {
+  return `[${allow.join(", ") || "none"}]${exclude.length ? ` minus [${exclude.join(", ")}]` : ""}`;
 }
 
 function describeOverreach(
   o: ReturnType<typeof overreachOf>,
-  parent: { scope: readonly string[]; allowSubscribe: readonly string[]; allowPublish: readonly string[] },
+  parent: { scope: readonly string[] } & GrantLists,
   role: string | undefined,
 ): string[] {
   return [
     o.overScope.length ? `scope [${o.overScope.join(", ")}] beyond [${parent.scope.join(", ") || "none"}]` : "",
-    o.overSub.length ? `read [${o.overSub.join(", ")}] beyond [${parent.allowSubscribe.join(", ") || "none"}]` : "",
-    o.overPub.length ? `post [${o.overPub.join(", ")}] beyond [${parent.allowPublish.join(", ") || "none"}]` : "",
+    o.overSub.length ? `read [${o.overSub.join(", ")}] beyond ${grantText(parent.allowSubscribe, parent.excludeSubscribe)}` : "",
+    o.overPub.length ? `post [${o.overPub.join(", ")}] beyond ${grantText(parent.allowPublish, parent.excludePublish)}` : "",
     o.needRole ? `role "${role}" beyond scope [${parent.scope.join(", ") || "none"}] (a role is delegated with the \`${o.needRole}\` capability)` : "",
   ].filter(Boolean);
 }
@@ -454,14 +531,23 @@ export function assertWithinRunDelegation(
   runId: string,
   starter: { owner: string; actor: string },
   delegation: RunDelegation,
-  child: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role">,
+  child: Pick<ActorRow, "owner" | "actor" | "scope" | "role"> & GrantLists,
 ): void {
   if (delegation.scope.includes("admin")) return;
-  const o = overreachOf({ ...starter, ...delegation }, child);
+  // The admission recorded each list in its wire shape; an exclusion it froze bounds the helper.
+  const read = parseChannelGrant(delegation.allowSubscribe, "run delegation allowSubscribe");
+  const post = parseChannelGrant(delegation.allowPublish, "run delegation allowPublish");
+  const held = {
+    scope: delegation.scope,
+    allowSubscribe: [...read.allow], allowPublish: [...post.allow],
+    ...(read.exclude.length ? { excludeSubscribe: [...read.exclude] } : {}),
+    ...(post.exclude.length ? { excludePublish: [...post.exclude] } : {}),
+  };
+  const o = overreachOf({ ...starter, ...held }, child);
   if (!o.overScope.length && !o.overSub.length && !o.overPub.length && !o.needRole) return;
   throw new Error(
     `agent "${child.actor}" would exceed what run ${runId}'s starter "${starter.owner}.${starter.actor}" held when the run was admitted - a run hands on only that: ` +
-      describeOverreach(o, delegation, child.role).join("; ") +
+      describeOverreach(o, held, child.role).join("; ") +
       " - start the run from a caller that holds these, or spawn the helper without them",
   );
 }
@@ -481,6 +567,8 @@ function widenGrantCommand(
     scope: union(parent.scope, addScope),
     allowSubscribe: union(parent.allowSubscribe, addSub),
     allowPublish: union(parent.allowPublish, addPub),
+    ...(parent.excludeSubscribe?.length ? { excludeSubscribe: parent.excludeSubscribe } : {}),
+    ...(parent.excludePublish?.length ? { excludePublish: parent.excludePublish } : {}),
     ...(parent.role ? { role: parent.role } : {}),
     ...(parent.label ? { label: parent.label } : {}),
   });
@@ -685,6 +773,8 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       scope: row.scope,
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
+      ...(row.excludeSubscribe?.length ? { excludeSubscribe: row.excludeSubscribe } : {}),
+      ...(row.excludePublish?.length ? { excludePublish: row.excludePublish } : {}),
       ...(row.role ? { role: row.role } : {}),
       ...(row.label ? { label: row.label } : {}),
       ...(row.parent ? { parent: row.parent } : {}),
@@ -750,6 +840,8 @@ export function ledgerAclResolver(dir: string): AclResolver {
     return {
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
+      ...(row.excludeSubscribe?.length ? { excludeSubscribe: row.excludeSubscribe } : {}),
+      ...(row.excludePublish?.length ? { excludePublish: row.excludePublish } : {}),
       ...(row.eventPayloads === false ? { eventPayloads: false as const } : {}),
       ...(row.role ? { role: row.role } : {}),
       lifecycleUid: t.act.lifecycleUid,
@@ -823,6 +915,8 @@ export function ledgerAuthorizeAgentExchange(
   scope: string[];
   allowSubscribe: string[];
   allowPublish: string[];
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   role?: string;
   parent?: string;
   lifecycleUid?: string;
@@ -853,6 +947,8 @@ export function ledgerAuthorizeAgentExchange(
     scope: row.scope,
     allowSubscribe: row.allowSubscribe,
     allowPublish: row.allowPublish,
+    ...(row.excludeSubscribe?.length ? { excludeSubscribe: row.excludeSubscribe } : {}),
+    ...(row.excludePublish?.length ? { excludePublish: row.excludePublish } : {}),
     ...(row.role ? { role: row.role } : {}),
     ...(row.parent ? { parent: row.parent } : {}),
     ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),

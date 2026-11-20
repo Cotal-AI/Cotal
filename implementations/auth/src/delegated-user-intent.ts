@@ -18,7 +18,6 @@ import {
   parseDelegatedUserIntentRequest,
   parseRemoteDelegatedUserIntentExecutionRequest,
   remoteManagerServePrincipal,
-  resolveReadAcl,
   type DelegatedUserIntentAdmission,
   type DelegatedUserIntentRequest,
   type DelegatedUserLaunchTarget,
@@ -28,7 +27,7 @@ import {
   type RemoteManagedAgentPrepareRetirementRequest,
 } from "@cotal-ai/core";
 import { assertWithinSpawnerGrant, ledgerAuthorizeGrant } from "./ledger.js";
-import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
+import { launchTargetGrant, type ObserveManagerGate } from "./managed-agent-enrollment.js";
 import type { PlatformControlDeps } from "./platform-control.js";
 import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 
@@ -190,12 +189,12 @@ export async function authorizeDelegatedUserIntentAdmission(
     // A dry run of the walk the host's writer repeats at the write, over the read ACL that writer
     // provisions: refuse before any record exists.
     try {
+      const { subscribe: _subscribe, ...lists } = launchTargetGrant(t);
       assertWithinSpawnerGrant(args.dir, {
         owner: args.owner,
         actor: t.actor,
         scope: t.capabilities ?? [],
-        allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe),
-        allowPublish: t.allowPublish ?? [],
+        ...lists,
         parent,
         ...(t.role !== undefined ? { role: t.role } : {}),
       }, "spawn");

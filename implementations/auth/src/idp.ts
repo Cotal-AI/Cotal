@@ -26,7 +26,7 @@
  */
 import { decodeJwt, decodeProtectedHeader, jwtVerify } from "jose";
 import type { CryptoKey, JWTPayload, JWTVerifyGetKey } from "jose";
-import { assertValidOwnerToken, type UserAuthGrant } from "@cotal-ai/core";
+import { assertValidOwnerToken, channelGrantField, type UserAuthGrant } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
@@ -57,6 +57,10 @@ export interface ActorGrant {
    *  refuses to invent their values, rather than one that prints a placeholder. */
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** The row's exclusions from those lists (SPEC §9). Carried for the same reason, and absent when
+   *  the row has none. */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   /** Carried for the same reason: an upsert that does not name them drops them. */
   role?: string;
   label?: string;
@@ -266,6 +270,8 @@ function regrantRemedy(owner: string, actor: string, grant: ActorGrant, need: st
       scope,
       allowSubscribe: grant.allowSubscribe,
       allowPublish: grant.allowPublish,
+      ...(grant.excludeSubscribe?.length ? { excludeSubscribe: grant.excludeSubscribe } : {}),
+      ...(grant.excludePublish?.length ? { excludePublish: grant.excludePublish } : {}),
       ...(grant.role ? { role: grant.role } : {}),
       ...(grant.label ? { label: grant.label } : {}),
     }) +
@@ -393,8 +399,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         exp,
         grant: {
           scope: [...(grant.scope ?? [])],
-          allowSubscribe: [...(grant.allowSubscribe ?? [])],
-          allowPublish: [...(grant.allowPublish ?? [])],
+          allowSubscribe: channelGrantField(grant.allowSubscribe ?? [], grant.excludeSubscribe),
+          allowPublish: channelGrantField(grant.allowPublish ?? [], grant.excludePublish),
           dmHistory: "own",
         },
       };
