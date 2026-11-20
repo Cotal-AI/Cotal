@@ -1448,18 +1448,6 @@ main() {
 
   _t0=$(date +%s)
 
-  if [ "$OPT_DRY_RUN" = 1 ]; then
-    # Report the runtime decision without acting on it: probe the system Node only.
-    if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm &&
-      [ "$(node_rank "$(command -v node)")" -ge "$NODE_MIN_RANK" ] 2>/dev/null; then
-      NODE_LABEL="$(node -v) $S_SEP already on this machine"
-    else
-      NODE_VENDORED=1
-    fi
-    dry_run_report
-    exit 0
-  fi
-
   if [ -d "$BIN_DIR/cotal" ]; then
     die "$(shquote "$BIN_DIR/cotal") is a directory." \
       "Move the directory aside or set COTAL_BIN_DIR to a different launcher directory."
@@ -1480,6 +1468,18 @@ main() {
         fi
         ;;
     esac
+  fi
+
+  if [ "$OPT_DRY_RUN" = 1 ]; then
+    # Report the runtime decision without acting on it: probe the system Node only.
+    if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm &&
+      [ "$(node_rank "$(command -v node)")" -ge "$NODE_MIN_RANK" ] 2>/dev/null; then
+      NODE_LABEL="$(node -v) $S_SEP already on this machine"
+    else
+      NODE_VENDORED=1
+    fi
+    dry_run_report
+    exit 0
   fi
 
   # First write of the run. A read-only or unwritable home is common enough (locked-down
