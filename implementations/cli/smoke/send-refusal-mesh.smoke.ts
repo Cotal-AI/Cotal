@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatStream, CotalEndpoint, createSpaceAuth, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
+import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -210,6 +210,23 @@ try {
   const openHistory = run(["history", "general", "--space", openSpace, "--server", openServers, "--json"]);
   const openTexts = (JSON.parse(openHistory.stdout || "{}") as { result?: { items?: { text?: string }[] } }).result?.items?.map((m) => m.text).join("|");
   check("open: its history holds that message", openHistory.status === 0 && openTexts === "first-open", shown(openHistory));
+
+  const openRoot = join(dir, "open-project");
+  mkdirSync(join(openRoot, ".cotal"), { recursive: true, mode: 0o700 });
+  recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", ts: new Date().toISOString() });
+  const alias = run(["send", "-c", "general", "wrong-space", "--server", `nats://localhost:${openPort}`, "--json"], openRoot);
+  const openInspector = await connect({ servers: openServers });
+  try {
+    const streamNames: string[] = [];
+    const openJsm = await jetstreamManager(openInspector);
+    for await (const name of openJsm.streams.names()) streamNames.push(name);
+    check("open: an unmatched loopback host inside the registered project refuses without creating a chat stream for main",
+      alias.status === 2 && alias.envelope?.error?.code === "TARGET_NOT_FOUND" && alias.envelope.error.message?.includes(`${openSpace} (${openServers})`) === true
+        && streamNames.includes(chatStream(openSpace)) && !streamNames.includes(chatStream(DEFAULT_SPACE)), { reply: shown(alias), streamNames });
+  } finally {
+    await openInspector.close();
+  }
+
   // The distinction the remedy above depends on stays: on a space this machine started, absent
   // streams mean the space was deleted, so a send refuses rather than create them again.
   const hereSpace = `sendhere-${randomUUID().slice(0, 8)}`;
