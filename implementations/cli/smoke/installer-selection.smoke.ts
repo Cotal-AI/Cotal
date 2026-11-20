@@ -116,6 +116,15 @@ try {
   const npmLink = readlinkSync(npmLauncher);
   const bootstrap = realpathSync(join(npmHome, ".npm-global/lib/node_modules/cotal-ai/dist/cotal.js"));
   assert.equal(realpathSync(npmLauncher), join(dirname(bootstrap), "cotal-npm"), "npm's executable links to the shell launcher");
+  const launcherText = readFileSync(npmLauncher, "utf8");
+  for (const [shell, ...args] of [["/bin/sh", "-n"], ["bash", "--posix", "-n"]]) {
+    const syntax = spawnSync(shell, args, { env: npmEnv, input: launcherText, encoding: "utf8", timeout: 10_000 });
+    assert.equal(syntax.status, 0, `${shell}: ${output(syntax)}`);
+  }
+  // Restrict substitutions to simple one-liners so no case pattern can fool Bash 3.2's parser.
+  const substitutions = [...launcherText.matchAll(/\$\(([^()\n]*)\)/g)];
+  assert.equal(substitutions.length, launcherText.split("$(").length - 1, "launcher command substitutions are flat and single-line");
+  assert(substitutions.every(([, command]) => !/\bcase\b/.test(command)), "launcher has no case inside a command substitution");
   const noNode = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(noNode.status, 0, output(noNode));
   assert.equal(noNode.stdout.trim(), "cotal-ai 0.0.0", "npm launcher uses the install-time Node without Node on PATH");
@@ -521,7 +530,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 149 : 128, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 153 : 132, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

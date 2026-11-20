@@ -35,21 +35,24 @@ else
   exit 127
 fi
 
-entry=$(
-  launcher=$0
+# Keep case outside command substitutions for Bash 3.2's parser.
+resolve_entry() {
+  launcher=$1
   while :; do
     case "$launcher" in /*) ;; *) launcher=./$launcher ;; esac
     # Resolve the directory before interpreting a relative symlink target.
-    CDPATH= cd -P "\${launcher%/*}/" 2>/dev/null || exit 1
+    CDPATH= cd -P "\${launcher%/*}/" 2>/dev/null || return 1
     launcher=$PWD/\${launcher##*/}
     if [ ! -L "$launcher" ]; then
-      [ -f "$PWD/cotal.js" ] || exit 1
+      [ -f "$PWD/cotal.js" ] || return 1
       printf '%s\\n' "$PWD/cotal.js"
       break
     fi
-    launcher=$(PATH="\${PATH:+$PATH:}/usr/bin:/bin" readlink "$launcher" 2>/dev/null) || exit 1
+    launcher=$(PATH="\${PATH:+$PATH:}/usr/bin:/bin" readlink "$launcher" 2>/dev/null) || return 1
   done
-) || {
+}
+
+entry=$(resolve_entry "$0") || {
   printf 'cotal: cannot resolve the JavaScript entry from launcher %s\\n' "$0" >&2
   exit 1
 }
