@@ -31,7 +31,7 @@
     },
     {
       "name": "resume commit skips its fresh retained-authority validation",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "    const authority = await Promise.all(inventory.agents.map(async (entry) => {\n      try {\n        await this.validateRetainedAuthority(entry);\n        return undefined;",
       "replace": "    const authority = await Promise.all(inventory.agents.map(async (entry) => {\n      try {\n        void entry;\n        return undefined;",
       "expectRed": "stock resume commit fresh-validates retained authority through registry-pinned HTTPS",

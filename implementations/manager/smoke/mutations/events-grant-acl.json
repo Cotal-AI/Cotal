@@ -65,7 +65,7 @@
     },
     {
       "name": "G4 the restart record keeps the channel but drops the arming",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "events: a.launch.events,",
       "replace": "events: false,",
       "expectRed": "the inventory carries the arming flag, not just the grant",

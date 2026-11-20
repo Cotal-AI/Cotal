@@ -189,7 +189,7 @@
     },
     {
       "name": "MP10: drop COTAL_MANAGER_INSTANCE from Manager.resumePreservedAgent resumed spec.env",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "        const spec = connector.buildLaunch(launchOpts);\n        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };\n        const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;",
       "replace": "        const spec = connector.buildLaunch(launchOpts);\n        spec.env = { ...spec.env };\n        const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;",
       "expectRed": "R3c: Manager.resumePreservedAgent sets COTAL_MANAGER_INSTANCE on the resumed spec.env when the connector buildLaunch does not",

@@ -79,7 +79,7 @@
     },
     {
       "name": "E4 the rule covers the spawn door but not the resume door",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "      const foreign = foreignEventChannels(\n        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
       "replace": "      const foreign = foreignEventChannels(\n        [],",
       "expectRed": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
@@ -88,7 +88,7 @@
     },
     {
       "name": "E5 the resume door judges the channel against the display name, not the principal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "      const actor = entry.identity.mode === \"user\" ? entry.identity.actor : entry.identity.id;",
       "replace": "      const actor = entry.identity.mode === \"user\" ? entry.name : entry.identity.id;",
       "expectRed": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
@@ -97,7 +97,7 @@
     },
     {
       "name": "E6 the resume door reads the read-set only, and forgets the post-set",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
       "replace": "        [...(entry.launch.allowSubscribe ?? [])],",
       "expectRed": "an inventory naming another agent's event channel to POST to is refused at the resume door too",
@@ -133,7 +133,7 @@
     },
     {
       "name": "E10 the resume door prints the route for the OTHER mesh, the defect that shipped there",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "            `${this.readerRemedy(owner, foreign[0]!)}`,",
       "replace": "            `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
       "expectRed": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
