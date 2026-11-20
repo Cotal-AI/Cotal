@@ -53,7 +53,7 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, processStopped, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -475,6 +475,23 @@ try {
   check("a healthy default stack exits 0 with the installed dashboard not-started",
     notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
       ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
+  if (process.platform === "linux") {
+    const pid = Number(readFileSync(join(webRoot, ".cotal", "nats.pid"), "utf8"));
+    assert.ok(Number.isSafeInteger(pid) && pid > 0);
+    process.kill(pid, "SIGSTOP");
+    try {
+      for (let i = 0; i < 100 && !processStopped(pid); i++) await sleep(20);
+      assert.ok(processStopped(pid), `broker ${pid} did not stop`);
+      const stopped = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+      const health = stopped.stdout.split("Component Health")[1] ?? "";
+      check(`a suspended broker exits 3 and names PID ${pid}`,
+        stopped.status === 3 && new RegExp(`broker\\s+not-serving[^\\n]*is served by process ${pid}, which is stopped`).test(health) &&
+        stopped.stdout.includes(`broker process ${pid} is stopped`) && stopped.stdout.includes(`kill -CONT ${pid} `),
+        `${stopped.stdout}${stopped.stderr}`);
+    } finally { process.kill(pid, "SIGCONT"); }
+    const resumed = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+    check("resuming that broker restores serving health", resumed.status === 0 && /broker\s+serving/.test(resumed.stdout), `${resumed.stdout}${resumed.stderr}`);
+  }
   const managerGuidance = (cwd: string, openMesh: boolean) => {
     const roster = cliIn(cwd, ["ps", "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
