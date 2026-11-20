@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import { registry, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { registry, writeSecretFileAtomic, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, WEB_CREDS_KIND, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, isCommandFailure, observeServiceStartup,
   oneLine, publishServiceStartup, readLocalRecordSource, readPinnedStaticCredential,
@@ -101,6 +101,12 @@ const nativeWebServiceCommand: Command = {
           sessionBytes = JSON.stringify({ schemaVersion: 1, space: selected.space, instanceId, launchRequestId, process: identityRecord(process.pid), ...session }) + "\n";
           writeSecretFileCreateOnly(sessionPath, sessionBytes);
           process.stdout.write(`${posting ? "Posting-enabled" : "Read-only"} dashboard. Private browser bootstrap file: ${oneLine(sessionPath)}\n`);
+        },
+        onLaunch(launchUrl) {
+          if (sessionBytes === undefined || readLocalRecordSource(sessionPath, 16384, true)?.toString("utf8") !== sessionBytes) throw new Error("the private dashboard session record changed");
+          const next = JSON.stringify({ ...JSON.parse(sessionBytes), launchUrl }) + "\n";
+          writeSecretFileAtomic(sessionPath, next);
+          sessionBytes = next;
         },
         onReady() { publishServiceStartup(readyPath, { phase: "web-listening", space: selected.space, instanceId, launchRequestId }); },
         onClosed() {
