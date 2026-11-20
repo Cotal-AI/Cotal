@@ -8,7 +8,8 @@
 import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, jsonFlag, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
 import { feedbackIntakePreset, feedbackIntakeProcess, runNativeFeedbackIntake, validateNativeIntakeArguments } from "./feedback-intake-service.js";
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLane, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle } from "./delivery.js";
+import { DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, runDelivery, startDeliveryService, type DeliveryLane, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle } from "./delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf } from "./delivery-creds.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
 import { runDeliveryHost } from "./delivery-host.js";
 import { deliveryPreset, deliveryService, nativeDeliveryCommand } from "./delivery-service.js";

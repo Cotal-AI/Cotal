@@ -15,9 +15,9 @@
   "mutations": [
     {
       "name": "dev-mint picks the root's sole space instead of the served one",
-      "file": "implementations/delivery/src/delivery.ts",
+      "file": "implementations/delivery/src/delivery-creds.ts",
       "find": "    const auth = loadSpaceAuth(authDir(root), space);",
-      "replace": "    const sole = soleSpaceOf(authDir(root)); const auth = sole ? loadSpaceAuth(authDir(root), sole) : undefined;",
+      "replace": "    const { soleSpaceOf } = await import(\"@cotal-ai/workspace\"); const sole = soleSpaceOf(authDir(root)); const auth = sole ? loadSpaceAuth(authDir(root), sole) : undefined;",
       "expectRed": "--space b --dev-mint on a two-space root signs with b's account",
       "cell": "--space b --dev-mint on a two-space root signs with b's account",
       "afterRestore": "pnpm --filter @cotal-ai/delivery build"
