@@ -111,6 +111,7 @@ export {
   type SleepRequest,
   type InlineSpawnDefinition,
   type InlineSpawnEndpoint,
+  type InlineSpawnGrant,
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,

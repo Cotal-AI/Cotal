@@ -647,6 +647,41 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   ok("a malformed inline persona is refused as L3049, naming what is wrong", wrong.length === 0, wrong);
   const caught = await run(`try { await spawn({ ${bad[0]![1]} }, { name: "helper" }); } catch (e) { }\n`, { runId: "o-inline-nojournal", handler: new SimHandler({}) });
   ok("and the refusal journals nothing", caught.journal.entries().length === 0, caught.journal.entries().map((e) => `${e.kind}:${e.name}`));
+
+  // A read or post list may remove channels as `{ allow, exclude }`. It reaches the handler whole,
+  // so the manager applies the grant rules to it, and the exclusion is part of the hashed definition.
+  const EXCL = 'name: "helper", prompt: "x", allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: { allow: [">"], exclude: ["team.*.private"] }';
+  capture.length = 0;
+  const excl = await run(src(EXCL), { runId: "o-inline-excl", handler: spy(new SimHandler({})) });
+  const exclReq = capture[0] as { inline?: Record<string, unknown> };
+  ok("an inline persona's { allow, exclude } lists reach the handler whole", JSON.stringify(exclReq?.inline) === JSON.stringify({
+    name: "helper", prompt: "x", allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: { allow: [">"], exclude: ["team.*.private"] },
+  }), exclReq);
+  const exclDiverges = async (edited: string): Promise<boolean> => {
+    try {
+      await resume(src(edited), excl.journal, { runId: "o-inline-excl", pins: excl.pins, handler: new SimHandler({}) });
+      return false;
+    } catch (e) {
+      if (!(e instanceof RunDivergence)) throw new Error(`FAIL: an exclusion edit threw something other than divergence - ${String(e)}`);
+      return true;
+    }
+  };
+  ok("the same exclusions resume clean", !(await exclDiverges(EXCL)));
+  ok("editing an exclusion diverges", await exclDiverges(EXCL.replace('exclude: ["team.secret"]', 'exclude: ["team.other"]')));
+  ok("dropping the exclusions for the plain list diverges", await exclDiverges(EXCL.replace('{ allow: ["team.>"], exclude: ["team.secret"] }', '["team.>"]')));
+  const badPairs: [string, string][] = [
+    ["no exclusion", 'allowSubscribe: { allow: ["team.>"], exclude: [] }'],
+    ["no exclude key", 'allowSubscribe: { allow: ["team.>"] }'],
+    ["a key the pair has no field for", 'allowPublish: { allow: ["team.>"], exclude: ["team.secret"], deny: ["x"] }'],
+    ["an exclusion that is not a string", 'allowPublish: { allow: ["team.>"], exclude: [7] }'],
+  ];
+  const wrongPairs: string[] = [];
+  for (const [label, field] of badPairs) {
+    const e = await run(src(`name: "helper", prompt: "x", ${field}`), { runId: "o-inline-excl-bad", handler: new SimHandler({}) })
+      .then(() => undefined, (x: unknown) => x as { code?: string; message?: string });
+    if (e?.code !== "L3049" || !String(e?.message).includes("or { allow, exclude } of two such lists with at least one exclusion")) wrongPairs.push(`${label}: ${JSON.stringify(e)}`);
+  }
+  ok("a malformed { allow, exclude } list is refused as L3049, naming the two shapes", wrongPairs.length === 0, wrongPairs);
 }
 
 console.log(`options.smoke: ${pass} checks passed`);

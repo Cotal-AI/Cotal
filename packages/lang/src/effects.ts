@@ -110,13 +110,18 @@ export interface InlineSpawnDefinition {
   readonly variant?: string;
   readonly description?: string;
   readonly subscribe?: readonly string[];
-  readonly allowSubscribe?: readonly string[];
-  readonly allowPublish?: readonly string[];
+  /** A list, or `{ allow, exclude }` when it removes channels or patterns. The manager applies the
+   *  grant rules to the pair. */
+  readonly allowSubscribe?: InlineSpawnGrant;
+  readonly allowPublish?: InlineSpawnGrant;
   readonly capabilities?: readonly string[];
   /** Endpoint commands to hand on. The manager checks the names and bounds them against the run. */
   readonly endpoints?: readonly InlineSpawnEndpoint[];
   readonly save?: boolean;
 }
+
+/** An inline persona's read or post list: the channels it grants, or those minus `exclude`. */
+export type InlineSpawnGrant = readonly string[] | { readonly allow: readonly string[]; readonly exclude: readonly string[] };
 
 /** One entry of an inline persona's `endpoints`. */
 export interface InlineSpawnEndpoint {

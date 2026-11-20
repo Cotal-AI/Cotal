@@ -68,6 +68,9 @@ const INLINE_STRINGS = ["role", "model", "variant", "description"] as const;
 
 const INLINE_LISTS = ["subscribe", "allowSubscribe", "allowPublish", "capabilities"] as const;
 
+/** The read and post lists, which may also remove channels as `{ allow, exclude }` (§6.1). */
+const INLINE_GRANTS: readonly string[] = ["allowSubscribe", "allowPublish"];
+
 const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "endpoints", "save"];
 
 const ENDPOINT_KEYS: readonly string[] = ["endpoint", "commands", "instanceId"];
@@ -97,11 +100,18 @@ function inlineDefinition(subject: unknown): InlineSpawnDefinition | undefined {
     if (!nonBlank(r[k])) refuse(`\`${k}\` must be a non-empty string when present`);
     out[k] = r[k];
   }
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((c) => typeof c === "string");
   for (const k of INLINE_LISTS) {
-    if (r[k] === undefined) continue;
-    if (!Array.isArray(r[k]) || !(r[k] as unknown[]).every((c) => typeof c === "string"))
-      refuse(`\`${k}\` must be a list of strings when present`);
-    out[k] = [...(r[k] as string[])];
+    const v = r[k];
+    if (v === undefined) continue;
+    if (strings(v)) { out[k] = [...v]; continue; }
+    if (!INLINE_GRANTS.includes(k)) refuse(`\`${k}\` must be a list of strings when present`);
+    // The shape only, as for every channel the program names: the manager applies the grant rules
+    // (an exclusion must remove part of the list and no whole entry) before it starts anything.
+    const pair = v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
+    if (!pair || Object.keys(pair).some((key) => key !== "allow" && key !== "exclude") || !strings(pair.allow) || !strings(pair.exclude) || pair.exclude.length === 0)
+      refuse(`\`${k}\` must be a list of strings, or { allow, exclude } of two such lists with at least one exclusion, when present`);
+    out[k] = { allow: [...(pair!.allow as string[])], exclude: [...(pair!.exclude as string[])] };
   }
   // The shape only: the manager reads the names (reserved commands, single-label endpoints) and
   // bounds each command against the run, as it does for a persona file.
