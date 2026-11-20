@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1103,
+    "total": 1105,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 881
+    "non-render/control": 883
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6417,9 +6417,23 @@
     {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
-      "anchor": " ${s.current}\\``, tone: \"waiting\" }\n    : s.preparedState",
+      "anchor": "(s.current)}`)}`, tone: \"waiting\" }\n    : s.preparedState",
       "class": "non-render/control",
       "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": ".lastOperation}`, tone: \"waiting\" });\n    lines.push(\n   ",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone describes the last recorded stack operation of a moved folder, not a peer's presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": "d.recordedRoot}`, tone: \"waiting\" },\n      { text: `  ${d",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone marks a stack journal moved from its recorded folder, not a peer's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/use.ts",
