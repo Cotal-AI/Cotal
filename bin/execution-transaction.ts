@@ -36,10 +36,10 @@ export function assertExecutionDestination(installed: string): void {
   selectExecutionProgram(installed);
 }
 
-function atomicFile(path: string, bytes: string | Buffer, mode: number): void {
+function atomicFile(path: string, bytes: string | Buffer, mode: number, flush = false): void {
   const temporary = `${path}.${randomBytes(16).toString("hex")}`;
   try {
-    writeFileSync(temporary, bytes, { flag: "wx", mode });
+    writeFileSync(temporary, bytes, { flag: "wx", mode, flush });
     chmodSync(temporary, mode);
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
@@ -59,7 +59,7 @@ export function journalExecutionTransaction(installed: string, target: RetainedE
     }, target,
   };
   const path = join(directory, "execution.json");
-  writeFileSync(path, JSON.stringify(transaction), { flag: "wx", mode: 0o600 });
+  atomicFile(path, JSON.stringify(transaction), 0o600, true);
   return path;
 }
 

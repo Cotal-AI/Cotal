@@ -78,6 +78,40 @@ if (["linux", "darwin"].includes(process.platform)) {
       assert.equal(existsSync(pending.root), true);
       clearUpdateRecovery();
     } finally { releaseRecovery(); }
+
+    const tornJournal = join(store, ".transaction-Torn123", "execution.json");
+    const protectedTornJournal = join(store, ".transaction-Held123", "execution.json");
+    const invalidJournal = join(store, ".transaction-Invalid123", "execution.json");
+    const temporaryJournal = join(store, ".transaction-Temp123", `execution.json.${"a".repeat(32)}`);
+    const torn = '{"v":1,"installed":';
+    const damaged = [[tornJournal, torn], [protectedTornJournal, torn], [temporaryJournal, torn], [invalidJournal, "null"]] as const;
+    for (const [path, contents] of damaged) {
+      mkdirSync(dirname(path));
+      writeFileSync(path, contents, { mode: 0o600 });
+    }
+    const staging = [join(store, ".installing-Torn123"), join(store, ".preparing-Prep123")];
+    for (const path of staging) mkdirSync(path);
+    const completed = readFileSync(pendingJournal);
+    warnings.length = 0;
+    const releaseTornRecovery = claimUpdateClosureAccess();
+    try {
+      writeUpdateRecovery({ previous: "0.4.0", target: "0.5.0", installed: "0.4.0", phase: "paused", reason: "cleanup smoke", execution: protectedTornJournal });
+      clean();
+      clearUpdateRecovery();
+    } finally { releaseTornRecovery(); }
+    assert.equal(warnings.length, 1);
+    for (const path of [tornJournal, protectedTornJournal, invalidJournal]) {
+      assert.ok(warnings[0].includes(path), "the warning names each malformed journal");
+    }
+    for (const path of [tornJournal, temporaryJournal]) {
+      assert.equal(existsSync(dirname(path)), false, "abandoned incomplete writes are removed");
+    }
+    assert.equal(readFileSync(protectedTornJournal, "utf8"), torn, "a malformed recovery journal is retained verbatim");
+    assert.equal(readFileSync(invalidJournal, "utf8"), "null", "invalid record contents are not evidence of an incomplete write");
+    for (const path of staging) assert.equal(existsSync(path), false, "damaged journals do not block independent staging cleanup");
+    assert.deepEqual(readFileSync(pendingJournal), completed, "an incomplete scan retains completion evidence for a later scan");
+    for (const path of [protectedTornJournal, invalidJournal]) rmSync(dirname(path), { recursive: true });
+
     clean();
     assert.equal(existsSync(pending.root), true, "completed unpublished generation remains");
     assert.equal(existsSync(pendingJournal), false);
