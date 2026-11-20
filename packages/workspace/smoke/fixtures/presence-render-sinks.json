@@ -7617,7 +7617,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting up to 10 minutes for another updater to release npm's global root\"))",
+      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting for another updater to release npm's global root\"))",
       "class": "non-render/control",
       "rationale": "Global installation custody is acquired before a package replacement begins, not peer presence."
     },
@@ -7645,7 +7645,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.verifyGlobalEntry(root, installed)",
+      "anchor": "(rt.verifyUpdatedEntry ?? rt.verifyGlobalEntry)(root, installed)",
       "class": "non-render/control",
       "rationale": "The selected global CLI entry is verified against its package version before dispatch, not peer presence."
     },
