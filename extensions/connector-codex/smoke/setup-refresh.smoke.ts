@@ -1,5 +1,6 @@
 /** Codex refresh must distinguish no installed plugin from an installed plugin it cannot update. */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,24 +90,36 @@ try {
     mkdirSync(join(cache(process.env.CODEX_HOME), "0.1.0"), { recursive: true });
     assert.equal(await refresh(), "Codex not installed; cached plugin left unchanged");
   });
-  await check("current read-only plugins need no reinstall, but a changed digest still does", async () => {
+  await check("read-only Codex config keeps its bytes and mode while the cache moves to the new digest", async () => {
     const f = fixture("read-only-current");
     process.env.CODEX_HOME = f.codex;
-    const installed = join(f.codex, "installed-version");
+    const market = join(process.env.COTAL_HOME!, "codex-plugin");
+    const priorMarket = join(f.root, "previous-marketplace");
+    mkdirSync(priorMarket);
     const calls = join(f.root, "calls");
     const config = join(f.codex, "config.toml");
     const disabledConfig = '[plugins."cotal@cotal-mesh"]\nenabled = false\n';
     mkdirSync(cache(f.codex), { recursive: true });
     writeFileSync(config, disabledConfig);
     writeFileSync(join(bin, "codex"), `#!${process.execPath}
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 const config = ${JSON.stringify(config)};
+const market = ${JSON.stringify(market)};
+const cacheRoot = ${JSON.stringify(cache(f.codex))};
 const args = process.argv.slice(2).join(" ");
 appendFileSync(${JSON.stringify(calls)}, args + "\\n");
 if (args === "plugin list") {
-  console.log("cotal@cotal-mesh  disabled, installed  " + readFileSync(${JSON.stringify(installed)}, "utf8"));
+  const versions = readdirSync(cacheRoot).sort();
+  if (versions.length) console.log("cotal@cotal-mesh  disabled, installed  " + versions.at(-1));
 } else if (args === "plugin marketplace list") {
   console.log("cotal-mesh");
+} else if (args === "plugin marketplace list --json") {
+  const moved = readFileSync(config, "utf8").includes("# previous marketplace");
+  console.log(JSON.stringify({ marketplaces: [{ name: "cotal-mesh", root: moved ? ${JSON.stringify(priorMarket)} : market }] }));
+} else if (args === "plugin marketplace remove cotal-mesh") {
+  // The fixture models the config edit in the subsequent marketplace add.
+} else if (args === "plugin marketplace add " + market) {
+  writeFileSync(config, readFileSync(config, "utf8").replace("# previous marketplace\\n", ""));
 } else if (args === "plugin add cotal@cotal-mesh") {
   const plugin = readFileSync(${JSON.stringify(join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.codex-plugin/plugin.json"))}, "utf8");
   const cache = ${JSON.stringify(cache(f.codex))} + "/" + JSON.parse(plugin).version;
@@ -115,7 +128,6 @@ if (args === "plugin list") {
   writeFileSync(cache + "/.mcp.json", "{}");
   writeFileSync(config + ".tmp", readFileSync(config, "utf8").replace("# stale\\n", ""), { mode: 0o600 });
   renameSync(config + ".tmp", config);
-  writeFileSync(${JSON.stringify(installed)}, JSON.parse(plugin).version);
 } else process.exit(1);
 `, { mode: 0o755 });
     try {
@@ -124,7 +136,9 @@ if (args === "plugin list") {
       const setup = () => codexSetupProvider.connector!.run({ cotal, wrote: (_, path) => written.push(path) });
       writeFileSync(config, `# stale\n${disabledConfig}`);
       await setup();
-      const version = readFileSync(installed, "utf8");
+      const manifest = join(market, "plugins/cotal/.codex-plugin/plugin.json");
+      const materializedVersion = () => (JSON.parse(readFileSync(manifest, "utf8")) as { version: string }).version;
+      const version = materializedVersion();
       assert.ok(written.includes(config), "the native config content change must be reported");
       assert.ok(written.includes(join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.mcp.json")));
       for (const path of [".codex-plugin/plugin.json", ".mcp.json"]) {
@@ -143,33 +157,76 @@ if (args === "plugin list") {
         { label: "Codex plugin", state: "off", text: "disabled" },
       ]);
       assert.equal(readFileSync(config, "utf8"), disabledConfig);
-      writeFileSync(calls, "");
-      for (const dir of [join(cache(f.codex), version), cache(f.codex), f.codex]) chmodSync(dir, 0o500);
-      for (let attempt = 0; attempt < 2; attempt++) assert.equal(await refresh(), `cotal@cotal-mesh ${version}; new Codex conversations load it`);
-      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["plugin list", "plugin list"]);
-      assert.equal(statSync(f.codex).mode & 0o777, 0o500);
-      assert.equal(readFileSync(config, "utf8"), disabledConfig);
-      const changed = { cotal: [process.execPath, join(ROOT, "different-cotal.js")] };
-      await assert.rejects(async () => codexSetupProvider.refresh!.run(changed), /codex plugin add failed/);
-      assert.equal(readFileSync(installed, "utf8"), version);
-      assert.equal(await refresh(), `cotal@cotal-mesh ${version}; new Codex conversations load it`);
-      for (const dir of [f.codex, cache(f.codex), join(cache(f.codex), version)]) chmodSync(dir, 0o700);
       chmodSync(config, 0o444);
       writeFileSync(calls, "");
-      assert.equal(await refresh(), `cotal@cotal-mesh ${version}; new Codex conversations load it`);
-      await assert.rejects(async () => codexSetupProvider.refresh!.run(changed), /Codex configuration is read-only/);
-      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["plugin list", "plugin list"]);
+      const changed = { cotal: [process.execPath, join(ROOT, "different-cotal.js")] };
+      const currentRefresh = await codexSetupProvider.refresh!.run(changed);
+      assert.match(currentRefresh, /remains disabled/);
+      assert.doesNotMatch(currentRefresh, /read-only/);
+      const current = materializedVersion();
+      assert.notEqual(current, version);
+      assert.equal(existsSync(join(cache(f.codex), version)), false);
+      assert.deepEqual(readFileSync(join(cache(f.codex), current, ".codex-plugin/plugin.json")), readFileSync(manifest));
+      assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["plugin list", "plugin marketplace list --json", "plugin list"]);
       assert.equal(statSync(config).mode & 0o777, 0o444);
       assert.equal(readFileSync(config, "utf8"), disabledConfig);
-      assert.equal(readFileSync(installed, "utf8"), version);
+
       chmodSync(config, 0o600);
-      assert.match(await codexSetupProvider.refresh!.run(changed), /new Codex conversations load it/);
-      assert.notEqual(readFileSync(installed, "utf8"), version);
+      const outdatedConfig = `# previous marketplace\n${disabledConfig}`;
+      writeFileSync(config, outdatedConfig);
+      chmodSync(config, 0o444);
+      const deferred = await codexSetupProvider.refresh!.run({ cotal });
+      assert.match(deferred, /remains disabled/);
+      assert.deepEqual(readFileSync(join(cache(f.codex), version, ".codex-plugin/plugin.json")), readFileSync(manifest));
+      assert.ok(deferred.includes(config));
+      assert.match(deferred, /run `cotal update`/);
+      const status = () => codexSetupProvider.status!({ version: version.split("+")[0]!, skillsRemedy: "" })[0]!;
+      assert.equal(status().state, "warn");
+      assert.ok(status().text.includes(config));
+      assert.equal(statSync(config).mode & 0o777, 0o444);
+      assert.equal(readFileSync(config, "utf8"), outdatedConfig);
+      chmodSync(config, 0o600);
+      const repaired = await codexSetupProvider.refresh!.run({ cotal });
+      assert.equal(readFileSync(config, "utf8"), disabledConfig);
+      assert.doesNotMatch(repaired, /read-only/);
+      assert.equal(status().state, "off");
+      assert.ok(!status().text.includes(config));
+      if (process.platform !== "win32") {
+        chmodSync(cache(f.codex), 0o500);
+        await assert.rejects(async () => codexSetupProvider.refresh!.run(changed), /Cannot refresh the Cotal plugin cache/);
+        assert.ok(existsSync(join(cache(f.codex), version, ".codex-plugin/plugin.json")));
+      }
     } finally {
       for (const dir of [f.codex, cache(f.codex)]) chmodSync(dir, 0o700);
       rmSync(join(bin, "codex"));
     }
   });
+  if (process.platform !== "win32") {
+    process.env.PATH = before.PATH;
+    const codex = (...args: string[]) => spawnSync("codex", args, { encoding: "utf8", timeout: 60_000 });
+    if (codex("--version").status === 0) await check("native Codex lists the new digest with the same read-only config", async () => {
+      const f = fixture("native");
+      const cotal = [process.execPath, join(ROOT, "cotal.js")];
+      await codexSetupProvider.connector!.run({ cotal });
+      const config = join(f.codex, "config.toml");
+      chmodSync(config, 0o444);
+      const original = readFileSync(config);
+      const inode = statSync(config).ino;
+      const beforeRefresh = codex("plugin", "list");
+      assert.equal(beforeRefresh.status, 0, beforeRefresh.stderr);
+      const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
+      await codexSetupProvider.refresh!.run({ cotal: changed });
+      const afterRefresh = codex("plugin", "list");
+      assert.equal(afterRefresh.status, 0, afterRefresh.stderr);
+      const manifest = join(process.env.COTAL_HOME!, "codex-plugin/plugins/cotal/.codex-plugin/plugin.json");
+      const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version: string };
+      assert.ok(afterRefresh.stdout.includes(version), afterRefresh.stdout);
+      assert.ok(!beforeRefresh.stdout.includes(version), beforeRefresh.stdout);
+      assert.deepEqual(readFileSync(config), original);
+      assert.equal(statSync(config).ino, inode);
+      assert.equal(statSync(config).mode & 0o777, 0o444);
+    });
+  }
 } finally {
   for (const key of keys) {
     if (before[key] === undefined) delete process.env[key];
