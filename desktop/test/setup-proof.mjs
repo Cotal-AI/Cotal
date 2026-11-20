@@ -435,6 +435,12 @@ try {
       }
       if (appInstalled) {
         await installServiceViaAppBridge(true);
+        // 0.164.9 gives the account's PATH read a short limit and refuses on a slow runner before it changes
+        // anything. That refusal belongs to the published release, so ask it again; every call stays in report.calls.
+        for (let retry = 1; retry <= 2 && cell === 'app-installed-0.164.9' && report.appBridgeInstall?.resultFrame?.error?.message?.startsWith("the account's application PATH could not be read"); retry++) {
+          report.appBridgeInstallRetries = retry;
+          await installServiceViaAppBridge(true);
+        }
         serviceInstalled = existsSync(join(root, 'daemon', 'service-unit.json'));
         await observeInstalledService('after-install');
         report.initialDaemonPoll = await pollDaemonStatus(sourceVersion, 120_000);
