@@ -80,7 +80,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "tatus: PresenceStatus = \"idle\";\n  /** The turn relay's",
+      "anchor": "\"idle\"",
       "class": "non-render/control"
     },
     {
@@ -104,7 +104,7 @@
     {
       "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
-      "anchor": "\"working\" && status === \"idle\") this.onTurnBoundary();",
+      "anchor": "\"idle\"",
       "class": "non-render/control"
     },
     {

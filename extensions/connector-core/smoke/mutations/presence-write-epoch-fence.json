@@ -24,9 +24,9 @@
     },
     {
       "name": "F3 inOrder runs each write directly again instead of chaining it behind the presence chain, so setStatus/resetStatus/setCondition/setAttention/setChannelMode/setModel go back to firing their bodies unserialized: two overlapping calls interleave their puts and the record that lands last is whichever call's second put finished last, not the call made last (#636, #2055).",
-      "file": "extensions/connector-core/src/agent.ts",
-      "find": "  private inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {\n    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n    const next = this.presenceChain.then(write, write);\n    this.presenceChain = next.catch(() => {});\n    return next;\n  }",
-      "replace": "  private inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {\n    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n    return write();\n  }",
+      "file": "extensions/connector-core/src/agent-presence.ts",
+      "find": "  inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {\n    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n    const next = this.presenceChain.then(write, write);\n    this.presenceChain = next.catch(() => {});\n    return next;\n  }",
+      "replace": "  inOrder(write: () => Promise<void>, forDeparture = false): Promise<void> {\n    if (this._stopping && !forDeparture) return Promise.reject(new Error(\"agent is stopping; presence writes are refused\"));\n    return write();\n  }",
       "expectRed": "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled",
       "cell": "two overlapping status writes land in call order: the later call's puts start only after the earlier call's have settled"
     },
