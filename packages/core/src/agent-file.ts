@@ -35,7 +35,7 @@ import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidRole, isConcreteChannel } from "./subjects.js";
-import { channelGrantField, channelInGrant, parseOptionalChannelGrant, resolveReadGrant, type ChannelGrantField } from "./channel-grant.js";
+import { channelGrantField, channelInGrant, parseChannelGrant, parseOptionalChannelGrant, resolveReadGrant, type ChannelGrantField } from "./channel-grant.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
@@ -226,8 +226,12 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const subscribe = list("subscribe");
   // A read or post list is a plain array, or `{ allow, exclude }` when it removes channels (SPEC §9).
   const grant = (k: "allowSubscribe" | "allowPublish") => {
-    try { return parseOptionalChannelGrant(fm[k], k); }
-    catch (e) { throw new Error(`agent file ${path}: ${(e as Error).message}`); }
+    const v = fm[k];
+    if (v === undefined || Array.isArray(v)) { const allow = list(k); return allow && { allow, exclude: [] }; }
+    const shape = `"${k}" must be an array of strings or a mapping { allow, exclude }; got ${yamlType(v)}`;
+    if (v === null || typeof v !== "object") throw new Error(`agent file ${path}: ${shape}`);
+    try { return parseChannelGrant(v, k); }
+    catch (e) { throw new Error(`agent file ${path}: ${shape}: ${(e as Error).message}`); }
   };
   const readGrant = grant("allowSubscribe"), postGrant = grant("allowPublish");
   const allowSubscribe = readGrant && [...readGrant.allow], allowPublish = postGrant && [...postGrant.allow];

@@ -15,6 +15,10 @@ import { importNativeSubjectPermissions, mintAcceptedToken, mintGeneration, type
 import { grantOverreach, type DelegatedGrant } from "../src/grant-bound.js";
 import type { IssuedCaller } from "../src/endpoint-subjects.js";
 import { eventChannel } from "../src/event-channel.js";
+import { loadAgentFile, parseAgentFileSource, saveAgentFile } from "../src/agent-file.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -115,6 +119,24 @@ console.log("channelInGrant");
   ok("team.private.> only partly overlaps team.*.private, so it is admitted", patternInGrant(allow, ex, "team.private.>"));
   ok("a concrete channel the pattern covers is excluded", !channelInGrant(allow, ex, "team.a.private") && !patternInGrant(allow, ex, "team.*.private"));
   ok("a pattern join outside the allow is refused", !patternInGrant(allow, ex, "ops.>"));
+}
+
+console.log("agent file");
+{
+  const src = (fm: string) => `---\nname: x\n${fm}\n---\nbody\n`;
+  const def = parseAgentFileSource(src("subscribe: [team.a]\nallowSubscribe:\n  allow: [team.>]\n  exclude: [team.secret, \"team.*.private\"]\nallowPublish: { allow: [team.>], exclude: [team.secret] }"), "f");
+  ok("the object form loads into the sibling lists", JSON.stringify([def.allowSubscribe, def.excludeSubscribe, def.allowPublish, def.excludePublish])
+    === '[["team.>"],["team.secret","team.*.private"],["team.>"],["team.secret"]]');
+  const plain = parseAgentFileSource(src("allowSubscribe: [team.>]"), "f");
+  ok("a plain list loads with no exclusion fields", plain.excludeSubscribe === undefined && plain.excludePublish === undefined);
+  const file = join(mkdtempSync(join(tmpdir(), "ce-af-")), "x.md");
+  saveAgentFile(file, def);
+  ok("a saved file round-trips the exclusions", JSON.stringify(loadAgentFile(file).excludeSubscribe) === '["team.secret","team.*.private"]');
+  ok("a saved file writes the object form", /allowSubscribe:\n\s+allow:/.test(readFileSync(file, "utf8")));
+  throws("a subscription on an excluded channel is refused", () => parseAgentFileSource(src("subscribe: [team.secret]\nallowSubscribe: { allow: [team.>], exclude: [team.secret] }"), "f"), /excluded/);
+  throws("a quiet channel that is excluded is refused", () => parseAgentFileSource(src("quiet: [team.secret]\nallowSubscribe: { allow: [team.>], exclude: [team.secret] }"), "f"), /not within your read ACL/);
+  throws("an unknown key on the object form is refused", () => parseAgentFileSource(src("allowSubscribe: { allow: [team.>], deny: [x] }"), "f"), /unknown key/);
+  throws("a saved exclusion without its allow list is refused", () => saveAgentFile(file, { name: "x", subscribe: [], excludeSubscribe: ["a"], persona: "b" }), /needs the list/);
 }
 
 console.log("delegation (grantOverreachOf)");
