@@ -2,4 +2,4 @@
 "cotal-ai": patch
 ---
 
-The shell installer keeps the working Cotal installation when a requested downgrade is too old for its connector state.
+The shell installer keeps the previous Cotal release when a downgrade is incompatible with its connector state or fails during reconciliation.

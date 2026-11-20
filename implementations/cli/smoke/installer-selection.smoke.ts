@@ -302,7 +302,7 @@ printf '{"name":"cotal-ai","version":"%s","bin":{"cotal":"./dist/cotal.js"}}\\n'
 if [ "$version" = 0.0.2 ]; then
   printf '#!/usr/bin/env node\\nthrow new Error("requested release cannot start");\\n' > "$pkg/dist/cotal.js"
 else
-  printf '#!/usr/bin/env node\\nif(process.argv[2]==="--version"){if(process.env.FIXTURE_WARN)console.error("benign startup warning");console.log("cotal-ai %s");}\\n' "$version" > "$pkg/dist/cotal.js"
+  printf '#!/usr/bin/env node\\nif(process.argv[2]==="--version"){if(process.env.FIXTURE_WARN)console.error("benign startup warning");console.log("cotal-ai %s");}\\nif(process.argv[2]==="update" && process.env.FIXTURE_FAIL_SELECTION){require("node:fs").writeFileSync(process.env.FIXTURE_FAIL_SELECTION,"reconciliation changed the selection");process.exitCode=1;}\\n' "$version" > "$pkg/dist/cotal.js"
 fi
 chmod 755 "$pkg/dist/cotal.js"
 ln -s "../lib/node_modules/cotal-ai/dist/cotal.js" "$prefix/bin/cotal"
@@ -396,6 +396,17 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.10");
   writeFileSync(stamp, stampBefore);
   writeFileSync(targetStamp, JSON.stringify({ generation: "0.0.9-rc.2" }));
+  const failedReconcile = spawnSync("/bin/sh", [stagingDriver, library], {
+    env: { ...stagingEnv, FIXTURE_NODE: join(systemBin, "node-24"), FIXTURE_TARGET: "older", FIXTURE_FAIL_SELECTION: join(sets, "current.json") },
+    encoding: "utf8", timeout: 90_000,
+  });
+  assert.equal(failedReconcile.status, 1, output(failedReconcile));
+  assert.match(output(failedReconcile), /Cotal 0\.0\.10 was restored/);
+  assert.equal(readFileSync(join(sets, "current.json"), "utf8"), record);
+  assert.equal(readFileSync(launcher, "utf8"), launcherBefore);
+  assert.equal(readlinkSync(join(prefix, "nodebin/node")), runtimeBeforeRefusal);
+  assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.10");
+  assert(!readdirSync(prefix).some(name => name.startsWith(".install-stage.")), "rollback cleans its private prefix");
   const compatible = stageRun("older");
   assert.equal(compatible.status, 0, output(compatible));
   assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.9-rc.2");
@@ -403,7 +414,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   const unseeded = stageRun("0.0.8");
   assert.equal(unseeded.status, 0, output(unseeded));
   assert.equal(spawnSync(launcher, ["--version"], { env: stagingEnv, encoding: "utf8" }).stdout.trim(), "cotal-ai 0.0.8");
-  assert.deepEqual(readdirSync(join(prefix, "lib/.cotal-generations")), []);
+  assert(!existsSync(join(prefix, "lib/.cotal-generations")), "a probe leaves no execution store behind");
 
   // Real runtime discovery and linking, including relative links and nodebin on PATH.
   const runtimeHome = join(root, "runtime home's");
@@ -477,7 +488,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 134 : 113, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 141 : 120, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

@@ -49,6 +49,7 @@ Before a downgrade, the installer checks the connector seed store the requested 
 That release uses its own retained connector set when one exists. If the applicable store is newer
 than the requested release, the installer keeps the installed release. Use it, or restore compatible
 connector state from a backup before retrying the downgrade.
+If an older release starts but reconciliation fails, the installer restores the previous release.
 You can rerun it with Cotal's `nodebin` directory on PATH without replacing its runtime links with links to themselves.
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
 It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.
