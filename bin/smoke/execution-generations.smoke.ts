@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
@@ -267,6 +267,43 @@ try {
     assert.equal(script.status, 0, script.stderr);
     assert.equal(readlinkSync(entry), wrapper);
     assert.equal(launch().stdout.trim(), "retained generation selected", "the wrapper alone does not retire an unchanged package");
+
+    const pathBin = join(scratch, "npm-path-node"), versionPreload = join(scratch, "path-node-version.cjs");
+    const markerPreload = join(scratch, "node-selection.cjs");
+    mkdirSync(pathBin);
+    writeFileSync(join(pathBin, "node"), `#!/bin/sh
+[ "$TEST_PATH_NODE_VERSION" != broken ] || exit 126
+TEST_PATH_NODE=1 exec "$TEST_REAL_NODE" --require "$TEST_PATH_NODE_PRELOAD" "$@"
+`, { mode: 0o755 });
+    writeFileSync(versionPreload, `
+Object.defineProperty(process.versions, "node", { value: process.env.TEST_PATH_NODE_VERSION });
+Object.defineProperty(process, "version", { value: "v" + process.env.TEST_PATH_NODE_VERSION });
+`);
+    writeFileSync(markerPreload, `console.log(process.env.TEST_PATH_NODE ? "PATH Node" : "recorded Node", process.env.PATH.split(":")[0]);`);
+    const recordedBin = dirname(realpathSync(process.execPath));
+    for (const [version, selected] of [
+      ["22.9.0", "recorded Node"],
+      ["22.10.0", "PATH Node"],
+      ["broken", "recorded Node"],
+      ["", "recorded Node"],
+    ]) {
+      const selection = spawnSync(entry, ["--version"], {
+        env: {
+          ...process.env,
+          PATH: version ? pathBin : join(scratch, "no-node-on-path"),
+          NODE_OPTIONS: `--require ${JSON.stringify(markerPreload)}`,
+          TEST_REAL_NODE: process.execPath,
+          TEST_PATH_NODE_PRELOAD: versionPreload,
+          TEST_PATH_NODE_VERSION: version,
+        },
+        cwd: scratch,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(selection.status, 0, `${version || "missing"} PATH Node: ${selection.stderr}`);
+      const selectedBin = selected === "PATH Node" ? pathBin : recordedBin;
+      assert.equal(selection.stdout, `${selected} ${selectedBin}\nretained generation selected\n`, `${version || "missing"} PATH Node`);
+    }
 
     // Keep the same manifest bytes and bootstrap hash. Only the installed package's incarnation changes.
     cpSync(manifest, `${manifest}.new`); renameSync(`${manifest}.new`, manifest);

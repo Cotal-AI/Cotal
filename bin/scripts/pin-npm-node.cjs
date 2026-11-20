@@ -1,10 +1,13 @@
 // Keep this check runnable on old Node releases that npm still uses to start lifecycle scripts.
 const minimum = require("../package.json").engines.node.slice(2).trim();
 const installed = process.versions.node;
-const [major, minor, patch] = installed.split(".").map(Number);
-const [minMajor, minMinor = 0, minPatch = 0] = minimum.split(".").map(Number);
+function meetsNodeFloor(version, floor) {
+  const [major, minor, patch] = version.split(".").map(Number);
+  const [minMajor, minMinor = 0, minPatch = 0] = floor.split(".").map(Number);
+  return major > minMajor || (major === minMajor && (minor > minMinor || (minor === minMinor && patch >= minPatch)));
+}
 
-if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === minMinor && patch < minPatch)))) {
+if (!meetsNodeFloor(installed, minimum)) {
   console.error(`cotal-ai requires Node.js ${minimum} or later, but npm is using v${installed}. Install a supported Node.js and retry npm install -g cotal-ai, or on Linux or macOS use the official installer: curl -fsSL https://get.cotal.ai | sh -s -- --no-setup`);
   process.exitCode = 1;
 } else if (process.platform === "linux" || process.platform === "darwin") {
@@ -23,16 +26,30 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
       const launcher = join(root, "dist", "cotal-npm");
       const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
       const node = realpathSync(process.execPath);
+      const probe = `(${meetsNodeFloor})(process.versions.node, ${JSON.stringify(minimum)}) ? "supported" : "old"`;
       writeFileSync(launcher, `#!/bin/sh
-if command -v node >/dev/null 2>&1; then
-  node=node
-elif [ -x ${quote(node)} ]; then
-  node=${quote(node)}
-  PATH="$PATH":${quote(dirname(node))}
-  export PATH
-else
-  printf '%s\\n' 'cotal: Node.js 22.10 or later is required. Restore Node to PATH and reinstall Cotal with npm.' >&2
-  exit 127
+node_support() {
+  # Do not run the user's preloads during the version probe. The CLI still inherits them.
+  NODE_OPTIONS= command "$1" -p ${quote(probe)} </dev/null 2>/dev/null
+}
+
+node=node
+path_support=$(node_support "$node") || path_support=
+if [ "$path_support" != supported ]; then
+  recorded=${quote(node)}
+  recorded_support=$(node_support "$recorded") || recorded_support=
+  if [ "$recorded_support" = supported ]; then
+    node=$recorded
+    PATH=${quote(dirname(node))}\${PATH:+:$PATH}
+    export PATH
+  elif [ "$path_support" != old ]; then
+    if [ "$recorded_support" != old ]; then
+      printf '%s\\n' ${quote(`cotal: Node.js ${minimum} or later is required. Restore a supported Node to PATH and reinstall Cotal with npm.`)} >&2
+      exit 127
+    fi
+    node=$recorded
+  fi
+  # A runnable old Node still enters the bootstrap to report its version and clean up a spawn handoff.
 fi
 
 # Keep case outside command substitutions for Bash 3.2's parser.

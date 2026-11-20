@@ -116,10 +116,11 @@ The shell installer does not support Windows shells.
 You can also use the shell installer inside WSL.
 
 On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.
-The `bin/cotal` link in the npm prefix points to a shell launcher, which uses that executable when Node is not on PATH.
+The `bin/cotal` link in the npm prefix points to a shell launcher. It uses Node from PATH when it
+meets the minimum version, or the recorded executable if it still meets the minimum.
 The launcher finds the JavaScript entry in the installed package, even when a package manager moves the installation after running the scripts.
 The package's JavaScript entry stays the same for daemon services and per-home connector state.
-If the recorded executable is gone, restore a supported Node to PATH and reinstall Cotal with npm.
+If neither executable works, restore a supported Node to PATH and reinstall Cotal with npm.
 
 Cotal includes a `nats-server` binary for its local broker.
 If you put your own `nats-server` on PATH, Cotal uses it when its folder is not writable by other accounts.
