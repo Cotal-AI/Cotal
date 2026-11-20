@@ -76,7 +76,7 @@
     },
     {
       "name": "a family's catch-up names each copy by the family",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-durable.ts",
       "find": "            msg, channel: parsed.rest, seq: m.seq, reason: \"durable-channel\", generation, ...(family ? { row: channel } : {}),",
       "replace": "            msg, channel, seq: m.seq, reason: \"durable-channel\", generation, ...(family ? { row: channel } : {}),",
       "expectRed": "dev.> catch-up stores dev.d's post, which only the family covers (each copy names its own channel)",
@@ -85,7 +85,7 @@
     },
     {
       "name": "a family's catch-up copies every channel, whatever its class",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-durable.ts",
       "find": "          if (!(await stored(parsed.rest))) continue;",
       "replace": "",
       "expectRed": "dev.> catch-up leaves out the live-class dev.quiet",
