@@ -29,11 +29,11 @@ import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTa
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, EpPrincipal, IssuedCaller, PrincipalAuthority } from "./endpoint-subjects.js";
 import { assertGeneration, assertRuntimeToken, endpointToken } from "./endpoint-subjects.js";
-import { servePrincipalRoute, describeContracts, type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
+import { type EpPrincipalCommandDef, type EpPrincipalServeHandle } from "./endpoint-serve.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import type { EndpointReply } from "./endpoint-envelope.js";
 import type { CompiledContract } from "./schema-profile.js";
-import { AGENT_CLUSTER, AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
+import { AGENT_CLUSTER, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { processRuntime } from "./process-runtime.js";
 import { issuedPermitsSubject, type IssuedSubjectPermission } from "./issued-authority.js";
 import type { RegistryEndpointsInput, RegistryEndpointsOutput } from "./registry-contract.js";
@@ -87,6 +87,7 @@ import { EndpointDurableBackstop } from "./endpoint-durable-backstop.js";
 import { EndpointDurable } from "./endpoint-durable.js";
 import { EndpointAnycast } from "./endpoint-anycast.js";
 import { EndpointConsumers } from "./endpoint-consumers.js";
+import { EndpointPrincipalServe } from "./endpoint-principal-serve.js";
 import { EndpointSubscriptions, membershipConsumerReleased, type MembershipFeedWatch } from "./endpoint-subscriptions.js";
 import { EndpointChannelDiscovery } from "./endpoint-channel-discovery.js";
 import { EndpointLiveness } from "./endpoint-liveness.js";
@@ -124,7 +125,6 @@ import {
   assertLifecycleToken,
   mintLifecycleUid,
   DEV_OWNER,
-  spacePrefix,
   spaceWildcard,
   subjectMatches,
   unicastSubject,
@@ -186,11 +186,6 @@ import {
 export {
   isFromSubjectSender,
 } from "./endpoint-messages.js";
-
-/** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
- *  orders lists by `seq` within one `runtime.id`, and a runtime id lives as long as the process, so
- *  this does too: across a stopped serve, a stopped endpoint and a new endpoint for the lifecycle. */
-const promptsSeqs = new Map<string, number>();
 
 /** The principal endpoint each `{space, runtime id, endpoint}` is served by in this process. Two
  *  would subscribe the same subject and both answer one request (SPEC 13.21). */
@@ -3172,125 +3167,47 @@ export class CotalEndpoint extends EventEmitter {
     return { ready, failed, stop: () => this.stopPrincipalServe(intent) };
   }
 
-  /** Subscribe `intent` on `nc`. */
+  /** The principal serve and prompts of this endpoint. Every dependency is read when it is used, and
+   *  every endpoint method is looked up at call time, so a member a caller replaced on the endpoint runs. */
+  private readonly principalServe = new EndpointPrincipalServe({
+    space: () => this.space,
+    nc: () => this.nc,
+    owner: () => this.owner,
+    actor: () => this.actor,
+    card: () => this.card,
+    principalServes: () => this.principalServes,
+    principalServers: () => principalServers,
+    promptsPresence: () => this.promptsPresence,
+    setPromptsPresence: (value) => { this.promptsPresence = value; },
+    publishPresence: () => this.publishPresence(),
+    emitRecoverable: (err) => this.emitRecoverable(err),
+    requireLifecycleUid: (what) => this.requireLifecycleUid(what),
+    notLiveMsg: () => this.notLiveMsg(),
+  });
+
+  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.bindPrincipalHandle}. */
   private bindPrincipalHandle(intent: PrincipalServeIntent, nc: NatsConnection): EpPrincipalServeHandle {
-    return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
+    return this.principalServe.bindPrincipalHandle(intent, nc);
   }
 
-  /** A principal-route refusal a call or a serve reports itself: a request publish, a serve
-   *  subscription or a reply read. Only a reply publish is left, which no call or serve awaits. */
+  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.ownedPrincipalRouteRefusal}. */
   private ownedPrincipalRouteRefusal(err: PermissionViolationError): boolean {
-    const p = `${spacePrefix(this.space)}.ep.`;
-    if (err.operation === "publish") return err.subject.startsWith(`${p}prin.`);
-    return err.subject.startsWith(`${p}prin.`) || err.subject.startsWith(`${p}prin-reply.`);
+    return this.principalServe.ownedPrincipalRouteRefusal(err);
   }
 
-  /** Track one binding: a refusal ends the serve, and an accepted subscription on the current
-   *  connection shows the presence field. */
+  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.armPrincipalServe}. */
   private async armPrincipalServe(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): Promise<void> {
-    intent.binding = { nc, handle };
-    // Every earlier binding is on a replaced connection: retire it once its handlers finish.
-    for (const old of intent.handles)
-      void old.stop().finally(() => {
-        const i = intent.handles.indexOf(old);
-        if (i >= 0) intent.handles.splice(i, 1);
-      });
-    intent.handles.push(handle);
-    intent.readyOn = undefined;
-    void handle.refused.then((err) => {
-      if (!intent.ended && intent.binding?.handle === handle) this.endPrincipalServe(intent, err);
-    });
-    try {
-      await handle.ready;
-    } catch {
-      // A refusal ends the serve through `refused`. A flush that failed because the connection
-      // went away is answered by the binding the next connection makes.
-      return;
-    }
-    this.principalServeConfirmed(intent, nc, handle);
+    return this.principalServe.armPrincipalServe(intent, nc, handle);
   }
 
-  /** The broker accepted `handle` on `nc`. When that is still the current binding, the serve is
-   *  ready there. */
-  private principalServeConfirmed(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): void {
-    if (intent.ended || intent.binding?.handle !== handle || this.nc !== nc) return;
-    intent.readyOn = nc;
-    if (!intent.readySettled) {
-      intent.readySettled = true;
-      intent.resolveReady();
-    }
-    if (intent.serve.endpoint === AGENT_ENDPOINT) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
-  }
-
-  /** Re-bind every principal serve on a replaced connection (a rebuild), or re-run the check on the
-   *  connection the library reconnected and re-subscribed itself. */
+  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.rebindPrincipalServes}. */
   private rebindPrincipalServes(reconnected: boolean): void {
-    const nc = this.nc;
-    if (!nc) return;
-    for (const intent of this.principalServes.values()) {
-      if (intent.ended) continue;
-      const bound = intent.binding;
-      if (bound && bound.nc === nc) {
-        if (!reconnected) continue;
-        intent.readyOn = undefined;
-        void bound.handle.check().then(() => this.principalServeConfirmed(intent, nc, bound.handle), () => { /* a refusal ends it through `refused` */ });
-        continue;
-      }
-      let handle: EpPrincipalServeHandle;
-      try {
-        handle = this.bindPrincipalHandle(intent, nc);
-      } catch (e) {
-        this.endPrincipalServe(intent, e as Error);
-        continue;
-      }
-      void this.armPrincipalServe(intent, nc, handle);
-    }
+    return this.principalServe.rebindPrincipalServes(reconnected);
   }
 
-  /** End a serve the broker refused: no more serving, `failed` resolves, the presence field goes. */
-  private endPrincipalServe(intent: PrincipalServeIntent, err: Error): void {
-    if (intent.ended) return;
-    this.forgetPrincipalServe(intent);
-    const wasReady = intent.readySettled;
-    if (!intent.readySettled) {
-      intent.readySettled = true;
-      intent.rejectReady(err);
-    }
-    intent.resolveFailed(err);
-    for (const handle of intent.handles) void handle.stop();
-    if (intent.serve.endpoint === AGENT_ENDPOINT) {
-      this.promptsPresence = undefined;
-      this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
-    }
-    // `ready` already carried a refusal that came before it settled; a later one is reported here.
-    if (wasReady) this.emitRecoverable(new Error(`stopped serving "${intent.serve.endpoint}" on the principal route: ${err.message}`, { cause: err }));
-  }
-
-  /** Mark `intent` ended and release what it holds in this endpoint and in this process. */
-  private forgetPrincipalServe(intent: PrincipalServeIntent): void {
-    intent.ended = true;
-    intent.readyOn = undefined;
-    if (this.principalServes.get(intent.serve.endpoint) === intent) this.principalServes.delete(intent.serve.endpoint);
-    if (principalServers.get(intent.serverKey) === intent) principalServers.delete(intent.serverKey);
-  }
-
-  /** Stop serving `intent` and wait for its handlers in flight, each until its request's deadline
-   *  at most. The ending is synchronous, so a
-   *  `ready` still waiting for the broker rejects before the caller's next step. `republish` writes
-   *  presence without the `prompts` field; the endpoint's own stop writes it offline instead. */
+  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.stopPrincipalServe}. */
   private async stopPrincipalServe(intent: PrincipalServeIntent, republish = true): Promise<void> {
-    if (!intent.ended) {
-      this.forgetPrincipalServe(intent);
-      if (!intent.readySettled) {
-        intent.readySettled = true;
-        intent.rejectReady(new Error(`stopped serving "${intent.serve.endpoint}" before the broker confirmed the subscription`));
-      }
-      if (intent.serve.endpoint === AGENT_ENDPOINT) {
-        this.promptsPresence = undefined;
-        if (republish) this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
-      }
-    }
-    await Promise.all(intent.handles.map((handle) => handle.stop()));
+    return this.principalServe.stopPrincipalServe(intent, republish);
   }
 
   /**
@@ -3302,17 +3219,7 @@ export class CotalEndpoint extends EventEmitter {
    * endpoint is not served, and a RangeError for a `seq` below one this runtime already used.
    */
   async setPromptsPresence(prompts: PresencePrompts): Promise<void> {
-    for (const k of ["open", "seq"] as const)
-      if (!Number.isSafeInteger(prompts?.[k]) || prompts[k] < 0) throw new TypeError(`prompts.${k} must be a non-negative safe integer`);
-    const intent = this.principalServes.get(AGENT_ENDPOINT);
-    if (!intent)
-      throw new Error(`the prompts presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
-    const used = promptsSeqs.get(intent.self.runtimeId) ?? 0;
-    if (prompts.seq < used)
-      throw new RangeError(`prompts.seq ${prompts.seq} is below ${used}, which this process already used under runtime ${intent.self.runtimeId}: seq never goes back under one runtime id (SPEC §6)`);
-    promptsSeqs.set(intent.self.runtimeId, prompts.seq);
-    this.promptsPresence = { open: prompts.open, seq: prompts.seq };
-    await this.publishPresence();
+    return this.principalServe.setPromptsPresence(prompts);
   }
 
   /**
@@ -3321,18 +3228,12 @@ export class CotalEndpoint extends EventEmitter {
    * prompt desk takes every `seq` it shows from here. Throws without a lifecycle UID.
    */
   nextPromptsSeq(): number {
-    const runtimeId = processRuntime(this.requireLifecycleUid("nextPromptsSeq")).id;
-    const used = promptsSeqs.get(runtimeId);
-    const next = used === undefined ? 0 : used + 1;
-    promptsSeqs.set(runtimeId, next);
-    return next;
+    return this.principalServe.nextPromptsSeq();
   }
 
-  /** The `prompts` field this process's presence carries now, or none. */
+  /** Forwards to the principal-serve component's {@link EndpointPrincipalServe.servedPrompts}. */
   private servedPrompts(): PresencePrompts | undefined {
-    const intent = this.principalServes.get(AGENT_ENDPOINT);
-    if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
-    return this.promptsPresence;
+    return this.principalServe.servedPrompts();
   }
 
   /**
@@ -3358,17 +3259,7 @@ export class CotalEndpoint extends EventEmitter {
     contract?: { input: CompiledContract; output: CompiledContract };
     signal?: AbortSignal;
   }): Promise<EndpointReply> {
-    const nc = this.nc;
-    if (!nc) throw new Error(this.notLiveMsg());
-    const contract = call.contract
-      ?? (call.command === "describe" ? describeContracts() : call.endpoint === AGENT_ENDPOINT ? AGENT_CONTRACTS[call.command] : undefined);
-    if (contract === undefined)
-      throw new EpEnvelopeError("bad-request", `no contract is built in for ${call.endpoint}.${call.command}; pass one`, undefined, "not-executed");
-    const caller: EpCaller = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("callPrincipal") };
-    return epPrincipalCall(nc, this.space, { principal: call.principal, authority: call.authority }, {
-      endpoint: call.endpoint, command: call.command, contract, caller, name: this.card.name,
-      ...(call.args !== undefined ? { args: call.args } : {}),
-    }, { deadlineMs: call.deadlineMs, ...(call.signal ? { signal: call.signal } : {}) });
+    return this.principalServe.callPrincipal(call);
   }
 
   /** Agent-side: request a Plane-3 durable backstop for a channel via the server-side delivery daemon (ctl.delivery). Throws
