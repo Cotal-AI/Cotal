@@ -161,8 +161,8 @@ const SUBJECT = { tie: "subject", effect: "proceed" };
 const BASE = { session_id: "11111111-2222-3333-4444-555555555555", transcript_path: "/home/u/.claude/projects/p/s.jsonl", cwd: "/work", permission_mode: "default" };
 const permission = (input: unknown, extra: Record<string, unknown> = {}): HookEvent =>
   ({ ...BASE, hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: input, ...extra });
-const batch = (calls: { tool_name?: unknown; tool_input?: unknown }[], extra: Record<string, unknown> = {}): HookEvent =>
-  ({ ...BASE, hook_event_name: "PostToolBatch", tool_calls: calls.map((c, i) => ({ ...c, tool_use_id: `toolu_${i}`, tool_response: "ok" })), ...extra });
+const batch = (calls: { tool_name?: unknown; tool_input?: unknown; tool_response?: unknown }[], extra: Record<string, unknown> = {}): HookEvent =>
+  ({ ...BASE, hook_event_name: "PostToolBatch", tool_calls: calls.map((c, i) => ({ tool_use_id: `toolu_${i}`, tool_response: "ok", ...c })), ...extra });
 const bash = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
 const stop = (): HookEvent => ({ ...BASE, hook_event_name: "Stop", stop_hook_active: false });
 const subagentStop = (agent_id: string): HookEvent =>
@@ -240,7 +240,7 @@ for (const [option, note, out] of [["allow", undefined, ALLOW_OUT], ["deny", "no
   receipt(w, main.h);
   receipt(w, sub.h);
   await flush();
-  check("a deny with no note prints a deny with no message", isDeepStrictEqual(sub.h.output, denyOut()), sub.h.output);
+  check("a deny with no note prints a deny whose message is Permission denied.", isDeepStrictEqual(sub.h.output, denyOut("Permission denied.")), sub.h.output);
   fire(w, stop());
   await flush();
   check("sent allow, the main thread's turn ended: unconfirmed, seen none", closedAs(state(w, main.id), { kind: "unconfirmed", seen: NONE }), state(w, main.id));
@@ -281,6 +281,52 @@ for (const then of ["a batch matches", "the turn ends"] as const) {
   conn2.abort();
   recorded[1]!.end({ attempted: false });
   check("end with nothing attempted and the hook's connection gone: nothing is written", writes.length === 0, writes);
+}
+
+// ---- a refused call -------------------------------------------------------------------------------
+// Claude lists a call a deny refused in its batch, with the deny's message as the call's result.
+console.log("\na call the deny refused");
+for (const note of ["not this one", undefined]) {
+  const w = world();
+  const { h, id } = await hold(w, permission({ command: "r" }));
+  void answer(w, id, "deny", note);
+  await flush();
+  receipt(w, h);
+  fire(w, batch([{ ...bash("r"), tool_response: note ?? "Permission denied." }]));
+  await flush();
+  check(`sent deny${note ? " with a note" : ""}, the batch lists the refused call with the deny's message as its result: no sighting, the prompt stays sent`,
+    isSent(state(w, id), "delivered", "deny"), state(w, id));
+  fire(w, stop());
+  await flush();
+  check(`... and the turn end closes it unconfirmed, seen none`, closedAs(state(w, id), { kind: "unconfirmed", seen: NONE }), state(w, id));
+}
+{
+  const w = world();
+  const p1 = await hold(w, permission({ command: "s" }));
+  const p2 = await hold(w, permission({ command: "s" }));
+  void answer(w, p1.id, "deny", "no");
+  await flush();
+  receipt(w, p1.h);
+  fire(w, batch([{ ...bash("s"), tool_response: "no" }]));
+  await flush();
+  check("the refused call is no sighting for a waiting twin either: P2 stays open", isOpen(state(w, p2.id)) && p2.h.output === undefined, state(w, p2.id));
+  fire(w, batch([{ ...bash("s"), tool_response: "no" }], { agent_id: "agent-5" }));
+  fire(w, batch([{ ...bash("s"), tool_response: "(Bash completed with no output)" }]));
+  await flush();
+  check("an entry with the key and another result is a sighting: P1 unconfirmed and P2 withdrawn, each tied to the subject",
+    closedAs(state(w, p1.id), { kind: "unconfirmed", seen: SUBJECT }) && closedAs(state(w, p2.id), { kind: "withdrawn", seen: SUBJECT }), [state(w, p1.id), state(w, p2.id)]);
+}
+{
+  const w = world();
+  const sub = await hold(w, permission({ command: "t" }, { agent_id: "agent-6" }));
+  const main = await hold(w, permission({ command: "t" }));
+  void answer(w, main.id, "deny", "no");
+  await flush();
+  receipt(w, main.h);
+  fire(w, batch([{ ...bash("t"), tool_response: "no" }], { agent_id: "agent-6" }));
+  await flush();
+  check("a refusal is recognized only in its own scope: the same result in a subagent's batch is a sighting there",
+    closedAs(state(w, sub.id), { kind: "withdrawn", seen: SUBJECT }) && isSent(state(w, main.id), "delivered", "deny"), [state(w, sub.id), state(w, main.id)]);
 }
 
 // ---- a name and an input are not an identity ----------------------------------------------------

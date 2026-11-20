@@ -14,7 +14,9 @@
  * prompt. The module keeps a match key per prompt (the scope, the tool name and the SHA-256 of the RFC
  * 8785 canonical JSON of the tool input) and reports only what that key can show: a batch with the key
  * is a sighting tied to the subject, a turn end and a closed hook connection show nothing. It never
- * reports `confirmed`, `local` or a sighting tied to the prompt.
+ * reports `confirmed`, `local` or a sighting tied to the prompt. A batch also lists a call that a deny
+ * refused, with the deny's message as its result, so an entry whose result is a deny this module wrote
+ * for that scope and key is the refused call and no sighting.
  *
  * {@link launchedSessionHooks} is the hook transport of a session Cotal launched: the control server's
  * held exchange, and every other event handed on, whole and once, to the existing consumer.
@@ -29,6 +31,12 @@ const OPEN_MS = 7 * 24 * 60 * 60 * 1000;
 const SETTLE_MS = 15 * 60 * 1000;
 /** Dialogs the terminal keeps: a question and a plan need more than allow and deny. */
 const LEFT_TO_TERMINAL: ReadonlySet<string> = new Set(["AskUserQuestion", "ExitPlanMode"]);
+/** The message of a deny with no note. Claude gives a refused call this message as its result, and the
+ *  module has to know the text to tell that call from one that ran. */
+const DENIED = "Permission denied.";
+/** How many refused calls the module recognizes, the oldest forgotten first. A batch can arrive after
+ *  its prompt closed, while a new prompt with the same key waits. */
+const REFUSALS_KEPT = 256;
 
 /** The hook's `agent_id`: a subagent's id, or undefined for the main thread. */
 export type Scope = string | undefined;
@@ -43,10 +51,12 @@ export interface ToolPermission {
   server?: string;
 }
 
-/** One call a batch ran: its tool name and the digest of its input. */
+/** One call a batch lists: its tool name, the digest of its input, and the SHA-256 of its result when
+ *  Claude gave the result as a string. */
 export interface ToolCallKey {
   tool: string;
   digest: string;
+  result?: string;
 }
 
 /** The held hook connection of one tool permission. */
@@ -90,11 +100,12 @@ function permissionContent(p: ToolPermission, input: PromptInput, options: Promp
   };
 }
 
+/** The message Claude gets for a deny, and later gives the refused call as its result. */
+const denyMessage = (verdict: PromptVerdict): string => verdict.note || DENIED;
+
 /** The hook output that hands an accepted answer to Claude. */
 function decision(verdict: PromptVerdict): Record<string, unknown> {
-  const d = verdict.option === ALLOW.id
-    ? { behavior: "allow" }
-    : { behavior: "deny", ...(verdict.note ? { message: verdict.note } : {}) };
+  const d = verdict.option === ALLOW.id ? { behavior: "allow" } : { behavior: "deny", message: denyMessage(verdict) };
   return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: d } };
 }
 
@@ -108,6 +119,8 @@ interface Live {
 }
 
 const keyOf = (tool: string, digest: string): string => `${tool}\0${digest}`;
+/** A call refused in `scope` with `key`, whose result is a message with SHA-256 `result`. */
+const refusalOf = (scope: Scope, key: string, result: string): string => `${scope ?? ""}\0${key}\0${result}`;
 
 /**
  * The prompt module over `desk`, which reads the agent's desk when a permission arrives: undefined
@@ -123,6 +136,11 @@ export function createClaudePrompts(opts: {
   if (gated)
     opts.warn("tool permissions are not served on the agent endpoint on Windows yet, so Claude's own dialog answers each one");
   const live = new Map<Live, PromptHold>();
+  const refusals = new Set<string>();
+  const refused = (r: string): void => {
+    refusals.add(r);
+    if (refusals.size > REFUSALS_KEPT) refusals.delete(refusals.values().next().value!);
+  };
   /** Report to every live prompt of `scope` (of every scope for `null`): a sighting tied to the
    *  subject for each whose key is in `ran`, or, with no `ran`, that the scope's turn ended. */
   const report = (scope: Scope | null, ran?: ReadonlySet<string>): void => {
@@ -155,6 +173,7 @@ export function createClaudePrompts(opts: {
           deliver: (verdict): Promise<Delivery> => {
             if (exchange.closed.aborted) return Promise.resolve({ kind: "gone" });
             p.answered = true;
+            if (verdict.option !== ALLOW.id) refused(refusalOf(p.scope, p.key, sha256(denyMessage(verdict))));
             return exchange.write(decision(verdict)).then(() => ({ kind: "delivered" }));
           },
           end: ({ attempted }) => {
@@ -172,7 +191,8 @@ export function createClaudePrompts(opts: {
       }, { once: true });
     },
     batch(scope, calls) {
-      report(scope, new Set(calls.map((c) => keyOf(c.tool, c.digest))));
+      const ran = calls.filter((c) => c.result === undefined || !refusals.has(refusalOf(scope, keyOf(c.tool, c.digest), c.result)));
+      report(scope, new Set(ran.map((c) => keyOf(c.tool, c.digest))));
     },
     turnEnd(scope) {
       report(scope);
@@ -188,13 +208,14 @@ export function createClaudePrompts(opts: {
 const scopeOf = (ev: HookEvent): Scope => (typeof ev.agent_id === "string" && ev.agent_id ? ev.agent_id : undefined);
 
 /** A `PostToolBatch`'s calls: one per element of `tool_calls` with a string `tool_name` and an input
- *  that is interchangeable JSON. */
+ *  that is interchangeable JSON, with the digest of a string `tool_response`. */
 function toolCalls(ev: HookEvent): ToolCallKey[] {
   if (!Array.isArray(ev.tool_calls)) return [];
-  return ev.tool_calls.flatMap((c: { tool_name?: unknown; tool_input?: unknown } | null) => {
+  return ev.tool_calls.flatMap((c: { tool_name?: unknown; tool_input?: unknown; tool_response?: unknown } | null) => {
     if (typeof c?.tool_name !== "string") return [];
     const digest = inputDigest(c.tool_input);
-    return digest === undefined ? [] : [{ tool: c.tool_name, digest }];
+    if (digest === undefined) return [];
+    return [{ tool: c.tool_name, digest, ...(typeof c.tool_response === "string" ? { result: sha256(c.tool_response) } : {}) }];
   });
 }
 

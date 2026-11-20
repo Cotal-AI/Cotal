@@ -690,8 +690,8 @@ waits for the reply with no deadline. Claude's own dialog stays open the whole t
 
 Each permission opens a `permission` prompt. It shows the tool's name and input, the session's
 directory, and the MCP server of an `mcp__*` tool, and it offers `allow` and `deny` with an optional
-note. It is offered for 7 days. An answer reaches Claude as the hook's decision, and a deny's note
-reaches Claude as its message. The relay's receipt for that decision moves the prompt to `delivered`.
+note. It is offered for 7 days. An answer reaches Claude as the hook's decision. A deny's message
+is its note, or `Permission denied.` when it has none. The relay's receipt for that decision moves the prompt to `delivered`.
 When the input would take the prompt over its 262144-byte content limit, the prompt shows the
 input as omitted with its size and offers only `deny`. Claude's dialog alone answers `AskUserQuestion` and `ExitPlanMode`. It also answers a
 permission that arrives before the endpoint is served or while 32 prompts are open or sent.
@@ -709,6 +709,10 @@ reports only what that key can show:
 | answered | a `PostToolBatch` of its scope lists a call with its key | `unconfirmed`, a call with this subject seen |
 | answered | its scope's turn ended | `unconfirmed`, nothing seen |
 | answered | the hook's connection closed with no receipt | stays `sent` until a batch, a turn end or 15 minutes |
+
+Claude's batch also lists a call that a deny refused, with the deny's message as the call's result.
+An entry whose scope, key and result match a deny the seat handed over is that refused call, so it
+shows no call with this subject.
 
 A call with the same name and input can belong to another request, so the seat never says that a
 prompt's own call ran or did not run, and it never reports `confirmed` or `local`. A prompt that
