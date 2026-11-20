@@ -1497,6 +1497,10 @@
   "ep:manager:input.text": "current:input --text",
   "ep:manager:input@any": "current:input",
   "ep:manager:input@owner": "current:input",
+  "ep:manager:interrupt": "current:acp",
+  "ep:manager:interrupt#ephemeral/manager.lifecycle": "current:acp",
+  "ep:manager:interrupt@any": "current:acp",
+  "ep:manager:interrupt@owner": "current:acp",
   "ep:manager:inspect": [
    "current:stop",
    "current:attach",
