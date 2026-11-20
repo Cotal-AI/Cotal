@@ -247,7 +247,7 @@ function statusRow({ version }: ConnectorStatusInput): ConnectorStatusRow {
       if (isConfigProtected(config)) return row("warn", protectedRegistration(config));
     }
   } catch (e) { return row("error", (e as Error).message); }
-  const remedy = "bare setup needs a terminal. See `cotal setup --help` for scripted setup.";
+  const remedy = "run `cotal setup` in a terminal, or see `cotal setup --help` for scripted setup";
   if (!installed) return row("off", `not installed · ${remedy}`);
   if (installed.disabled) return row("off", "disabled");
   return installed.version.startsWith(`${version}+`) ? row("ok", "current") : row("warn", `stale · ${remedy}`);

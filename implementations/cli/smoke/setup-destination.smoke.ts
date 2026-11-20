@@ -198,7 +198,7 @@ if (seeded.status !== 0) {
   process.exit(1);
 }
 
-// Status must not send a script to bare setup, which cannot prompt for the required choices.
+// Status qualifies the interactive command and points scripts to setup help.
 {
   const state = join(home, ".codex-fixture.json");
   for (const label of ["not installed", "stale"]) {
@@ -206,7 +206,7 @@ if (seeded.status !== 0) {
     const status = await run(["status", "--plain"]);
     const row = status.stdout.split("\n").find(line => line.startsWith("  Codex plugin:"));
     check(`headless status points a ${label} Codex plugin to scripted setup help`, status.status === 0 &&
-      row?.trim().replace(/\s+/g, " ") === `Codex plugin: ${label} - bare setup needs a terminal. See \`cotal setup --help\` for scripted setup.`, row ?? shown(status));
+      row?.trim().replace(/\s+/g, " ") === `Codex plugin: ${label} - run \`cotal setup\` in a terminal, or see \`cotal setup --help\` for scripted setup`, row ?? shown(status));
   }
   rmSync(state);
 }
