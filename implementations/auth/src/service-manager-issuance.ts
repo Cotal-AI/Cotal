@@ -70,6 +70,7 @@ export interface ManagerIssuanceDeps {
   registeredManagerCluster: (owner: string, instanceId: string, observed: { registrationRevision: number }) => Promise<ManagerCluster>;
   refuseIfFenced: () => void;
   issuerAuth: () => SpaceAuth;
+  composedSourceIsLive: (session: IssuerSession) => Parameters<IssuerSession["store"]["resolve"]>[1];
   onConnection: AuthorityClientOpts["onConnection"] | undefined;
 }
 

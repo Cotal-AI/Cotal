@@ -1096,7 +1096,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         managerInstance: `auth-service:${space}`,
       });
     },
-    ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection }),
+    ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection, composedSourceIsLive }),
     validateRetainedAgent: async (holder) => {
       refuseIfFenced();
       return authorizeRemoteRetainedAgentValidation({
