@@ -957,7 +957,9 @@ a space you removed can be read and removed, and refuse any other name the same 
 another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
 that value: a variable, or your value for the space a command here uses when you write your
 defaults, with or without `--user`. The receipt's effective value is the one a command here uses,
-read through `--space`, else that space. A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
+read through `--space`, else that space. If an unreadable space record prevents this lookup, a
+write to your defaults still succeeds and warns that the effective value is unavailable.
+A `persona` that the space's catalog does not hold is saved with a `PERSONA_NOT_FOUND`
 warning naming the catalog. A variable whose value `config set` would refuse still wins, and
 `config`, `config get` and `status` name it in a `PREFERENCE_INVALID` warning with the reason.
 Setting a value that is already saved, or
@@ -971,7 +973,8 @@ with the `chmod` that fixes it, and a linked `preferences.json`, which `config s
 `result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner`
 (`{source, name, value}`, where `source` is `environment`, `space`, `user` or `default`) and the
 `shadowed` layers below it. A write's result has the `previous` and new `value`, the file's new
-`revision`, and `effective`, the key as a command there now resolves it.
+`revision`, and `effective`, the key as a command there now resolves it. When the effective value
+is unavailable, `effective` is `null` and `completeness` is `partial`.
 
 
 ## completion [#completion]

@@ -5,7 +5,9 @@ import {
   COLOR_VALUES,
   CommandFailure,
   PREFERENCE_KEYS,
+  cachedPreferences,
   isCommandFailure,
+  isMeshRegistryError,
   describeLayer,
   extensionProvides,
   findMesh,
@@ -36,6 +38,7 @@ import {
 } from "@cotal-ai/workspace";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
+import { registryFailure } from "../lib/registry-errors.js";
 import { launchSpace } from "../lib/spawn-defaults.js";
 
 export const configFlags = [
@@ -103,8 +106,8 @@ interface PreferenceWrite {
   readonly previous: string | null;
   readonly value: string | null;
   /** The key as a command here now resolves it, from this shell: through `--space`, else the space a
-   *  launch here uses, whichever scope was written. */
-  readonly effective: Setting;
+   *  launch here uses, whichever scope was written. Null when that scope could not be read. */
+  readonly effective: Setting | null;
 }
 
 export function validateConfigArguments(args: ParsedArgs): void {
@@ -167,11 +170,21 @@ export async function config(args: ParsedArgs): Promise<void> {
     const modeChanged: OutputWarning[] = replacedMode === undefined ? [] : [{ code: "PREFERENCES_MODE_CHANGED", target: { path: preferencesPath() }, message: `${preferencesPath()} was mode ${replacedMode.toString(8).padStart(4, "0")}, and this write replaced it with a new file at mode 0600; a file's mode does not stop config set or unset` }];
     // What a command here uses next, whichever scope was written: through `--space`, else the space a
     // launch here uses, as `spawn` resolves it. `--user` chooses where the value is saved, not that.
-    const here = readScope({ ...v, user: undefined });
-    const effective = setting(key, here, readPreferences());
+    let effective: Setting | null = null;
+    let missing: OutputWarning | undefined;
+    let unread: OutputWarning | undefined;
+    try {
+      const here = readScope({ ...v, user: undefined });
+      effective = setting(key, here, changed ? cachedPreferences() : prefs);
+      if (key === "persona" && value?.trim()) missing = missingPersona(value, here);
+    } catch (error) {
+      if (!isMeshRegistryError(error)) throw error;
+      const failure = registryFailure(error);
+      const check = effective === null ? "determine the effective value in this project" : "check the persona catalog";
+      unread = { code: failure.code, target: failure.target, message: `Could not ${check}: ${failure.message}${failure.remedy ? `. To fix it, ${failure.remedy}.` : ""}` };
+    }
     const result: PreferenceWrite = { kind: "preference-write", file: preferencesPath(), revision, scope, key, previous, value: value ?? null, effective };
-    const missing = key === "persona" && value?.trim() ? missingPersona(value, here) : undefined;
-    writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...modeChanged, ...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
+    writeResult(presentation, { command: "config", target: target(scope), result, completeness: unread ? "partial" : "complete", warnings: [...modeChanged, ...shadowedWrite(result), ...(missing ? [missing] : []), ...(unread ? [unread] : [])], noOp: !changed }, writeView);
     return;
   }
   throw usage(`cotal config has no subcommand "${sub}" - run \`cotal help config\``);
@@ -281,7 +294,7 @@ export function invalidEnvironmentValues(settings: readonly ResolvedPreference[]
  *  the value a command will use. */
 function shadowedWrite(w: PreferenceWrite): OutputWarning[] {
   if (w.value === null) return [];
-  const winner = w.effective.winner;
+  const winner = w.effective?.winner;
   if (!winner || winner.source === (w.scope.space === null ? "user" : "space")) return [];
   return [{ code: "PREFERENCE_SHADOWED", target: target(w.scope), message: `${describeLayer(winner)} (${winner.value}) outranks this value in this shell` }];
 }
@@ -347,11 +360,14 @@ function writeView(w: PreferenceWrite): Report {
         ? { text: `${w.key} is already ${w.value} in ${where}`, tone: "hint" }
         : { text: `${w.key} = ${w.value} in ${where}${w.previous === null ? "" : ` (it was ${w.previous})`}`, tone: "ok", mark: "✓" };
   const now = w.effective;
+  const effectiveRows: (readonly [string, Cell])[] = now
+    ? [["Effective value", now.value ?? "not set"], ["Source", now.winner ? describeLayer(now.winner) : "not set"]]
+    : [["Effective value", "unavailable"]];
   return {
     sections: [{
       blocks: [
         { kind: "lines", lines: [line] },
-        { kind: "fields", rows: [["Saved to", where], ["Effective value", now.value ?? "not set"], ["Source", now.winner ? describeLayer(now.winner) : "not set"], ["Running agents", "unchanged"]] },
+        { kind: "fields", rows: [["Saved to", where], ...effectiveRows, ["Running agents", "unchanged"]] },
       ],
     }],
   };
