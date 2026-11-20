@@ -1344,6 +1344,7 @@ export class Manager {
     transportDown: () => this.transportDown,
     renewRemoteExecutor: (...args) => this.renewRemoteExecutor(...args),
     renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
+    dialViaManager: (opts) => this.dial(opts),
   });
 
   /** The start and launch control doors. Every dependency reads through at its use. */
