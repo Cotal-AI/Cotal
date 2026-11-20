@@ -1,7 +1,7 @@
 /** Shipped readiness distinguishes local spaces, refuses unusable IdP proofs and permits two bounded slow reads. */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
@@ -27,10 +27,11 @@ mkdirSync(join(config, "systemd/user"), { recursive: true, mode: 0o700 });
 writeFileSync(join(native, "systemctl"), `#!/bin/sh\n[ "$*" = '--user show-environment' ] || exit 89\nprintf '%s\\n' 'XDG_CONFIG_HOME=${config}'\n`, { mode: 0o700 });
 for (const name of ["launchctl", "schtasks"]) writeFileSync(join(native, name), "#!/bin/sh\nexit 89\n", { mode: 0o700 });
 const unitPath = join(config, "systemd/user/cotal-daemon.service");
+const unitReceipt = join(home, "daemon/service-unit.json");
 const unit = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${cliEntry}" daemon serve\nRestart=always\n\n[Install]\nWantedBy=default.target\n`;
 writeFileSync(unitPath, unit, { mode: 0o600 });
 mkdirSync(join(home, "daemon"), { mode: 0o700 });
-writeFileSync(join(home, "daemon/service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath,
+writeFileSync(unitReceipt, JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath,
   unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
 const key = await generateKeyPair("EdDSA");
 let mode = "valid", tokenDelay = 0, authorityDelay = 0, tokens = 0, gets = 0, posts = 0, devices = 0;
@@ -119,6 +120,14 @@ try {
     assert.equal(stopped.code, 0, JSON.stringify(stopped));
     assert.equal((await runProject("space", "show", localSpace)).state, "stopped");
     await assertLocalRefusal("stopped");
+    // The daemon was started in the foreground. Remove the synthetic install receipt for this case.
+    renameSync(unitReceipt, `${unitReceipt}.saved`);
+    try {
+      await assertLocalRefusal("stopped, with no installed unit");
+      assert.equal(existsSync(unitReceipt), false, "local setup must not install a service");
+    } finally {
+      renameSync(`${unitReceipt}.saved`, unitReceipt);
+    }
     for (const mode of ["setup", "connect-check"]) {
       const reply = await run(mode, "--space", "unknown-space");
       assert.equal(reply.code, 2, JSON.stringify(reply));

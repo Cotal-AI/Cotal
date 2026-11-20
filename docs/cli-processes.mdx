@@ -678,7 +678,8 @@ To connect directly to a user-auth participant space, use `cotal daemon setup --
 For a local static-auth or open space, run `cotal up` in the folder that hosts it. The local stack
 runs its Manager. For these local spaces, `daemon setup` and `daemon connect-check` report
 `UNSUPPORTED` (`NOT_USER_AUTH`) and point to `cotal up`, even if the stack is not running.
-Daemon setup does not turn the space on or record a hosted Manager refusal.
+Daemon setup reports this before it checks for an installed daemon service, including when a
+foreground daemon is running. It does not turn the space on or record a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
@@ -1069,10 +1070,10 @@ the setup command with the pinned provider. This applies to both Manager and `--
 An expired or revoked session rejected by the provider needs a new device sign-in, even when a
 cached session remains on disk. A provider outage or unusable response stops setup with
 `DEPENDENCY_UNAVAILABLE`, without asking for a new sign-in or reporting the session as valid.
-A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
-(`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
-refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
-and use `register` and `service-connect` by hand.
+If setup needs the machine daemon and it is already answering without an installed unit on record,
+setup refuses `CONFLICT` (`RUNNING_WITHOUT_UNIT`). The lifetime lock refuses a second daemon, and
+the running one is not a persistent service. Stop it and run setup again. For a user-auth
+participant space, you can instead keep it and use `register` and `service-connect` by hand.
 
 `install` runs the daemon as the signed-in user's own service, through the native supervisor of
 each OS. It runs as that user, never as root or LocalSystem. A system-wide headless profile, such as
