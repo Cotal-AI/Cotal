@@ -494,6 +494,8 @@ which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
 paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
+Body files and standard input from `--from` must be valid UTF-8. Invalid input is refused with
+`SCHEMA_INVALID` before any persona is written. Convert the input to UTF-8 and retry.
 Complete files must be valid UTF-8, pass validation for all supported fields and name the requested
 persona. Creation keeps their original bytes. An invalid encoding refuses with `SCHEMA_INVALID`,
 names the source and asks you to save it as UTF-8. It writes nothing. A file that names another persona is
