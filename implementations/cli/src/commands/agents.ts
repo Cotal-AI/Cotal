@@ -142,15 +142,16 @@ export async function stop(args: ParsedArgs): Promise<void> {
   } else {
     name = managedTarget(args, "stop");
     refuseControlCreds(v.creds, v.space);
-    pin = await pinForTarget({ ...v, name } as never, "cotal stop");
+    const refusal = { onRefusal: v.json ? "throw" as const : undefined };
+    pin = await pinForTarget({ ...v, name } as never, "cotal stop", [], refusal);
     on = pin.instanceId;
     // A typed pin the registry does not list is refused at once, as spawn refuses it. Stop's admin
     // instrument holds no registry read, so the check uses the one ps reads the registry with.
     if (v.on !== undefined && on !== undefined) {
-      const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+      const reader = await resolveControlTarget(v, "control-caller-privileged", on, refusal);
       if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
     }
-    t = await resolveControlTarget(v, "control-caller-admin", on);
+    t = await resolveControlTarget(v, "control-caller-admin", on, refusal);
   }
   recordOperationSpace(t.space);
   const reply = await askManager(cliControl, t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { ...pin, instanceId: on });
