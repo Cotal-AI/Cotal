@@ -1,5 +1,34 @@
 # @cotal-ai/cli
 
+## 0.172.0
+
+### Patch Changes
+
+- 7e28b82: When `cotal up` cannot bind a broker address that nothing listens on, its refusal now counts only connections on the address's own host or a wildcard. A connection elsewhere on the machine that happens to share the port number no longer turns a TIME-WAIT into "an open connection's local end holds its port", so the next step stays "wait up to a minute".
+- 4f02fa7: Stop stalled self-update downloads without changing the installed version or counting an automatic update failure.
+- 13090da: Restart guidance explains how to clear an occupied broker port or recover a missing preserved store and keeps broker-only restarts from adding a manager.
+- 7b4f3dd: Fix global updates from pnpm projects with Corepack and report npm refusals instead of a false registry outage.
+- 1e9c863: Keep npm downgrades compatible with idle retained connector sets and let installation and stack maintenance report unreadable connector selections without losing access to built-in commands.
+- 30cba2e: Update Cotal without stopping a selected local stack whose Manager belongs to a separate installation.
+- f133e87: Point version and update checks to `cotal ext seed --repair` when the extension manifest is unreadable or corrupt.
+- 807e3e7: The space inventory now shows how to keep a renamed stopped project's new location, and plain create after forgetting it prints the exact adoption command.
+- 90ce950: Show the restore attempt and a cleanup command you can copy when `cotal up --foreground --restore` completes the restore.
+- 351daaf: Inside a named open space's project, an unmatched loopback broker address now names the registered address instead of sending to `main`.
+- ae98f87: Fix `cotal` after Volta or another npm package manager moves the installed package out of its staging directory.
+- a901ab2: Keep up and down remedies runnable for the current installation, reject empty manifest and run targets, preserve missing-stack diagnoses in structured output, and refuse suspended brokers and busy bind hosts before starting a replacement.
+- 87283e8: Linux updates use the validated per-user runtime when `XDG_RUNTIME_DIR` is unset and report a partial self-update with a recovery command if the systemd user manager cannot activate the daemon.
+- 1910f21: Report missing or corrupt extension package metadata in `cotal ext list` without loading or repairing packages.
+- Updated dependencies [de93c7e]
+- Updated dependencies [14b556d]
+- Updated dependencies [f166a78]
+- Updated dependencies [8aa6645]
+- Updated dependencies [7b4f3dd]
+- Updated dependencies [1e9c863]
+- Updated dependencies [807e3e7]
+- Updated dependencies [351daaf]
+  - @cotal-ai/core@0.172.0
+  - @cotal-ai/workspace@0.172.0
+
 ## 0.171.5
 
 ### Patch Changes

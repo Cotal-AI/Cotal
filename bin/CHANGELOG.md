@@ -1,5 +1,59 @@
 # cotal-ai
 
+## 0.172.0
+
+### Patch Changes
+
+- 4f02fa7: Stop stalled self-update downloads without changing the installed version or counting an automatic update failure.
+- 7b4f3dd: Fix global updates from pnpm projects with Corepack and report npm refusals instead of a false registry outage.
+- d5aa368: Connection instructions now recommend only the Cotal tools that the connection can call.
+- 32241b7: Fix self-update in a separate Cotal home and npm prefix when another home's daemon is already listening at the shared endpoint.
+- 1e9c863: Keep npm downgrades compatible with idle retained connector sets and let installation and stack maintenance report unreadable connector selections without losing access to built-in commands.
+- 30cba2e: Update Cotal without stopping a selected local stack whose Manager belongs to a separate installation.
+- ce44345: Point `cotal daemon setup` and `cotal daemon connect-check` to `cotal up` for stopped local static-auth and open spaces instead of asking users to sign in or register the space again.
+- 90ce950: Show the restore attempt and a cleanup command you can copy when `cotal up --foreground --restore` completes the restore.
+- ae98f87: Fix `cotal` after Volta or another npm package manager moves the installed package out of its staging directory.
+- 3a433d1: The uninstall guide now shows how to remove the machine daemon before deleting the Cotal CLI.
+- 87283e8: Linux updates use the validated per-user runtime when `XDG_RUNTIME_DIR` is unset and report a partial self-update with a recovery command if the systemd user manager cannot activate the daemon.
+- 1910f21: Report missing or corrupt extension package metadata in `cotal ext list` without loading or repairing packages.
+- Updated dependencies [7e28b82]
+- Updated dependencies [a0f1ea2]
+- Updated dependencies [3067fc5]
+- Updated dependencies [80ad491]
+- Updated dependencies [6b7dd18]
+- Updated dependencies [10b740a]
+- Updated dependencies [4f02fa7]
+- Updated dependencies [de93c7e]
+- Updated dependencies [13090da]
+- Updated dependencies [87c15fd]
+- Updated dependencies [14b556d]
+- Updated dependencies [f166a78]
+- Updated dependencies [8aa6645]
+- Updated dependencies [7b4f3dd]
+- Updated dependencies [d5aa368]
+- Updated dependencies [1e9c863]
+- Updated dependencies [30cba2e]
+- Updated dependencies [f133e87]
+- Updated dependencies [807e3e7]
+- Updated dependencies [2df89cb]
+- Updated dependencies [90ce950]
+- Updated dependencies [351daaf]
+- Updated dependencies [ae98f87]
+- Updated dependencies [3a433d1]
+- Updated dependencies [a901ab2]
+- Updated dependencies [87283e8]
+- Updated dependencies [1910f21]
+  - @cotal-ai/cli@0.172.0
+  - @cotal-ai/auth@0.172.0
+  - @cotal-ai/core@0.172.0
+  - @cotal-ai/workspace@0.172.0
+  - @cotal-ai/connector-core@0.172.0
+  - @cotal-ai/manager@0.172.0
+  - @cotal-ai/delivery@0.172.0
+  - @cotal-ai/registry@0.172.0
+  - @cotal-ai/runtime@0.172.0
+  - @cotal-ai/seat@0.172.0
+
 ## 0.171.5
 
 ### Patch Changes
