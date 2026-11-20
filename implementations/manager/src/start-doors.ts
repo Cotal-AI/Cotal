@@ -21,6 +21,21 @@ export interface StartDoorsDeps {
   startAgent: (...args: Parameters<Manager["startAgent"]>) => ReturnType<Manager["startAgent"]>;
 }
 
+/** Builds the {@link StartDoorsDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function startDoorsDeps(m: Manager): StartDoorsDeps {
+  return {
+    eventsRequired: () => m["eventsRequired"],
+    execution: () => m["execution"],
+    remoteAuthority: () => m["remoteAuthority"],
+    space: () => m["space"],
+    userMode: () => m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    executionRefusal: (...args) => m["executionRefusal"](...args),
+    startAgent: (...args) => m["startAgent"](...args),
+  };
+}
+
 /** The `start` and `launch` control doors: argument checks and the hand-off to `startAgent`. */
 export class StartDoors {
   constructor(private readonly deps: StartDoorsDeps) {}

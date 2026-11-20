@@ -1,5 +1,5 @@
-import { UserProvision, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
-import { TurnRelay, goalKey, caughtEnvelope, TURN_ANSWER_RETENTION_MS, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
+import { UserProvision, userProvisionDeps, type ProvisionUserAgentOpts, type ProvisionedUserAgent, type UserAgentRefusal } from "./user-provision.js";
+import { TurnRelay, goalKey, TURN_ANSWER_RETENTION_MS, type PendingTurn, type OnceRetire, type TurnAcceptance } from "./turn-relay.js";
 import { createHash } from "node:crypto";
 import { drainAndClose } from "@cotal-ai/core";
 import { hostname } from "node:os";
@@ -38,38 +38,38 @@ import {
   type Runtime,
   type RuntimeMode,
 } from "./runtime/index.js";
-import { Retirement, type TeardownTarget } from "./retirement.js";
+import { Retirement, retirementDeps, type TeardownTarget } from "./retirement.js";
 import type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
-import { ServePlane } from "./serve-plane.js";
-import { NamesCapacity, type Occupancy } from "./names-capacity.js";
+import { ServePlane, servePlaneDeps } from "./serve-plane.js";
+import { NamesCapacity, namesCapacityDeps, type Occupancy } from "./names-capacity.js";
 import { AttachEndpoint } from "./attach-endpoint.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
-import { ManagedStaticLifecycle, STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
+import { ManagedStaticLifecycle, managedStaticLifecycleDeps, STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 export { credRenewIntervalMs } from "./credential-renewal.js";
-import { LeaseKeeper } from "./lease-keeper.js";
+import { LeaseKeeper, leaseKeeperDeps } from "./lease-keeper.js";
 export { ManagerInstanceLeaseHeld } from "./lease-keeper.js";
-import { SessionRecovery } from "./session-recovery.js";
-import { SeatCustody, watchConnectorHolder } from "./seat-custody.js";
-import { GoalWriter } from "./goal-writer.js";
-import { DEPROVISION_TIMEOUT_MS, SeatStop } from "./seat-stop.js";
-import { CommandDispatch, participantKey } from "./command-dispatch.js";
-import { SpawnGoal } from "./spawn-goal.js";
-import { PersonaCatalog } from "./persona-catalog.js";
-import { TerminalInput } from "./terminal-input.js";
-import { StatusAndModels, MANAGER_VERSION } from "./status-and-models.js";
-import { ReadinessWait } from "./readiness-wait.js";
-import { BrokerTransport } from "./broker-transport.js";
-import { StartDoors } from "./start-doors.js";
-import { HarnessResolution, resolveHarness } from "./harness-resolution.js";
-import { ConnectorInventory } from "./connector-inventory.js";
-import { Preservation } from "./preservation.js";
-import { PreservedResume, bearerEntryArgv } from "./preserved-resume.js";
+import { SessionRecovery, sessionRecoveryDeps } from "./session-recovery.js";
+import { SeatCustody, seatCustodyDeps, watchConnectorHolder } from "./seat-custody.js";
+import { GoalWriter, goalWriterDeps } from "./goal-writer.js";
+import { SeatStop, seatStopDeps } from "./seat-stop.js";
+import { CommandDispatch, commandDispatchDeps, participantKey } from "./command-dispatch.js";
+import { SpawnGoal, spawnGoalDeps } from "./spawn-goal.js";
+import { PersonaCatalog, personaCatalogDeps } from "./persona-catalog.js";
+import { TerminalInput, terminalInputDeps } from "./terminal-input.js";
+import { StatusAndModels, statusAndModelsDeps, MANAGER_VERSION } from "./status-and-models.js";
+import { ReadinessWait, readinessWaitDeps } from "./readiness-wait.js";
+import { BrokerTransport, brokerTransportDeps } from "./broker-transport.js";
+import { StartDoors, startDoorsDeps } from "./start-doors.js";
+import { HarnessResolution, harnessResolutionDeps, resolveHarness } from "./harness-resolution.js";
+import { ConnectorInventory, connectorInventoryDeps } from "./connector-inventory.js";
+import { Preservation, preservationDeps } from "./preservation.js";
+import { PreservedResume, preservedResumeDeps, bearerEntryArgv } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
-import { CredentialRenewal, credRenewIntervalMs, REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
-import { SeatLaunch, foreignEventChannels, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
+import { CredentialRenewal, credentialRenewalDeps, credRenewIntervalMs } from "./credential-renewal.js";
+import { SeatLaunch, seatLaunchDeps, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { inlineSnapshotPath } from "./launch.js";
@@ -90,7 +90,7 @@ import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, lifecycleBlocked, lifecycleBlockedFrom, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { epgateKey, parseEndpointGate, readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, listGoalIndex, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, type ManagerConnectorStatus, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
@@ -127,32 +127,6 @@ const PRESERVE_STOP_TIMEOUT_MS = 10_000;
  * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
  * a reuse. */
 const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
-
-
-
-/** Why a frozen manager gate stays frozen on an open mesh. Reconciliation must prove the holder
- *  gone, and an open mesh runs no delivery daemon to prove it, so neither boot self-heal nor
- *  `cotal manager reconcile` can reopen the gate there. */
-const OPEN_MESH_GATE_LIMIT = "reconciliation needs liveness evidence an open mesh cannot currently provide, so `cotal manager reconcile` refuses this gate. Keep this store intact; upgrading alone does not recover it";
-
-/** The open mesh's registration evictor. An open mesh has no eviction oracle, so the superseded
- *  family's holders stay unverified as they do with no evictor, and the barrier keeps the gate
- *  frozen. Throwing instead of answering `false` only puts the reason in the refusal. */
-function openMeshUnverifiedEviction(holders: readonly string[]): never {
-  throw new Error(`principal(s) ${holders.map((h) => `"${h}"`).join(", ")} not verified evicted: ${OPEN_MESH_GATE_LIMIT}`);
-}
-
-/** An open-mesh registration refused by a gate another registration froze, restated without the
- *  `cotal reconcile-gate` remedy that cannot run there. Code, gate state, blocked op and op id are
- *  kept. Any other failure is returned as it is. */
-function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
-  const envelope = caughtEnvelope(e);
-  const blocked = lifecycleBlockedFrom(envelope);
-  if (envelope === undefined || blocked?.gateState !== "frozen" || blocked.blockedOp !== "registration") return e;
-  return lifecycleBlocked(envelope.code, `the issuance gate for "${instanceId}" is frozen under another registration, and this manager cannot register while it is; ${OPEN_MESH_GATE_LIMIT} (SPEC 13.8)`,
-    { blockedOp: blocked.blockedOp, gateState: blocked.gateState, ...(blocked.opId !== undefined ? { opId: blocked.opId } : {}) }, envelope.outcome);
-}
-
 
 
 export interface ManagerOptions {
@@ -775,79 +749,8 @@ export class Manager {
   /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
    *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
   private userMode = false;
-  private readonly namesCapacity = new NamesCapacity({
-    userMode: () => this.userMode,
-    seatCap: () => this.seatCap,
-    managerInstanceId: () => this.managerInstanceId,
-    agents: () => this.agents.values(),
-    authEnabled: () => this.auth !== undefined,
-    maintenanceActive: () => this.maintenanceState === "active",
-    roster: () => this.ep.getRoster(),
-    agentFor: (name) => this.agents.get(name),
-    hasAgent: (name) => this.agents.has(name),
-    removeAgent: (name) => { this.agents.delete(name); },
-    managedCount: () => this.agents.size,
-    predecessor: (name) => this.retirement.predecessor(name),
-    hasRetirementHold: (name) => this.retirement.hasHold(name),
-    holdRetirement: (name, hold) => this.retirement.hold(name, hold),
-    endSessionsForTarget: (...args) => { this.sessionPlane?.endForTarget(...args); },
-    logSeatReaped: (...args) => this.logSeatReaped(...args),
-    recordContinuityAtStop: (...args) => this.recordContinuityAtStop(...args),
-    releasedSeatPending: (...args) => this.releasedSeatPending(...args),
-    dropSeatRecord: (...args) => this.dropSeatRecord(...args),
-    failSeatTurns: (...args) => this.failSeatTurns(...args),
-    teardownTarget: (...args) => this.teardownTarget(...args),
-    dropInlineSnapshot: (...args) => this.dropInlineSnapshot(...args),
-    trackDeprovision: (...args) => this.trackDeprovision(...args),
-  });
-  private readonly servePlane = new ServePlane({
-    auth: () => this.auth,
-    remoteAuthority: () => this.remoteAuthority,
-    space: () => this.space,
-    servers: () => this.servers,
-    workspaceRoot: () => this.workspaceRoot,
-    managerInstanceId: () => this.managerInstanceId,
-    managerServeIdentity: () => this.managerServeIdentity,
-    leaseStopping: () => this.leaseStopping,
-    remoteBundleRenewal: () => this.remoteBundleRenewal,
-    maxSessions: () => this.maxSessions,
-    serviceServe: () => this.serviceServe,
-    setServiceServe: (value) => { this.serviceServe = value; },
-    sessionLedgerIdentity: () => this.sessionLedgerIdentity,
-    setSessionLedgerIdentity: (value) => { this.sessionLedgerIdentity = value; },
-    sessionLedgerCreds: () => this.sessionLedgerCreds,
-    setSessionLedgerCreds: (value) => { this.sessionLedgerCreds = value; },
-    sessionLedgerConn: () => this.sessionLedgerConn,
-    setSessionLedgerConn: (value) => { this.sessionLedgerConn = value; },
-    sessionPlane: () => this.sessionPlane,
-    setSessionPlane: (value) => { this.sessionPlane = value; },
-    sessionKeyRenewTimer: () => this.sessionKeyRenewTimer,
-    setSessionKeyRenewTimer: (value) => { this.sessionKeyRenewTimer = value; },
-    connectorStatuses: () => { this.refreshUnavailableConnectors(); return this.connectorStatuses; },
-    setGoalWriterIdentity: (value) => { this.goalWriterIdentity = value; },
-    setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
-    remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
-    dial: (...args) => this.dial(...args),
-    dialRemoteStanding: (...args) => this.dialRemoteStanding(...args),
-    trackTransport: (...args) => this.trackTransport(...args),
-    discardServeCandidate: (...args) => this.discardServeCandidate(...args),
-    managerServiceDefs: (...args) => this.managerServiceDefs(...args),
-    omitClassCommands: (...args) => this.omitClassCommands(...args),
-    resolveTarget: (target) => this.resolveServeTarget(target),
-    withEndpointServeExecutor: (...args) => this.withEndpointServeExecutor(...args),
-    withOpenServeConnection: (...args) => this.withOpenServeConnection(...args),
-    boundedReconnect: (...args) => this.boundedReconnect(...args),
-    renewRemoteBeforeRedial: (...args) => this.renewRemoteBeforeRedial(...args),
-    scheduleServeRenewal: (...args) => this.scheduleServeRenewal(...args),
-    stop: (...args) => this.stop(...args),
-    healFrozenRegistrationGate: (...args) => this.healFrozenRegistrationGate(...args),
-    mintAndStageGoalWriter: (...args) => this.mintAndStageGoalWriter(...args),
-    retireConnection: (...args) => this.retireConnection(...args),
-    withTimeout,
-    remoteStandingTimeLeft,
-    openMeshUnverifiedEviction,
-    openMeshFrozenGateRefusal,
-  });
+  private readonly namesCapacity = new NamesCapacity(namesCapacityDeps(this));
+  private readonly servePlane = new ServePlane(servePlaneDeps(this));
 
   private resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
           if (this.remoteAuthority) {
@@ -866,35 +769,8 @@ export class Manager {
           return undefined;
 
   }
-  private readonly retirement = new Retirement({
-    auth: () => this.auth,
-    remoteAuthority: () => this.remoteAuthority,
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    space: () => this.space,
-    servers: () => this.servers,
-    secrets: () => this.secrets,
-    serveIdentity: () => this.managerServeIdentity,
-    lifecycleUid: () => this.managerLifecycleUid,
-    instanceId: () => this.managerInstanceId,
-    serveEpoch: () => this.serviceServe?.grant.epoch,
-    dial: (opts) => this.dial(opts),
-    withRetirementSlot: (run) => this.withRetirementSlot(run),
-    driveStaticRetirement: (a) => this.driveStaticRetirement(a),
-    awaitHandleExit: (handle) => this.awaitHandleExit(handle),
-    shredUserSecrets: (failures, family) => this.shredUserSecrets(failures, family),
-    dropSeatRecord: (a) => this.dropSeatRecord(a),
-    fenceRetiringAcl: (a) => this.fenceRetiringAcl(a),
-    lifecycleMembershipInventory: (a) => this.lifecycleMembershipInventory(a),
-    brokerTeardown: (task, message) => withTimeout(task, DEPROVISION_TIMEOUT_MS, message),
-    trackLifecycle: () => { this.lifecycleInFlight++; return () => this.releaseLifecycle(); },
-  });
-  private readonly lease = new LeaseKeeper({
-    endpoint: () => this.ep,
-    instanceId: () => this.managerInstanceId,
-    space: () => this.space,
-    stopping: () => this.leaseStopping,
-  });
+  private readonly retirement = new Retirement(retirementDeps(this));
+  private readonly lease = new LeaseKeeper(leaseKeeperDeps(this));
   private get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
   private set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
   private get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
@@ -953,55 +829,9 @@ export class Manager {
   /** {@link BrokerTransport.dialRemoteStanding}. */
   private dialRemoteStanding(...args: Parameters<BrokerTransport["dialRemoteStanding"]>): ReturnType<BrokerTransport["dialRemoteStanding"]> { return this.brokerTransportComponent.dialRemoteStanding(...args); }
 
-  private readonly seatCustody = new SeatCustody({
-    staticAuth: () => !!this.auth && !this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    space: () => this.space,
-    instanceId: () => this.managerInstanceId,
-    endpoint: () => this.ep,
-    secrets: () => this.secrets,
-    eventPayloadsWithheld: () => this.eventPayloadsWithheld,
-    runtimeFor: (kind) => this.runtimeFor(kind),
-    requiredRuntime: () => this.requiredRuntime,
-    withLifecycleExecutor: (pin, fn) => this.withLifecycleExecutor(pin, fn),
-    watchConnectorHolder: (handle, holder) => this.watchConnectorHolder(handle, holder),
-    resumeEntryOf: (agent) => this.resumeEntryOf(agent),
-    inventoryReferenceError: (entry) => this.inventoryReferenceError(entry),
-    registerAgent: (name, agent) => { this.agents.set(name, agent); },
-    agentFor: (name) => this.agents.get(name),
-    watchExit: (agent) => this.watchExit(agent),
-    bindOnceSeat: (agent) => this.bindOnceSeat(agent),
-    renewManagedStaticCred: (agent) => this.renewManagedStaticCred(agent),
-    resumeSupervisedAgent: (entry, supervised) => this.resumePreservedAgent(entry, false, false, undefined, supervised),
-  });
+  private readonly seatCustody = new SeatCustody(seatCustodyDeps(this));
 
-  private readonly sessionRecovery = new SessionRecovery({
-    workspaceRoot: () => this.workspaceRoot,
-    execution: () => this.execution,
-    executionRefusal: () => this.executionRefusal(),
-    instanceId: () => this.managerInstanceId,
-    endpoint: () => this.ep,
-    beginLifecycle: () => this.beginLifecycle(),
-    freeSlot: (agent, floor, cause) => this.freeSlot(agent, floor, cause),
-    reapChildrenOf: (principal) => this.reapChildrenOf(principal),
-    managedPrincipal: (agent) => this.managedPrincipal(agent),
-    inlineSnapshotChange: (agent) => this.inlineSnapshotChange(agent),
-    agentFor: (name) => this.agents.get(name),
-    maintenanceState: () => this.maintenanceState,
-    resolveConnector: (name) => this.resolveConnector(name),
-    runtimeFor: (kind) => this.runtimeFor(kind),
-    reserveCustody: (runtime) => this.reserveCustody(runtime),
-    recordSlotCustody: (agent, reference) => this.recordSlotCustody(agent, reference),
-    spawnCustodied: (runtime, name, spec, cwd, reserved) => this.spawnCustodied(runtime, name, spec, cwd, reserved),
-    awaitReadiness: (agent, timeoutMs, opts) => this.awaitReadiness(agent, timeoutMs, opts),
-    readinessTimeoutMs: () => this.readinessTimeoutMs,
-    recordSlotRuntime: (agent) => this.recordSlotRuntime(agent),
-    refreshSeatRecord: (agent) => this.refreshSeatRecord(agent),
-    watchExit: (agent) => this.watchExit(agent),
-    tail: (session) => this.tail(session),
-    stopHandle: (agent, graceful, cause) => this.stopHandle(agent, graceful, cause),
-    trackStoppedHandle: (agent, floor, cause) => this.trackStoppedHandle(agent, floor, cause),
-  });
+  private readonly sessionRecovery = new SessionRecovery(sessionRecoveryDeps(this));
 
   get staticReconcileLastSweepResources(): {
     slots: {
@@ -1028,579 +858,58 @@ export class Manager {
     deprovision?: DeprovisionResourceAccounting;
   } | undefined) { this.staticLifecycle.setResources(value); }
 
-  private readonly staticLifecycle = new ManagedStaticLifecycle({
-    space: () => this.space,
-    servers: () => this.servers,
-    auth: () => this.auth,
-    secrets: () => this.secrets,
-    workspaceRoot: () => this.workspaceRoot,
-    instanceId: () => this.managerInstanceId,
-    processUid: () => this.managerLifecycleUid,
-    userMode: () => this.userMode,
-    eventPayloadsWithheld: () => this.eventPayloadsWithheld,
-    evictor: () => this.staticLifecycleEvict,
-    retryDelays: () => this.staticReconcileRetryDelaysMs,
-    resumeRequired: () => this.resumeRequired,
-    records: () => this.goalWriter?.ctx.kv,
-    agentFor: (name) => this.agents.get(name),
-    retirementFor: (name) => this.retirement.held(name),
-    recordStaticRetirement: (a) => this.retirement.recordStaticRetirement(a),
-    noteRetiredPrincipal: (principal) => { this.retirement.rememberRetired(principal); },
-
-    foreignEventChannels: (channels, owner, actor) => foreignEventChannels(channels, owner, actor),
-    withIssuer: (fn) => this.withIssuer(fn),
-    deprovisionBroker: (a) => this.deprovisionBroker(a),
-    reapOrphanSeat: (a) => this.reapOrphanSeat(a),
-    withLifecycleExecutor: (pin, fn) => this.withLifecycleExecutor(pin, fn),
-    readerRemedy: (owner, channel) => this.readerRemedy(owner, channel),
-    withProvisioner: (fn) => this.withProvisioner(fn),
-    beginLifecycle: (resumeOperation) => this.beginLifecycle(resumeOperation),
-    maintenanceError: () => this.maintenanceError(),
-    withRetirementSlot: (run) => this.withRetirementSlot(run),
-    managedStaticInstanceReads: (capabilities) => this.managedStaticInstanceReads(capabilities),
-    issuanceSeam: (i, mode, a, exp) => this.issuanceSeam(i, mode, a, exp),
-    refreshSeatRecord: (a) => this.refreshSeatRecord(a),
-    dial: (opts) => this.dial(opts),
-    seatRecordFor: (row) => this.seatRecordFor(row),
-    restartSupervisedSeat: (row, record) => this.restartSupervisedSeat(row, record),
-    adoptSeat: (row, record) => this.adoptSeat(row, record),
-    dropSeatRecord: (a) => this.dropSeatRecord(a),
-  });
+  private readonly staticLifecycle = new ManagedStaticLifecycle(managedStaticLifecycleDeps(this));
 
   /** User-mode provisioning owns no manager state: each dependency reads through at its use. */
-  private readonly userProvision = new UserProvision({
-    space: () => this.space,
-    workspaceRoot: () => this.workspaceRoot,
-    secrets: () => this.secrets,
-    managerInstanceId: () => this.managerInstanceId,
-    runHosting: () => this.runHosting,
-    remoteAuthority: () => this.remoteAuthority,
-    deprovision: (target) => this.deprovision(target),
-    withProvisioner: (fn) => this.withProvisioner(fn),
-    shredUserSecrets: (failures, family) => this.shredUserSecrets(failures, family),
-    bearerEntryArgv,
-  });
+  private readonly userProvision = new UserProvision(userProvisionDeps(this));
 
   /** Seat stop, exit, recursive reap and named despawn. Every dependency reads through at its use. */
-  private readonly seatStopComponent = new SeatStop({
-    agentGoals: () => this.agentGoals,
-    agents: () => this.agents,
-    auth: () => this.auth,
-    ep: () => this.ep,
-    execution: () => this.execution,
-    goalWriter: () => this.goalWriter,
-    lifecycleInFlight: () => this.lifecycleInFlight,
-    setLifecycleInFlight: (value) => { this.lifecycleInFlight = value; },
-    maintenanceState: () => this.maintenanceState,
-    managerInstanceId: () => this.managerInstanceId,
-    remoteAuthority: () => this.remoteAuthority,
-    retirement: () => this.retirement,
-    servers: () => this.servers,
-    serviceServe: () => this.serviceServe,
-    space: () => this.space,
-    unverifiedStops: () => this.unverifiedStops,
-    setUnverifiedStops: (value) => { this.unverifiedStops = value; },
-    workspaceRoot: () => this.workspaceRoot,
-    assertGoalWriterEpochCurrent: (...args) => this.assertGoalWriterEpochCurrent(...args),
-    authorizeNamed: (...args) => this.authorizeNamed(...args),
-    awaitHandleExit: (...args) => this.awaitHandleExit(...args),
-    beginLifecycle: (...args) => this.beginLifecycle(...args),
-    confirmRetirement: (...args) => this.confirmRetirement(...args),
-    emitGoalProgress: (...args) => this.emitGoalProgress(...args),
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    expireGoalAcceptance: (...args) => this.expireGoalAcceptance(...args),
-    freeSlot: (...args) => this.freeSlot(...args),
-    maintenanceError: (...args) => this.maintenanceError(...args),
-    managedPrincipal: (...args) => this.managedPrincipal(...args),
-    readManagedSessionState: (...args) => this.readManagedSessionState(...args),
-    recoverManagedSession: (...args) => this.recoverManagedSession(...args),
-    releaseLifecycle: (...args) => this.releaseLifecycle(...args),
-    shredUserSecrets: (...args) => this.shredUserSecrets(...args),
-    trackDeprovision: (...args) => this.trackDeprovision(...args),
-  });
+  private readonly seatStopComponent = new SeatStop(seatStopDeps(this));
 
   /** The typed command table and its admission. Every dependency reads through at its use. */
-  private readonly commandDispatch = new CommandDispatch({
-    agents: () => this.agents,
-    auth: () => this.auth,
-    execution: () => this.execution,
-    goalWriter: () => this.goalWriter,
-    managerInstanceId: () => this.managerInstanceId,
-    participants: () => this.participants,
-    remoteAuthority: () => this.remoteAuthority,
-    resumeRequired: () => this.resumeRequired,
-    runHosting: () => this.runHosting,
-    space: () => this.space,
-    transcripts: () => this.transcripts,
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    attachAuthorized: (...args) => this.attachAuthorized(...args),
-    authorizeNamed: (...args) => this.authorizeNamed(...args),
-    authorizeRunAmend: (...args) => this.authorizeRunAmend(...args),
-    authorizeRunAnswer: (...args) => this.authorizeRunAnswer(...args),
-    beginLifecycle: (...args) => this.beginLifecycle(...args),
-    despawnAuthorized: (...args) => this.despawnAuthorized(...args),
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    findManagedByTarget: (...args) => this.findManagedByTarget(...args),
-    inputAuthorized: (...args) => this.inputAuthorized(...args),
-    lifecycleMembershipRefusal: (...args) => this.lifecycleMembershipRefusal(...args),
-    list: (...args) => this.list(...args),
-    listSpawnDirectory: (...args) => this.listSpawnDirectory(...args),
-    loggedSpawnRefusal: (ctx, fn) => this.loggedSpawnRefusal(ctx, fn),
-    maintenanceError: (...args) => this.maintenanceError(...args),
-    managedPrincipal: (...args) => this.managedPrincipal(...args),
-    managerStatusData: (...args) => this.managerStatusData(...args),
-    opCommitResume: (...args) => this.opCommitResume(...args),
-    opDefinePersona: (...args) => this.opDefinePersona(...args),
-    opFinalizeResume: (...args) => this.opFinalizeResume(...args),
-    opLaunch: (...args) => this.opLaunch(...args),
-    opListPersonas: (...args) => this.opListPersonas(...args),
-    opModels: (...args) => this.opModels(...args),
-    opPreservationCtl: (...args) => this.opPreservationCtl(...args),
-    opPurge: (...args) => this.opPurge(...args),
-    opRemovePersona: (...args) => this.opRemovePersona(...args),
-    opResumePreserved: (...args) => this.opResumePreserved(...args),
-    opShowPersona: (...args) => this.opShowPersona(...args),
-    opStart: (...args) => this.opStart(...args),
-    openStaticChatSession: (...args) => this.openStaticChatSession(...args),
-    psOwnerFilter: (...args) => this.psOwnerFilter(...args),
-    resolveSpawnCwd: (...args) => this.resolveSpawnCwd(...args),
-    retireStaticChatSession: (...args) => this.retireStaticChatSession(...args),
-    runAnswerer: (...args) => this.runAnswerer(...args),
-    runHost: (...args) => this.runHost(...args),
-    serveGated: (ctx, fn) => this.serveGated(ctx, fn),
-    serveObservation: (ctx, fn) => this.serveObservation(ctx, fn),
-    serveSpawnGoal: (...args) => this.serveSpawnGoal(...args),
-    serveTurnCancel: (...args) => this.serveTurnCancel(...args),
-    serveTurnGoal: (...args) => this.serveTurnGoal(...args),
-    serveTurnParticipation: (...args) => this.serveTurnParticipation(...args),
-    serveTurnUnconfirmed: (...args) => this.serveTurnUnconfirmed(...args),
-    serveTurnYield: (...args) => this.serveTurnYield(...args),
-    spawnPersona: (...args) => this.spawnPersona(...args),
-    stopHandle: (...args) => this.stopHandle(...args),
-    stopWindowsSeat: (...args) => this.stopWindowsSeat(...args),
-    trackStoppedHandle: (...args) => this.trackStoppedHandle(...args),
-    turnPendingFor: (...args) => this.turnPendingFor(...args),
-    turnTarget: (...args) => this.turnTarget(...args),
-  });
+  private readonly commandDispatch = new CommandDispatch(commandDispatchDeps(this));
 
   /** The spawn and launch goal path. Every dependency reads through at its use. */
-  private readonly spawnGoalComponent = new SpawnGoal({
-    agentGoals: () => this.agentGoals,
-    execution: () => this.execution,
-    goalAcceptanceRetentionMs: () => this.goalAcceptanceRetentionMs,
-    goalAcceptances: () => this.goalAcceptances,
-    goalReconcileDone: () => this.goalReconcileDone,
-    goalWriter: () => this.goalWriter,
-    managerInstanceId: () => this.managerInstanceId,
-    onceWatched: () => this.onceWatched,
-    readinessTimeoutMs: () => this.readinessTimeoutMs,
-    serviceServe: () => this.serviceServe,
-    userMode: () => this.userMode,
-    acceptOnceTurn: (...args) => this.acceptOnceTurn(...args),
-    assertGoalWriterEpochCurrent: (...args) => this.assertGoalWriterEpochCurrent(...args),
-    commitOnceCancel: (...args) => this.commitOnceCancel(...args),
-    emitGoalProgress: (...args) => this.emitGoalProgress(...args),
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    settleOnceTurn: (...args) => this.settleOnceTurn(...args),
-  });
+  private readonly spawnGoalComponent = new SpawnGoal(spawnGoalDeps(this));
 
   /** The persona catalog doors. Every dependency reads through at its use. */
-  private readonly personaCatalogComponent = new PersonaCatalog({
-    agents: () => this.agents,
-    execution: () => this.execution,
-    meshMode: () => this.meshMode,
-    remoteAuthority: () => this.remoteAuthority,
-    space: () => this.space,
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    managedPrincipal: (...args) => this.managedPrincipal(...args),
-    nameError: (...args) => this.nameError(...args),
-    spawnBoundRefusal: (...args) => this.spawnBoundRefusal(...args),
-    spawnRun: (...args) => this.spawnRun(...args),
-    staticSpawnBound: (...args) => this.staticSpawnBound(...args),
-  });
+  private readonly personaCatalogComponent = new PersonaCatalog(personaCatalogDeps(this));
 
   /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
-  private readonly terminalInputComponent = new TerminalInput({
-    agents: () => this.agents,
-    auth: () => this.auth,
-    managerLifecycleUid: () => this.managerLifecycleUid,
-    sessionPlane: () => this.sessionPlane,
-    wsPort: () => this.wsPort,
-    runtimeFor: (...args) => this.runtimeFor(...args),
-  });
+  private readonly terminalInputComponent = new TerminalInput(terminalInputDeps(this));
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
-  private readonly statusAndModelsComponent = new StatusAndModels({
-    agents: () => this.agents,
-    auth: () => this.auth,
-    connectorStatuses: () => this.connectorStatuses,
-    ep: () => this.ep,
-    execution: () => this.execution,
-    leaseStopping: () => this.leaseStopping,
-    lifecycleInFlight: () => this.lifecycleInFlight,
-    maintenanceState: () => this.maintenanceState,
-    managerInstanceId: () => this.managerInstanceId,
-    managerLifecycleUid: () => this.managerLifecycleUid,
-    namesCapacity: () => this.namesCapacity,
-    preservationAttemptId: () => this.preservationAttemptId,
-    preservationInventory: () => this.preservationInventory,
-    remoteAuthority: () => this.remoteAuthority,
-    requiredRuntime: () => this.requiredRuntime,
-    resumeRequired: () => this.resumeRequired,
-    retirement: () => this.retirement,
-    runtimeKind: () => this.runtimeKind,
-    space: () => this.space,
-    startedAtMs: () => this.startedAtMs,
-    staticLifecycle: () => this.staticLifecycle,
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    classSpawnEnabled: (...args) => this.classSpawnEnabled(...args),
-    connectorNames: (...args) => this.connectorNames(...args),
-    epAdminReach: (...args) => this.epAdminReach(...args),
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    forkProvenance: (...args) => this.forkProvenance(...args),
-    isOwnPresence: (a, p) => this.isOwnPresence(a, p),
-    isProcessBoundSeat: (...args) => this.isProcessBoundSeat(...args),
-    launchHarness: (...args) => this.launchHarness(...args),
-    refreshUnavailableConnectors: (...args) => this.refreshUnavailableConnectors(...args),
-    resolveConnector: (...args) => this.resolveConnector(...args),
-    staticReconciliationStatus: (...args) => this.staticReconciliationStatus(...args),
-  });
+  private readonly statusAndModelsComponent = new StatusAndModels(statusAndModelsDeps(this));
 
   /** The launch readiness race and exit watch. Every dependency reads through at its use. */
-  private readonly readinessWaitComponent = new ReadinessWait({
-    agents: () => this.agents,
-    ep: () => this.ep,
-    shutdownReadiness: () => this.shutdownReadiness,
-    managedPrincipal: (...args) => this.managedPrincipal(...args),
-    onAgentExit: (...args) => this.onAgentExit(...args),
-  });
+  private readonly readinessWaitComponent = new ReadinessWait(readinessWaitDeps(this));
 
   /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
-  private readonly brokerTransportComponent = new BrokerTransport({
-    auth: () => this.auth,
-    endpointServeExecutorExpiresInSeconds: () => this.endpointServeExecutorExpiresInSeconds,
-    leaseStopping: () => this.leaseStopping,
-    managerInstanceId: () => this.managerInstanceId,
-    remoteAuthority: () => this.remoteAuthority,
-    remoteBundleAdoption: () => this.remoteBundleAdoption,
-    remoteExecutorCreds: () => this.remoteExecutorCreds,
-    servers: () => this.servers,
-    space: () => this.space,
-    transportDown: () => this.transportDown,
-    renewRemoteExecutor: (...args) => this.renewRemoteExecutor(...args),
-    renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
-    dialViaManager: (opts) => this.dial(opts),
-  });
+  private readonly brokerTransportComponent = new BrokerTransport(brokerTransportDeps(this));
 
   /** The start and launch control doors. Every dependency reads through at its use. */
-  private readonly startDoorsComponent = new StartDoors({
-    eventsRequired: () => this.eventsRequired,
-    execution: () => this.execution,
-    remoteAuthority: () => this.remoteAuthority,
-    space: () => this.space,
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    startAgent: (...args) => this.startAgent(...args),
-  });
+  private readonly startDoorsComponent = new StartDoors(startDoorsDeps(this));
 
   /** Connector and harness resolution for a launch. Every dependency reads through at its use. */
-  private readonly harnessResolutionComponent = new HarnessResolution({
-    connectorStatuses: () => this.connectorStatuses,
-    eventPayloadsWithheld: () => this.eventPayloadsWithheld,
-    eventsRequired: () => this.eventsRequired,
-    expectedConnectorGeneration: () => this.expectedConnectorGeneration,
-    installedExtensions: () => this.installedExtensions,
-    servers: () => this.servers,
-    space: () => this.space,
-    workspaceRoot: () => this.workspaceRoot,
-  });
+  private readonly harnessResolutionComponent = new HarnessResolution(harnessResolutionDeps(this));
 
   /** The boot connector inventory. Every dependency reads through at its use. */
-  private readonly connectorInventoryComponent = new ConnectorInventory({
-    bootNotes: () => this.bootNotes,
-    setBootNotes: (value) => { this.bootNotes = value; },
-    connectorRequirements: () => this.connectorRequirements,
-    setConnectorRequirements: (value) => { this.connectorRequirements = value; },
-    connectorStatuses: () => this.connectorStatuses,
-    setConnectorStatuses: (value) => { this.connectorStatuses = value; },
-    execution: () => this.execution,
-    installedExtensions: () => this.installedExtensions,
-    machineSetupCommand: () => this.machineSetupCommand,
-    classSpawnEnabled: (...args) => this.classSpawnEnabled(...args),
-    prepareClaudeWake: (...args) => this.prepareClaudeWake(...args),
-  });
+  private readonly connectorInventoryComponent = new ConnectorInventory(connectorInventoryDeps(this));
 
   /** Manager preservation and released-seat adoption. Every dependency reads through at its use. */
-  private readonly preservationComponent = new Preservation({
-    agents: () => this.agents,
-    auth: () => this.auth,
-    credRenewTimer: () => this.credRenewTimer,
-    setCredRenewTimer: (value) => { this.credRenewTimer = value; },
-    ep: () => this.ep,
-    execution: () => this.execution,
-    lifecycleInFlight: () => this.lifecycleInFlight,
-    maintenanceState: () => this.maintenanceState,
-    setMaintenanceState: (value) => { this.maintenanceState = value; },
-    managerInstanceId: () => this.managerInstanceId,
-    meshMode: () => this.meshMode,
-    preservationAttemptId: () => this.preservationAttemptId,
-    setPreservationAttemptId: (value) => { this.preservationAttemptId = value; },
-    preservationGeneration: () => this.preservationGeneration,
-    setPreservationGeneration: (value) => { this.preservationGeneration = value; },
-    preservationInventory: () => this.preservationInventory,
-    setPreservationInventory: (value) => { this.preservationInventory = value; },
-    preserveStopTimeoutMs: () => this.preserveStopTimeoutMs,
-    resumeCredRenewal: () => this.resumeCredRenewal,
-    space: () => this.space,
-    unverifiedStops: () => this.unverifiedStops,
-    setUnverifiedStops: (value) => { this.unverifiedStops = value; },
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    awaitLifecycleDrain: (...args) => this.awaitLifecycleDrain(...args),
-    deprovision: (...args) => this.deprovision(...args),
-    dropInlineSnapshot: (...args) => this.dropInlineSnapshot(...args),
-    dropSeatRecord: (...args) => this.dropSeatRecord(...args),
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    fileDigest: (...args) => this.fileDigest(...args),
-    logSeatReaped: (...args) => this.logSeatReaped(...args),
-    onAgentExit: (...args) => this.onAgentExit(...args),
-    recordContinuityAtStop: (...args) => this.recordContinuityAtStop(...args),
-    renewDaemonCreds: (...args) => this.renewDaemonCreds(...args),
-    resumeEntry: (...args) => this.resumeEntry(...args),
-    resumeEntryOf: (...args) => this.resumeEntryOf(...args),
-    runtimeFor: (...args) => this.runtimeFor(...args),
-    stopHandle: (...args) => this.stopHandle(...args),
-    teardownTarget: (...args) => this.teardownTarget(...args),
-    validateRetainedAuthority: (...args) => this.validateRetainedAuthority(...args),
-    watchExit: (...args) => this.watchExit(...args),
-    withProvisioner: (fn) => this.withProvisioner(fn),
-  });
+  private readonly preservationComponent = new Preservation(preservationDeps(this));
 
   /** Preserved-manager resume and its control doors. Every dependency reads through at its use. */
-  private readonly preservedResumeComponent = new PreservedResume({
-    agents: () => this.agents,
-    auth: () => this.auth,
-    ep: () => this.ep,
-    eventPayloadsWithheld: () => this.eventPayloadsWithheld,
-    execution: () => this.execution,
-    managerInstanceId: () => this.managerInstanceId,
-    namesCapacity: () => this.namesCapacity,
-    readinessTimeoutMs: () => this.readinessTimeoutMs,
-    remoteAuthority: () => this.remoteAuthority,
-    resumeAttemptId: () => this.resumeAttemptId,
-    resumeDurableCommitToken: () => this.resumeDurableCommitToken,
-    setResumeDurableCommitToken: (value) => { this.resumeDurableCommitToken = value; },
-    resumeRequired: () => this.resumeRequired,
-    setResumeRequired: (value) => { this.resumeRequired = value; },
-    retirement: () => this.retirement,
-    secrets: () => this.secrets,
-    space: () => this.space,
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    abortPreservation: (...args) => this.abortPreservation(...args),
-    armSessionRecovery: (...args) => this.armSessionRecovery(...args),
-    awaitHandleExit: (...args) => this.awaitHandleExit(...args),
-    awaitReadiness: (...args) => this.awaitReadiness(...args),
-    beginLifecycle: (...args) => this.beginLifecycle(...args),
-    capabilityRefusal: (...args) => this.capabilityRefusal(...args),
-    capacityRefusal: (...args) => this.capacityRefusal(...args),
-    commitPreservation: (...args) => this.commitPreservation(...args),
-    deprovision: (...args) => this.deprovision(...args),
-    eventsRefusal: (...args) => this.eventsRefusal(...args),
-    executionRefusal: (...args) => this.executionRefusal(...args),
-    fileDigestOrEmpty: (...args) => this.fileDigestOrEmpty(...args),
-    forkProvenance: (...args) => this.forkProvenance(...args),
-    freeSlot: (...args) => this.freeSlot(...args),
-    hostLaunchFields: (...args) => this.hostLaunchFields(...args),
-    inventoryReferenceError: (...args) => this.inventoryReferenceError(...args),
-    launchHarness: (...args) => this.launchHarness(...args),
-    loadSeatRuntime: (...args) => this.loadSeatRuntime(...args),
-    maintenanceError: (...args) => this.maintenanceError(...args),
-    managedPrincipal: (...args) => this.managedPrincipal(...args),
-    nameError: (...args) => this.nameError(...args),
-    occupancy: (...args) => this.occupancy(...args),
-    occupancyText: (...args) => this.occupancyText(...args),
-    preparePreservation: (...args) => this.preparePreservation(...args),
-    probeStaticCredential: (...args) => this.probeStaticCredential(...args),
-    readManagedSession: (...args) => this.readManagedSession(...args),
-    readStaticReconcileSlot: (...args) => this.readStaticReconcileSlot(...args),
-    readerRemedy: (...args) => this.readerRemedy(...args),
-    reconcileStaticLifecycles: (...args) => this.reconcileStaticLifecycles(...args),
-    recordContinuity: (...args) => this.recordContinuity(...args),
-    recordContinuityAtStop: (...args) => this.recordContinuityAtStop(...args),
-    recordSlotCustody: (...args) => this.recordSlotCustody(...args),
-    recordSlotRuntime: (...args) => this.recordSlotRuntime(...args),
-    refreshSeatRecord: (...args) => this.refreshSeatRecord(...args),
-    refreshUnavailableConnectors: (...args) => this.refreshUnavailableConnectors(...args),
-    reserveCustody: (...args) => this.reserveCustody(...args),
-    resolveConnector: (...args) => this.resolveConnector(...args),
-    retainedSessionId: (...args) => this.retainedSessionId(...args),
-    runtimeFor: (...args) => this.runtimeFor(...args),
-    spawnCustodied: (...args) => this.spawnCustodied(...args),
-    stopHandle: (...args) => this.stopHandle(...args),
-    watchExit: (...args) => this.watchExit(...args),
-  });
+  private readonly preservedResumeComponent = new PreservedResume(preservedResumeDeps(this));
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
-  private readonly goalWriterComponent = new GoalWriter({
-    auth: () => this.auth,
-    goalAcceptances: () => this.goalAcceptances,
-    goalWriter: () => this.goalWriter,
-    setGoalWriter: (value) => { this.goalWriter = value; },
-    goalWriterCreds: () => this.goalWriterCreds,
-    setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
-    goalWriterIdentity: () => this.goalWriterIdentity,
-    leaseStopping: () => this.leaseStopping,
-    managerInstanceId: () => this.managerInstanceId,
-    readinessTimeoutMs: () => this.readinessTimeoutMs,
-    remoteAuthority: () => this.remoteAuthority,
-    serviceServe: () => this.serviceServe,
-    space: () => this.space,
-    turnRelay: () => this.turnRelay,
-    goalReconcileDone: () => this.goalReconcileDone,
-    setGoalReconcileDone: (value) => { this.goalReconcileDone = value; },
-    adoptTurnGoal: (...args) => this.adoptTurnGoal(...args),
-    boundedReconnect: (...args) => this.boundedReconnect(...args),
-    dial: (...args) => this.dial(...args),
-    noticeSeatTurns: (...args) => this.noticeSeatTurns(...args),
-    renewRemoteBeforeRedial: (...args) => this.renewRemoteBeforeRedial(...args),
-    retireConnection: (...args) => this.retireConnection(...args),
-    trackTransport: (...args) => this.trackTransport(...args),
-    withEndpointServeExecutor: (fn) => this.withEndpointServeExecutor(fn),
-  });
+  private readonly goalWriterComponent = new GoalWriter(goalWriterDeps(this));
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
-  private readonly credentialRenewal = new CredentialRenewal({
-    agents: () => this.agents,
-    auth: () => this.auth,
-    credentialPushRetry: () => this.credentialPushRetry,
-    setCredentialPushRetry: (value) => { this.credentialPushRetry = value; },
-    credentialPushes: () => this.credentialPushes,
-    daemonRenewalEligible: () => this.daemonRenewalEligible,
-    setDaemonRenewalEligible: (value) => { this.daemonRenewalEligible = value; },
-    daemonRenewalOwner: () => this.daemonRenewalOwner,
-    setDaemonRenewalOwner: (value) => { this.daemonRenewalOwner = value; },
-    endpointServeRenewalTimer: () => this.endpointServeRenewalTimer,
-    setEndpointServeRenewalTimer: (value) => { this.endpointServeRenewalTimer = value; },
-    ep: () => this.ep,
-    finishRemoteBundleAdoption: () => this.finishRemoteBundleAdoption,
-    setFinishRemoteBundleAdoption: (value) => { this.finishRemoteBundleAdoption = value; },
-    goalWriter: () => this.goalWriter,
-    goalWriterCreds: () => this.goalWriterCreds,
-    setGoalWriterCreds: (value) => { this.goalWriterCreds = value; },
-    leaseStopping: () => this.leaseStopping,
-    managerInstanceId: () => this.managerInstanceId,
-    pendingCredentialPushes: () => this.pendingCredentialPushes,
-    remoteAuthority: () => this.remoteAuthority,
-    remoteBundleAdoption: () => this.remoteBundleAdoption,
-    setRemoteBundleAdoption: (value) => { this.remoteBundleAdoption = value; },
-    remoteBundleRenewal: () => this.remoteBundleRenewal,
-    setRemoteBundleRenewal: (value) => { this.remoteBundleRenewal = value; },
-    remoteExecutorCreds: () => this.remoteExecutorCreds,
-    setRemoteExecutorCreds: (value) => { this.remoteExecutorCreds = value; },
-    remoteRenewalDebt: () => this.remoteRenewalDebt,
-    setRemoteRenewalDebt: (value) => { this.remoteRenewalDebt = value; },
-    remoteSupervisorCreds: () => this.remoteSupervisorCreds,
-    setRemoteSupervisorCreds: (value) => { this.remoteSupervisorCreds = value; },
-    runHosting: () => this.runHosting,
-    secretStoreIdentity: () => this.secretStoreIdentity,
-    setSecretStoreIdentity: (value) => { this.secretStoreIdentity = value; },
-    secrets: () => this.secrets,
-    serviceServe: () => this.serviceServe,
-    sessionLedgerConn: () => this.sessionLedgerConn,
-    sessionLedgerCreds: () => this.sessionLedgerCreds,
-    setSessionLedgerCreds: (value) => { this.sessionLedgerCreds = value; },
-    space: () => this.space,
-    supervisorCredentialPush: () => this.supervisorCredentialPush,
-    setSupervisorCredentialPush: (value) => { this.supervisorCredentialPush = value; },
-    supervisorCredentialPushPending: () => this.supervisorCredentialPushPending,
-    setSupervisorCredentialPushPending: (value) => { this.supervisorCredentialPushPending = value; },
-    userMode: () => this.userMode,
-    workspaceRoot: () => this.workspaceRoot,
-    beginLifecycle: (...args) => this.beginLifecycle(...args),
-    dialRemoteStanding: (...args) => this.dialRemoteStanding(...args),
-    dialServeConnection: (...args) => this.dialServeConnection(...args),
-    discardServeCandidate: (...args) => this.discardServeCandidate(...args),
-    mintAndStageGoalWriter: (...args) => this.mintAndStageGoalWriter(...args),
-    mintAndStageSessionLedger: (...args) => this.mintAndStageSessionLedger(...args),
-    probeStaticCredential: (...args) => this.probeStaticCredential(...args),
-    renewManagedStaticCred: (...args) => this.renewManagedStaticCred(...args),
-    withEndpointServeExecutor: (fn) => this.withEndpointServeExecutor(fn),
-    renewRemoteStandingBundle: (...args) => this.renewRemoteStandingBundle(...args),
-  });
+  private readonly credentialRenewal = new CredentialRenewal(credentialRenewalDeps(this));
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
-  private readonly seatLaunch = new SeatLaunch({
-    space: () => this.space,
-    servers: () => this.servers,
-    workspaceRoot: () => this.workspaceRoot,
-    installedExtensions: () => this.installedExtensions,
-    ep: () => this.ep,
-    auth: () => this.auth,
-    userMode: () => this.userMode,
-    managerInstanceId: () => this.managerInstanceId,
-    serviceServe: () => this.serviceServe,
-    runHosting: () => this.runHosting,
-    connectorStatuses: () => this.connectorStatuses,
-    execution: () => this.execution,
-    requiredRuntime: () => this.requiredRuntime,
-    meshMode: () => this.meshMode,
-    executionRefusal: () => this.executionRefusal(),
-    nameError: (name) => this.nameError(name),
-    canReadPersona: (owner, caller, admin) => this.canReadPersona(owner, caller, admin),
-    epAdminReach: (caller) => this.epAdminReach(caller),
-    startAgent: (opts) => this.startAgent(opts),
-
-    awaitReadiness: (...args) => this.awaitReadiness(...args),
-    awaitStartupOutcome: (...args) => this.awaitStartupOutcome(...args),
-    capabilityRefusal: (...args) => this.capabilityRefusal(...args),
-    delegatedLaunched: () => this.delegatedLaunched,
-    dropInlineSnapshot: (...args) => this.dropInlineSnapshot(...args),
-    endOnceBeforeServe: (...args) => this.endOnceBeforeServe(...args),
-    eventPayloadsWithheld: () => this.eventPayloadsWithheld,
-    eventsRefusal: (...args) => this.eventsRefusal(...args),
-    eventsRequired: () => this.eventsRequired,
-    fileDigest: (...args) => this.fileDigest(...args),
-    hostLaunchFields: (...args) => this.hostLaunchFields(...args),
-    issuanceSeam: (...args) => this.issuanceSeam(...args),
-    launchHarness: (...args) => this.launchHarness(...args),
-    launchOwner: (...args) => this.launchOwner(...args),
-    leaseStopping: () => this.leaseStopping,
-    loadSeatRuntime: (...args) => this.loadSeatRuntime(...args),
-    managerLifecycleUid: () => this.managerLifecycleUid,
-    namesCapacity: () => this.namesCapacity,
-    openOnceDelivery: (...args) => this.openOnceDelivery(...args),
-    personaOwner: (...args) => this.personaOwner(...args),
-    place: (...args) => this.place(...args),
-    provisionUserAgent: (...args) => this.provisionUserAgent(...args),
-    readerRemedy: (...args) => this.readerRemedy(...args),
-    readinessTimeoutMs: () => this.readinessTimeoutMs,
-    refreshUnavailableConnectors: (...args) => this.refreshUnavailableConnectors(...args),
-    remoteAuthority: () => this.remoteAuthority,
-    resolveConnector: (...args) => this.resolveConnector(...args),
-    retirement: () => this.retirement,
-    runtimeFor: (...args) => this.runtimeFor(...args),
-    seatCapRefusal: (...args) => this.seatCapRefusal(...args),
-    seatCustody: () => this.seatCustody,
-    secrets: () => this.secrets,
-    sessionRecovery: () => this.sessionRecovery,
-    shredUserSecrets: (...args) => this.shredUserSecrets(...args),
-    staticLifecycle: () => this.staticLifecycle,
-    stopAndTrack: (...args) => this.stopAndTrack(...args),
-    trackDeprovision: (...args) => this.trackDeprovision(...args),
-    transcripts: () => this.transcripts,
-    userProvision: () => this.userProvision,
-    watchExit: (...args) => this.watchExit(...args),
-    watchOnceExit: (...args) => this.watchOnceExit(...args),
-    withIssuer: (fn) => this.withIssuer(fn),
-    withLifecycleExecutor: (pin, fn) => this.withLifecycleExecutor(pin, fn),
-    withProvisioner: (fn) => this.withProvisioner(fn),
-  });
+  private readonly seatLaunch = new SeatLaunch(seatLaunchDeps(this));
 
   constructor(opts: ManagerOptions) {
     if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)

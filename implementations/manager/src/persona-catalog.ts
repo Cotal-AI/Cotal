@@ -24,6 +24,26 @@ export interface PersonaCatalogDeps {
   staticSpawnBound: (...args: Parameters<Manager["staticSpawnBound"]>) => ReturnType<Manager["staticSpawnBound"]>;
 }
 
+/** Builds the {@link PersonaCatalogDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
+  return {
+    agents: () => m["agents"],
+    execution: () => m["execution"],
+    meshMode: () => m["meshMode"],
+    remoteAuthority: () => m["remoteAuthority"],
+    space: () => m["space"],
+    userMode: () => m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    executionRefusal: (...args) => m["executionRefusal"](...args),
+    managedPrincipal: (...args) => m["managedPrincipal"](...args),
+    nameError: (...args) => m["nameError"](...args),
+    spawnBoundRefusal: (...args) => m["spawnBoundRefusal"](...args),
+    spawnRun: (...args) => m["spawnRun"](...args),
+    staticSpawnBound: (...args) => m["staticSpawnBound"](...args),
+  };
+}
+
 /** The persona catalog doors: define, remove, list and show, with the definer's grant check and read reach. */
 export class PersonaCatalog {
   constructor(private readonly deps: PersonaCatalogDeps) {}

@@ -31,6 +31,26 @@ export interface BrokerTransportDeps {
   dialViaManager: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
 }
 
+/** Builds the {@link BrokerTransportDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
+  return {
+    auth: () => m["auth"],
+    endpointServeExecutorExpiresInSeconds: () => m["endpointServeExecutorExpiresInSeconds"],
+    leaseStopping: () => m["leaseStopping"],
+    managerInstanceId: () => m["managerInstanceId"],
+    remoteAuthority: () => m["remoteAuthority"],
+    remoteBundleAdoption: () => m["remoteBundleAdoption"],
+    remoteExecutorCreds: () => m["remoteExecutorCreds"],
+    servers: () => m["servers"],
+    space: () => m["space"],
+    transportDown: () => m["transportDown"],
+    renewRemoteExecutor: (...args) => m["renewRemoteExecutor"](...args),
+    renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
+    dialViaManager: (opts) => m["dial"](opts),
+  };
+}
+
 /** Dialing the broker, tracking and retiring connections, and the scoped one-shot executor connections the manager's writes ride. */
 export class BrokerTransport {
   constructor(private readonly deps: BrokerTransportDeps) {}

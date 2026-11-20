@@ -18,10 +18,38 @@ import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from ".
 import { MANAGER_ENDPOINT, managerClusterArtifacts, managerContractArtifactValues, type ManagerConnectorStatus } from "./manager-service-contract.js";
 import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
 import type { ManagerOptions } from "./manager.js";
+import type { Manager } from "./manager.js";
+import { caughtEnvelope } from "./turn-relay.js";
+import { lifecycleBlocked, lifecycleBlockedFrom } from "@cotal-ai/core";
+import { REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
+import { withTimeout } from "./manager-timeout.js";
 
 type ServiceServe = { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
 type SessionLedgerConnection = { nc: NatsConnection; creds?: string };
 type ExecutorStores = { recordsKv: KV; authKv: KV; nc: NatsConnection };
+
+/** Why a frozen manager gate stays frozen on an open mesh. Reconciliation must prove the holder
+ *  gone, and an open mesh runs no delivery daemon to prove it, so neither boot self-heal nor
+ *  `cotal manager reconcile` can reopen the gate there. */
+const OPEN_MESH_GATE_LIMIT = "reconciliation needs liveness evidence an open mesh cannot currently provide, so `cotal manager reconcile` refuses this gate. Keep this store intact; upgrading alone does not recover it";
+
+/** The open mesh's registration evictor. An open mesh has no eviction oracle, so the superseded
+ *  family's holders stay unverified as they do with no evictor, and the barrier keeps the gate
+ *  frozen. Throwing instead of answering `false` only puts the reason in the refusal. */
+function openMeshUnverifiedEviction(holders: readonly string[]): never {
+  throw new Error(`principal(s) ${holders.map((h) => `"${h}"`).join(", ")} not verified evicted: ${OPEN_MESH_GATE_LIMIT}`);
+}
+
+/** An open-mesh registration refused by a gate another registration froze, restated without the
+ *  `cotal reconcile-gate` remedy that cannot run there. Code, gate state, blocked op and op id are
+ *  kept. Any other failure is returned as it is. */
+function openMeshFrozenGateRefusal(e: unknown, instanceId: string): unknown {
+  const envelope = caughtEnvelope(e);
+  const blocked = lifecycleBlockedFrom(envelope);
+  if (envelope === undefined || blocked?.gateState !== "frozen" || blocked.blockedOp !== "registration") return e;
+  return lifecycleBlocked(envelope.code, `the issuance gate for "${instanceId}" is frozen under another registration, and this manager cannot register while it is; ${OPEN_MESH_GATE_LIMIT} (SPEC 13.8)`,
+    { blockedOp: blocked.blockedOp, gateState: blocked.gateState, ...(blocked.opId !== undefined ? { opId: blocked.opId } : {}) }, envelope.outcome);
+}
 
 /** Current manager authority and shared renewal state, read when an operation runs. */
 export interface ServePlaneDeps {
@@ -71,6 +99,59 @@ export interface ServePlaneDeps {
   remoteStandingTimeLeft: (deadline: number) => number;
   openMeshUnverifiedEviction: (holders: readonly string[]) => never;
   openMeshFrozenGateRefusal: (error: unknown, instanceId: string) => unknown;
+}
+
+/** Builds the {@link ServePlaneDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function servePlaneDeps(m: Manager): ServePlaneDeps {
+  return {
+    auth: () => m["auth"],
+    remoteAuthority: () => m["remoteAuthority"],
+    space: () => m["space"],
+    servers: () => m["servers"],
+    workspaceRoot: () => m["workspaceRoot"],
+    managerInstanceId: () => m["managerInstanceId"],
+    managerServeIdentity: () => m["managerServeIdentity"],
+    leaseStopping: () => m["leaseStopping"],
+    remoteBundleRenewal: () => m["remoteBundleRenewal"],
+    maxSessions: () => m["maxSessions"],
+    serviceServe: () => m["serviceServe"],
+    setServiceServe: (value) => { m["serviceServe"] = value; },
+    sessionLedgerIdentity: () => m["sessionLedgerIdentity"],
+    setSessionLedgerIdentity: (value) => { m["sessionLedgerIdentity"] = value; },
+    sessionLedgerCreds: () => m["sessionLedgerCreds"],
+    setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
+    sessionLedgerConn: () => m["sessionLedgerConn"],
+    setSessionLedgerConn: (value) => { m["sessionLedgerConn"] = value; },
+    sessionPlane: () => m["sessionPlane"],
+    setSessionPlane: (value) => { m["sessionPlane"] = value; },
+    sessionKeyRenewTimer: () => m["sessionKeyRenewTimer"],
+    setSessionKeyRenewTimer: (value) => { m["sessionKeyRenewTimer"] = value; },
+    connectorStatuses: () => { m["refreshUnavailableConnectors"](); return m["connectorStatuses"]; },
+    setGoalWriterIdentity: (value) => { m["goalWriterIdentity"] = value; },
+    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
+    remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
+    dial: (...args) => m["dial"](...args),
+    dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
+    trackTransport: (...args) => m["trackTransport"](...args),
+    discardServeCandidate: (...args) => m["discardServeCandidate"](...args),
+    managerServiceDefs: (...args) => m["managerServiceDefs"](...args),
+    omitClassCommands: (...args) => m["omitClassCommands"](...args),
+    resolveTarget: (target) => m["resolveServeTarget"](target),
+    withEndpointServeExecutor: (...args) => m["withEndpointServeExecutor"](...args),
+    withOpenServeConnection: (...args) => m["withOpenServeConnection"](...args),
+    boundedReconnect: (...args) => m["boundedReconnect"](...args),
+    renewRemoteBeforeRedial: (...args) => m["renewRemoteBeforeRedial"](...args),
+    scheduleServeRenewal: (...args) => m["scheduleServeRenewal"](...args),
+    stop: (...args) => m["stop"](...args),
+    healFrozenRegistrationGate: (...args) => m["healFrozenRegistrationGate"](...args),
+    mintAndStageGoalWriter: (...args) => m["mintAndStageGoalWriter"](...args),
+    retireConnection: (...args) => m["retireConnection"](...args),
+    withTimeout,
+    remoteStandingTimeLeft,
+    openMeshUnverifiedEviction,
+    openMeshFrozenGateRefusal,
+  };
 }
 
 /** Registers and recovers the manager control service and its dedicated session authority. */

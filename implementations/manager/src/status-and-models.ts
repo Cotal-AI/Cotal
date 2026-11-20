@@ -55,6 +55,47 @@ export interface StatusAndModelsDeps {
   staticReconciliationStatus: (...args: Parameters<Manager["staticReconciliationStatus"]>) => ReturnType<Manager["staticReconciliationStatus"]>;
 }
 
+/** Builds the {@link StatusAndModelsDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
+  return {
+    agents: () => m["agents"],
+    auth: () => m["auth"],
+    connectorStatuses: () => m["connectorStatuses"],
+    ep: () => m["ep"],
+    execution: () => m["execution"],
+    leaseStopping: () => m["leaseStopping"],
+    lifecycleInFlight: () => m["lifecycleInFlight"],
+    maintenanceState: () => m["maintenanceState"],
+    managerInstanceId: () => m["managerInstanceId"],
+    managerLifecycleUid: () => m["managerLifecycleUid"],
+    namesCapacity: () => m["namesCapacity"],
+    preservationAttemptId: () => m["preservationAttemptId"],
+    preservationInventory: () => m["preservationInventory"],
+    remoteAuthority: () => m["remoteAuthority"],
+    requiredRuntime: () => m["requiredRuntime"],
+    resumeRequired: () => m["resumeRequired"],
+    retirement: () => m["retirement"],
+    runtimeKind: () => m["runtimeKind"],
+    space: () => m["space"],
+    startedAtMs: () => m["startedAtMs"],
+    staticLifecycle: () => m["staticLifecycle"],
+    userMode: () => m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    classSpawnEnabled: (...args) => m["classSpawnEnabled"](...args),
+    connectorNames: (...args) => m["connectorNames"](...args),
+    epAdminReach: (...args) => m["epAdminReach"](...args),
+    executionRefusal: (...args) => m["executionRefusal"](...args),
+    forkProvenance: (...args) => m["forkProvenance"](...args),
+    isOwnPresence: (a, p) => m["isOwnPresence"](a, p),
+    isProcessBoundSeat: (...args) => m["isProcessBoundSeat"](...args),
+    launchHarness: (...args) => m["launchHarness"](...args),
+    refreshUnavailableConnectors: (...args) => m["refreshUnavailableConnectors"](...args),
+    resolveConnector: (...args) => m["resolveConnector"](...args),
+    staticReconciliationStatus: (...args) => m["staticReconciliationStatus"](...args),
+  };
+}
+
 /** What the manager reports about itself: status, the seat list and its owner filter, local seat facts, and the model catalog. */
 export class StatusAndModels {
   constructor(private readonly deps: StatusAndModelsDeps) {}

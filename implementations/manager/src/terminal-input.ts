@@ -38,6 +38,19 @@ export interface TerminalInputDeps {
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
 }
 
+/** Builds the {@link TerminalInputDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function terminalInputDeps(m: Manager): TerminalInputDeps {
+  return {
+    agents: () => m["agents"],
+    auth: () => m["auth"],
+    managerLifecycleUid: () => m["managerLifecycleUid"],
+    sessionPlane: () => m["sessionPlane"],
+    wsPort: () => m["wsPort"],
+    runtimeFor: (...args) => m["runtimeFor"](...args),
+  };
+}
+
 /** Typing into a seat's terminal and opening an attach or console session on it, after authorization. */
 export class TerminalInput {
   constructor(private readonly deps: TerminalInputDeps) {}

@@ -44,6 +44,30 @@ export interface SpawnGoalDeps {
   settleOnceTurn: (...args: Parameters<Manager["settleOnceTurn"]>) => ReturnType<Manager["settleOnceTurn"]>;
 }
 
+/** Builds the {@link SpawnGoalDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
+  return {
+    agentGoals: () => m["agentGoals"],
+    execution: () => m["execution"],
+    goalAcceptanceRetentionMs: () => m["goalAcceptanceRetentionMs"],
+    goalAcceptances: () => m["goalAcceptances"],
+    goalReconcileDone: () => m["goalReconcileDone"],
+    goalWriter: () => m["goalWriter"],
+    managerInstanceId: () => m["managerInstanceId"],
+    onceWatched: () => m["onceWatched"],
+    readinessTimeoutMs: () => m["readinessTimeoutMs"],
+    serviceServe: () => m["serviceServe"],
+    userMode: () => m["userMode"],
+    acceptOnceTurn: (...args) => m["acceptOnceTurn"](...args),
+    assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
+    commitOnceCancel: (...args) => m["commitOnceCancel"](...args),
+    emitGoalProgress: (...args) => m["emitGoalProgress"](...args),
+    executionRefusal: (...args) => m["executionRefusal"](...args),
+    settleOnceTurn: (...args) => m["settleOnceTurn"](...args),
+  };
+}
+
 /** Serving `spawn` and `launch` as goals: acceptance, the cached acceptance a retry reads, and its expiry. */
 export class SpawnGoal {
   constructor(private readonly deps: SpawnGoalDeps) {}
