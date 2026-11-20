@@ -1,12 +1,27 @@
-import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
 import { cliVersion } from "./version.js";
+
+/** Check the manager's local launch coordinates and runtime metadata without importing a provider. */
+export function assertManagerStartOptions(space: string, options: Record<string, unknown>): void {
+  const server = options.server as string | undefined;
+  if (server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("--server");
+  if (server !== undefined || findMesh(space)) resolveNativeServiceTarget(String(options.root), space, server);
+
+  const runtime = String(options.runtime);
+  if (runtime === "pty" || registry.has("runtime", runtime)) return;
+  const extension = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.find((row) => extensionProvides(row).some((ref) => ref.kind === "runtime" && ref.name === runtime)) : undefined;
+  const target = { space, runtime };
+  if (!extension) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", runtimeInstallHint(runtime), { target });
+  if (installedExtensionPackage(extension.pkg)?.version !== extension.version || extension.pkg.startsWith("@cotal-ai/") && extension.version !== cliVersion())
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the installed package for runtime ${JSON.stringify(runtime)} is missing or does not match the required version`, { target, remedy: `check it with \`cotal runtimes\`` });
+}
 
 const reserved = new Set(["help", "no-color", "no-input", "space", "json", "plain", "file", "preset", "exec", "cwd", "yes", "instance", "new-instance", "foreground", "no-open", "with-agents", "dry-run", "tail", "follow"]);
 

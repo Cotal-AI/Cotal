@@ -334,8 +334,9 @@ and its flags and the manager preset's options (`--runtime`, `--roster`, `--name
 options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
 service show manager` reads it. A start that names another `--runtime` or other option for a
-stopped manager saves it again with that option, and says so. With `--dry-run` it makes the same
-checks and saves nothing. A `--console-host` with whitespace or control characters is refused
+stopped manager saves it again with that option, and says so. With `--dry-run` it checks the
+registered broker URL and installed runtime metadata without loading provider code, saving a
+definition or starting a process. A `--console-host` with whitespace or control characters is refused
 before changing the saved definition or stopped instance. A running one refuses
 `LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
 
@@ -361,12 +362,13 @@ Without `--instance`, `cotal manager status` and `cotal manager stop` select the
 manager even if an older saved `manager` service is stopped. Stopping the stack manager this way
 leaves the broker running. `--instance` still selects the named saved service instance.
 `cotal manager restart` does not restart a stack's manager by itself: it refuses `LIFECYCLE_BLOCKED`
-and names `cotal manager stop --yes`, then `cotal up`, which starts the manager again and reuses the
-running broker. When the stack's manager is stopped, `cotal manager start` refuses the same way and
-names `cotal up`. `manager start` cannot override the stack manager's options. For a manager
-option `up` does not take, such as `--console-port`, stop the stack manager if it is running,
-start the stack with `cotal up --no-manager`, then add and start a named service with the
-manager preset. `cotal service add custom-manager --preset manager --help` lists its options.
+and names `cotal manager stop --space <space> --yes`, then `cotal up --root <dir> --space <space>`.
+These commands target the same stack from another folder. The second starts the manager again and
+reuses the running broker. When the stack's manager is stopped, `cotal manager start` refuses the
+same way and names that `cotal up` command. `manager start` cannot override the stack manager's
+options. For a manager option `up` does not take, such as `--console-port`, stop the stack manager
+if it is running, start the stack with `cotal up --no-manager`, then add and start a named service
+with the manager preset. `cotal service add custom-manager --preset manager --help` lists its options.
 
 Two saved manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
 command. An unpinned `start` or `status` reports the PID of a manager that `cotal up` or

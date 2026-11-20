@@ -1,10 +1,11 @@
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { codeSpan, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand } from "../lib/confirmation-required.js";
-import { describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
@@ -126,10 +127,18 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       // Running as recorded and as observed: a member whose stop is retained is `stopping`, and its
       // start stays refused here.
       const live = serviceInstances(space, member).some((row) => row.record.value.state === "running" && observeServiceProcess(row.record.value) === "running");
-      if (mode === "restart" && live)
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy: `stop it with \`${commandName === "manager" ? "cotal manager stop --yes" : `cotal service stop ${member} --yes`}\`, then run \`cotal up\` to start it again with its stack` });
+      const up = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
+      if (mode === "restart" && live) {
+        const stop = commandName === "manager" ? "cotal manager stop" : `cotal service stop ${shellWord(member)}`;
+        const instance = args.values.instance === undefined ? "" : ` --instance ${shellWord(String(args.values.instance))}`;
+        const withAgents = args.values["with-agents"] ? " --with-agents" : "";
+        const stopStep = member === STACK_DEFINITION.broker
+          ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then review and stop the whole stack with \`cotal down\``
+          : `stop it with ${codeSpan(`${stop} --space ${shellWord(space)}${instance}${withAgents} --yes`)}`;
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy: `${stopStep}, then run ${up} to start it again with its stack` });
+      }
       if (!live)
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: memberTarget, remedy: "start the stack with `cotal up`" });
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: memberTarget, remedy: `start the stack with ${up}` });
     }
     if (resolved?.saved === null && mode === "start" && args.values["dry-run"] && !store.read(resolved.name)) return previewPresetStart(resolved, space, root, args, presentation, commandName);
     try { return await serviceAction(resolved ? { ...args, positionals: [mode, resolved.name] } : args, space, root, commandName, resolved); }
@@ -415,6 +424,7 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   const target = { space, name: resolved.name, executionHost: "this-machine" };
   const { capabilities } = resolveServiceAdapter(launch.adapter, launch.options, false).declaration;
   if (args.values["new-instance"] && !capabilities.multiInstance || args.values.foreground && !capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+  if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, launch.options);
   writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
     { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
     { kind: "lines", lines: ["Nothing was saved, launched or loaded. The real start saves this definition first, then starts it."] },

@@ -7,10 +7,11 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, skipSuite } from "@cotal-ai/smoke-kit";
+import { execWords } from "../../implementations/cli/src/lib/exec-words.js";
 
 if (process.platform !== "linux") skipSuite("the native manager child is Linux-only");
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
@@ -32,7 +33,7 @@ type Envelope = {
 };
 
 function fixture(name: string) {
-  const base = join(scratch, name), root = join(base, name), home = join(base, "home");
+  const base = join(scratch, name), root = join(base, name === "workflowstopcontrol" ? "controller's project" : name), home = join(base, "home");
   const config = join(home, "config"), runtime = join(home, "runtime");
   for (const dir of [base, root, join(root, ".cotal"), home, config, runtime]) mkdirSync(dir, { mode: 0o700 });
   const env = { ...host, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: config,
@@ -65,7 +66,10 @@ for (const prepared of [false, true]) {
     if (prepared) {
       const refused = cli("service", "restart", "stack-manager", "--yes");
       check("prepared control: restart still refuses before stopping or starting anything", refused.code === 2 && refused.body.error?.code === "LIFECYCLE_BLOCKED" && refused.body.error.message?.includes("nothing was stopped or started") === true, refused);
-      check("prepared control: the remedy still names service stop followed by up", refused.body.error?.remedy === "stop it with `cotal service stop stack-manager --yes`, then run `cotal up` to start it again with its stack", refused);
+      const remedy = refused.body.error?.remedy?.match(/^stop it with `([^`]+)`, then run `([^`]+)` to start it again with its stack$/);
+      check("prepared control: the remedy names the space in both commands and shell-quotes the root in up",
+        remedy?.[1] === `cotal service stop stack-manager --space ${name} --yes`
+          && JSON.stringify(execWords(remedy[2]!)) === JSON.stringify(["cotal", "up", "--root", realpathSync(root), "--space", name]), refused);
       const status = cli("service", "status", "stack-manager");
       check("prepared control: the manager service is still running", status.code === 0 && status.body.result?.observedProcess === "running", status);
     } else {
