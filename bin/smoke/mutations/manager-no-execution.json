@@ -48,16 +48,16 @@
     },
     {
       "name": "manifest refusal delayed until after real inline persistence",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),",
-      "replace": "      launch: (ctx) => this.serveGated(ctx, () => { if (args(ctx).spec !== undefined) persistLaunchSpec(this.workspaceRoot, parseLaunchSpec(args(ctx).spec, \"inline launch spec\")); return this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route)); }),",
+      "replace": "      launch: (ctx) => this.serveGated(ctx, async () => { if (args(ctx).spec !== undefined) { const { persistLaunchSpec, parseLaunchSpec } = await import(\"./launch.js\"); persistLaunchSpec(this.workspaceRoot, parseLaunchSpec(args(ctx).spec, \"inline launch spec\")); } return this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route)); }),",
       "expectRed": "served launch/run refusals produce no host requests or launch files",
       "cell": "served launch/run refusals produce no host requests or launch files",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
       "name": "retained allocated inventory ignored",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "if (entries.some((entry) => entry.iid === remote.instanceId && (entry.allocated !== undefined || entry.note !== undefined)))",
       "replace": "if (entries.some((entry) => entry.iid === remote.instanceId && entry.note !== undefined))",
       "expectRed": "seat native retained inventory refuses boot",
@@ -66,7 +66,7 @@
     },
     {
       "name": "immutable execution mismatch ignored",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "if (record.execution !== this.execution)",
       "replace": "if (false)",
       "expectRed": "none instance cannot restart as runtime",
@@ -75,7 +75,7 @@
     },
     {
       "name": "older unclassified instance is accepted",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "if (this.execution === \"none\" && !existsSync(path) && remote.serveGrant.epoch !== 0)",
       "replace": "if (false)",
       "expectRed": "unclassified later epoch refuses none boot",
@@ -85,8 +85,8 @@
     {
       "name": "workflow admission loses none capability refusal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "private runHost(): RunHosting {\n    if (this.execution === \"none\") throw new EpEnvelopeError(\"unimplemented\", this.executionRefusal());",
-      "replace": "private runHost(): RunHosting {",
+      "find": "protected runHost(): RunHosting {\n    if (this.execution === \"none\") throw new EpEnvelopeError(\"unimplemented\", this.executionRefusal());",
+      "replace": "protected runHost(): RunHosting {",
       "expectRed": "run-start refuses natively before any allocation",
       "cell": "run-start refuses natively before any allocation",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"

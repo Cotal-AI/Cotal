@@ -40,7 +40,10 @@ cotal setup --configure-only
 ```
 
 In setup, choose **Local** and the agent application you have installed.
-Keep the built-in **pty** runtime for this first run.
+The built-in `pty` runtime is always enabled and does not appear as a selectable row.
+Setup checks optional runtimes that are already installed or whose tools it finds on this machine.
+To keep only `pty` for this first run, use the arrow keys to move to each checked row and press **Space** to uncheck it.
+Then press **Enter**.
 Use the current project folder and its default space name, `cotal-demo`.
 Review the choices and save them.
 

@@ -1,4 +1,5 @@
 /** Updates skip retained legacy configurations without claiming continuity and prove stopped controllers cold. */
+import "./update-isolation.js";
 import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawnSync } from "node:child_process";
@@ -10,7 +11,7 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { authDir, clearCurrent, findPreparedSpace, readCurrent, recordPreparedSpace, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, findPreparedSpace, meshFile, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
 
@@ -234,10 +235,10 @@ try {
   mkdirSync(originalProject, { mode: 0o700 });
   const controllerSandbox = recordSmokeSandbox({ root: originalProject, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   mkdirSync(temp, { mode: 0o500 });
-  const controllerCli = (args: string[], temporary?: string) => {
+  const controllerCli = (args: string[], temporary?: string, seed = false) => {
     const options = {
       cwd: controllerProject, encoding: "utf8" as const, timeout: 180_000,
-      env: { ...env, ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
+      env: { ...env, ...(seed ? { COTAL_SKIP_CONNECTOR_SEED: "0" } : {}), ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
     };
     assertSmokeSandboxDown(controllerSandbox, args, options);
     return spawnSync(process.execPath, [bin, ...args], options);
@@ -257,7 +258,46 @@ try {
     started = false;
     expectSuccess(["use", "--clear"]);
     const journalPath = join(".cotal", "stack-controller.json");
-    const journalBefore = readFileSync(join(controllerProject, journalPath));
+    let journalBefore = readFileSync(join(controllerProject, journalPath));
+    // Older releases could leave another stopped space registered at this address. Current up
+    // guards against creating the duplicate, so record the historical entry after stopping.
+    const sharingSpace = `sharing-${randomUUID()}`;
+    recordMesh({ space: sharingSpace, root: join(root, "renamed-away"), server: target.server, mode: "open", origin: "up", ts: new Date().toISOString() });
+    try {
+      const registration = readFileSync(meshFile(sharingSpace));
+      const result = expectSuccess(["update", "--self", "--space", controllerSpace]);
+      assert.match(result.stdout, /stopped; no manager running/);
+      assert.deepEqual(readFileSync(meshFile(sharingSpace)), registration, "update preserves the other registration");
+      assert.deepEqual(readFileSync(join(controllerProject, journalPath)), journalBefore, "update preserves the stopped controller journal");
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(address.port, "127.0.0.1", resolve); });
+      try {
+        const cwd = process.cwd();
+        try {
+          process.chdir(controllerProject);
+          await assert.rejects(readManagerContinuity({ space: controllerSpace }), /another registration names this stack's exact broker address/);
+        } finally { process.chdir(cwd); }
+      } finally {
+        await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+      }
+    } finally { removeMesh(sharingSpace); }
+    // Recreate the on-disk recovery state after an updater with no usable snapshot exits.
+    writeUpdateRecovery({ previous: "0.171.0", target: "0.171.2", installed: "0.171.2", phase: "replacing", reason: "interrupted update",
+      owner: { pid: 2147483647, start: "dead-start", nonce: "old-owner" } });
+    const blocked = controllerCli(["up"], undefined, true);
+    started = blocked.status === 0;
+    assert.equal(blocked.status, 5, blocked.stdout + blocked.stderr);
+    assert.match(blocked.stdout + blocked.stderr, /started no member.*an interrupted update needs restoration/);
+    const failedJournal = readFileSync(join(controllerProject, journalPath));
+    const recovered = expectSuccess(["update", "--self"]);
+    assert.match(recovered.stdout, /Retained unusable interrupted-update records/);
+    assert.match(recovered.stdout, /stopped; no manager running/);
+    assert.deepEqual(readFileSync(join(controllerProject, journalPath)), failedJournal, "recovery does not start the controller or rewrite its journal");
+    const restarted = controllerCli(["up"], undefined, true);
+    started = restarted.status === 0;
+    assert.equal(restarted.status, 0, restarted.stdout + restarted.stderr);
+    expectSuccess(["down", "--yes"]);
+    started = false;
+    journalBefore = readFileSync(join(controllerProject, journalPath));
     for (const kind of ["copy", "move", "forgotten"] as const) {
       if (kind === "copy") {
         controllerProject = join(root, "controller-copy");

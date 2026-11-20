@@ -29,7 +29,7 @@
     },
     {
       "name": "the crash restart drops the policy it was granted under",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "crashes: supervised.crashes, recovering: false, armed: false, policy: supervised.policy } }",
       "replace": "crashes: supervised.crashes, recovering: false, armed: false } }",
       "expectRed": "the record counts the manager crash against the policy",

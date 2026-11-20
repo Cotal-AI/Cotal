@@ -173,7 +173,9 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
 export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
   const logical = resolve(entry), physical = realpathSync.native(logical);
   const canonicalRoot = realpathSync.native(root);
-  if (physical !== join(canonicalRoot, "dist", "cotal.js")) throw new Error("execution launch route does not resolve to this bootstrap");
+  // npm's postinstall can repoint the saved entry to this package's wrapper.
+  if (physical !== join(canonicalRoot, "dist", "cotal.js") && physical !== join(canonicalRoot, "dist", "cotal-npm"))
+    throw new Error("execution launch route does not resolve to this bootstrap");
   let path = join(canonicalRoot, "package.json");
   for (let current = dirname(logical); current !== dirname(current); current = dirname(current)) {
     if (lstatSync(current).isSymbolicLink()) { path = current; break; }

@@ -17,7 +17,7 @@
     },
     {
       "name": "stopped rebuild dial retains its connection failure",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-reconnect.ts",
       "find": "      try {\n        await this.connectAndBind();\n      } catch (error) {\n        if (!this.stopped) throw error;\n      }",
       "replace": "      await this.connectAndBind();",
       "expectRed": "hosted_rebuild-stop_lifecycle",
@@ -33,7 +33,7 @@
     },
     {
       "name": "stop suppresses a genuine connection-close rejection",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    this.disableLibraryReconnect(nc);\n    await nc.close().catch(() => {});\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "expectRed": "a genuine connection-close rejection remains a stop failure",
@@ -41,7 +41,7 @@
     },
     {
       "name": "stop accepts a resolved close without proof",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    // Mutation: trust a resolved close without checking its outcome.",
       "expectRed": "a resolved close without closure proof remains a stop failure",
@@ -49,7 +49,7 @@
     },
     {
       "name": "stop omits the final owned-connection proof",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    if ([...this.ownedConnections].some((nc) => !nc.isClosed()))\n      throw new Error(\"endpoint stop could not prove its connection closed; local consumer custody must be retained\");",
       "replace": "    // Mutation: release custody without proving every owned connection closed.",
       "expectRed": "an unclosed owned connection retains custody after all bind flights settle",

@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "a catalog the install cannot list is reported as supported",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/status-and-models.ts",
       "find": "supported: catalog.unavailable === undefined, ...catalog",
       "replace": "supported: true, ...catalog",
       "expectRed": "a catalog the install cannot list is supported: false with its reason, complete, exit 0, no warning",
@@ -57,7 +57,7 @@
     },
     {
       "name": "a read of the one unreadable catalog succeeds",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/status-and-models.ts",
       "find": "return result.error ? { ok: false, error: result.error } : { ok: true, data: result };",
       "replace": "return { ok: true, data: result };",
       "expectRed": "the one catalog --agent names could not be read: failed, exit 5, with the connector's reason",

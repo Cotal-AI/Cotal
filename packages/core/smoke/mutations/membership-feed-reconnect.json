@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "reconnect drops the membership watch rearm call",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    await this.rearmMembershipWatches();\n",
       "replace": "",
       "expectRed": "the membership feed watch stays live across reconnect",
@@ -44,7 +44,7 @@
     },
     {
       "name": "endpoint shutdown leaves public membership stop pending while broker is down",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "      watch.resolveStop?.();\n      watch.resolveStop = undefined;\n      watch.rejectStop = undefined;\n",
       "replace": "      watch.resolveStop = undefined;\n      watch.rejectStop = undefined;\n",
       "expectRed": "endpoint shutdown while broker is down settles the public membership stop",
@@ -54,7 +54,7 @@
     },
     {
       "name": "the rebuild keeps the manager-lease KV handle bound to the drained connection",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-reconnect.ts",
       "find": "      this.managerLeaseKv = undefined;\n",
       "replace": "",
       "expectRed": "the manager lease renews after reconnect",

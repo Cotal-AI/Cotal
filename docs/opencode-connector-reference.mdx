@@ -214,7 +214,8 @@ change the append expectation or discard local logs.
 
 When OpenCode exits before its session is ready, the launcher's final line names the exit code and
 repeats the connector's last message. A host that reports only the last line of a failed launch,
-as the Manager does, then reports the reason and not a generic exit.
+as the Manager does, then reports the reason and not a generic exit. The launcher exits with
+OpenCode's status, or 1 when OpenCode exited 0, so the launch fails either way.
 
 The managed session is created and announced only after the mesh join completes. Its event boundary
 is captured at adopt, before any prompt is admitted.

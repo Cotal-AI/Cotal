@@ -676,7 +676,7 @@ try {
       check(`a ${how} target whose ${file} will not load is unreadable-auth naming that record, not an empty ambiguity`,
         isWorkspaceTargetError(err) && err.code === "unreadable-auth" && rendered !== undefined &&
           rendered.message.includes(`(${record})`) && !rendered.message.includes("multiple meshes") &&
-          (rendered.remedy ?? "").includes("repair or remove that record") && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
+          (rendered.remedy ?? "").includes(`restore ${record} from backup; do not remove other account records`) && (rendered.remedy ?? "").includes("--space <name>"), rendered ?? (err as Error)?.message);
     }
     check(`…and the refused ${file} is left as it was`, readFileSync(record, "utf8") === "not json");
   }

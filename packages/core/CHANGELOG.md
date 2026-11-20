@@ -1,5 +1,19 @@
 # @cotal-ai/core
 
+## 0.171.4
+
+### Patch Changes
+
+- 38a233e: Move the endpoint's connection bind and teardown out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- 7f6cda9: Move the endpoint's rebuild and retry pacing out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+
+## 0.171.3
+
+### Patch Changes
+
+- d4b3949: Move the endpoint's bearer and credential renewal out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- eb7fd6a: Validate spawn agent names, channel flags, foreground working directories, structured detached pre-send refusals, and empty `--cwd` and `--root` flags before provisioning or writing records.
+
 ## 0.171.2
 
 ### Patch Changes

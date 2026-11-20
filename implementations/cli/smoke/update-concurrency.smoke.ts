@@ -2,7 +2,7 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
@@ -62,8 +62,14 @@ const globalHelperRoot = process.env.COTAL_UPDATE_GLOBAL_LOCK_HELPER;
 if (globalHelperRoot) {
   const ready = process.env.COTAL_UPDATE_GLOBAL_LOCK_READY!;
   const releaseFile = process.env.COTAL_UPDATE_GLOBAL_LOCK_RELEASE!;
-  const release = claimGlobalNpmUpdateLock(globalHelperRoot);
+  const renew = process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "renew";
+  const release = claimGlobalNpmUpdateLock(globalHelperRoot, { renew });
   writeFileSync(ready, String(process.pid));
+  if (renew) {
+    await sleep(5_000);
+    release();
+    process.exit(0);
+  }
   await waitFor(() => existsSync(releaseFile) || process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1", "global update lock release");
   if (process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1") await sleep(1_000);
   release();
@@ -97,6 +103,7 @@ if (globalHelperRoot) {
       /another cotal-ai update is using npm global root/,
       "a second update parent cannot enter the same npm global root",
     );
+    assert.throws(() => claimGlobalNpmUpdateLock(root, { waitMs: 100, renew: true }), /another cotal-ai update/);
     writeFileSync(releaseFile, "release");
     await waitForExit(holder);
     assert.equal(holder.exitCode, 0);
@@ -136,6 +143,33 @@ if (globalHelperRoot) {
   }
 }
 
+// A renewing holder's reservation remains exclusive past the initial wait budget.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-global-renew-"));
+  const ready = join(root, "holder-ready");
+  const holder = spawn(process.execPath, [...process.execArgv, import.meta.filename], {
+    env: { ...process.env, COTAL_UPDATE_GLOBAL_LOCK_HELPER: root, COTAL_UPDATE_GLOBAL_LOCK_READY: ready,
+      COTAL_UPDATE_GLOBAL_LOCK_RELEASE: join(root, "release"), COTAL_UPDATE_GLOBAL_LOCK_TIMED: "renew" },
+    stdio: "ignore",
+  });
+  try {
+    await waitFor(() => existsSync(ready), "the renewing updater");
+    const lock = join(root, ".cotal-update.lock");
+    const before = statSync(lock).mtimeMs;
+    await waitFor(() => statSync(lock).mtimeMs > before, "the holder's reservation renewal");
+    const started = Date.now();
+    let waits = 0;
+    claimGlobalNpmUpdateLock(root, { waitMs: 2_000, renew: true, onWait: () => { waits++; } })();
+    assert.ok(Date.now() - started > 2_000, "the waiter outlasts its initial budget");
+    assert.equal(waits, 1, "renewal does not repeat the wait notice");
+    await waitForExit(holder);
+    assert.equal(holder.exitCode, 0);
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // A fresh npm prefix reports a node_modules root that does not exist yet. Locking establishes it,
 // then canonicalizes it so aliases converge on one global mutation key.
 {
@@ -148,6 +182,44 @@ if (globalHelperRoot) {
     release();
   } finally {
     rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+// The finished npm leader does not prove its seed prefix is idle while a descendant survives.
+if (process.platform === "linux") {
+  const path = extensionNpmMutationPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const ready = join(dirname(path), "seed-descendant.pid");
+  const mutation = beginExtensionNpmMutation(false, true);
+  const leader = spawn(process.execPath, ["-e", `
+    const { spawn } = require('node:child_process');
+    spawn(process.execPath, ['-e', 'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', process.argv[1]], {stdio: 'ignore'});
+    setInterval(() => {}, 1000);
+  `, ready], { detached: true, stdio: "ignore" });
+  try {
+    assert.ok(leader.pid);
+    mutation.markLive(leader.pid);
+    await waitFor(() => existsSync(ready) && readFileSync(ready, "utf8").length > 0, "a seed npm descendant");
+    leader.kill("SIGKILL");
+    await waitForExit(leader);
+    assert.throws(() => mutation.complete(null, "SIGKILL", "interrupted"), /running process group/);
+    assert.throws(() => claimExtensionMutationLock(), /running process group/);
+    process.kill(Number(readFileSync(ready, "utf8")), "SIGTERM");
+    let release: (() => void) | undefined;
+    await waitFor(() => {
+      try { release = claimExtensionMutationLock(); return true; }
+      catch (error) { if (!/running process group/.test(String(error))) throw error; return false; }
+    }, "the seed npm process group to finish");
+    release?.();
+    assert.equal(existsSync(path), false, "a finished seed group needs no manual marker cleanup");
+  } finally {
+    if (leader.pid && existsSync(path)) {
+      try { process.kill(-leader.pid, "SIGKILL"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    }
+    await waitForExit(leader);
+    if (existsSync(path)) mutation.clear();
+    rmSync(ready, { force: true });
   }
 }
 

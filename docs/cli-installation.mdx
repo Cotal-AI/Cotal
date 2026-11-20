@@ -210,6 +210,8 @@ npm workers have exited. It leaves unrecorded caches and active archive checks a
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
+If npm runs out of space while checking installed extension dependencies, no global install is
+attempted. Free space on the temporary filesystem, then run `cotal update --self` again.
 If a signal terminates the npm dependency check, the command names the signal and leaves installed
 packages unchanged. Run `cotal update --self` again.
 A failed replacement is followed by another reconcile attempt, then a verified reinstall
@@ -243,9 +245,20 @@ its process group are gone. A live writer or unreadable evidence leaves the reco
 For an older record without child custody, manual repair still requires this account's other
 application processes to exit. It stops only this installation's service after confirming its
 hosted Managers have no seats, and starts the enabled service again after the attempt.
+If the systemd user manager is unavailable, the update keeps the record and asks you to retry when
+the manager answers on the user bus. A staging process stopped by a signal reports that signal.
+If npm is interrupted during connector seeding on Linux, rerun `cotal ext seed --repair` or
+`cotal update --self`. Wait for any remaining npm processes in the reported group to exit first.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.
 Update that app with its signed platform installer so the app, CLI and runtime stay together.
+
+If npm is missing from `PATH`, `update --self` exits 1 and `update --check` reports partial results
+with exit 4. Install npm or add it to `PATH`, then retry. A registry connection failure still
+leaves the installation unchanged without failing `update --self`.
+On Linux and macOS, an installed self-update restores owner write access to its own connector
+directories before staging a release. If it cannot make those directories writable, it names the
+directory to fix and stops before staging.
 
 
 ```bash
@@ -315,7 +328,8 @@ recovery guidance instead of suggesting another update that would meet the same 
 ### Manager continuity
 
 When `update --self` finds no newer release and verifies the installed package closure is current,
-it reports that no connector reconciliation ran. It does not suggest a repair it did not observe.
+it reports that no connector reconciliation ran and skips the running Manager continuity check.
+An unreadable Manager from another installation does not block this result.
 
 If an older updater refuses an answering hosted Manager as `starting`, install the fixed release
 with npm directly in the same installation prefix. For an installer-managed Unix installation,
@@ -440,7 +454,12 @@ When a newer release exists, Cotal first downloads and integrity-checks its `cot
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
-keeps a single attempt. Missing release archives wait up to ten minutes before keeping the installed
+keeps a single attempt. If npm reports a refused connection to the proxy set by `HTTP_PROXY` or
+`HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
+proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
+without a confirmed proxy refusal remains a no-op.
+
+Missing release archives wait up to ten minutes before keeping the installed
 version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
 installation or connector reconciliation. Since 0.167.1, registry access refusals report npm's error
 code rather than asking you to wait for publication. For a refused scoped connection, check the
@@ -663,6 +682,8 @@ cotal ext seed [--repair|--reset|--force]
 
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
+Give `remove` the package name as listed by `cotal ext list`, without a version.
+If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
@@ -689,6 +710,9 @@ of waiting the command says so on stderr:
 `waiting for another cotal command (pid <id>) to finish changing this installation`.
 `cotal status` does not wait. It names that command, leaves the application rows unread and exits 4
 with a partial report: `another cotal command (pid <id>) is changing this installation, so the application rows were not read`.
+If the recorded extension versions differ from the running CLI, status reports that they may still
+change and asks you to check again when the command finishes. If the versions still differ then,
+status recommends `cotal update --self`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,

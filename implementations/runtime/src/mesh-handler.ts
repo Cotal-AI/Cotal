@@ -16,8 +16,6 @@
  * a clock that has moved, so `arm()` reads the recorded spec rather than doing the arithmetic
  * again.
  */
-import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
 import { realpathSync } from "node:fs";
 import {
   readCheckpointSettle,
@@ -28,27 +26,12 @@ import {
   waitConsumerConfig,
   isConcreteChannel,
   assertSafePattern,
-  assertValidChannel,
   presenceBucket,
-  principalKey,
   parseSubject,
   isFromSubjectSender,
-  IncompleteKvScan,
-  openMembersRegistry,
-  openChannelRegistry,
-  openAclRegistry,
-  readAcl,
-  channelInAllow,
-  memberKey,
-  writeChannelConfig,
-  readMember,
-  commitMemberRevision,
-  tombstoneMember,
-  StaleMembershipWrite,
   runNoticeId,
   writeRunNotice,
   actionContext,
-  invokeCommand,
   invokeRepairingSplit,
   replyRefusedBeforeEffect,
   readGoalResult,
@@ -58,7 +41,6 @@ import {
   markRunNoticeConsumed,
   listRunNoticesForRun,
   EpEnvelopeError,
-  replyTargetUnmapped,
   unansweredRequest,
   type ActionContext,
   type CheckpointRef,
@@ -66,16 +48,12 @@ import {
   type CotalMessage,
   type EpAttributedReply,
   type EpCaller,
-  type EpError,
   type EpVerbTarget,
   type GoalRef,
   type GoalResultFact,
   type Presence,
   type ResolvedService,
   type RunAdmissionView,
-  assertAdmittedPublish,
-  assertAdmittedSubscribe,
-  isStreamNotFound,
 } from "@cotal-ai/core";
 import { migrationSeats } from "./migrate.js";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -95,7 +73,6 @@ import {
   type CheckpointRaw,
   type CheckpointRequest,
   type EffectContext,
-  type InlineSpawnDefinition,
   type JournalEntry,
   type MonitorRequest,
   type NotifyRequest,
@@ -105,7 +82,6 @@ import {
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,
-  digest,
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
@@ -119,6 +95,19 @@ import { delay } from "./delay.js";
 import { FIRE_POLL_MS, PauseTimers, decodeMessage } from "./mesh-pause-timers.js";
 import { SeatWatch, type DeathWatch } from "./mesh-seat-watch.js";
 import { TurnAsk } from "./mesh-turn-ask.js";
+import {
+  type AgentPermits,
+  CheckpointAnswerMissing,
+  GOAL_POLL_MS,
+  MANAGER_ROUTE_ATTEMPTS,
+  parseAgentHandle,
+  readPermits,
+  SPAWN_ACCEPT_DEADLINE_MS,
+  spawnDespawnTarget,
+  WAIT_POLL_MS,
+} from "./mesh-handler-shared.js";
+import { MeshSpawn } from "./mesh-spawn.js";
+import { MeshConclave } from "./mesh-conclave.js";
 
 export interface RunMeshServices {
   readonly pauses: RunPauseHost;
@@ -177,28 +166,6 @@ export interface MeshHandlerBinding {
    */
   readonly defaultCheckpointTimeout: string;
 }
-
-/**
- * A checkpoint resumed with no answer to read.
- *
- * The settle fact is the arbiter and it NAMES the answer it accepted, so a `resumed` settlement
- * with no id — or with an id no record answers to — means the token was presented by something
- * other than the run driver's own `resolveCheckpoint`. There is no honest value to return for it:
- * the program asked a question, something released the pause, and what was answered is not
- * recoverable. Returning `resolved` with an empty value would invent one.
- */
-export class CheckpointAnswerMissing extends Error {
-  constructor(readonly token: string, readonly answerId: string | undefined) {
-    super(
-      `checkpoint "${token}" settled as resumed but ${answerId === undefined
-        ? "its settle fact names no answer"
-        : `no answer record exists under the id ${answerId} it names`}; ` +
-        `a workflow checkpoint is answered through the run driver's resolveCheckpoint, which writes the answer BEFORE presenting the token`,
-    );
-    this.name = "CheckpointAnswerMissing";
-  }
-}
-
 /** How the handler learns that a checkpoint settled. Injected so a test can drive it directly. */
 export interface SettleWatcher {
   /**
@@ -305,51 +272,6 @@ export class MeshHandler {
     });
   }
 
-  /**
-   * #1616 item 5 — PHASE A, RESOLVE ON THE HOST THAT WILL LAUNCH. A directory is a fact about one
-   * filesystem, so the only process that can canonicalize it is the manager instance that will
-   * `chdir` into it. This asks the PINNED instance for the canonical form and returns it together
-   * with the identity that answered, so phase B dispatches the resolved path and the journal records
-   * which host resolved it. There is deliberately NO envelope `id`: a resolve binds no goal, takes
-   * no reservation and allocates nothing, so a retry or a crash between the phases costs nothing.
-   *
-   * EVERY failure direction is a REFUSAL. A path the target cannot resolve is not passed through as
-   * the raw string: the raw string would launch somewhere plausible on the manager's own root, which
-   * is the fail-open outcome this repair exists to remove.
-   */
-  private async resolveCwd(req: SpawnRequest, service: ResolvedService, cwd: string, instanceId: string): Promise<CwdResolution> {
-    let reply: EpAttributedReply;
-    try {
-      reply = await invokeCommand(this.nc, this.binding.space, service, "resolve-cwd", { cwd }, {
-        deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-      });
-    } catch (err) {
-      // An older manager does not list `resolve-cwd`, and `invokeCommand` refuses an unlisted
-      // command with `not-found` before it publishes anything. That is
-      // the fail-CLOSED direction and it stays closed: a host that cannot answer the question does
-      // not get handed the caller's guess.
-      throw cwdResolutionRefusal(req.persona, instanceId, cwd,
-        err instanceof EpEnvelopeError && err.code === "not-found"
-          ? `this manager serves no resolve-cwd command, so it can state no canonical form (${err.message})`
-          : String((err as Error)?.message ?? err));
-    }
-    if (reply.reply.ok === false)
-      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error.message);
-    const data = reply.reply.data as { cwd?: unknown; host?: unknown } | undefined;
-    if (typeof data?.cwd !== "string" || data.cwd.length === 0 || !isAbsolute(data.cwd))
-      throw cwdResolutionRefusal(req.persona, instanceId, cwd,
-        `the reply names no absolute directory (${JSON.stringify(data?.cwd)})`);
-    // The AUTHORITATIVE identity is the one that answered, off the attributed reply's subject, not
-    // the one the caller asked for: the pinned resolve already rejects a reply from another
-    // instance, so recording the responder is recording what was checked.
-    return {
-      cwd: data.cwd,
-      endpoint: reply.responder.endpoint,
-      instanceId: reply.responder.instanceId,
-      ...(typeof data.host === "string" ? { host: data.host } : {}),
-    };
-  }
-
   /** The branded goal-fact context over this handler's own connection, memoized the same way. */
   private actions: Promise<ActionContext> | undefined;
   private actionCtx(): Promise<ActionContext> {
@@ -372,78 +294,6 @@ export class MeshHandler {
     });
     return this.presenceKvOpen;
   }
-
-  private membersKvOpen: Promise<KV> | undefined;
-  private membersRegistry(): Promise<KV> {
-    this.membersKvOpen ??= openMembersRegistry(this.nc, this.binding.space).catch((e) => {
-      this.membersKvOpen = undefined;
-      throw e;
-    });
-    return this.membersKvOpen;
-  }
-
-  private channelsKvOpen: Promise<KV> | undefined;
-  private channelRegistry(): Promise<KV> {
-    this.channelsKvOpen ??= openChannelRegistry(this.nc, this.binding.space).catch((e) => {
-      this.channelsKvOpen = undefined;
-      throw e;
-    });
-    return this.channelsKvOpen;
-  }
-
-  /** The lifecycle read-ACL registry a conclave's membership write is fenced on (#4995). Opened,
-   *  never created. A mesh without one (open mode) records no read ACLs, so there is nothing to
-   *  fence on and the write proceeds as before: opening a bucket is lazy, so its absence is found
-   *  by the first read, which marks the registry absent here. Any other failure stays loud. */
-  private aclKvOpen: Promise<KV | undefined> | undefined;
-  private aclRegistry(): Promise<KV | undefined> {
-    this.aclKvOpen ??= openAclRegistry(this.nc, this.binding.space).then((kv) => kv, (e: unknown) => {
-      if (isStreamNotFound(e)) return undefined;
-      this.aclKvOpen = undefined;
-      throw e;
-    });
-    return this.aclKvOpen;
-  }
-
-  /** Whether the member lifecycle's exact read-ACL row allows `channel` now; true when the space has
-   *  no ACL registry at all (open mode), which the read is the first to find out. */
-  private async memberAclAllows(aclKv: KV, m: { principal: string; uid: string }, channel: string): Promise<boolean> {
-    let row: Awaited<ReturnType<typeof readAcl>>;
-    try {
-      row = await readAcl(aclKv, m.principal, m.uid);
-    } catch (e) {
-      if (!isStreamNotFound(e)) throw e;
-      this.aclKvOpen = Promise.resolve(undefined);
-      return true;
-    }
-    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
-  }
-
-  /** The post-write half of the conclave's ACL fence: keep the row just written (at `revision`) only
-   *  on proof the member's ACL row still allows the channel. A row the ACL proves disallowed goes by
-   *  its exact key, whoever wrote its latest revision. When the read fails nothing is proven, so only
-   *  this write is taken back (a later revision belongs to another writer) and the failure is thrown. */
-  private async keepMemberRowIfAclAllows(aclKv: KV, membersKv: KV, m: { principal: string; uid: string }, channel: string, revision: number): Promise<void> {
-    let allowed: boolean | undefined;
-    let readFailure: unknown;
-    try { allowed = await this.memberAclAllows(aclKv, m, channel); } catch (e) { readFailure = e; }
-    if (allowed === true) return;
-    const key = memberKey(channel, m.principal, m.uid);
-    if (allowed === false) { await membersKv.purge(key); return; }
-    try { await membersKv.purge(key, { previousSeq: revision }); } catch { /* a later write replaced it: that write's row */ }
-    throw new Error(`conclave ${channel}: the read ACL of member ${m.principal} (lifecycle ${m.uid}) could not be re-read after its row was written; the write was taken back`, { cause: readFailure });
-  }
-
-  /** The chat stream's current last sequence — a conclave join/leave cursor (SPEC §7 interval). */
-  private async chatFrontier(): Promise<number> {
-    return (await this.jsm.streams.info(chatStream(this.binding.space))).state.last_seq;
-  }
-
-  /** The open conclaves this process performed, keyed by the scope's request id, so the close that
-   *  follows the body reads the SAME plan the open executed. A crash loses the map and loses
-   *  nothing: the plan was bound as the entry's external state before a single row was written,
-   *  and a re-entered open repopulates the map from `ctx.resume`. */
-  private readonly conclaves = new Map<string, ConclavePlan>();
 
   /** The run's roster: every agent this run spawned, by name — the handle a handoff resolves to,
    *  the owner/actor address a `turn` targets (absent when the spawn's acceptance floor was
@@ -587,56 +437,6 @@ export class MeshHandler {
       if (r.status !== "handoff" || r.to === undefined || typeof r.to.agent !== "string") continue;
       this.recordHandoffMemo(e.scope, parseAgentHandle(r.to.agent).name, e.requestId ?? "");
     }
-  }
-
-  /**
-   * The runtime half of "two agents MUST NOT share a worktree concurrently" (spec 6.5; the
-   * validator owns the literal case as L3022). The registry records who holds each logical
-   * worktree this run spawned into — the live seat, or the spawn still bringing one up — and a
-   * new spawn CLAIMS the tree here before anything is submitted: a tree nobody holds is taken in
-   * the same synchronous step that read it, so two branches spawning into one computed id cannot
-   * both pass; a tree held by a spawn in flight refuses; a tree held by a seat is admitted only
-   * when that holder is no longer live on presence, and re-read after the liveness wait, because
-   * a sibling may have claimed it meanwhile. Sequential reuse is legal, concurrency is data loss.
-   * The liveness read is the same witness `wait(down)` and a conclave join use, so "still
-   * holding" and "down" are one definition — a discharged loser or a crashed seat releases its
-   * tree the moment its presence row is gone, with no bookkeeping of its own.
-   */
-  private async claimWorktree(worktree: string, persona: string, goalId: string): Promise<void> {
-    const holder = this.worktreeHolders.get(worktree);
-    if (holder === undefined) {
-      this.worktreeHolders.set(worktree, { pending: goalId });
-      return;
-    }
-    if ("pending" in holder)
-      throw new EffectError(
-        "L4008", "worktree",
-        `spawn(${persona}) would put a second agent into the worktree "${worktree}" while spawn goal ${holder.pending} is still bringing one up in it; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
-      );
-    let rows: readonly Presence[];
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        rows = await this.presenceRows();
-        break;
-      } catch (e) {
-        // A scan that keeps coming back incomplete is a broken presence plane, and a guard that
-        // never answers would park the spawn for good: bounded, then the scan's own error.
-        if (!(e instanceof IncompleteKvScan) || attempt >= WORKTREE_SCAN_ATTEMPTS) throw e;
-        await delay(WAIT_POLL_MS);
-      }
-    }
-    if (rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))
-      throw new EffectError(
-        "L4008", "worktree",
-        `spawn(${persona}) would put a second agent into the worktree "${worktree}" while ${holder.name}#${holder.uid} is live in it; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
-      );
-    const now = this.worktreeHolders.get(worktree);
-    if (now !== undefined && now !== holder)
-      throw new EffectError(
-        "L4008", "worktree",
-        `spawn(${persona}) would put a second agent into the worktree "${worktree}", which ${"pending" in now ? `spawn goal ${now.pending}` : `${now.name}#${now.uid}`} claimed while this spawn read its previous holder's liveness; two agents MUST NOT share a worktree concurrently (L3022/L4008)`,
-      );
-    this.worktreeHolders.set(worktree, { pending: goalId });
   }
 
   /** One turn goal registered under its handle composite — what `wait(replied)` observes. */
@@ -854,24 +654,6 @@ export class MeshHandler {
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
       this.managerServices.delete("despawn");
     }
-  }
-
-  /**
-   * Release a cancelled conclave's MEMBERSHIP (spec §7.5): a cancelled body performs no new
-   * effect, so it never closed its room, and the release travels this recovery path like every
-   * other branch-local resource. The entry's own `closed` fact is the gate — a conclave whose
-   * body failed but whose close acknowledged holds nothing. An entry with no bound plan created
-   * nothing (rows are written only after the bind), so there is nothing to release and no retry
-   * that could learn more. Failures are raised: an unfinished release must not be flipped to
-   * `issued`, and the driver's next sweep retries idempotently.
-   */
-  private async dischargeConclave(e: JournalEntry): Promise<void> {
-    if (e.closed === true) return;
-    const plan = e.external;
-    if (!isConclavePlan(plan)) return;
-    assertConclaveOwnership(plan, e.requestId!);
-    await this.releaseConclave(plan);
-    this.conclaves.delete(e.requestId as string);
   }
 
   /**
@@ -1353,248 +1135,6 @@ export class MeshHandler {
     return null;
   }
 
-  /**
-   * `spawn` is the manager's spawn ACTION, submitted under the step's own identity.
-   *
-   * **The request id is the goalId.** The envelope id is pinned to `ctx.requestId`, and the
-   * manager binds its goal under the envelope id — so a resumed run that re-submits is served the
-   * RECORDED acceptance (same fingerprint, same goal) instead of allocating a second seat, and the
-   * goal's terminal fact sits on a subject this run can re-derive from nothing but its journal.
-   *
-   * The ACCEPTANCE is bound as the entry's external state before the terminal is awaited, so a
-   * crash mid-await resumes straight into the poll — it must NOT re-invoke, because by then the
-   * manager may have restarted and a fresh submission would be judged against a live seat rather
-   * than served from its acceptance cache. The terminal await itself is a read of a durable fact,
-   * deliberately not `submitAndFollowGoal`: a live progress subscription dies with the process,
-   * and the fact is the thing a resume can still read.
-   *
-   * `permits`, `supervise` and `onFork` are POLICY, not identity (§6.4): they ride the journalled
-   * request and are enforced where they bind (`permits` at `turn`, `supervise` as the manager's
-   * restart budget on the spawn submission, an `onFork` at fork adoption).
-   */
-  async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> {
-    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
-    const goalId = ctx.requestId;
-
-    // Placement is explicit and host-local. Refuse malformed values before manager discovery or
-    // submission, so an invalid request can never turn into an omitted `cwd` and inherit the
-    // manager's workspace root. Existence and launch authority stay with the serving manager.
-    if (req.cwd !== undefined && (typeof req.cwd !== "string" || req.cwd.length === 0 || !isAbsolute(req.cwd)))
-      throw new EffectError("L4000", "spawn",
-        `spawn(${req.persona}) cwd must be a non-empty absolute directory on the serving manager's host; refusing ${JSON.stringify(req.cwd)} rather than falling back`);
-
-    // #1616 ITEM 2 — THE AFFINITY GATE. A directory is HOST-LOCAL, so a request that names one but
-    // names no manager instance rides the class `one` queue and lands wherever the anycast fell.
-    // The design record calls that combination not acceptable, so it REFUSES. There is deliberately
-    // NO anycast fallback: falling back IS the defect. And the refusal is raised HERE, ahead of
-    // `readPermits`, ahead of `this.manager()`'s describe round-trip, ahead of any submission,
-    // acceptance or launch — so nothing is reserved, claimed or started before it. Legacy
-    // cwd-omitted spawns never reach this line and keep their prior behaviour byte for byte.
-    if (req.cwd !== undefined && req.placement === undefined)
-      throw new EffectError("L4000", "spawn",
-        `spawn(${req.persona}) names a cwd but no placement target: a host-local directory needs an explicit { endpoint, instanceId } manager instance, and this spawn refuses rather than falling back to class anycast`);
-    if (req.placement !== undefined
-        && (typeof req.placement.endpoint !== "string" || req.placement.endpoint.length === 0
-          || typeof req.placement.instanceId !== "string" || req.placement.instanceId.length === 0))
-      throw new EffectError("L4000", "spawn",
-        `spawn(${req.persona}) placement must name both an endpoint and an instanceId; refusing ${JSON.stringify(req.placement)} rather than dispatching unpinned`);
-    // Naming a target the run is not bound to is a mismatched target, not a request to go find it:
-    // automatic manager discovery is outside this bounded repair, so it refuses here too.
-    if (req.placement !== undefined && req.placement.endpoint !== this.binding.endpoint)
-      throw new EffectError("L4000", "spawn",
-        `spawn(${req.persona}) placement targets endpoint ${JSON.stringify(req.placement.endpoint)} but this run is bound to ${JSON.stringify(this.binding.endpoint)}; refusing rather than dispatching off-binding`);
-    // The manager reads only a boolean `events`, so any other value would arm the default plane
-    // the author was trying to opt out of. Refused before anything is submitted.
-    if (req.events !== undefined && typeof req.events !== "boolean")
-      throw new EffectError("L4000", "spawn",
-        `spawn(${req.persona}) events must be true or false; refusing ${JSON.stringify(req.events)} rather than launching with the default event plane`);
-    if (req.runtime !== undefined && (typeof req.runtime !== "string" || req.runtime.trim() === ""))
-      throw new EffectError("L4000", "spawn",
-        `spawn(${req.persona}) runtime must be a non-empty runtime name; refusing ${JSON.stringify(req.runtime)} rather than launching on the manager's own runtime`);
-
-    // A recorded goalId is a previous attempt's ACCEPTANCE: the submission landed and its
-    // identity was bound before the crash. Go straight back to the terminal. An entry that says
-    // `adoptedFrom` names the goal the ORPHANED spawn submitted, not this step's own request id:
-    // that goal is the terminal this step reads on every pass, and no pass ever submits one.
-    const recorded = ctx.resume as Readonly<Record<string, unknown>> | undefined;
-    let ext: Readonly<Record<string, unknown>> | undefined =
-      typeof recorded?.goalId === "string" && (recorded.goalId === goalId || typeof recorded.adoptedFrom === "string")
-        ? recorded
-        : undefined;
-    const checkRecordedPlacement = (floor: Readonly<Record<string, unknown>> | undefined): void => {
-      if (req.placement !== undefined && floor?.host !== req.placement.instanceId)
-        throw new EffectError("L4000", "spawn", `spawn(${req.persona}) requested placement ${req.placement.instanceId} but the accepted seat's recorded host is ${typeof floor?.host === "string" ? floor.host : "unrecorded"}; an adopted or resumed seat cannot be moved by a new request`);
-    };
-    if (ext !== undefined) checkRecordedPlacement(ext);
-    // An inline persona is bound with its digest before anything is submitted, and every later bind
-    // restates it, so a resume submits the definition it recorded and a migration hands a seat only
-    // to a spawn of the same definition. The input hash already ties the two; this checks it.
-    const inlineDigest = req.inline === undefined ? undefined : digest(req.inline);
-    const recordedInline = readInlineBinding(recorded?.inline);
-    if (recordedInline !== undefined && recordedInline.digest !== inlineDigest)
-      throw new Error(`spawn(${req.persona}): the journal recorded an inline definition with digest ${recordedInline.digest}, and this spawn's is ${inlineDigest ?? "a catalog persona"}; a resume never submits another definition than the one it recorded`);
-    let inline = recordedInline ?? (req.inline === undefined ? undefined : { definition: req.inline, digest: inlineDigest! });
-    // A budget this host cannot meter is refused before anything is submitted: accepting it and
-    // enforcing nothing would be the silent no-op the effect table exists to prevent.
-    const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
-    // Same rule, for the other policy option. `supervise` is a declarative restart policy: it
-    // is parsed here (a malformed or unknown-key record is refused before anything is submitted)
-    // and travels on the spawn args so the manager can restart the seat in place. A host that
-    // cannot restart in place refuses at accept rather than accepting a silent no-op.
-    if (req.supervise !== undefined) readSupervise(req.supervise, req.persona);
-    // A seat a migration kept for this persona (§11.2): the orphaned spawn's GOAL becomes this
-    // step's own, bound with that spawn's floor and the step it came from. From here the two kinds
-    // of spawn are one path — the terminal is read under the bound goal, the handle comes from it,
-    // a resume re-reads it, and a discharge despawns by it — so the hand-over is spent exactly
-    // once and this step never mints a second seat for a persona it was handed one for.
-    const adoptions = ext === undefined ? this.adoptable.get(req.persona) : undefined;
-    const adopted = adoptions?.[0];
-    if (adopted !== undefined) {
-      const handle = adopted.result as AgentHandleValue | undefined;
-      const floor = adopted.external as Readonly<Record<string, unknown>> | undefined;
-      if (typeof handle?.agent !== "string" || typeof adopted.requestId !== "string")
-        throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle or goal; a garbled hand-over is refused rather than minted over`);
-      if (req.worktree !== undefined && handle.worktree !== req.worktree)
-        throw new Error(`spawn(${req.persona}) asks for worktree "${req.worktree}" but the seat the migration hands it holds ${handle.worktree === undefined ? "none" : `"${handle.worktree}"`}; an adopted seat keeps its tree, so the edited program names that tree or none`);
-      const adoptedInline = readInlineBinding(floor?.inline);
-      if (adoptedInline?.digest !== inlineDigest)
-        throw new Error(`spawn(${req.persona}) is ${inlineDigest === undefined ? "a catalog spawn" : `an inline definition with digest ${inlineDigest}`}, but the seat the migration hands it was spawned from ${adoptedInline === undefined ? "a catalog persona" : `an inline definition with digest ${adoptedInline.digest}`}; an adopted seat keeps its definition, so the edited program spawns that same definition, or the migration releases the seat`);
-      inline = adoptedInline;
-      checkRecordedPlacement(floor);
-      // Refused validation leaves the hand-over queued; claim it before the first await.
-      adoptions!.shift();
-      ext = {
-        goalId: adopted.requestId,
-        ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
-        ...(inline !== undefined ? { inline } : {}),
-        ...(typeof floor?.host === "string" ? { host: floor.host } : {}),
-        ...(handle.worktree !== undefined ? { worktree: handle.worktree } : {}),
-        ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
-        ...(req.permits !== undefined ? { permits: req.permits } : {}),
-        spawnedAt: typeof floor?.spawnedAt === "number" ? floor.spawnedAt : this.now(),
-        adoptedFrom: journalEntryKeyString(adopted),
-      };
-      await ctx.bind(ext);
-    }
-    // The goal this step reads its terminal under: its own submission, or the adopted spawn's.
-    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId: typeof ext?.goalId === "string" ? ext.goalId : goalId };
-    if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);
-    try {
-      if (ext === undefined) {
-        let reply: EpAttributedReply | undefined;
-        // #1616 item 5 — PHASE A, then phase B. A previous attempt's journalled resolution is
-        // reused rather than re-asked, so the path a resumed spawn launches in is the one the
-        // resolve recorded and cannot drift under a re-resolve. A spawn naming no cwd has nothing
-        // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
-        let resolution = readCwdResolution(recorded?.resolution);
-        // PERSIST BEFORE SUBMITTING, as the resolution below is: the definition a resume submits is
-        // the one this bind recorded.
-        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });
-        try {
-          const command = req.cwd !== undefined && resolution === undefined ? "resolve-cwd" : "spawn";
-          const service = await this.manager(command, req.placement?.instanceId);
-          if (req.cwd !== undefined && resolution === undefined) {
-            // `req.placement` is guaranteed here: a cwd without one refused at the affinity gate above.
-            resolution = await this.resolveCwd(req, service, req.cwd, req.placement?.instanceId ?? "");
-            // PERSIST BEFORE SUBMITTING. The resolution is what phase B dispatches and what a
-            // resume re-reads; binding it after the submission would leave a crash in between with
-            // a launched seat whose directory no record names.
-            await ctx.bind({ ...(inline !== undefined ? { inline } : {}), resolution });
-          }
-          const spawnService = service.commands.has("spawn") ? service : await this.manager("spawn", req.placement?.instanceId);
-          reply = await this.invokeManager(spawnService, "spawn",
-            // The run id lets a static manager that does not host this run, placed or reached through
-            // the class queue, read the run's admission and bound the helper by it (SPEC 14.8).
-            { ...spawnArgs({ ...req, ...(inline !== undefined ? { inline: inline.definition } : {}), ...(resolution !== undefined ? { cwd: resolution.cwd } : {}) }), runId: this.binding.runId }, {
-              id: goalId,
-              deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-            });
-        } catch (err) {
-          // A refusal this handler RAISED is never a lost reply: it was decided here, before
-          // anything was submitted, so it is re-thrown rather than weighed against a goal record.
-          if (err instanceof EffectError) throw err;
-          // The invoke did not come back — which does not prove nothing happened: the request may
-          // have been accepted while the reply was lost. The goal record is the arbiter: a durable
-          // trace under this goalId means the submission landed, so proceed to its terminal; none
-          // means it never did, and the raised error is the honest outcome.
-          if ((await readGoalStatus(await this.actionCtx(), ref)) === undefined) throw err;
-        }
-        if (reply !== undefined && reply.reply.ok === false) {
-          // Refused AT ACCEPT: the manager bound no goal and provisioned nothing, so this is the
-          // effect's own failure, catchable as such — and never L4002, because no agent existed to
-          // be down. A seat budget the endpoint will not extend is a permit the run does not hold
-          // (L4001); every other refusal (persona unknown, name taken) is the host declining the
-          // request (L4000), the manager's own code carried in the detail.
-          const err = reply.reply.error;
-          throw new EffectError(err.code === "resource-exhausted" ? "L4001" : "L4000", "spawn",
-            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err.message}`,
-            { code: err.code });
-        }
-        const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
-        if (floor !== undefined && floor.goalId !== goalId)
-          throw new Error(`the spawn acceptance names goal "${String(floor.goalId)}" but this submission pinned "${goalId}"; a mismatched acceptance never authorizes (SPEC 13.6)`);
-        // BIND BEFORE AWAITING: the goalId is re-derivable, but the bind is what tells a resume the
-        // submission LANDED — and the identity floor beside it is what a discharge despawns by when
-        // the terminal alone carries none (an `uncertain` verdict). The worktree rides along so an
-        // adoption re-takes this spawn's reservation; `onFork` so a fork can read the policy.
-        ext = {
-          goalId,
-          ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
-          // `bind` REPLACES the external record, so the phase-A resolution is re-stated here or the
-          // acceptance bind would erase it and a resume would re-resolve against a moved target.
-          ...(resolution !== undefined ? { resolution } : {}),
-          ...(inline !== undefined ? { inline } : {}),
-          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
-          ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
-          ...(req.permits !== undefined ? { permits: req.permits } : {}),
-          // The placed instance hosts the seat, and only its resolver maps it: an adopted run
-          // re-addresses this seat's turns there from the journal alone.
-          ...(req.placement !== undefined ? { host: req.placement.instanceId } : {}),
-          spawnedAt: this.now(),
-        };
-        await ctx.bind(ext);
-      }
-
-      const fact = await this.goalTerminal(ref, ctx.signal);
-      const handle = spawnHandleOf(req, ext, fact, this.binding.endpoint);
-      // Register the run-roster entry `turn` addresses and a handoff resolves to, by the same
-      // identity the discharge despawns (see spawnDespawnTarget).
-      const address = spawnDespawnTarget(ext, fact);
-      this.roster.set(parseAgentHandle(handle.agent).name, {
-        handle,
-        uid: parseAgentHandle(handle.agent).uid,
-        goalId: ref.goalId,
-        ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
-        ...(permits !== undefined ? { permits } : {}),
-        ...(typeof ext.spawnedAt === "number" ? { spawnedAt: ext.spawnedAt } : {}),
-        ...(typeof ext.host === "string" ? { host: ext.host } : {}),
-      });
-      if (typeof handle.worktree === "string")
-        this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });
-      return handle;
-    } catch (e) {
-      const tree = typeof ext?.worktree === "string" ? ext.worktree : req.worktree;
-      if (tree !== undefined) this.releaseWorktree(tree, ref.goalId, ext, e instanceof Cancelled);
-      throw e;
-    }
-  }
-
-  /**
-   * A spawn that ends without a handle gives its tree back. The one exception is a cancellation
-   * while parked on an ACCEPTED submission: the seat may well be up in the tree until its
-   * discharge lands, so the reservation becomes a hold by the accepted identity, which presence
-   * liveness then releases the way it releases any holder.
-   */
-  private releaseWorktree(worktree: string, goalId: string, ext: Readonly<Record<string, unknown>> | undefined, parked: boolean): void {
-    const holder = this.worktreeHolders.get(worktree);
-    if (holder === undefined || !("pending" in holder) || holder.pending !== goalId) return;
-    if (parked && typeof ext?.name === "string" && typeof ext.uid === "string") {
-      this.worktreeHolders.set(worktree, { name: ext.name, uid: ext.uid });
-      return;
-    }
-    this.worktreeHolders.delete(worktree);
-  }
-
   /** Poll the goal's durable terminal fact, observing cancellation on the poll cadence — the same
    *  discipline as `wait`: a race decided against this branch stops parking within one poll, and
    *  the seat its acceptance may have produced is the DISCHARGE's to release, not this branch's. */
@@ -1658,197 +1198,6 @@ export class MeshHandler {
     await ctx.bind({ agent: `${name}#${uid}` });
     this.monitored.add(`${name}#${uid}`);
     return null;
-  }
-
-  /**
-   * `conclave` open: mint (or take) the channel and join the members as durable membership rows.
-   *
-   * **The plan is the recovery identity.** Everything the close and the discharge need — the
-   * channel, whether this open minted its registry row, and per member the resolved principal,
-   * incarnation, generation and whether THIS conclave created the row — is computed first, bound
-   * as the entry's external state, and only then executed. A crash before the bind created
-   * nothing (rows are written after it); a crash after it re-enters with `ctx.resume` carrying
-   * the plan, and the execute converges idempotently without re-resolving anything: the members
-   * may have died since, and the recorded plan — not the world's current shape — is what a
-   * release answers to.
-   *
-   * **The channel is handler-derived** when the program names none: `conclave-` plus a digest of
-   * the step's own request id, so a resumed run re-derives the same room instead of opening a
-   * second one. A program-named channel is taken as-is (validated concrete) and its registry row
-   * is left alone — naming a room is not creating one, and the close must not tear down a channel
-   * the run merely borrowed.
-   *
-   * **Members resolve through presence.** A handle carries `<name>#<lifecycleUid>`; the row that
-   * maps it to the principal a membership record needs is the seat's own self-published presence —
-   * the same source DM name-resolution reads, and the witness the manager's readiness gate
-   * requires before a spawn reports `succeeded`. A member with no matching row is down or gone,
-   * which is the effect's own catchable failure (L4002), not a handler fault.
-   *
-   * A member already durably in the channel (a pinned pre-existing room) is planned `joined:
-   * false`: the conclave neither re-joins nor — at close — evicts a membership it did not create.
-   */
-  async openConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ChannelHandleValue> {
-    if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
-    let plan: ConclavePlan;
-    if (isConclavePlan(ctx.resume)) {
-      plan = ctx.resume;
-    } else {
-      plan = await this.planConclave(req, ctx);
-      await ctx.bind({ ...plan });
-    }
-    assertConclaveOwnership(plan, ctx.requestId, req);
-    await this.executeConclavePlan(plan);
-    this.conclaves.set(ctx.requestId, plan);
-    return { channel: plan.channel };
-  }
-
-  /**
-   * `conclave` close: release exactly what the recorded plan says the open created — tombstone
-   * the memberships planned `joined: true`, delete the registry row when this conclave minted the
-   * channel. A member that left and rejoined on its own since carries a newer generation, and the
-   * stale-write guard makes this leave a no-op for it: the membership is theirs now.
-   *
-   * Idempotent by the plane (a tombstone at or below an existing leave cursor is a no-op), so the
-   * re-entry that retries an unacknowledged close converges. The failure mode is the interpreter's
-   * `CloseOwed`: a close that throws leaves the entry pending, which IS the durable "a close is
-   * still owed".
-   */
-  async closeConclave(_req: ConclaveRequest, ctx: EffectContext): Promise<null> {
-    const plan = this.conclaves.get(ctx.requestId) ?? (isConclavePlan(ctx.resume) ? ctx.resume : undefined);
-    if (plan === undefined)
-      throw new Error(`conclave close for "${ctx.requestId}" has no recorded plan: the open that owes this close bound none`);
-    assertConclaveOwnership(plan, ctx.requestId);
-    await this.releaseConclave(plan);
-    this.conclaves.delete(ctx.requestId);
-    return null;
-  }
-
-  /** Compute the conclave plan from the world: derive or validate the channel, resolve every
-   *  member handle to its principal, and read each existing membership row so the join generation
-   *  and the created-by-us fact are decided BEFORE anything is written. Duplicate handles collapse
-   *  to one planned member — one identity is one membership row. */
-  private async planConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ConclavePlan> {
-    const derived = req.channel === undefined;
-    const channel = derived
-      ? `conclave-${createHash("sha256").update(ctx.requestId).digest("hex").slice(0, 12)}`
-      : assertConclaveChannel(req.channel!);
-    const members: ConclavePlanMember[] = [];
-    if (req.members.length > 0) {
-      const presence = await this.presenceRows();
-      const membersKv = await this.membersRegistry();
-      const seen = new Set<string>();
-      for (const m of req.members) {
-        const { name, uid } = parseAgentHandle(m.agent);
-        if (seen.has(`${name}#${uid}`)) continue;
-        seen.add(`${name}#${uid}`);
-        const principal = resolveMemberPrincipal(presence, m.agent, name, uid);
-        const existing = await readMember(membersKv, channel, principal, uid);
-        const open = existing !== undefined && existing.record.state === "durable-active" && existing.record.leaveCursor === undefined;
-        members.push({
-          agent: m.agent,
-          principal,
-          uid,
-          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,
-          joined: !open,
-        });
-      }
-    }
-    return { channel, registered: derived, members };
-  }
-
-  /** Execute a conclave plan against the registries, idempotently: the registry row is a merge
-   *  the re-entry rewrites byte-identical, and a member row is committed only where the plan's
-   *  generation is NEWER than what is stored — a re-entry must not roll a landed row's join
-   *  cursor forward (the members were mid-conversation when the host died), and a row the world
-   *  moved past (an independent leave or rejoin) is theirs, not this conclave's. */
-  private async executeConclavePlan(plan: ConclavePlan): Promise<void> {
-    if (this.services) {
-      // SPEC 14.8: registering a room and writing third-party memberships are management writes
-      // the run performs as its own principal, so the admitted ceiling must cover the channel in
-      // BOTH directions. A program-named room the run merely borrows is held to the same rule: a
-      // conclave is a channel effect whichever way the name was chosen.
-      // The publish row an agent's credential carries names the AGENT's triple, so the ceiling
-      // is checked under the caller the run was admitted for, never under the run-driver principal
-      // this handler runs as: that principal holds no chat row and would deny every conclave the
-      // starting caller may in fact hold.
-      const view = await this.services.admission();
-      const reason = this.services.cancellationObserved?.();
-      if (view.revoked !== undefined && reason !== undefined)
-        throw new Cancelled(reason);
-      assertAdmittedPublish(view, plan.channel, view.admission.caller);
-      assertAdmittedSubscribe(view, plan.channel);
-    }
-    if (plan.registered) {
-      await writeChannelConfig(await this.channelRegistry(), plan.channel, {
-        description: `a workflow conclave of run ${this.binding.runId}`,
-      });
-    }
-    const joins = plan.members.filter((m) => m.joined);
-    if (joins.length === 0) return;
-    const membersKv = await this.membersRegistry();
-    const joinCursor = await this.chatFrontier();
-    for (const m of joins) {
-      const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);
-      if (existing !== undefined && existing.record.generation >= m.generation) continue;
-      const aclKv = await this.aclRegistry();
-      // The member lifecycle's exact read-ACL row is the fence a retirement relies on: it is narrowed
-      // before the retirement's membership inventory is read, so a row created after that read must
-      // refuse itself (#4984). This write is a creating writer outside the delivery daemon (#4995), so
-      // it reads that row just before the commit and again after it, as the daemon's join does: a
-      // member the row no longer covers gets no row, and a row written while it was narrowed goes.
-      if (aclKv !== undefined && !(await this.memberAclAllows(aclKv, m, plan.channel))) continue;
-      let written: { revision: number };
-      try {
-        written = await commitMemberRevision(membersKv, {
-          channel: plan.channel,
-          owner: m.principal,
-          lifecycleUid: m.uid,
-          state: "durable-active",
-          joinCursor,
-          generation: m.generation,
-          // No activation catch-up is owed: eligibility starts at the join cursor captured here,
-          // so the completeness the flag reports holds by construction — nothing before the join
-          // is in this membership's interval.
-          activated: true,
-          writerIdentity: `${this.binding.caller.owner}.${this.binding.caller.actor}`,
-          updatedAt: this.now(),
-        });
-      } catch (e) {
-        // A concurrent newer write won between the read and the commit — same verdict as the
-        // read-side skip above: the membership is the newer writer's now.
-        if (!(e instanceof StaleMembershipWrite)) throw e;
-        continue;
-      }
-      if (aclKv !== undefined) await this.keepMemberRowIfAclAllows(aclKv, membersKv, m, plan.channel, written.revision);
-    }
-  }
-
-  /** The world half of ending a conclave, shared by the close and the discharge: tombstone the
-   *  memberships this conclave created, then delete the registry row it minted. Idempotent, and
-   *  tolerant of exactly one foreign move — a NEWER generation on a row (the member left and
-   *  rejoined on its own), which the stale-write guard reports and this leave must not evict. */
-  private async releaseConclave(plan: ConclavePlan): Promise<void> {
-    // A release is owed cleanup of resources this run created (recorded in the plan), which a
-    // revocation does not cancel: the tombstones and the registry delete undo the run's own
-    // writes and grant nothing new. The admission must still be READABLE, so an unreachable store
-    // refuses here too rather than proceeding on nothing.
-    if (this.services) await this.services.admission();
-    const joined = plan.members.filter((m) => m.joined);
-    if (joined.length > 0) {
-      const membersKv = await this.membersRegistry();
-      const leaveCursor = await this.chatFrontier();
-      const writer = `${this.binding.caller.owner}.${this.binding.caller.actor}`;
-      for (const m of joined) {
-        try {
-          await tombstoneMember(membersKv, plan.channel, m.principal, m.uid, leaveCursor, writer, m.generation);
-        } catch (e) {
-          if (!(e instanceof StaleMembershipWrite)) throw e;
-        }
-      }
-    }
-    if (plan.registered) {
-      await (await this.channelRegistry()).delete(plan.channel);
-    }
   }
 
   /** The pause timers own no handler state: each input is read through the handler at its use. */
@@ -1924,88 +1273,45 @@ export class MeshHandler {
   private handoffRefusal(fromWorktree: string | undefined, to: unknown): "L4005" | "L4004" | undefined { return this.turnAsk.handoffRefusal(fromWorktree, to); }
   private seatAddress(name: string, uid?: string): { address: SeatAddress; why?: undefined } | { address?: undefined; why: "not-in-roster" | "no-floor" } { return this.turnAsk.seatAddress(name, uid); }
   private waitSender(agent: string): string { return this.turnAsk.waitSender(agent); }
+
+  /** The spawn action and its worktree guard. Every dependency reads through at its use. */
+  private readonly spawnComponent = new MeshSpawn({
+    actionCtx: (...args) => this.actionCtx(...args),
+    adoptable: () => this.adoptable,
+    binding: () => this.binding,
+    goalTerminal: (...args) => this.goalTerminal(...args),
+    invokeManager: (...args) => this.invokeManager(...args),
+    manager: (...args) => this.manager(...args),
+    nc: () => this.nc,
+    now: (...args) => this.now(...args),
+    presenceRows: (...args) => this.presenceRows(...args),
+    roster: () => this.roster,
+    worktreeHolders: () => this.worktreeHolders,
+  });
+
+  async spawn(req: SpawnRequest, ctx: EffectContext): Promise<AgentHandleValue> { return this.spawnComponent.spawn(req, ctx); }
+
+  /** The conclave lifecycle and the registries it opens. It owns the open conclave plans and the lazy registry handles; every other dependency reads through at its use. */
+  private readonly conclaveComponent = new MeshConclave({
+    binding: () => this.binding,
+    jsm: () => this.jsm,
+    nc: () => this.nc,
+    now: (...args) => this.now(...args),
+    presenceRows: (...args) => this.presenceRows(...args),
+    services: () => this.services,
+  });
+
+  /** Reached by run-driver-auth.smoke through a cast: the members handle the conclave component holds. */
+  membersRegistry(): Promise<KV> { return this.conclaveComponent.membersRegistry(); }
+  private async dischargeConclave(e: JournalEntry): Promise<void> { return this.conclaveComponent.dischargeConclave(e); }
+  async openConclave(req: ConclaveRequest, ctx: EffectContext): Promise<ChannelHandleValue> { return this.conclaveComponent.openConclave(req, ctx); }
+  async closeConclave(_req: ConclaveRequest, ctx: EffectContext): Promise<null> { return this.conclaveComponent.closeConclave(_req, ctx); }
 }
 
 export { waitConsumerName, waitConsumerConfig } from "@cotal-ai/core";
-
-/** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
- *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
-export const WAIT_POLL_MS = 2_000;
-/** The budgets this host meters for an agent, read from the spawn's `permits` record. */
-type AgentPermits = { turns?: number; wallClockMs?: number };
 /** The seat an ask is told to: its roster identity and address.
  *  `host` pins a placed seat's turns to its placement instance; unplaced seats use the class rail. */
 export type SeatAddress = { name: string; uid: string; owner: string; actor: string; host?: string };
-
-/** What an `expired` turn refusal shows. The placed host speaks for its own seat. A class-rail
- *  target-unmapped refusal says only that no member the call reached maps the seat: in a space with
- *  more than one manager a live seat on a member it missed answers the same as a dead one. */
-export function seatDownReading(err: EpError, host: string | undefined): string {
-  if (host !== undefined) return `found the agent down on its placed host ${host}`;
-  return replyTargetUnmapped(err)
-    ? "found the agent down or unreachable (no manager the class rail reached maps it; a live seat on a member the call missed answers the same)"
-    : "found the agent down";
-}
-
-/** The restart budget this host asks the manager to enforce for a spawn. */
-type AgentSupervise = { restarts: number; windowMs: number };
-
-/**
- * Read a spawn's `supervise` as the restart policy this host can enforce: `restarts`, a positive
- * integer of in-window process deaths the manager may restart under the same handle, and
- * `window`, an optional duration (default `10m`) those deaths are counted in. Anything else is a
- * policy this host has no restart for, and a policy it cannot enforce is refused loudly rather
- * than accepted as a silent no-op.
- */
-export function readSupervise(raw: unknown, persona: string): AgentSupervise {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
-    throw new Error(`spawn(${persona}): supervise must be a record of { restarts, window? }, got ${JSON.stringify(raw)}`);
-  let restarts: number | undefined;
-  let windowMs: number | undefined;
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (key === "restarts") {
-      if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);
-      restarts = value;
-    } else if (key === "window") {
-      if (typeof value !== "string")
-        throw new Error(`spawn(${persona}): supervise.window must be a duration string, got ${JSON.stringify(value)}`);
-      windowMs = parseDuration(value);
-    } else {
-      throw new Error(`spawn(${persona}): supervise.${key} is not a restart policy this host enforces; it takes restarts and window, and a policy it cannot enforce is refused rather than ignored`);
-    }
-  }
-  if (restarts === undefined)
-    throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer`);
-  return { restarts, windowMs: windowMs ?? parseDuration("10m") };
-}
-
-/**
- * Read a spawn's `permits` as the budgets this host can enforce: `turns`, a positive integer of
- * turns the run may dispatch to the agent, and `wallClock`, a duration from the spawn after which
- * no turn is admitted. Anything else (tokens, spend) is a budget this host has no meter for, and a
- * budget it cannot enforce is refused loudly rather than accepted as a silent no-op.
- */
-function readPermits(raw: unknown, persona: string): AgentPermits {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
-    throw new Error(`spawn(${persona}): permits must be a record of budgets, got ${JSON.stringify(raw)}`);
-  const out: AgentPermits = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (key === "turns") {
-      if (typeof value !== "number" || !Number.isInteger(value) || value < 1)
-        throw new Error(`spawn(${persona}): permits.turns must be a positive integer, got ${JSON.stringify(value)}`);
-      out.turns = value;
-    } else if (key === "wallClock") {
-      if (typeof value !== "string")
-        throw new Error(`spawn(${persona}): permits.wallClock must be a duration string, got ${JSON.stringify(value)}`);
-      out.wallClockMs = parseDuration(value);
-    } else {
-      throw new Error(`spawn(${persona}): permits.${key} is a budget this host has no meter for; it meters turns and wallClock, and a budget it cannot enforce is refused rather than ignored`);
-    }
-  }
-  return out;
-}
-
 /** A worktree's holder: the live seat spawned into it, or the spawn goal still bringing one up. */
 type WorktreeHolder = { name: string; uid: string } | { pending: string };
 /**
@@ -2026,28 +1332,8 @@ function foldEntries(entries: readonly JournalEntry[]): readonly JournalEntry[] 
   if (first === undefined) return entries;
   return new Journal({ run: first.run, entries, readOnly: true }).entries();
 }
-
-/** How many incomplete presence scans the worktree guard tolerates before it fails loudly. */
-const WORKTREE_SCAN_ATTEMPTS = 5;
-
-/** How often an action's durable terminal fact is looked for. Same argument as `WAIT_POLL_MS`. */
-const GOAL_POLL_MS = 2_000;
-
-/** How long one acceptance round-trip may take. The ACCEPT is synchronous and cheap on the far
- *  side (the manager replies at identity mint, before any provision), so this bounds a lost
- *  broker, not the spawn itself — the spawn's own outcome rides the goal terminal. */
-const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Total unanswered attempts per seat. Separate from class routing so an outage is bounded. */
 const SPAWN_DISCHARGE_UNANSWERED_ATTEMPTS = 3;
-/** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
-export const TURN_ACCEPT_DEADLINE_MS = 30_000;
-/** How many class-rail calls a despawn, a relay withdrawal or a lapse's inspect sends before it stops
- *  waiting for the one manager that holds its goal (the spawn's allocator, the relay's accepter) to
- *  answer. Each is one {@link MeshHandler.invokeManager} call, whose describe and invoke both land on
- *  that manager with probability 1/m^2 per trip in a space of m managers, so one call reaches it with
- *  probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All 65 then miss
- *  with probability about 2^-65 and 9e-9. */
-export const MANAGER_ROUTE_ATTEMPTS = 64;
 /** The terminal wait a discharge grants a goal whose entry recorded no readiness window (the
  *  crash-before-bind case). Matches the manager's default readiness budget. */
 const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
@@ -2064,223 +1350,6 @@ const DISCHARGE_TERMINAL_BOUND_MS = 30_000;
  */
 export function canonicalCwd(cwd: string): string {
   return realpathSync(cwd);
-}
-
-/** What phase A establishes and the step journal keeps: the canonical directory as the SERVING host
- *  stated it, plus the authoritative identity that stated it. Phase B dispatches `cwd` from here. */
-interface CwdResolution {
-  cwd: string;
-  endpoint: string;
-  instanceId: string;
-  host?: string;
-}
-
-/** The single named refusal every phase-A failure direction produces: the target does not serve
- *  `resolve-cwd`, refuses the path, or answers with something that is not an absolute directory.
- *  `L4000` is the host declining the request, and it is raised before any submission, so nothing is
- *  bound, allocated or launched. There is no raw-path arm: a fall-back to the caller's string is
- *  fail-OPEN, and launching somewhere plausible is the outcome being removed. */
-function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
-  return new EffectError("L4000", "spawn",
-    `spawn(${persona}) cwd ${JSON.stringify(cwd)} was not resolved by manager instance ${instanceId}: ${cause}; refusing rather than dispatching a path this host never canonicalized`);
-}
-
-/** A journalled phase-A resolution, read back on resume. A garbled entry is treated as absent and
- *  phase A runs again: re-resolving is free (no goal, no reservation), trusting a broken record is
- *  not. */
-function readCwdResolution(value: unknown): CwdResolution | undefined {
-  const r = value as { cwd?: unknown; endpoint?: unknown; instanceId?: unknown; host?: unknown } | undefined;
-  if (typeof r?.cwd !== "string" || r.cwd.length === 0 || typeof r.endpoint !== "string" || typeof r.instanceId !== "string")
-    return undefined;
-  return { cwd: r.cwd, endpoint: r.endpoint, instanceId: r.instanceId, ...(typeof r.host === "string" ? { host: r.host } : {}) };
-}
-
-/** The manager `spawn` args a {@link SpawnRequest} submits: persona names the persona file
- *  (`name`), `join` becomes the seat's channel subscriptions. `permits` stay on the run (they
- *  bind at `turn`); `supervise` travels because the manager is who restarts the process, and
- *  `events` because the manager is who arms the event plane (`false` is `--no-events`). */
-export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
-  return {
-    name: req.persona,
-    // An inline persona travels as the manager's `persona` record, whose `name` is the spawn's own.
-    ...(req.inline !== undefined ? { persona: Object.fromEntries(Object.entries(req.inline).filter(([k]) => k !== "name")) } : {}),
-    ...(req.model !== undefined ? { model: req.model } : {}),
-    ...(req.variant !== undefined ? { variant: req.variant } : {}),
-    // #1616 item 5: the cwd dispatched here is ALREADY the canonical form, resolved by the serving
-    // manager in phase A (see MeshEffectHandler.resolveCwd) and read back off the journalled
-    // resolution. This projection no longer canonicalizes anything: `realpathSync` in the driver
-    // answers about the DRIVER's filesystem, which is a different host's answer to the question.
-    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
-    ...(req.role !== undefined ? { role: req.role } : {}),
-    ...(req.join !== undefined && req.join.length > 0 ? { subscribe: req.join.map((c) => c.channel) } : {}),
-    ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),
-    ...(req.events !== undefined ? { events: req.events } : {}),
-    ...(req.runtime !== undefined ? { runtime: req.runtime } : {}),
-  };
-}
-
-/** An inline binding read back off a journal entry, or `undefined` when the entry has none. A
- *  binding that is present but unreadable is refused, never read as a catalog spawn. */
-function readInlineBinding(value: unknown): { definition: InlineSpawnDefinition; digest: string } | undefined {
-  if (value === undefined) return undefined;
-  const r = value as { definition?: unknown; digest?: unknown } | null;
-  if (r === null || typeof r !== "object" || typeof r.digest !== "string" || r.definition === null || typeof r.definition !== "object"
-    || digest(r.definition) !== r.digest)
-    throw new Error(`a journalled inline persona binding is unreadable or does not match its digest (${JSON.stringify(value)?.slice(0, 120)}); refused rather than read as a catalog spawn`);
-  return { definition: r.definition as InlineSpawnDefinition, digest: r.digest };
-}
-
-/** The acceptance-floor fields worth binding: the allocated identity a discharge despawns by, and
- *  the readiness window that bounds its wait for a terminal. Copied field-by-field so a widened
- *  acceptance never smuggles unknown keys into the journal. */
-function pickAcceptanceFloor(floor: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const k of ["name", "owner", "actor", "uid", "readinessDeadlineMs"] as const) {
-    if (floor[k] !== undefined) out[k] = floor[k];
-  }
-  return out;
-}
-
-/** The despawn target for a discharged spawn: the identity a SUCCEEDED terminal records (`id` is
- *  the `owner.actor` principal, `lifecycleUid` the incarnation), else the bound acceptance floor,
- *  else what any other terminal records. A host that enrolls a user-auth agent picks its lifecycle
- *  after the acceptance, so only the terminal names the incarnation that came up. `undefined` when
- *  none names an agent. */
-function spawnDespawnTarget(
-  external: Readonly<Record<string, unknown>> | undefined,
-  fact: GoalResultFact,
-): { owner: string; actor: string; lifecycleUid: string } | undefined {
-  const recorded = terminalAgent(fact);
-  if (fact.state === "succeeded" && recorded !== undefined) return recorded;
-  if (typeof external?.owner === "string" && typeof external.actor === "string" && typeof external.uid === "string")
-    return { owner: external.owner, actor: external.actor, lifecycleUid: external.uid };
-  return recorded;
-}
-
-/** The agent a spawn terminal records, when its `id` is an `owner.actor` principal. */
-function terminalAgent(fact: GoalResultFact): { owner: string; actor: string; lifecycleUid: string } | undefined {
-  const d = fact.data as { id?: unknown; lifecycleUid?: unknown } | undefined;
-  if (typeof d?.id !== "string" || typeof d.lifecycleUid !== "string") return undefined;
-  const dot = d.id.indexOf(".");
-  if (dot <= 0 || dot === d.id.length - 1) return undefined;
-  return { owner: d.id.slice(0, dot), actor: d.id.slice(dot + 1), lifecycleUid: d.lifecycleUid };
-}
-
-/**
- * The program's value from a spawn terminal. `succeeded` yields the agent handle — `agent` is the
- * `<name>#<lifecycleUid>` composite, one string that addresses the NAME the mesh knows the seat by
- * while pinning WHICH incarnation this run spawned (a respawned namesake is not this handle).
- * Every other state throws the catchable spawn failure (L4002) carrying the terminal's own reason:
- * `failed` and `uncertain` are the manager's readiness verdicts, `cancelled` means a despawn ended
- * the launch under it. Each of them leaves the program with an agent that is not up, which is
- * what L4002 names; each replays identically because the fact is durable. A refusal at accept is
- * a different thing (no agent was ever allocated) and is classed at the accept, in `spawn`. The
- * handle's worktree is the BOUND one: the request's for a spawn this step submitted, the seat's own
- * for one a migration handed it (an adopted seat keeps its tree whether or not the edit names it).
- */
-function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {
-  if (fact.state !== "succeeded") {
-    const d = fact.data as { error?: unknown; reason?: unknown; cancelledBy?: unknown } | undefined;
-    const why =
-      typeof d?.error === "string" ? d.error
-      : typeof d?.reason === "string" ? d.reason
-      : d?.cancelledBy !== undefined ? `cancelled by ${JSON.stringify(d.cancelledBy)}`
-      : `the ${endpoint} endpoint recorded no reason`;
-    throw new EffectError("L4002", "spawn", `spawn(${req.persona}) ${fact.state}: ${why}`, { state: fact.state });
-  }
-  const d = fact.data as { name?: unknown; lifecycleUid?: unknown; role?: unknown } | undefined;
-  if (typeof d?.name !== "string" || typeof d.lifecycleUid !== "string")
-    throw new Error(`the spawn goal's succeeded terminal carries no readable agent identity (${JSON.stringify(fact.data)}); a garbled terminal never yields a handle (SPEC 13.6)`);
-  return {
-    agent: `${d.name}#${d.lifecycleUid}`,
-    persona: req.persona,
-    ...(typeof ext.worktree === "string" ? { worktree: ext.worktree } : {}),
-    ...(typeof d.role === "string" ? { role: d.role } : {}),
-  };
-}
-
-/**
- * A conclave's recovery identity: everything the execute, the close and the discharge act on,
- * decided before anything was written and bound as the entry's external state. `registered` is
- * whether THIS conclave minted the channel's registry row (a program-named channel is borrowed,
- * never torn down); per member, `joined` is whether this conclave created the membership row.
- */
-interface ConclavePlanMember {
-  readonly agent: string;
-  /** The member's owner+actor dot-form principal, resolved from its presence row. */
-  readonly principal: string;
-  readonly uid: string;
-  readonly generation: number;
-  readonly joined: boolean;
-}
-interface ConclavePlan {
-  readonly channel: string;
-  readonly registered: boolean;
-  readonly members: readonly ConclavePlanMember[];
-}
-
-/** A recorded flag cannot turn a borrowed channel into a channel this step owns. */
-function assertConclaveOwnership(plan: ConclavePlan, requestId: string, req?: ConclaveRequest): void {
-  const derived = `conclave-${createHash("sha256").update(requestId).digest("hex").slice(0, 12)}`;
-  if (plan.registered && plan.channel !== derived)
-    throw new Error(`recorded conclave channel ${plan.channel} is not owned by step ${requestId}`);
-  if (req !== undefined) {
-    if (plan.channel !== (req.channel ?? derived) || plan.registered !== (req.channel === undefined))
-      throw new Error(`recorded conclave channel does not match the requested channel for ${requestId}`);
-    const members = new Set(req.members.map((member) => member.agent));
-    if (plan.members.length !== members.size || plan.members.some((member) => !members.delete(member.agent)))
-      throw new Error(`recorded conclave members do not match the request for ${requestId}`);
-  }
-  for (const member of plan.members) {
-    const [owner, actor, ...extra] = member.principal.split(".");
-    if (owner === undefined || actor === undefined || extra.length !== 0 || principalKey(owner, actor).key !== member.principal
-      || parseAgentHandle(member.agent).uid !== member.uid || !Number.isSafeInteger(member.generation) || member.generation < 1)
-      throw new Error(`recorded conclave member identity is malformed for ${requestId}`);
-  }
-}
-
-/** Whether a recorded external is a conclave plan. A journal is bytes from an earlier process, so
- *  the shape is checked rather than trusted — a malformed external reads as "nothing was bound". */
-function isConclavePlan(v: unknown): v is ConclavePlan {
-  if (typeof v !== "object" || v === null) return false;
-  const p = v as Record<string, unknown>;
-  if (typeof p.channel !== "string" || typeof p.registered !== "boolean" || !Array.isArray(p.members)) return false;
-  return p.members.every((m) => {
-    if (typeof m !== "object" || m === null) return false;
-    const r = m as Record<string, unknown>;
-    return typeof r.agent === "string" && typeof r.principal === "string" && typeof r.uid === "string"
-      && typeof r.generation === "number" && typeof r.joined === "boolean";
-  });
-}
-
-/** Split an agent handle `<name>#<lifecycleUid>` on its LAST `#` — the uid alphabet
- *  (`[a-z0-9]{26,32}`) cannot carry one, a name could. */
-export function parseAgentHandle(agent: string): { name: string; uid: string } {
-  const i = agent.lastIndexOf("#");
-  if (i <= 0 || i === agent.length - 1)
-    throw new Error(`"${agent}" is not an agent handle of the form <name>#<lifecycleUid>`);
-  return { name: agent.slice(0, i), uid: agent.slice(i + 1) };
-}
-
-/** The one presence row that carries the handle's name AND incarnation, as a principal. None is
- *  the effect's own catchable failure — the agent is down or gone (L4002) — and more than one is
- *  an ambiguity no membership row may be written under. */
-function resolveMemberPrincipal(rows: readonly Presence[], agent: string, name: string, uid: string): string {
-  const matches = rows.filter((p) => p.card.name === name && p.lifecycleUid === uid);
-  if (matches.length === 1) return matches[0]!.card.id;
-  if (matches.length === 0)
-    throw new EffectError("L4002", "conclave",
-      `conclave member "${agent}" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);
-  throw new Error(`conclave member "${agent}" is ambiguous: ${matches.length} presence rows claim that name and incarnation`);
-}
-
-/** A program-named conclave channel: valid channel grammar AND concrete — membership rows and a
- *  room to talk in are per-channel things a wildcard cannot name. */
-function assertConclaveChannel(channel: string): string {
-  assertValidChannel(channel);
-  if (!isConcreteChannel(channel))
-    throw new Error(`conclave channel "${channel}" is a wildcard; a conclave joins its members to one concrete channel`);
-  return channel;
 }
 
 /**

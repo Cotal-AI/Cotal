@@ -300,9 +300,9 @@ if (!brokerDisplayOnly) {
     // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
     const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
     const [command, description] = firstCommand(next);
-    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of ps and the store reset",
+    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of who and the store reset",
       /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
-        && next.includes("cotal ps") && next.indexOf("cotal up") < next.indexOf("cotal ps") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+        && next.includes("cotal who") && next.indexOf("cotal up") < next.indexOf("cotal who") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
   }
   for (const [label, next] of [
     ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
@@ -390,7 +390,7 @@ if (!brokerDisplayOnly) {
     const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
     const rendered = renderReport(statusView(held as unknown as Parameters<typeof statusView>[0]), "plain");
     const actions = rendered.split("\nNext\n")[1] ?? "";
-    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
+    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|who|ps)\b/.test(actions), rendered);
   }
   for (const state of ["ready", "commit-intent", "active"]) {
     const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };
@@ -662,8 +662,8 @@ if (process.platform !== "win32") {
   const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
-  check("the applications line names what is set up and counts the rest behind cotal setup",
-    ascii(`  Agent applications: aa · 1 more with \`${displayCmd()} setup\``) === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
+  check("the headless applications line names what is set up and counts the rest",
+    ascii("  Agent applications: aa · 1 not set up") === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",
@@ -713,8 +713,8 @@ if (process.platform !== "win32") {
     const [port] = (await once(greeter.stdout!, "data")) as [Buffer];
     const noApp = run(["status", "--server", `nats://127.0.0.1:${port.toString().trim()}`, "--plain"], onPath);
     const next = noApp.stdout.split("\nNext\n")[1] ?? "";
-    check("when every seeded connector is missing its executable, Next offers setup instead of spawn",
-      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup +Set up an agent application\b/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
+    check("when every seeded connector is missing its executable, headless Next offers scripted setup help instead of spawn",
+      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup --help +See setup flags for scripts/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
   } finally {
     greeter.kill("SIGKILL");
   }

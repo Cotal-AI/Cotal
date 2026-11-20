@@ -1,5 +1,17 @@
 # @cotal-ai/lang
 
+## 0.171.4
+
+### Patch Changes
+
+- 82e9e79: Split the validator in `grammar.ts`: the resolution walk (identifier binding and effect call checks) moves to an internal `grammar-resolve.ts`, and the node, scope and pattern helpers both walks use move to an internal `grammar-shared.ts`. The package surface is unchanged.
+- 8a918ce: Move the walker's operator helpers (`applyBinary`, the no-coercion and update-operand refusals, and canonical array indexes) out of `interpret.ts` into an internal `interpret-operators.ts`. The package surface is unchanged.
+- 5cbdcfe: Move per-primitive dispatch (`dispatchPrimitive`, its hashed projections and the `waitUntil` observation loop) out of `perform.ts` into an internal `perform-dispatch.ts`. The package surface is unchanged.
+
+## 0.171.3
+
+No changes in this release.
+
 ## 0.171.2
 
 No changes in this release.

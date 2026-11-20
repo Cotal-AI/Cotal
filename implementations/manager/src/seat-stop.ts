@@ -103,6 +103,47 @@ export interface SeatStopDeps {
   trackDeprovision: (...args: Parameters<Manager["trackDeprovision"]>) => ReturnType<Manager["trackDeprovision"]>;
 }
 
+/** Builds the {@link SeatStopDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function seatStopDeps(m: Manager): SeatStopDeps {
+  return {
+    agentGoals: () => m["agentGoals"],
+    agents: () => m["agents"],
+    auth: () => m["auth"],
+    ep: () => m["ep"],
+    execution: () => m["execution"],
+    goalWriter: () => m["goalWriter"],
+    lifecycleInFlight: () => m["lifecycleInFlight"],
+    setLifecycleInFlight: (value) => { m["lifecycleInFlight"] = value; },
+    maintenanceState: () => m["maintenanceState"],
+    managerInstanceId: () => m["managerInstanceId"],
+    remoteAuthority: () => m["remoteAuthority"],
+    retirement: () => m["retirement"],
+    servers: () => m["servers"],
+    serviceServe: () => m["serviceServe"],
+    space: () => m["space"],
+    unverifiedStops: () => m["unverifiedStops"],
+    setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
+    workspaceRoot: () => m["workspaceRoot"],
+    assertGoalWriterEpochCurrent: (...args) => m["assertGoalWriterEpochCurrent"](...args),
+    authorizeNamed: (...args) => m["authorizeNamed"](...args),
+    awaitHandleExit: (...args) => m["awaitHandleExit"](...args),
+    beginLifecycle: (...args) => m["beginLifecycle"](...args),
+    confirmRetirement: (...args) => m["confirmRetirement"](...args),
+    emitGoalProgress: (...args) => m["emitGoalProgress"](...args),
+    executionRefusal: (...args) => m["executionRefusal"](...args),
+    expireGoalAcceptance: (...args) => m["expireGoalAcceptance"](...args),
+    freeSlot: (...args) => m["freeSlot"](...args),
+    maintenanceError: (...args) => m["maintenanceError"](...args),
+    managedPrincipal: (...args) => m["managedPrincipal"](...args),
+    readManagedSessionState: (...args) => m["readManagedSessionState"](...args),
+    recoverManagedSession: (...args) => m["recoverManagedSession"](...args),
+    releaseLifecycle: (...args) => m["releaseLifecycle"](...args),
+    shredUserSecrets: (...args) => m["shredUserSecrets"](...args),
+    trackDeprovision: (...args) => m["trackDeprovision"](...args),
+  };
+}
+
 /** Stopping a seat, recording why it left, reaping its children, and the named despawn doors. */
 export class SeatStop {
   constructor(private readonly deps: SeatStopDeps) {}

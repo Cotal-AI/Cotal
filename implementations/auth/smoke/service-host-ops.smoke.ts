@@ -25,10 +25,11 @@ import {
 import { compileServiceRegistration, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
 import { parseServiceHostResult, type ServiceApprovalResult } from "../src/service-host-contract.js";
 import {
-  S2A_INVOCATION_MS, S3_MAX_INTENTS_PER_INSTANCE, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord,
-  parseServiceCapacityRecord, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceRequestIntentIndexRecord, serviceHostOperationId,
+  S3_MAX_INTENTS_PER_INSTANCE, openServiceHostOperations, parseServiceAdmissionRecord, parseServiceAssignmentRecord,
+  parseServiceCapacityRecord, parseServiceHostOperationRecord, parseServiceProposalRecord, parseServiceRequestIntentIndexRecord,
   serviceRegisterHostRequest, type ServiceHostOperations, type ServiceHostOperationsOptions, type ServiceServeOperation, type ServiceServeRequest,
 } from "../src/service-host-ops.js";
+import { S2A_INVOCATION_MS, serviceHostOperationId } from "../src/service-host-kernel.js";
 import { bytesOf, checks, openFixture, type Fixture, type WriteCall } from "./_service-custody-fixture.js";
 
 const c = checks();

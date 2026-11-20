@@ -11,7 +11,7 @@
   "mutations": [
     {
       "name": "drop manager explicit isolation intent",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/harness-resolution.ts",
       "find": "mcpServersExclusive: shareTools !== undefined,",
       "replace": "mcpServersExclusive: false,",
       "expectRed": "named shareTools requests exclusive MCP discovery"

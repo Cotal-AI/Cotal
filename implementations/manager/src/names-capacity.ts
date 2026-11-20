@@ -5,6 +5,7 @@ import { MAX_AGENTS } from "./resume.js";
 import type { ManagedAgent, FreeSlotCause, StartAgentOpts } from "./manager.js";
 import type { RetirementHold, TeardownTarget } from "./retirement.js";
 import type { AttachEndReason } from "./session/index.js";
+import type { Manager } from "./manager.js";
 
 type FreeSlotStopCause = Extract<FreeSlotCause, { kind: string }>;
 /** Minimum slot lifetime for rate-flooring (P4c). A slot freed (by despawn OR natural exit/reap)
@@ -58,6 +59,36 @@ export interface NamesCapacityDeps {
   teardownTarget: (agent: ManagedAgent) => TeardownTarget;
   dropInlineSnapshot: (name: string, lifecycleUid: string) => boolean;
   trackDeprovision: (target: TeardownTarget) => void;
+}
+
+/** Builds the {@link NamesCapacityDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
+  return {
+    userMode: () => m["userMode"],
+    seatCap: () => m["seatCap"],
+    managerInstanceId: () => m["managerInstanceId"],
+    agents: () => m["agents"].values(),
+    authEnabled: () => m["auth"] !== undefined,
+    maintenanceActive: () => m["maintenanceState"] === "active",
+    roster: () => m["ep"].getRoster(),
+    agentFor: (name) => m["agents"].get(name),
+    hasAgent: (name) => m["agents"].has(name),
+    removeAgent: (name) => { m["agents"].delete(name); },
+    managedCount: () => m["agents"].size,
+    predecessor: (name) => m["retirement"].predecessor(name),
+    hasRetirementHold: (name) => m["retirement"].hasHold(name),
+    holdRetirement: (name, hold) => m["retirement"].hold(name, hold),
+    endSessionsForTarget: (...args) => { m["sessionPlane"]?.endForTarget(...args); },
+    logSeatReaped: (...args) => m["logSeatReaped"](...args),
+    recordContinuityAtStop: (...args) => m["recordContinuityAtStop"](...args),
+    releasedSeatPending: (...args) => m["releasedSeatPending"](...args),
+    dropSeatRecord: (...args) => m["dropSeatRecord"](...args),
+    failSeatTurns: (...args) => m["failSeatTurns"](...args),
+    teardownTarget: (...args) => m["teardownTarget"](...args),
+    dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
+    trackDeprovision: (...args) => m["trackDeprovision"](...args),
+  };
 }
 
 /** Allocation reservations, numbered-name history and cooling occupancy for one manager. */

@@ -103,7 +103,7 @@
     },
     {
       "name": "N10 accept a resume entry whose snapshot is another path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preservation.ts",
       "find": "    if (entry.launch.source.kind === \"inline\" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))\n",
       "replace": "    if (false)\n",
       "expectRed": "a resume entry whose inline snapshot is not its lifecycle's path is refused",
@@ -183,7 +183,7 @@
     },
     {
       "name": "N19 settle a stopped seat's snapshot when its removal failed",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preservation.ts",
       "find": "        const settled = a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid);\n",
       "replace": "        const settled = a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid) || true;\n",
       "expectRed": "and reports that snapshot from its terminal",
@@ -199,7 +199,7 @@
     },
     {
       "name": "N21 write a defined persona's capabilities unbounded",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "        ? refusal({ capabilities: kept, endpoints: keptEndpoints, namesEndpoints })\n",
       "replace": "        ? refusal({ capabilities: [], endpoints: keptEndpoints, namesEndpoints })\n",
       "expectRed": "and is refused one its row does not hold, by name, writing nothing",
@@ -207,7 +207,7 @@
     },
     {
       "name": "N22 bound a user-auth admin definer",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "      if (scope?.includes(\"admin\")) return undefined;\n      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));\n",
       "replace": "      const over = capabilities.filter((c) => !capabilityWithin(scope ?? [], c));\n",
       "expectRed": "a user-auth definer whose row holds admin is exempt",
@@ -215,7 +215,7 @@
     },
     {
       "name": "N23 read the local ledger on a hosted manager",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "    if (this.remoteAuthority)\n      return ({ capabilities, namesEndpoints }) => namesEndpoints\n",
       "replace": "    if (false)\n      return ({ capabilities, namesEndpoints }) => namesEndpoints\n",
       "expectRed": "a hosted manager reads no ledger, so its definer puts no capability into a persona",
@@ -223,7 +223,7 @@
     },
     {
       "name": "N24 write the def composed before the grant resolved",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
       "replace": "      const kept",
       "expectRed": "a definition that waited on its grant does not overwrite a persona another principal defined meanwhile",
@@ -231,7 +231,7 @@
     },
     {
       "name": "N25 bound the argument instead of the written persona",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "      const kept = composed.def.capabilities ?? [];\n",
       "replace": "      const kept = capabilities ?? [];\n",
       "expectRed": "a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing",
@@ -239,7 +239,7 @@
     },
     {
       "name": "N26 bound only a definition that names capabilities",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {\n      const refusal = await this.definerGrantRefusal(",
       "replace": "    if (capabilities?.length || composed.def.endpoints !== undefined) {\n      const refusal = await this.definerGrantRefusal(",
       "expectRed": "a redefine that omits capabilities is refused the saved ones its definer no longer holds, writing nothing",

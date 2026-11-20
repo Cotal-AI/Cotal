@@ -104,15 +104,16 @@ assert.throws(() => loopStallWatch(() => {}, 300, -1)); checks++;
     async () => { calls.push("bad"); await sleep(1); throw Object.assign(new Error("private detail"), { name: "TimeoutError" }); },
   ], (row) => rows.push(row), 40, 2, 10);
   await sleep(260);
-  probe.stop();
+  await probe.stop();
   const stats = probe.take();
   assert.ok(calls.length >= 4 && calls.length <= 26, `calls ${calls.length}`); checks++;
   assert.deepEqual(calls.slice(0, 3), ["fast", "slow", "bad"]); checks++;
   assert.equal(stats.n, calls.length); checks++;
   assert.equal(stats.failed, calls.filter((c) => c === "bad").length); checks++;
-  assert.ok(stats.maxMs >= 60 && stats.p50Ms <= stats.p99Ms && stats.p99Ms <= stats.maxMs, JSON.stringify(stats)); checks++;
+  // Only the slow put reaches the 40 ms threshold; a 60 ms timer can measure 59 ms.
+  assert.ok(stats.maxMs >= 40 && stats.p50Ms <= stats.p99Ms && stats.p99Ms <= stats.maxMs, JSON.stringify(stats)); checks++;
   assert.equal(rows.length, 2, "row limit"); checks++;
-  assert.ok(rows[0].ms >= 60 && rows[0].failed === undefined, JSON.stringify(rows[0])); checks++;
+  assert.ok(rows[0].ms >= 40 && rows[0].failed === undefined, JSON.stringify(rows[0])); checks++;
   assert.equal(rows[1].failed, "TimeoutError"); checks++;
   assert.ok(!JSON.stringify(rows).includes("private detail")); checks++;
   const after = probe.take();

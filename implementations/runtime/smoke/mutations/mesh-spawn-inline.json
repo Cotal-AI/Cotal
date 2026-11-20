@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "M1 the definition is not bound before submission",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });",
       "replace": "",
       "expectRed": "the definition and its digest are bound before the submission, with no goal yet",
@@ -21,7 +21,7 @@
     },
     {
       "name": "M2 the acceptance bind drops the definition",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "          ...(resolution !== undefined ? { resolution } : {}),\n          ...(inline !== undefined ? { inline } : {}),",
       "replace": "          ...(resolution !== undefined ? { resolution } : {}),",
       "expectRed": "and the acceptance bind restates them beside the goal",
@@ -29,7 +29,7 @@
     },
     {
       "name": "M3 a resume submits a recorded definition that differs from the program's",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (recordedInline !== undefined && recordedInline.digest !== inlineDigest)\n      throw new Error(",
       "replace": "    if (false)\n      throw new Error(",
       "expectRed": "a resume whose recorded definition differs from the program's is refused",
@@ -37,7 +37,7 @@
     },
     {
       "name": "M4 an adopted seat goes to a spawn of another definition",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "      if (adoptedInline?.digest !== inlineDigest)\n        throw new Error(",
       "replace": "      if (false)\n        throw new Error(",
       "expectRed": "an adopted inline seat is refused to a spawn of another definition",
@@ -45,7 +45,7 @@
     },
     {
       "name": "M5 the spawn args drop the persona record",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    ...(req.inline !== undefined ? { persona: Object.fromEntries(Object.entries(req.inline).filter(([k]) => k !== \"name\")) } : {}),",
       "replace": "",
       "expectRed": "the manager is asked for the helper by name, with the definition as its persona record",
@@ -53,7 +53,7 @@
     },
     {
       "name": "M6 the definition is bound only after the manager answered the submission",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });",
       "replace": "        if (inline !== undefined && recordedInline === undefined) { const invoke = this.invokeManager.bind(this); this.invokeManager = async (...a: Parameters<typeof invoke>) => { const reply = await invoke(...a); await ctx.bind({ inline }); return reply; }; }",
       "expectRed": "the definition and its digest are bound before the submission, with no goal yet",

@@ -476,7 +476,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 
 /**
  * The refusal that was written for a malformed placement lives in the RUNTIME
- * (`mesh-handler.ts`, L4000, "placement must name both an endpoint and an instanceId"), and
+ * (`mesh-spawn.ts`, L4000, "placement must name both an endpoint and an instanceId"), and
  * `placement: null` never reached it. `option()` guards the BAG being null and not the VALUE, so
  * `null` came back from the bag, passed the `!== undefined` forwarding test, and was dereferenced
  * by the identity projection: `TypeError: Cannot read properties of null (reading 'endpoint')`,

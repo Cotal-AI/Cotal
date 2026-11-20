@@ -1,5 +1,39 @@
 # @cotal-ai/auth
 
+## 0.171.4
+
+### Patch Changes
+
+- bd46d72: Move the auth service's process and context host (`runAuthService`, `startAuthService` and its handle, the lane and multi-tenant host runners, and `startAuthContext`) out of `service.ts` into an internal `service-host.ts`. The package surface is unchanged.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [82e9e79]
+- Updated dependencies [8a918ce]
+- Updated dependencies [5cbdcfe]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/lang@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- 01f280f: Fix CLI smoke coverage for signed-out login guidance, private stack cleanup, and broker-only startup.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/lang@0.171.3
+
 ## 0.171.2
 
 ### Patch Changes

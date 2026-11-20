@@ -84,7 +84,7 @@ check(
 // absent outcome, because absent cannot reach one. A sample would not have caught the second site.
 const here = dirname(fileURLToPath(import.meta.url));
 const managerFile = resolve(here, "..", "src", "manager.ts");
-const managerFiles = ["manager.ts", "seat-custody.ts"].map((name) => resolve(here, "..", "src", name));
+const managerFiles = ["manager.ts", "seat-custody.ts", "preservation.ts", "preserved-resume.ts"].map((name) => resolve(here, "..", "src", name));
 const managerSrc = managerFiles.map((file) => readFileSync(file, "utf8")).join("\n");
 const renderings = managerSrc.split('outcome === "absent"').length - 1;
 check(
@@ -372,7 +372,7 @@ instrument.forEach(([name, , holds], i) => {
 //   spawnCustodied: carries it into the throw, saying the seat was not proved gone.
 // restartSupervisedSeat no longer calls requireRuntimeReap. It proves the previous seat's local work
 // ended through runtime.reapWork before the resume launches, and a refusal there stays with that proof.
-const REVIEWED_SITES = ["Manager.adoptReleasedSeat", "Manager.reapOrphanedResumeSeat", "SeatCustody.reapOrphanSeat", "SeatCustody.spawnCustodied"];
+const REVIEWED_SITES = ["Preservation.adoptReleasedSeat", "PreservedResume.reapOrphanedResumeSeat", "SeatCustody.reapOrphanSeat", "SeatCustody.spawnCustodied"];
 const managerConfig = ts.getParsedCommandLineOfConfigFile(resolve(here, "..", "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: (d) => { throw new Error(ts.flattenDiagnosticMessageText(d.messageText, " ")); } })!;
 const managerProgram = ts.createProgram({ rootNames: managerFiles, options: { ...managerConfig.options, noEmit: true } });
 const managerSources = managerFiles.map((file) => managerProgram.getSourceFile(file)!);
@@ -406,8 +406,8 @@ check(
   { elementTotal, elements: census.elements },
 );
 check(
-  "CONTROL: the bypass scan sees the one typeof feature probe of reap, in Manager.orphanedResumeSeat",
-  census.probes.length === 1 && census.probes[0]!.startsWith("Manager.orphanedResumeSeat "),
+  "CONTROL: the bypass scan sees the one typeof feature probe of reap, in PreservedResume.orphanedResumeSeat",
+  census.probes.length === 1 && census.probes[0]!.startsWith("PreservedResume.orphanedResumeSeat "),
   { probes: census.probes },
 );
 

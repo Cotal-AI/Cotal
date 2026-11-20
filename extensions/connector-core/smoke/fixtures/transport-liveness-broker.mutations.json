@@ -31,7 +31,7 @@
   "mutations": [
     {
       "name": "a stop landing mid-bind still announces the connection it then tears down",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    if (this.stopped) return;\n    this.emit(\"connection\", { connected: true });\n",
       "replace": "    this.emit(\"connection\", { connected: true });\n",
       "expectRed": "stop during a REAL initial bind never announces the connection it then tears down",
@@ -49,7 +49,7 @@
     },
     {
       "name": "doRebuild skips tearDownIfStopped, so a stop mid-rebuild-bind leaves the fresh nc live",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-reconnect.ts",
       "find": "      if (await this.tearDownIfStopped()) return;\n      this.superviseConnection();\n    } finally {\n      this.reconnecting = false;",
       "replace": "      this.superviseConnection();\n    } finally {\n      this.reconnecting = false;",
       "expectRed": "stop during a REAL rebuild bind tears the just-bound connection rather than leaving nc live",

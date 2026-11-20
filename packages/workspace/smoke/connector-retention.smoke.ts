@@ -29,6 +29,13 @@ const before=connectorConfigDir();
 assert(before.endsWith('/sets/0.165.4/cotal') && before.includes('/installs/'));
 assert.equal(existsSync(before),false,'root reads must not create retained state');
 assert.deepEqual(readdirSync(process.env.XDG_CONFIG_HOME),[],'fresh root reads must not create config files');
+const {chmodSync,mkdirSync,statSync}=await import('node:fs');
+const {prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
+mkdirSync(before+'/seed',{recursive:true,mode:0o700});
+chmodSync(before+'/seed',0o500);
+chmodSync(before,0o500);
+prepareConnectorConfigForUpdate();
+assert.equal(statSync(before+'/seed').mode&0o777,0o700,'unfinished seed directory can be replaced later');
 inheritConnectorConfig();
 assert.equal(connectorConfigDir(),before,'initial inheritance keeps the advertised root');
 assert.equal(existsSync(before),true);
@@ -55,7 +62,7 @@ import {createHash} from 'node:crypto';
 import {join,dirname} from 'node:path';
 ${scenario === "checkout" ? `const checkout=${JSON.stringify(join(config, "checkout"))};mkdirSync(join(checkout,'bin/dist'),{recursive:true,mode:0o700});mkdirSync(join(checkout,'implementations'),{mode:0o700});writeFileSync(join(checkout,'bin/package.json'),JSON.stringify({name:'cotal-ai',version:'0.166.0',bin:{cotal:'./dist/cotal.js'}}));writeFileSync(join(checkout,'bin/dist/cotal.js'),'');Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:join(checkout,'bin/dist/cotal.js'),loadedEntry:join(checkout,'bin/dist/cotal.js')})});` : scenario === "pnpm-dlx-refresh" ? `const dlxA=${JSON.stringify(join(config, "cache/pnpm/dlx/f366da99/mwm2iwjx-ygzp/node_modules/.pnpm/cotal-ai@0.165.4/node_modules/cotal-ai"))},dlxB=${JSON.stringify(join(config, "cache/pnpm/dlx/f366da99/mwm2kdsm-z19x/node_modules/.pnpm/cotal-ai@0.165.4/node_modules/cotal-ai"))};for(const dir of [dlxA,dlxB]){mkdirSync(join(dir,'dist'),{recursive:true,mode:0o700});writeFileSync(join(dir,'package.json'),JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));writeFileSync(join(dir,'dist/cotal.js'),'// dlx fixture\\n');}let currentDlx=join(dlxA,'dist/cotal.js');Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{get(){return Object.freeze({logicalEntry:currentDlx,loadedEntry:currentDlx});}});` : scenario === "no-identity" ? "" : `Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});`}
 ${scenario === "desktop" ? `writeFileSync(${JSON.stringify(join(installed, "desktop-runtime.json"))},'{}');` : scenario === "windows" ? `Object.defineProperty(process,'platform',{value:'win32'});` : ""}
-const {connectorConfigDir,retainConnectorConfig,inheritConnectorConfig,canRecoverConnectorConfig}=await import(${JSON.stringify(module)});
+const {connectorConfigDir,retainConnectorConfig,inheritConnectorConfig,canRecoverConnectorConfig,prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
 const original=${JSON.stringify(join(config, "cotal"))};
 const metadata=${JSON.stringify(join(installed, "package.json"))};
 writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));
@@ -73,6 +80,7 @@ assert.notEqual(selected,original);
 assert.equal(connectorConfigDir(),selected);
 assert.equal(canRecoverConnectorConfig(),true,'current selection, including interrupted publication, keeps recovery');
 assert.equal(retainConnectorConfig(),selected);
+${scenario === "retain" ? `const unrelated=join(original,'installs','other-install');mkdirSync(unrelated,{mode:0o500});fs.chmodSync(selected,0o520);fs.chmodSync(join(selected,'seed'),0o500);prepareConnectorConfigForUpdate();assert.equal(connectorConfigDir(),selected);assert.equal(fs.statSync(selected).mode&0o777,0o700);assert.equal(fs.statSync(join(selected,'seed')).mode&0o777,0o700);assert.equal(fs.statSync(unrelated).mode&0o777,0o500);fs.chmodSync(unrelated,0o700);` : ""}
 assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
 writeFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'new graph\\n');
 assert.equal(readFileSync(join(original,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
@@ -98,6 +106,77 @@ console.log('PASS');
 `;
     const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...childEnv, XDG_CONFIG_HOME: config, COTAL_HOME: join(config, "home") }, encoding: "utf8", timeout: 30_000 });
     assert.equal(result.status, 0, `${scenario}: ${result.stdout}${result.stderr}`);
+    passed++;
+  }
+  rmSync(join(installed, "desktop-runtime.json"), { force: true });
+  for (const source of ["canonical", "retained", "linked-retained"] as const) {
+    const config = join(root, `update-${source}`);
+    mkdirSync(join(config, "cotal/seed"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(config, "cotal/extensions"), { mode: 0o700 });
+    if (source === "linked-retained") {
+      renameSync(config, `${config}-physical`);
+      symlinkSync(`${config}-physical`, config);
+    }
+    const childScript = `
+import assert from 'node:assert/strict';
+import {chmodSync,readFileSync,mkdirSync,statSync} from 'node:fs';
+import {join,dirname} from 'node:path';
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
+const {connectorConfigDir,inheritConnectorConfig,prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
+assert.equal(connectorConfigDir(),process.env.SNAPSHOT,'reconciliation reads the updater snapshot, not the stale target');
+const staleExtensions=join(process.env.STALE,'extensions');
+chmodSync(staleExtensions,0o500);
+prepareConnectorConfigForUpdate();
+assert.equal(statSync(staleExtensions).mode&0o777,0o500,'snapshot preflight leaves the stale target untouched');
+const configHome=process.env.XDG_CONFIG_HOME;
+const stage=join(dirname(process.env.STALE),'.extensions.stage-fixture','config');
+mkdirSync(join(stage,'cotal/extensions'),{recursive:true,mode:0o700});
+process.env.XDG_CONFIG_HOME=stage;
+assert.equal(connectorConfigDir(),join(stage,'cotal'),'extension validation must keep its private stage');
+process.env.XDG_CONFIG_HOME=configHome;
+inheritConnectorConfig();
+const selected=connectorConfigDir();
+assert.notEqual(selected,process.env.STALE);
+assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),'tmux added; pi removed');
+assert.equal(readFileSync(join(process.env.STALE,'extensions/state'),'utf8'),'pi installed');
+const selectedExtensions=join(selected,'extensions');
+chmodSync(selectedExtensions,0o500);
+prepareConnectorConfigForUpdate();
+assert.equal(statSync(selectedExtensions).mode&0o777,0o700,'preflight repairs the newly selected root');
+chmodSync(staleExtensions,0o700);
+inheritConnectorConfig();
+assert.equal(connectorConfigDir(),selected,'one transaction inherits only once');
+`;
+    const script = `
+import assert from 'node:assert/strict';
+import {cpSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync} from 'node:fs';
+import {join,dirname} from 'node:path';
+import {spawnSync} from 'node:child_process';
+Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
+const {retainConnectorConfig,connectorConfigDir}=await import(${JSON.stringify(module)});
+const {claimUpdateClosureAccess,updateClosureChildEnv,updateClosureOwner}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/update-closure.ts")).href)});
+const {writeUpdateRecovery,clearUpdateRecovery}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/updates.ts")).href)});
+const metadata=${JSON.stringify(join(installed, "package.json"))};
+writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));
+const stale=retainConnectorConfig();
+writeFileSync(join(stale,'extensions/state'),'pi installed');
+const current=${source === "canonical" ? JSON.stringify(join(config, "cotal")) : "stale"};
+const snapshot=mkdtempSync(join(current,'.update-snapshot-'));
+cpSync(join(current,'extensions'),join(snapshot,'extensions'),{recursive:true});
+writeFileSync(join(snapshot,'extensions/state'),'tmux added; pi removed');
+const release=claimUpdateClosureAccess();
+try {
+writeUpdateRecovery({previous:'0.166.0',target:'0.165.4',installed:'0.166.0',phase:'replacing',reason:'test update',owner:updateClosureOwner(),snapshot});
+const child=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',${JSON.stringify(childScript)}],{env:{...updateClosureChildEnv(process.env),COTAL_UPDATE_PARENT:String(process.pid),SNAPSHOT:snapshot,STALE:stale},encoding:'utf8'});
+assert.equal(child.status,0,child.stdout+child.stderr);
+clearUpdateRecovery();
+const selected=connectorConfigDir();
+assert.notEqual(selected,stale,'completed update keeps its new selection');
+assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),'tmux added; pi removed');
+} finally { release(); }
+`;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...childEnv, XDG_CONFIG_HOME: config, COTAL_HOME: join(config, "home") }, encoding: "utf8", timeout: 30_000 });
+    assert.equal(result.status, 0, `update-${source}: ${result.stdout}${result.stderr}`);
     passed++;
   }
   console.log("connector retention: original graph preserved, selected copy isolated, unsupported and forged state refused");

@@ -38,6 +38,37 @@ export interface GoalWriterDeps {
   withEndpointServeExecutor: <T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>) => Promise<T>;
 }
 
+/** Builds the {@link GoalWriterDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function goalWriterDeps(m: Manager): GoalWriterDeps {
+  return {
+    auth: () => m["auth"],
+    goalAcceptances: () => m["goalAcceptances"],
+    goalWriter: () => m["goalWriter"],
+    setGoalWriter: (value) => { m["goalWriter"] = value; },
+    goalWriterCreds: () => m["goalWriterCreds"],
+    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
+    goalWriterIdentity: () => m["goalWriterIdentity"],
+    leaseStopping: () => m["leaseStopping"],
+    managerInstanceId: () => m["managerInstanceId"],
+    readinessTimeoutMs: () => m["readinessTimeoutMs"],
+    remoteAuthority: () => m["remoteAuthority"],
+    serviceServe: () => m["serviceServe"],
+    space: () => m["space"],
+    turnRelay: () => m["turnRelay"],
+    goalReconcileDone: () => m["goalReconcileDone"],
+    setGoalReconcileDone: (value) => { m["goalReconcileDone"] = value; },
+    adoptTurnGoal: (...args) => m["adoptTurnGoal"](...args),
+    boundedReconnect: (...args) => m["boundedReconnect"](...args),
+    dial: (...args) => m["dial"](...args),
+    noticeSeatTurns: (...args) => m["noticeSeatTurns"](...args),
+    renewRemoteBeforeRedial: (...args) => m["renewRemoteBeforeRedial"](...args),
+    retireConnection: (...args) => m["retireConnection"](...args),
+    trackTransport: (...args) => m["trackTransport"](...args),
+    withEndpointServeExecutor: (fn) => m["withEndpointServeExecutor"](fn),
+  };
+}
+
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
   constructor(private readonly deps: GoalWriterDeps) {}

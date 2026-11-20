@@ -28,8 +28,10 @@ try {
     const failedCursor = readFileSync(cursor, "utf8");
     for (const args of [["attach", "missing"], ["attach", "missing"], ["stop", "missing"], ["input", "missing", "hello"]]) {
       const control = cotal(cfg, args, noNpm);
+      const expectedExit = args[0] === "input" ? 2 : 1;
       check(`${args[0]} after failed seed: reaches target resolution without connector repair`,
-        control.status === 1 && /no space is registered or prepared here/.test(control.stderr) && !/connector seed|Reconciling built-in/.test(control.stderr), control.stderr);
+        control.status === expectedExit && /no space is registered or prepared here/.test(control.stderr) && !/connector seed|Reconciling built-in/.test(control.stderr),
+        { status: control.status, stderr: control.stderr });
       check(`${args[0]} after failed seed: leaves the failed seed record unchanged`, readFileSync(cursor, "utf8") === failedCursor);
     }
     const repair = cotal(cfg, ["ext", "seed", "--repair"]);

@@ -45,7 +45,7 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
-  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume} (#1499), and
+  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume}, and
    *  the agent the CLI found them with. Imperative control args only, like `resume`. */
   resumeClaim?: string;
   resumeAgent?: string;
@@ -53,8 +53,8 @@ export interface StartAgentOpts {
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
   eventPayloads?: boolean;
-  /** #373: set by `opStart` when a non-owner, non-admin caller omitted `events` and the plane was served
-   *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
+  /** `opStart` sets this when a non-owner, non-admin caller omits `events` and the event plane
+   *  is disarmed. The reply includes it so the caller sees the downgrade. */
   eventsNotice?: string;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
@@ -136,7 +136,7 @@ export interface ManagedLaunch {
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
-  /** A carried resume's claim (#1499): the digest the manager staged, which the seat's fork record
+  /** A carried resume's claim: the digest the manager staged, which the seat's fork record
    *  must name before {@link resumed} is set, the host it came from, and when it was staged. */
   carried?: { transcriptSha256: string; host: string; transferredAt: string };
   /** The connector's {@link LaunchSpec.resumeRecordPath} for this seat's fork. */
@@ -149,7 +149,7 @@ export interface ManagedAgent {
   name: string;
   role?: string;
   agent: string;
-  /** The seat-private Claude home a carried resume launched in (#1499), removed when the seat is freed. */
+  /** The seat-private Claude home a carried resume launches in. Removed when the seat is freed. */
   seatHome?: string;
   /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
    *  the owner+actor principal dot-form (user mode). */
@@ -235,7 +235,7 @@ export interface ManagedAgent {
    *  watcher frees the slot with it, so an exit the stop caused is not logged or ended as the
    *  seat's own. */
   stopCause?: FreeSlotCause;
-  /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
+  /** Set while the manager has logged this seat off the mesh but still holds its slot.
    *  cleared when the seat is logged back on. */
   offMesh?: boolean;
   /** The one renewal admitted before terminalization. Retirement drains it before revocation and

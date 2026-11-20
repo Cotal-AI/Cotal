@@ -89,7 +89,7 @@ const run = (args: string[], cwd = root, path = tools) => {
   writeFileSync(join(sandbox, `${String(sequence++).padStart(2, "0")}.json`), JSON.stringify(value, null, 2));
   return value;
 };
-const psCommand = (text: string) => text.split("\n").find((line) => line.includes("See the agent roster"))?.trim().split(/\s{2,}See the agent roster/)[0];
+const rosterCommand = (text: string) => text.split("\n").find((line) => line.includes("See the live roster"))?.trim().split(/\s{2,}See the live roster/)[0];
 const space = "command-display";
 let attempted = false;
 try {
@@ -140,7 +140,7 @@ try {
   suite.check("staged CLI reports installed provenance", json.result?.machine?.install?.kind === "installed", metadata);
   const status = run(["status", "--plain"]);
   suite.check("installed status never suggests pnpm cotal off PATH", status.code === 0 && !status.output.includes("pnpm cotal"), status);
-  const command = psCommand(status.stdout);
+  const command = rosterCommand(status.stdout);
   suite.check("status prints a roster next step", Boolean(command), status);
   if (command) {
     const followed = spawnSync("/bin/sh", ["-c", command], { cwd: outside, env, encoding: "utf8", timeout: 60_000 });
@@ -150,10 +150,10 @@ try {
   const roster = run(["ps", "--plain"]);
   suite.check("off-PATH roster suggestions use the same runnable prefix", roster.code === 0 && !/^\s+cotal (?:spawn|setup)\b/m.test(roster.stdout) && !roster.stdout.includes("pnpm cotal"), roster);
   const onPath = run(["status", "--plain"], root, `${env.COTAL_BIN_DIR}:${tools}`);
-  suite.check("on-PATH installed status keeps concise cotal commands", onPath.code === 0 && psCommand(onPath.stdout) === "cotal ps" && !onPath.stdout.includes("pnpm cotal"), onPath);
+  suite.check("on-PATH installed status keeps concise cotal commands", onPath.code === 0 && rosterCommand(onPath.stdout) === "cotal who" && !onPath.stdout.includes("pnpm cotal"), onPath);
   const source = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "status", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("off-PATH source checkout retains pnpm cotal guidance", source.status === 0 && source.stdout.includes("pnpm cotal"), { code: source.status, output: source.stdout + source.stderr });
-  const setupCommand = status.stdout.split("\n").find((line) => /\s{2,}Set up an agent application(?: and a space)?$/.test(line))?.trim().split(/\s{2,}Set up an agent application(?: and a space)?$/)[0];
+  const setupCommand = status.stdout.split("\n").find((line) => / setup --help(?:\s|$)/.test(line))?.trim().split(" --help")[0];
   suite.check("status prints a setup next step", Boolean(setupCommand), status);
   const seedEnv: NodeJS.ProcessEnv = { ...env };
   delete seedEnv.COTAL_SKIP_CONNECTOR_SEED;

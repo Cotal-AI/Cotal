@@ -1266,6 +1266,11 @@ main() {
     exit 0
   fi
 
+  if [ -d "$BIN_DIR/cotal" ]; then
+    die "$(shquote "$BIN_DIR/cotal") is a directory." \
+      "Move the directory aside or set COTAL_BIN_DIR to a different launcher directory."
+  fi
+
   # A recorded service may still run the npm installation after the shell install. Do not
   # replace its visible command with a launcher for a different package before reconciliation.
   _daemon_receipt="${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json"

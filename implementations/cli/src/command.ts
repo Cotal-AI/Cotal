@@ -670,8 +670,14 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const updateCheck = builtin?.name === "update" && words.includes("--check") && !asksForHelp(words)
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
+  // Structured version reports inventory failures itself and needs no extension commands.
+  const versionJson = builtin?.name === "version" && !asksForHelp(words) && asksForJson(builtin, words);
+  // The built-in updater repairs its connector paths before opening any promotion journal.
+  const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
+    && parseOrExit(builtin, ownWords(builtin)).values.self === true;
+  const useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate;
   const configFolder = globalConfigDirProblem();
-  if (opts.extensions && !updateCheck) {
+  if (useExtensionOverlay) {
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder)) return;
       recoverExtensionPromotion();
@@ -694,7 +700,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = opts.extensions && !updateCheck ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionJson ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but

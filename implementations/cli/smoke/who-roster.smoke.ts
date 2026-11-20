@@ -242,7 +242,7 @@ try {
   const traceLine = probeTraceLine(probeTraceResult(traceRead, traceControl));
   console.log(traceLine);
   const tracePayload = JSON.parse(traceLine.slice("WHO_PROBE_TRACE ".length)) as ReturnType<typeof probeTraceResult>;
-  check("native probe diagnostics preserve nested module records as one JSON line", traceRead.status === 0 && tracePayload.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "module-matched" && "sourceSha256" in record && /^[a-f0-9]{64}$/.test(String(record.sourceSha256))), { status: traceRead.status, traceLine });
+  check("native probe diagnostics preserve nested module records as one JSON line", traceRead.status === 0 && tracePayload.trace.some((record) => typeof record === "object" && record !== null && "kind" in record && record.kind === "module-matched" && "sourceSha256" in record && /^[a-f0-9]{64}$/.test(String(record.sourceSha256))), { status: traceRead.status, traceLine, stderr: traceRead.stderr });
 
   const waiting = await run(["who", "--waiting", "--json"]);
   check("--waiting keeps the waiting row and the row with a condition", Object.keys(rowsOf(waiting)).sort().join() === "bob,carol" && waiting.envelope?.target.scope === "waiting", Object.keys(rowsOf(waiting)));

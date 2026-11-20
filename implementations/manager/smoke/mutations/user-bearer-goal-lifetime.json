@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "M1 omit endpoint stop cancellation",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "    for (const follower of this.activeGoalFollowers) {\n      follower.cancel();\n    }",
       "replace": "    // omit owned follower cancellation",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
@@ -104,7 +104,7 @@
     },
     {
       "name": "M11 omit notification of a replaced connection",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "        follower.reconnected(this.nc);",
       "replace": "        void follower;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",

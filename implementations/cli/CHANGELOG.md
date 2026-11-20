@@ -1,5 +1,64 @@
 # @cotal-ai/cli
 
+## 0.171.4
+
+### Patch Changes
+
+- 06a66f2: Local MCP clients get direct connection instructions, `input --json` reports an unregistered space as a structured refusal, and removing an absent extension succeeds without changing the installation.
+- 635053e: Self-update no longer asks you to retry while it can wait for a previous install, and it tells you to free temporary disk space when npm runs out during dependency checks.
+- 0df8319: Manual self-updates now report a refused HTTP or HTTPS proxy connection and fail without changing the installation or bypassing the proxy.
+- 0224885: Let an already-current `cotal update --self` succeed even when a running Manager from another installation has an unreadable launch entry.
+- 8c2d0c9: When you rename a stopped space's project folder, `cotal up` and `cotal status` show the commands to keep the new location when the old path is gone and the stack is confirmed stopped.
+- d96fc46: When npm runs on an unsupported Node.js version, Cotal stops installation and explains how to upgrade Node.js or use the official installer.
+- 29564fe: A prepared space record this account cannot read, such as one left owned by root, is no longer reported as a record that does not parse. A command about its space, such as `cotal up` or `cotal use`, refuses `PERMISSION_DENIED`, exit 2, instead of `SCHEMA_INVALID`, and keeps the record. The refusal, the `PREPARED_RECORD_SKIPPED` warning and `cotal status` say the file could not be read and name the step that gives it back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, instead of `cotal space forget`. A record that does not parse or is not a prepared space record still names the forget.
+- d44bae8: `cotal status` reports an answering manager outside a broker-only stack and points to `cotal who` for the live roster.
+- cb8692a: Cotal update explains how to refresh the standalone pi extension without overwriting your copy.
+- a58d5bf: Wait for a self-update that is still renewing its npm reservation, then recheck the installed version instead of asking you to retry.
+- 4734631: Let `cotal update --self` finish interrupted-update recovery when `cotal up` failed without starting any stack members and the stack is confirmed stopped.
+- 8e3024e: `cotal up` no longer refuses a controller stack after a reboot because of a stale delivery or manager record. Before it starts a member, `up` removes each process record under the root whose process is gone, or whose pid now runs another start than its identity pin records. It names each one in a `STALE_PROCESS_RECORD` warning, as a complete `cotal down` does, and never signals the process that holds a reused pid. Before, a record whose pid had been reused refused `up` as a legacy process. A record whose pid a process started by the same `up` took refused the delivery member with `LIFECYCLE_BLOCKED`. A record that may front a live process still refuses.
+- b393c16: Report the CLI version as partial JSON with exit code 4 when the extension manifest cannot be read.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- 291b1a3: Stopping a foreground stack cleanly with `cotal down` no longer prints a broker crash error or claims that a removed space stays recorded.
+- 632460f: A bare `cotal up` in a new project now chooses a free broker port when a stopped project still holds the default address.
+- cb72a76: `cotal` and `cotal help` now explain when the working directory has been removed, even when `PATH` contains relative entries. Help still finds executable paths that do not depend on the removed folder.
+- 19b5bce: Report missing Hermes models alongside missing `uv` in foreground spawn, and explain how to choose Cloud in interactive setup.
+- f900d77: `join --creds` now explains when a credential is for another space, was revoked or predates a local space reset, and shows how to mint a replacement with `--provision`.
+- fdac103: Commands given an unmatched loopback broker address now name possible registered spaces instead of assuming an open `main` space.
+- 5f67adc: Accept explicit broker defaults on `cotal up` and keep a stopped named open space's persona catalog accessible from its project folder.
+- 342d8af: Preserve added extensions and removed connectors when updating after an npm downgrade, and leave newer connector sets untouched when an older CLI refuses reconciliation.
+- e514d98: Print `cotal --version` and `cotal -V` without loading the command runtime or installed extensions.
+- 0c4b5c0: Fix `cotal mcp` shutdown so closing a stdio client retires its local identity without waiting for another CLI process or expired shutdown timers.
+- 01f280f: Fix CLI smoke coverage for signed-out login guidance, private stack cleanup, and broker-only startup.
+- a5db381: `reset store` and `reset space` on a stopped controller stack now leave an empty store directory and record it in the stack journal. `status` no longer exits 4 with a missing-store warning after a reset, including after `space forget`, and `down` and the next `up` no longer warn `STORE_MISSING`. A store removed by hand still warns.
+- 504cbb3: Make the cleanup command printed by `up --restore --root` work from the invoking folder without mistaking a missing local restore record for completed cleanup.
+- b647c12: Make legacy shutdown retries succeed after confirmed agent retirement and show runnable setup guidance in headless status.
+- 1a76a35: Keep complete option names, requested JSON, and subcommand help in argument refusals, show seed usage for invalid `ext seed` arguments, and list only supported persona inputs in public `spawn` help.
+- eb7fd6a: Validate spawn agent names, channel flags, foreground working directories, structured detached pre-send refusals, and empty `--cwd` and `--root` flags before provisioning or writing records.
+- 3d6f145: `cotal status` now reports recorded connector seed failures and the steps to repair them instead of suggesting startup.
+- 2463109: Preview history clearing after a local stack stops, and give working shutdown instructions for renamed projects and stacks started without a manager.
+- 4a26cd5: Self-update no longer refuses a shared address when the selected stack and its broker are stopped, and `cotal status` asks you to wait for an active update before reconciling extension versions.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+
 ## 0.171.2
 
 ### Patch Changes

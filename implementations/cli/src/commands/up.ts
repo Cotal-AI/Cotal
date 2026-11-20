@@ -2238,7 +2238,16 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   }
   if (stoppedStart) console.log(c.dim(stoppedStart));
 
-  if (!resumeAttempt) refuseRegisteredAddress(server, values.space ?? folderSpace(), `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
+  if (!resumeAttempt) {
+    const space = values.space ?? folderSpace();
+    // A stopped reservation has no listener to trigger the port selection above. Only a first
+    // implicit start can move: a prior store, launch record or manifest summary can outlive its address.
+    if (!listenerReachable && values.server === undefined && !values["rotate-sys"] && registeredAddressHolder(server, space)
+      && recordsNameNoSpace(cotalRoot()) && !["nats", "stack-home.json", "team-summaries"].some((entry) => existsSync(cotalPath(entry)))) {
+      server = await freshStackServer(server, host);
+    }
+    refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
+  }
   await assertBrokerAddressFree(server, `${displayCmd()} up${values.host === undefined ? "" : ` --host ${shellWord(host)}`}`, host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
@@ -2402,6 +2411,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // before signalling the broker. Keep the child referenced and its output in this terminal.
   // The configuration names a store inside the root relative to it, so the broker runs from the root.
   const child = spawnBroker(bin, natsArgs, { cwd: cotalRoot(), stdio: "inherit", detached: process.platform !== "win32" });
+  let listenerReady = false;
   let activationFinished = !resumeAttempt;
   await recordSpawnedListener(child, listenerStartedAt, boundListener);
   child.on("error", (err) => {
@@ -2466,9 +2476,8 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
     await stopManager(space).then(() => clearManagerArtifacts(space)).catch((e: Error) => console.error(`! manager teardown: ${e.message}`));
     await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-    // Unrecording (and the exit code below) both depend on WHY the broker is gone. `stopping` is
-    // true only for the intended shutdown `stop()` drives (Ctrl-C, SIGTERM) — everything else here
-    // (a crash, an OOM kill, a signal from outside `up`) leaves the record and its store in place.
+    // Only the shutdown that `stop()` drives (Ctrl-C, SIGTERM) can unrecord here.
+    // External `down` owns its own registry cleanup.
     if (stopping) {
       // Only unrecord if the registry still points at THIS broker. A newer broker for the same space
       // (a concurrent `up`, or a different-port re-up that recorded after us) may have replaced our
@@ -2483,6 +2492,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         if (getCurrent() === space) clearCurrent();
       }
       if (activationFinished) process.exit(stopSignal === "SIGTERM" ? 143 : 130);
+    } else if (code === 0) {
+      // Before readiness, the startup check reports that the listener never answered.
+      // After readiness, do not race external `down` with a claim about its registry cleanup.
+      if (listenerReady && activationFinished) process.exit(0);
     } else {
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
@@ -2507,14 +2520,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       stderrLine("✗ ", `nats-server exited unexpectedly (${detail})${outcome}`, c.red);
       // A foreground broker under `Restart=on-failure` must exit non-zero on a crash so the unit
       // restarts it; exiting 0 here (as an unconditional `code ?? 0` used to) looked like a clean
-      // stop and left the unit sitting dead. A broker that exited 0, as after an external `down`,
-      // still exits 0. Any other exit is a failed run, 5, not the broker's own code, which the exit
-      // table would read as a usage error (1) or a refusal (2).
-      if (activationFinished) process.exit(code === 0 ? 0 : exitCode("failed", "OPERATION_FAILED"));
+      // stop and left the unit sitting dead. An abnormal exit is a failed run, 5, not the broker's
+      // own code, which the exit table would read as a usage error (1) or a refusal (2).
+      if (activationFinished) process.exit(exitCode("failed", "OPERATION_FAILED"));
     }
   });
 
   await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
+  listenerReady = true;
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
@@ -4753,7 +4766,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance, quietBoot = false):
   }
   const nativeHost = nativeMembers.length ? knownStackRecoveryHost() : undefined;
   const recorded: MeshEntry = { ...m, origin, ...(nativeHost !== undefined ? { nativeMembers, nativeHost } : {}) };
-  recordMesh(provenance === "refresh" ? { ...prior, ...recorded, stoppedByDown: undefined } : recorded);
+  recordMesh(provenance === "refresh" ? { ...prior, ...recorded, stoppedByDown: undefined, stoppedWithAgents: undefined } : recorded);
   removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setAdoptedCurrent(m.space);
@@ -4991,6 +5004,13 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
   });
 }
 
+function registeredAddressHolder(server: string, space: string) {
+  const key = brokerAddressKey(server);
+  if (key === undefined) return undefined;
+  const root = canonicalRoot(cotalRoot());
+  return loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
+}
+
 /** Refuse an address that a space registered for another folder keeps while its broker is stopped,
  *  as an occupied one is refused. Starting there would leave two registrations naming one broker:
  *  whichever stack runs answers for both, and the other one's `down` and reads reach it. Every
@@ -4998,10 +5018,7 @@ async function assertFreshTeamBindAvailable(server: string, host: string, space:
  *  `elsewhere` names the way to move the one being started. A space this start takes the name of is
  *  left to the name rules. */
 function refuseRegisteredAddress(server: string, space: string, elsewhere: string): void {
-  const key = brokerAddressKey(server);
-  if (key === undefined) return;
-  const root = canonicalRoot(cotalRoot());
-  const held = loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
+  const held = registeredAddressHolder(server, space);
   if (!held) return;
   throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },

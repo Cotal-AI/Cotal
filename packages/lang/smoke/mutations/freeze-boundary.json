@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "effect inputs stay writable after the dispatch, the shipped defect",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  for (const arg of args) deepFreeze(arg);",
       "replace": "",
       "expectRed": "the options bag crosses like any input: a checkpoint's schema is frozen at the share (L2031)",

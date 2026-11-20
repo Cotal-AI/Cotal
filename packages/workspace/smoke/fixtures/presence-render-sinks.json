@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1098,
+    "total": 1100,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 876
+    "non-render/control": 878
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -3500,7 +3500,7 @@
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "yielded: status });\n    return r;\n  }\n\n  /** Drop an acti",
       "class": "non-render/control",
@@ -4155,7 +4155,7 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
       "class": "non-render/control",
@@ -5668,7 +5668,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "status-token",
-      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (r.folder.root",
+      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (servedStack(r",
       "class": "non-render/control",
       "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
     },
@@ -7294,7 +7294,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "ecuted\");\n      }\n      return reply;\n    } catch (error) {\n ",
+      "anchor": "return reply;",
       "class": "non-render/control"
     },
     {
@@ -7617,7 +7617,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting up to 10 minutes for another updater to release npm's global root\"))",
+      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting for another updater to release npm's global root\"))",
       "class": "non-render/control",
       "rationale": "Global installation custody is acquired before a package replacement begins, not peer presence."
     },
@@ -7645,7 +7645,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.verifyGlobalEntry(root, installed)",
+      "anchor": "(rt.verifyUpdatedEntry ?? rt.verifyGlobalEntry)(root, installed)",
       "class": "non-render/control",
       "rationale": "The selected global CLI entry is verified against its package version before dispatch, not peer presence."
     },
@@ -7788,6 +7788,20 @@
       "anchor": "`exit status ${run.status}`",
       "class": "non-render/control",
       "rationale": "Names the nats-server version probe's process exit status in a refusal, not agent presence or activity."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.turns.yieldTurn(status, opts)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's yield verdict (done, blocked or handoff) to the turn component; the argument is a turn-control token, not a peer's presence, and nothing is rendered here."
+    },
+    {
+      "path": "implementations/cli/src/commands/ext.ts",
+      "kind": "derived-output",
+      "anchor": "`npm terminated by ${closed.signal}`",
+      "class": "non-render/control",
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     }
   ]
 }

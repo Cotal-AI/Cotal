@@ -27,7 +27,7 @@ import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
-import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
@@ -262,11 +262,6 @@ function strandedRegistration(journal: StackJournal, members: readonly Member[])
   } };
 }
 
-/** A stale process record a complete stop removed, or for a preview, one it would remove. */
-function staleWarning(root: string, row: LocalRecord, preview = false): OutputWarning {
-  return { code: "STALE_PROCESS_RECORD", target: { root, path: row.path, pid: row.pid, state: row.state }, message: staleRecordNotice(row, preview) };
-}
-
 /** What a stop that rebuilt the registration says it did, or for a preview, what it would do. */
 function strandedNotice(journal: StackJournal, previous: MeshEntry | undefined, preview = false): OutputWarning {
   const used = preview ? "the stop would use" : "the stop used";
@@ -417,7 +412,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
     else if (full) blocked = fullStoreStop(journal0, manager, full);
   }
   const warnings = [...stackStoreWarnings(journal0), ...(blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
-    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
+    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleRecordWarning(root, row, true))])];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
@@ -639,7 +634,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       ...abandonWarnings,
       ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []),
       ...(stranded ? [strandedNotice(journal0, stranded.previous)] : []),
-      ...cleared.map((row) => staleWarning(root, row)),
+      ...cleared.map((row) => staleRecordWarning(root, row)),
     ] : []),
     ...killed.map(({ role, instanceId, pid }) => ({ code: "STOP_ESCALATED", target: { ...target, role, instanceId, pid }, message: `the ${role} member, pid ${pid}, did not exit within ${PROCESS_STOP_GRACE_MS / 1000} s of SIGTERM, so it was stopped with SIGKILL` })),
     ...(deliveryLease === "unread" ? [{ code: "DELIVERY_LEASE_UNREAD", target, message: "the delivery lease could not be read after the delivery member stopped, so its credential was kept; the next up waits out a lease row that still names it" }] : []),

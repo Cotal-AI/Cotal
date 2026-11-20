@@ -57,6 +57,8 @@ If you selected an older release, run the installer again without `--version` to
 If the latest release cannot start, report the error at the [issue tracker](https://github.com/Cotal-AI/Cotal/issues).
 
 The launcher goes in `~/.local/bin/cotal`.
+If a directory occupies the launcher path, the installer stops before changing the installation.
+Move the directory aside or set `COTAL_BIN_DIR` to a different launcher directory.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
 If the launcher directory is not already on PATH, the installer updates your shell configuration.
 On Linux with Bash, it updates `~/.bashrc` and the first readable login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.
@@ -81,6 +83,8 @@ On Linux, use a glibc distribution to start the built-in PTY manager. The defaul
 uses that manager. Alpine and other musl distributions cannot start it.
 
 If you already have Node.js 22.10 or newer, install as your own user, without sudo.
+On older Node.js versions, the npm postinstall check stops the installation and reports the running and required versions.
+Install a supported Node.js and retry, or use the [shell installer](#use-the-shell-installer) on macOS or Linux.
 The npm global prefix must be writable by your user, and its executable directory must be on PATH.
 On macOS or Linux with distribution Node, the default prefix may be root-owned.
 Use the [shell installer](#use-the-shell-installer) above, or select a user-owned npm prefix before installing:

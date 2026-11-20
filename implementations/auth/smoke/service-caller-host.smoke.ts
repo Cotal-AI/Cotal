@@ -14,7 +14,8 @@ import { SERVICE_AUTHORITY_MAX_BYTES, contractDigest, epAuthBucket } from "@cota
 import { findInteractiveActor, grantActor } from "../src/ledger.js";
 import { SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_CALLER_PAYLOAD_OVERHEAD } from "../src/service-caller-payload.js";
 import { parseServiceHostResult } from "../src/service-host-contract.js";
-import { openServiceHostOperations, serviceHostOperationId, serviceMarkerCeilSeconds, type ServiceHostOperations } from "../src/service-host-ops.js";
+import { openServiceHostOperations, serviceMarkerCeilSeconds, type ServiceHostOperations } from "../src/service-host-ops.js";
+import { serviceHostOperationId } from "../src/service-host-kernel.js";
 import { bytesOf, checks, openFixture, type Fixture } from "./_service-custody-fixture.js";
 
 const c = checks();

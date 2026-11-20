@@ -1,5 +1,33 @@
 # @cotal-ai/delivery
 
+## 0.171.4
+
+### Patch Changes
+
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- f11c18c: Delivery retries starting the membership feed when its store is missing, so the membership view recovers after the store is restored without a daemon restart.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+
 ## 0.171.2
 
 ### Patch Changes

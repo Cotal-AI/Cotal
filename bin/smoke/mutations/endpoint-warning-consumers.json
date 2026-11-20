@@ -9,7 +9,7 @@
   "mutations": [
     {
       "name": "manager stops subscribing to recoverable endpoint warnings",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "    this.ep.on(\"warning\", reportEndpoint);",
       "replace": "    void reportEndpoint;",
       "cell": "manager surfaces endpoint warnings through its supervisor diagnostic",

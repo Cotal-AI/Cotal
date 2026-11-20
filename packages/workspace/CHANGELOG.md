@@ -1,5 +1,30 @@
 # @cotal-ai/workspace
 
+## 0.171.4
+
+### Patch Changes
+
+- 8c2d0c9: When you rename a stopped space's project folder, `cotal up` and `cotal status` show the commands to keep the new location when the old path is gone and the stack is confirmed stopped.
+- 29564fe: A prepared space record this account cannot read, such as one left owned by root, is no longer reported as a record that does not parse. A command about its space, such as `cotal up` or `cotal use`, refuses `PERMISSION_DENIED`, exit 2, instead of `SCHEMA_INVALID`, and keeps the record. The refusal, the `PREPARED_RECORD_SKIPPED` warning and `cotal status` say the file could not be read and name the step that gives it back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, instead of `cotal space forget`. A record that does not parse or is not a prepared space record still names the forget.
+- a58d5bf: Wait for a self-update that is still renewing its npm reservation, then recheck the installed version instead of asking you to retry.
+- b393c16: Report the CLI version as partial JSON with exit code 4 when the extension manifest cannot be read.
+- 85c0a50: Move the restore lifecycle (restore contexts and claims, the restore listener and its custody, and the settling, activation, rollback and retirement of a restored root) out of `maintenance.ts` into an internal `maintenance-restore.ts`. `maintenance.ts` re-exports every public name, so the package surface and import paths are unchanged.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+  - @cotal-ai/core@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- f900d77: `join --creds` now explains when a credential is for another space, was revoked or predates a local space reset, and shows how to mint a replacement with `--provision`.
+- fdac103: Commands given an unmatched loopback broker address now name possible registered spaces instead of assuming an open `main` space.
+- 342d8af: Preserve added extensions and removed connectors when updating after an npm downgrade, and leave newer connector sets untouched when an older CLI refuses reconciliation.
+- b647c12: Make legacy shutdown retries succeed after confirmed agent retirement and show runnable setup guidance in headless status.
+- Updated dependencies [d4b3949]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+
 ## 0.171.2
 
 ### Patch Changes

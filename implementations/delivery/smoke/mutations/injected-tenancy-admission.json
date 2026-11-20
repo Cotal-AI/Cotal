@@ -20,7 +20,7 @@
     },
     {
       "name": "an unidentified injected adapter silently falls back instead of refusing",
-      "file": "implementations/delivery/src/delivery.ts",
+      "file": "implementations/delivery/src/delivery-creds.ts",
       "find": "  return src.injected ? injectedSecretStoreIdentity(src.store) : src.identity;",
       "replace": "  return src.injected ? (src.store.identity !== undefined || process.env.COTAL_SECRET_STORE ? injectedSecretStoreIdentity(src.store) : { kind: \"fs\", root: process.cwd(), id: \"\" }) : src.identity;",
       "expectRed": "injected identity refuses a silent local-root fallback",

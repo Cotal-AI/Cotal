@@ -52,7 +52,7 @@ import {
   saveServiceKeys,
 } from "../src/store.js";
 import { exportSigningKey, generateSigningKey } from "../src/issuer.js";
-import { runAuthService } from "../src/service.js";
+import { runAuthService } from "../src/service-host.js";
 import { cotalAuthProvider } from "../src/provider.js";
 
 let pass = 0, fail = 0;

@@ -222,12 +222,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // `docs` reads its page names from the bundled docs, so completion offers them offline.
   const pages = cotal(["__complete", "docs", ""], undefined, noSeed);
   check("docs completes its page names", pages.status === 0 && ["spec", "lang", "architecture"].every((page) => new RegExp(`^${page}(\\t|$)`, "m").test(pages.stdout)) && !/^--/m.test(pages.stdout), shown(pages));
-  // A subcommand alias reaches the command as its canonical word. The seed is skipped by env so the
-  // run reaches `ext remove` quickly; it refuses because nothing is installed.
+  // A subcommand alias reaches the command as its canonical word. Skip the seed so the run
+  // reaches `ext remove` and reports that the requested package is already absent.
   const removeByAlias = cotal(["x", "rm", "not-installed"], undefined, noSeed);
   check(
     "ext rm runs ext remove",
-    removeByAlias.status === 1 && /no installed extension/.test(removeByAlias.stderr) && same(removeByAlias, cotal(["ext", "remove", "not-installed"], undefined, noSeed)),
+    removeByAlias.status === 0 && /already absent/.test(removeByAlias.stdout) && same(removeByAlias, cotal(["ext", "remove", "not-installed"], undefined, noSeed)),
     shown(removeByAlias),
   );
   const seedHelp = cotal(["x", "seed", "--help"]);
@@ -248,6 +248,33 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // a probe that warns once the CLI is running still prints.
   const probeDir = mkdtempSync(join(tmpdir(), "cotal-entry-probe-"));
   cleanup.push(probeDir);
+  const extDir = join(probeDir, "config", "cotal", "extensions");
+  const extPackage = join(extDir, "node_modules", "version-fixture");
+  mkdirSync(extPackage, { recursive: true });
+  writeFileSync(join(extPackage, "package.json"), JSON.stringify({ name: "version-fixture", version: "1.2.3", main: "index.js" }));
+  writeFileSync(join(extPackage, "index.js"), 'throw new Error("version must not import this extension");\n');
+  writeFileSync(join(extDir, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "version-fixture", spec: "version-fixture@1.2.3", version: "1.2.3", commands: [], provides: [{ kind: "connector", name: "version-fixture" }] }] }));
+  const versionEnv = { XDG_CONFIG_HOME: join(probeDir, "config"), COTAL_TELEMETRY: "off" };
+  const updateCache = (home: string) => writeFileSync(join(home, "update-check.json"), JSON.stringify({ v: 1, latest: "99.0.0", checkedAt: Date.now(), attemptedAt: Date.now(), firstSeenAt: Date.now() }));
+  const inventory = cotal(["version"], updateCache, versionEnv);
+  check("version lists the recorded extension version", /^  version-fixture  1\.2\.3$/m.test(inventory.stdout), shown(inventory));
+  check("version lists a cached newer version", inventory.stdout.includes("99.0.0"), shown(inventory));
+  writeFileSync(join(probeDir, "version-hooks.mjs"), [
+    'export async function load(url, context, next) {',
+    '  if (/\\/bin\\/dist\\/run\\.js$|\\/cli\\/dist\\/(command|index)\\.js$|\\/node_modules\\/version-fixture\\//.test(url)) {',
+    '    throw new Error(`unexpected version import: ${url}`);',
+    '  }',
+    '  return next(url, context);',
+    '}',
+  ].join("\n"));
+  writeFileSync(join(probeDir, "version-register.mjs"), 'import { register } from "node:module";\nregister("./version-hooks.mjs", import.meta.url);\n');
+  for (const flag of ["--version", "-V"]) {
+    const r = cotal([flag], updateCache, { ...versionEnv, NODE_OPTIONS: `--import=${join(probeDir, "version-register.mjs")}` });
+    check(`${flag} prints the same inventory without loading a command runtime or extension`, same(inventory, r), shown(r));
+  }
+  const invalidHome = { ...noSeed, COTAL_HOME: "relative-home" };
+  const refusedVersion = cotal(["version"], undefined, invalidHome);
+  check("--version keeps the relative COTAL_HOME refusal", refusedVersion.status !== 0 && same(refusedVersion, cotal(["--version"], undefined, invalidHome)), shown(refusedVersion));
   writeFileSync(join(probeDir, "probe.mjs"), 'setTimeout(() => process.emitWarning("probe-warning"), 100);\n');
   const both = cotal(["help"], undefined, { ...noSeed, FORCE_COLOR: "1", NO_COLOR: "1", NODE_OPTIONS: `--import=${join(probeDir, "probe.mjs")}` });
   check("FORCE_COLOR with NO_COLOR prints no Node color warning, and another warning still prints",
@@ -332,6 +359,48 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("version -j, --version --json and -V -j print the same envelope", same(json, cotal(["version", "-j"])) && same(json, cotal(["--version", "--json"])) && same(json, cotal(["-V", "-j"])));
   const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
   check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
+
+  const cfg = mkdtempSync(join(tmpdir(), "cotal-entry-version-"));
+  cleanup.push(cfg);
+  const manifest = join(cfg, "cotal", "extensions", "extensions.json");
+  mkdirSync(dirname(manifest), { recursive: true });
+  const versionRun = (args: string[]) => cotal(args, undefined, { XDG_CONFIG_HOME: cfg });
+  const partialVersion = (name: string, args: string[], reason: RegExp) => {
+    const result = versionRun(args);
+    const docs = envelopes(result);
+    const [report] = docs;
+    check(name, result.status === 4 && result.stderr === "" && docs.length === 1 && report?.command === "version"
+      && report.outcome === "partial" && report.completeness === "partial" && report.error?.code === "OPERATION_PARTIAL"
+      && report.result?.version === env?.result?.version && Array.isArray(report.result?.extensions) && report.result.extensions.length === 0
+      && report.warnings?.length === 1 && report.warnings[0]?.code === "EXTENSIONS_UNREADABLE"
+      && reason.test(report.warnings[0]?.message ?? ""), shown(result));
+  };
+  writeFileSync(manifest, "{}\n");
+  partialVersion("version --json reports a corrupt manifest as partial", ["version", "--json"], /no "extensions" array/);
+  partialVersion("leading JSON and the version alias also produce the partial envelope", ["-j", "-V"], /no "extensions" array/);
+  check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
+  const strict = versionRun(["ext", "list"]);
+  check("ext list still refuses the corrupt manifest", strict.status === 1 && strict.stdout === "" && /no "extensions" array/.test(strict.stderr), shown(strict));
+
+  const pin = { pkg: "sample-extension", version: "1.2.3", provides: [{ kind: "runtime", name: "sample" }] };
+  writeFileSync(manifest, JSON.stringify({ extensions: [pin] }));
+  partialVersion("version --json refuses to call a malformed extension row complete", ["version", "--json"], /invalid extension inventory entry/);
+  writeFileSync(manifest, JSON.stringify({ extensions: [{ ...pin, commands: [] }] }));
+  const installed = versionRun(["version", "--json"]);
+  const [installedReport] = envelopes(installed);
+  check("version --json still lists a valid installed pin", installed.status === 0 && installed.stderr === ""
+    && installedReport?.completeness === "complete" && installedReport.result?.extensions[0]?.package === pin.pkg
+    && installedReport.result.extensions[0].version === pin.version, shown(installed));
+  rmSync(manifest);
+  if (process.platform !== "win32") {
+    symlinkSync("missing.json", manifest);
+    partialVersion("version --json distinguishes a dangling manifest link from absence", ["version", "--json"], /ENOENT/);
+    rmSync(manifest);
+    const fifo = spawnSync("mkfifo", [manifest]);
+    check("rig: create a writerless manifest FIFO", fifo.status === 0, fifo.error);
+    partialVersion("version --json reports a writerless manifest FIFO without waiting", ["version", "--json"], /not a regular file/);
+    rmSync(manifest, { force: true });
+  }
 
   // Under --json the envelope alone reports a refusal: its message is the reason, and stderr stays empty.
   const refusedJson = (name: string, r: Run, reason: RegExp) =>

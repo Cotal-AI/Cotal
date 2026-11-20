@@ -22,7 +22,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
+import { MeshAgent } from "../src/agent.js";
+import { SPAWN_TIMEOUT_MS } from "../src/agent-supervision.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import { registerCotalTools } from "../src/tools.js";
 import type { AgentConfig } from "../src/config.js";

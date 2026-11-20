@@ -10,7 +10,7 @@
  * Run: pnpm smoke:status-installation-changing
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -32,6 +32,11 @@ const { acquireLock } = await import("@cotal-ai/workspace");
 interface Envelope { completeness?: string; warnings: { code: string; message: string; target: { pid?: number } | null }[]; result: { machine: { integrations: unknown[] } } | null }
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
+mkdirSync(extensions, { recursive: true, mode: 0o700 });
+writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [
+  { pkg: "@cotal-ai/tmux", version: "0.155.0", spec: "@cotal-ai/tmux@0.155.0", provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
+] }));
 /** Runs the binary without blocking this process, which may be the one holding the lock. */
 async function run(args: string[]) {
   const t0 = Date.now();
@@ -46,6 +51,7 @@ async function run(args: string[]) {
 }
 const shown = (r: Awaited<ReturnType<typeof run>>) => ({ status: r.status, ms: r.ms, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
 const changing = (r: Awaited<ReturnType<typeof run>>) => r.envelope?.warnings.filter((w) => w.code === "INSTALLATION_CHANGING") ?? [];
+const skew = (r: Awaited<ReturnType<typeof run>>) => r.envelope?.warnings.find((w) => w.code === "EXTENSION_VERSION_SKEW")?.message ?? "";
 
 const free = await run(["status", "--json"]);
 check("control: with nobody changing the installation, status names no such command", (free.status === 0 || free.status === 4) && free.envelope !== undefined && changing(free).length === 0, shown(free));
@@ -57,15 +63,20 @@ try {
   check("its warning names that command by pid and says the application rows were not read",
     changing(json).length === 1 && changing(json)[0]!.target?.pid === process.pid && changing(json)[0]!.message === `another cotal command (pid ${process.pid}) is changing this installation, so the application rows were not read`, json.envelope?.warnings);
   check("the report is partial and carries no application rows", json.envelope?.completeness === "partial" && json.envelope.result?.machine.integrations.length === 0, { completeness: json.envelope?.completeness, integrations: json.envelope?.result?.machine.integrations });
+  check("structured status names the provisional skew without recommending another update",
+    skew(json).includes("@cotal-ai/tmux is 0.155.0") && skew(json).includes("These versions may change") && !json.stdout.includes("update --self"), shown(json));
   const plain = await run(["status", "--plain"]);
   check("the text report says so on stderr and names the next step",
     plain.status === 4 && plain.stderr.includes(`another cotal command (pid ${process.pid}) is changing this installation`) && plain.stdout.includes("run `cotal status` again when that command finishes") && !plain.stderr.includes("waiting for another cotal command"), shown(plain));
+  check("text status describes the skew but only tells the user to wait",
+    plain.stderr.includes("These versions may change") && !(plain.stdout + plain.stderr).includes("update --self"), shown(plain));
 } finally {
   lock.release();
 }
 
 const after = await run(["status", "--json"]);
 check("once that command is done, status reads as before", (after.status === 0 || after.status === 4) && changing(after).length === 0, shown(after));
+check("skew that persists after the writer exits gets the reconciliation remedy again", skew(after).includes("update --self"), shown(after));
 
 finish();
 process.exit(process.exitCode ?? 0);

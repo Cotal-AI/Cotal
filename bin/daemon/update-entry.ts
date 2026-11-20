@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
 import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
-import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
+import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
@@ -25,6 +25,7 @@ import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { daemonServiceRequirement } from "./guidance.js";
+import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
  *  from before that marker never waits there, so its child keeps the line. */
@@ -139,6 +140,7 @@ const composed: Command = { ...command, async run(args) {
   let reconcileDaemonObserved = false;
   let recoveryFence = false;
   let repairService: DaemonPaths | undefined;
+  let repairServiceStopped = false;
   let interruptedChildRoot: string | undefined;
   let legacyRepair = false;
   let admission: UpdateAdmission | undefined;
@@ -178,7 +180,7 @@ const composed: Command = { ...command, async run(args) {
     admission = { disposition: "restart-empty", occupied: 0, hostedSpaces: plan.hostedSpaces };
   };
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
-  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
+  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution();
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()), { retainGraph: true });
   /** Target admission covers the daemon and the Managers it hosts. Every other local Manager keeps
@@ -227,19 +229,26 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, onWait, repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait, ...(legacyRepair && root === interruptedChildRoot ? { repairAmbiguous: () => {
+      const ancestors = new Set<number>();
+      const unavailable = () => new CommandFailure("refused", "LIFECYCLE_BLOCKED", "The interrupted update cannot be recovered until the systemd user manager answers on the user bus. Run `cotal update --self` again when it is available.", {
+        native: { outcome: "not-executed" },
+      });
+      let native: string;
+      try {
+        native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+      } catch { throw unavailable(); }
+      const manager = /^u ([1-9]\d*)$/.exec(native);
+      if (!manager) throw unavailable();
+      const managerPid = Number(manager[1]);
+      const managerStart = processBirth(managerPid);
+      if (!managerStart) throw unavailable();
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
         submitSystemdUnitControl("stop", plan.unit);
+        repairServiceStopped = true;
       }
-      const ancestors = new Set<number>();
-      const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000 }).trim();
-      const manager = /^u ([1-9]\d*)$/.exec(native);
-      if (!manager) throw new Error("the native user manager PID could not be authenticated for repair");
-      const managerPid = Number(manager[1]);
-      const managerStart = processBirth(managerPid);
-      if (!managerStart) throw new Error("the native user manager lifetime is unreadable");
       for (let pid = process.pid; pid > 1 && !ancestors.has(pid);) {
         ancestors.add(pid);
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -265,11 +274,21 @@ const composed: Command = { ...command, async run(args) {
         }
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
-    } } : { waitMs: 10 * 60_000, onWait }),
+    } } : {}) }),
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
+      globalVersion: () => observeExecutionVersion(executionInstallRoot()),
+      verifyUpdatedEntry: (root: string, version: string) => {
+        const installed = executionInstallRoot();
+        const selected = selectExecutionProgram(installed);
+        const selectedVersion = updateRuntime.globalVersion!(dirname(selected.root));
+        if (selectedVersion !== version) throw new Error("the selected execution changed before the update recheck");
+        const packageVersion = updateRuntime.globalVersion!(root);
+        if (!packageVersion) throw new Error("the installed global package is missing");
+        return verifyGlobalEntry(root, packageVersion);
+      },
       prepareExecution: async (version: string, root: string) => {
         const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = receipt.admission; hostedSpaces = [...receipt.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; });
         replacementVersion = version;
@@ -482,8 +501,8 @@ const composed: Command = { ...command, async run(args) {
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
-      if (!currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
+      const status = reply.data as { agentCount?: number; custody?: string };
+      if (status.custody === "legacy" && status.agentCount !== 0) {
         const instanceId = manager.instanceId;
         const inventory = await withIdpSessionDir(homeCotalDir(), async () => {
           const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
@@ -510,10 +529,6 @@ const composed: Command = { ...command, async run(args) {
             if (!empty.ok || (empty.data as { agentCount?: number })?.agentCount !== 0) throw new Error("hosted Manager still has running agents; update deferred");
           });
         } });
-      }
-      if (currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
-        const names = status.stopImpact?.agents.map(agent => agent.name);
-        console.log(`hosted Manager ${manager.instanceId}: a later update will require stopping its agents${names?.length ? ` (${names.join(", ")})` : ""}`);
       }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
@@ -564,7 +579,7 @@ const composed: Command = { ...command, async run(args) {
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
-  await collectConnectorSets();
+  if (!currentPackages) await collectConnectorSets();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
@@ -572,6 +587,11 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
+  // Current packages need no Manager census or restart. Keep the guarded start of a stopped native service.
+  if (currentPackages) {
+    const state = join(homeCotalDir(), "daemon");
+    if (daemonObserved || !existsSync(unitReceiptFile({ state })) || await observeUpdateDaemon()) return;
+  }
   // This process keeps the release it loaded. The daemon must run the selected or installed release.
   const expectedVersion = replacementVersion ?? installedCliVersion();
   // A version-changing update already waited for the installed generation before it returned.
@@ -584,7 +604,6 @@ const composed: Command = { ...command, async run(args) {
     }
     return;
   }
-  if (currentPackages) return;
   const paths = daemonPaths();
   const current = standaloneReconcile ? await reconcileDaemonStatus(paths, true) : await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
@@ -624,7 +643,7 @@ const composed: Command = { ...command, async run(args) {
   } finally {
     closeWindowsGeneration();
     if (repairService) {
-      await startEnabledInstalled(repairService, undefined);
+      if (repairServiceStopped) await startEnabledInstalled(repairService, undefined);
       try { await managerViaDaemon({ paths: repairService }, { op: "managers-abort-restart" }); }
       catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NOT_RUNNING") throw error; }
     }

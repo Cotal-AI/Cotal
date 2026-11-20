@@ -71,10 +71,13 @@ whose stack ran and was stopped, and `unsettled` when its last `up` or `down` re
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
 `space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
 a missing folder `(no longer exists)` and names `cotal space forget <space>` for it instead of
-`cotal up`. If you stop a stack and rename its project, run `space show <name>` in the renamed
-folder. It reads the matching journal and tells you how to move the folder back. After a completed
-`cotal down`, it also gives the exact `cotal space forget <name>` and
-`cotal space create <name> --adopt --root <dir>` commands for keeping the new location.
+`cotal up`. If you stop a stack and rename its project, run `cotal status` in the renamed folder.
+When the original path is gone and the retained stack is confirmed stopped, `cotal up` and
+`cotal status` show how to move the folder back or keep the new location. To keep the new location,
+run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
+commands, then run `cotal up` from that folder. Forget releases the stopped stack definitions and
+leaves the project data in place. `cotal space show <name>` also shows how to recover a stopped stack
+from its matching moved journal.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -216,6 +219,10 @@ prepared in a folder that no longer exists, refuses `TARGET_UNAVAILABLE`, exit 2
 space named after the folder there. Forget the space with `cotal space forget <name>`, prepare it again in its new
 folder with `cotal space create <name>`, then run `cotal up`. Until then, `space create` of that name
 says its recorded folder no longer exists.
+
+
+An explicit empty or whitespace-only `--root` on `space create` or `space add` refuses
+`USAGE_INVALID` (exit 1) before any files or registrations are written.
 
 
 ### Forgetting a local record
@@ -516,17 +523,16 @@ If the original home's records were removed, the project's `cotal down --dry-run
 If another home still holds the records, use that home instead.
 
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
-`space create <name>` there refuses `CONFLICT`, exit 2, and names `cotal space create <name> --adopt
---root <root>`, and `status` names the same command. `--adopt` takes the journal over: it rewrites it
+`space create <name>` there refuses `CONFLICT`, exit 2. `cotal status` lists the applicable recovery
+options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
 this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
 with the copied store. When that store directory is present under this folder, it refreshes the recorded store identity from
 it, so a moved or copied store gives no replacement warning before startup, while a missing store or a
 replacement made after adoption still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
-link, when the recorded folder still holds the journal, because this folder is then a copy of a stack
-that runs from there, when this machine records an instance of that stack, because the folder was
-then moved on this machine and moves back, and when the space is prepared or registered on this
-machine, where its Next names `cotal space forget` first. A copy brought from another machine and a
+link, when the recorded folder still holds the journal, when this machine records an instance of
+that stack, or when the space is prepared or registered on this machine. For a confirmed stopped
+stack at a missing path, follow the forget and adopt commands shown by `cotal status`. A copy brought from another machine and a
 folder moved after its record was forgotten are adopted. A folder renamed from a path that `cotal up`
 refuses, such as one with a tab in it, is told only to adopt, since moving it back would not start
 the stack. Without `--adopt`, nothing rewrites a journal.
@@ -636,7 +642,10 @@ This machine shows what is set up and what needs attention. The version line is 
 applications is one line: the applications whose required executables are on PATH, and a count of the
 others, which `cotal setup` adds. An application's own rows, such as the Claude plugin, Claude
 Desktop and Claude skills, appear for an application that is set up and only when they are not
-current. When this machine has local broker records, such as a prepared space, a stack or a
+current. When no application is set up and `status` cannot prompt, Next names the missing executable
+and gives a configure-only setup command if the prepared local space has a saved harness whose
+connector is installed. If those inputs are not known, Next points to `cotal setup --help` for the
+scripted flags. Bare `cotal setup` needs a terminal. When this machine has local broker records, such as a prepared space, a stack or a
 registration started here, the broker executable appears if it is missing or `up` refuses it.
 Prepared spaces count even when another space is selected or status runs outside their projects.
 Local trust and a stack journal also retain the row, including records that cannot be read or parsed.
@@ -788,7 +797,11 @@ reads it, such as `space`, `space create`, `use <name>` and `up`. A file in its 
 or is not a prepared space record refuses only a command about the space its file is named for, such
 as `use <space>`, and names `cotal space forget <space>`. Other commands skip it with the warning `PREPARED_RECORD_SKIPPED`, which names the
 file and `cotal space forget <space>`, the step that removes it, and `status` lists it under
-`meshes.unreadable` and exits 4. A record removed between listing and reading
+`meshes.unreadable` and exits 4. A record this account cannot read, such as one left owned by root,
+is reported as `<file> could not be read`, not as damaged. A command about its space refuses
+`PERMISSION_DENIED`, exit 2, and keeps the record. That refusal and the skip warning name the step
+that gives the file back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, in place of the
+forget. A record removed between listing and reading
 is omitted from that listing. A keyed read also treats a record removed during its read as absent;
 parse, shape and other read failures still refuse by name. Recording or removing a mesh also sweeps
 the directory for an older-format record of the same space. Any error listing the directory for
@@ -1026,6 +1039,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
 | `services` | Selected-space local owned records: `space`, `state` (`read`, `partial` or `not-checked`), non-atomic `observedAt`, public definition/instance projections and explicit scope. An unreadable family is `null`; stored readiness is historical. Older serialized snapshots may omit this observation, which is not an empty inventory. |
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
+| `outsideStackManager` | A manager endpoint check for a selected stack that started with `--no-manager`, when no local manager preset is named. The `endpoint` is `answered`, `not-answering` or `unchecked`. An answer includes `instanceId` if the manager reported it. Absent when the check was skipped |
 | `store` | What the selected space's running local broker logged about its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `damaged` with `pid`, `log`, `at` and the broker's `warning` when it logged damage in a stored file; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
 
@@ -1093,9 +1107,12 @@ status names the file in an `EXTENSIONS_UNREADABLE` warning and reports a partia
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. An open mesh runs no delivery daemon, so when it records no delivery lease its
-delivery responder row says the responder is not used and suggests no command. A controller stack
-started with `--no-manager` gets a Manager row saying it runs none by choice and that bare `cotal up`
-adds it. A part it cannot read is named on its row and as a warning, and the run is
+delivery responder row says the responder is not used and suggests no command. A selected controller
+stack started with `--no-manager` can still have an answering manager outside the stack. The Manager
+row names a local manager preset or reports whether the selected endpoint answered, including its instance
+when reported. If the endpoint could not be checked, the row says so. Next suggests `cotal who` for the
+live roster. It offers `cotal ps` to list managed agents when the report observed a manager answer.
+A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
 connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's

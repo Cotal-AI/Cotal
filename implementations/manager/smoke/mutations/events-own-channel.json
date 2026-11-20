@@ -79,7 +79,7 @@
     },
     {
       "name": "E4 the rule covers the spawn door but not the resume door",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "      const foreign = foreignEventChannels(\n        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
       "replace": "      const foreign = foreignEventChannels(\n        [],",
       "expectRed": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
@@ -88,7 +88,7 @@
     },
     {
       "name": "E5 the resume door judges the channel against the display name, not the principal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "      const actor = entry.identity.mode === \"user\" ? entry.identity.actor : entry.identity.id;",
       "replace": "      const actor = entry.identity.mode === \"user\" ? entry.name : entry.identity.id;",
       "expectRed": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
@@ -97,7 +97,7 @@
     },
     {
       "name": "E6 the resume door reads the read-set only, and forgets the post-set",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
       "replace": "        [...(entry.launch.allowSubscribe ?? [])],",
       "expectRed": "an inventory naming another agent's event channel to POST to is refused at the resume door too",
@@ -133,7 +133,7 @@
     },
     {
       "name": "E10 the resume door prints the route for the OTHER mesh, the defect that shipped there",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preserved-resume.ts",
       "find": "            `${this.readerRemedy(owner, foreign[0]!)}`,",
       "replace": "            `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
       "expectRed": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
@@ -143,8 +143,8 @@
     {
       "name": "E11 the single selector, swapped",
       "file": "implementations/manager/src/manager.ts",
-      "find": "  private get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"user\";\n    if (this.auth !== undefined) return \"static\";\n    return \"open\";\n  }",
-      "replace": "  private get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"static\";\n    if (this.auth !== undefined) return \"user\";\n    return \"open\";\n  }",
+      "find": "  protected get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"user\";\n    if (this.auth !== undefined) return \"static\";\n    return \"open\";\n  }",
+      "replace": "  protected get meshMode(): \"open\" | \"static\" | \"user\" {\n    if (this.userMode) return \"static\";\n    if (this.auth !== undefined) return \"user\";\n    return \"open\";\n  }",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",
       "cell": "the refusal prints a mint command, naming a profile and a channel",
       "note": "There is exactly ONE selector for all three doors, and this swaps the two non-open arms rather than inverting a boolean (there is no boolean left to invert; the fold in #567 made the selector three-valued so a fourth mode could not fall into an existing arm). The suite runs a STATIC mesh, so under this mutant a static manager reads meshMode as \"user\" and the refusal hands a static operator `cotal actor grant` against a ledger that does not exist, reddening the same cell E9 named. Re-anchored for #567: the prior E11 found the single-line ternary `return this.userMode` the earlier boolean selector used, which #567 replaced with this switch."

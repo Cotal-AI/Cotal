@@ -1,5 +1,15 @@
 # @cotal-ai/connector-opencode
 
+## 0.171.4
+
+No changes in this release.
+
+## 0.171.3
+
+### Patch Changes
+
+- a5ec351: `cotal spawn --harness opencode` now exits non-zero when the OpenCode server stops on its own before its Cotal session is ready, even when OpenCode itself exits 0. It used to forward that 0 and report success for a seat that never joined. A server that exits with an error keeps its own status, and the boot-log message is unchanged.
+
 ## 0.171.2
 
 ### Patch Changes

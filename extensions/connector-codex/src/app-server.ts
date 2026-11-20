@@ -43,7 +43,7 @@ import type { PresenceCondition } from "@cotal-ai/core";
 import { codexCondition } from "./agui-map.js";
 
 /** Non-secret launch attribution variables a seat's shell needs for `cotal stop --self` and
- *  seat-attributed CLI control commands (#7594). */
+ *  other CLI control commands that need to identify the calling seat. */
 export const SEAT_ATTRIBUTION_ENV: ReadonlySet<string> = new Set([
   "COTAL_SPACE",
   "COTAL_MANAGER_INSTANCE",

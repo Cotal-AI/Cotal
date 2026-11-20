@@ -22,12 +22,16 @@ cotal up
 cotal spawn default --detach --agent pi
 ```
 
-To make ordinary interactive Pi sessions mesh-capable, copy the standalone artifact once:
+To make ordinary interactive Pi sessions mesh-capable, install and copy the standalone artifact:
 
 ```bash
+npm install @cotal-ai/pi
 mkdir -p ~/.pi/agent/extensions
 cp node_modules/@cotal-ai/pi/dist/standalone.js ~/.pi/agent/extensions/cotal.js
 ```
+
+Cotal's updater leaves this copy unchanged. After the update succeeds, reinstall `@cotal-ai/pi` at
+the version shown by `cotal --version` and repeat the copy. Review any local edits before replacing it.
 
 The copied file has no repository-local or sibling-file imports. It activates only when a real
 Cotal identity (`COTAL_NAME`, `COTAL_AGENT_FILE`, or `COTAL_LINK`) is present. Unrelated operator

@@ -140,6 +140,8 @@ export interface MeshEntry {
   ts: string;
   /** This folder's completed legacy down kept the registration. The next up clears this receipt. */
   stoppedByDown?: true;
+  /** The completed legacy down also confirmed the manager's shutdown with agent retirement. */
+  stoppedWithAgents?: true;
 }
 
 /** Non-secret user-auth metadata on a {@link MeshEntry}. TRUST PINS and CONVENIENCE ENDPOINTS are
@@ -550,12 +552,15 @@ export class MeshRegistryError extends Error {
   readonly summary?: string;
   /** The step that clears it, when it is not the restore or remove a damaged record takes. */
   readonly remedy?: string;
-  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string }) {
+  /** Set when this account may not read the file, which is then intact as far as anyone knows. */
+  readonly refusal?: "PERMISSION_DENIED";
+  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string; refusal?: "PERMISSION_DENIED" }) {
     super(message, options);
     this.name = "MeshRegistryError";
     this.file = file;
     this.summary = options?.summary;
     this.remedy = options?.remedy;
+    this.refusal = options?.refusal;
   }
 }
 

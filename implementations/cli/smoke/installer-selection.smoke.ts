@@ -76,10 +76,13 @@ try {
   const npmPackage = join(root, "npm-package");
   mkdirSync(npmHome);
   mkdirSync(npmPackage);
-  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "dist/cotal.js" }, scripts: { postinstall: "node scripts/pin-npm-node.mjs" } }));
+  const binRoot = resolve(import.meta.dirname, "../../../bin");
+  const { engines, scripts } = JSON.parse(readFileSync(join(binRoot, "package.json"), "utf8"));
+  const postinstall = scripts.postinstall.replace(/^node /, "");
+  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "dist/cotal.js" }, engines, scripts: { postinstall: scripts.postinstall } }));
   mkdirSync(join(npmPackage, "dist"));
   mkdirSync(join(npmPackage, "scripts"));
-  copyFileSync(resolve(import.meta.dirname, "../../../bin/scripts/pin-npm-node.mjs"), join(npmPackage, "scripts/pin-npm-node.mjs"));
+  copyFileSync(join(binRoot, postinstall), join(npmPackage, postinstall));
   writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
@@ -220,6 +223,18 @@ try {
   assert(output(latestCrashed).includes("The latest Cotal release could not start.") && output(latestCrashed).includes("Report the error above at https://github.com/Cotal-AI/Cotal/issues"), "latest failure names the issue tracker");
   assert(!output(latestCrashed).includes("without --version"), "latest failure does not recommend the same installation again");
   assert(!output(latestCrashed).includes("✓ Cotal") && !output(latestCrashed).includes("get your machine ready"), "latest failure prints no success or setup instructions");
+
+  const obstructed = fixture("launcher-directory");
+  const occupiedLauncher = join(obstructed.newBin, "cotal");
+  mkdirSync(occupiedLauncher);
+  writeFileSync(join(occupiedLauncher, "sentinel"), "keep-me\n");
+  const blocked = spawnSync("/bin/sh", [driver, library], { env: { ...obstructed.env, PATH: toolPath }, encoding: "utf8" });
+  assert.equal(blocked.status, 1, output(blocked));
+  assert.deepEqual(readdirSync(occupiedLauncher), ["sentinel"], "refusal does not leave a hidden launcher inside the directory");
+  assert.equal(readFileSync(join(occupiedLauncher, "sentinel"), "utf8"), "keep-me\n");
+  assert(!existsSync(join(obstructed.home, ".local/share/cotal")), "refusal leaves the install root absent");
+  assert(output(blocked).includes(`${quote(occupiedLauncher)} is a directory.`), "refusal names the obstructing path");
+  assert.match(output(blocked), /Move the directory aside or set COTAL_BIN_DIR/);
 
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
@@ -408,7 +423,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 108 : 87, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 114 : 93, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

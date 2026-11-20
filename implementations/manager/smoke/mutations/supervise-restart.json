@@ -37,7 +37,7 @@
     },
     {
       "name": "a supervised restart treats stale presence as a join",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/readiness-wait.ts",
       "find": "        && p.lifecycleUid === a.lifecycleUid\n        && (opts.joinedAfter === undefined || p.ts >= opts.joinedAfter));",
       "replace": "        && p.lifecycleUid === a.lifecycleUid);",
       "expectRed": "a failed supervised relaunch retires the seat",

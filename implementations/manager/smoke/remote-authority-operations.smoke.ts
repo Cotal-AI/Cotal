@@ -262,5 +262,20 @@ assert.equal((startOpts[4] as { events?: boolean }).events, undefined);
 assert.equal((startOpts[4] as { eventsNotice?: string }).eventsNotice, undefined);
 assert.equal(remoteChecks, 16);
 
+// The broker transport's own dials go through Manager.dial, so a test that replaces it (as the
+// goal-index sweep above does) intercepts the standing dial and the one-shot connections too.
+const dialSeam = new Manager({ space: "demo", runtime: "pty" }) as unknown as {
+  servers: string;
+  dial(opts: unknown): Promise<never>;
+  dialRemoteStanding(opts: unknown, deadline: number): Promise<unknown>;
+  withOpenServeConnection<T>(fn: unknown): Promise<T>;
+};
+dialSeam.servers = "nats://127.0.0.1:1";
+let seamDials = 0;
+dialSeam.dial = async () => { seamDials++; throw new Error("dial seam stub"); };
+await assert.rejects(dialSeam.dialRemoteStanding({ maxReconnectAttempts: 0 }, performance.now() + 3000), /dial seam stub/, "a replaced Manager.dial intercepts the remote standing dial");
+await assert.rejects(dialSeam.withOpenServeConnection(async () => undefined), /dial seam stub/, "a replaced Manager.dial intercepts the open serve connection");
+assert.equal(seamDials, 2);
+
 console.log(`remote authority operations: ${cells()} passed, 0 failed`);
 emitSentinel({ passed: cells(), failed: 0 });

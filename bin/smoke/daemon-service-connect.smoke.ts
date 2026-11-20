@@ -203,6 +203,26 @@ async function ask(socket: string, req: Frame, ms = 40_000): Promise<Frame> {
     });
   } finally { sock.destroy(); }
 }
+function pollStartupStatus(socket: string) {
+  let stopped = false;
+  let replies = 0, slowestMs = 0;
+  let failure: unknown;
+  const poll = (async () => {
+    while (!stopped) {
+      const started = performance.now();
+      const reply = await ask(socket, { op: "status" }, 1000);
+      assert.equal(reply.ok, true);
+      slowestMs = Math.max(slowestMs, performance.now() - started);
+      replies++;
+      await sleep(100);
+    }
+  })().catch(error => { failure = error; });
+  return async () => {
+    stopped = true;
+    await poll;
+    check("desktop Manager startup keeps new status connections responsive", failure === undefined && replies > 1 && slowestMs < 1000, { replies, slowestMs, failure: String(failure ?? "") });
+  };
+}
 const resultOf = (f: Frame) => (f.result ?? {}) as Record<string, any>;
 const errorOf = (f: Frame) => (f.error ?? {}) as Record<string, unknown>;
 
@@ -2650,7 +2670,6 @@ process.stdin.once('data', () => {
             check("I6 intent authentication refusal preserves desired set and asks for sign-in", !refused.ok && JSON.stringify(refused).includes("Sign in again") && !accountDesired, refused);
             return;
           }
-          accountDesired = true;
           const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
           const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
             let value: Record<string, any> = {};
@@ -2658,10 +2677,14 @@ process.stdin.once('data', () => {
             check(label, predicate(value), value); return value;
           };
           const hostedShape = process.argv.includes("--account-hosted");
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
-          if (!hostedShape) await approve(host, ON, fixture.owner);
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
-          await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          const stopStatusPoll = retiredAppRuntime ? pollStartupStatus(paths.socket) : undefined;
+          try {
+            accountDesired = true;
+            await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
+            if (!hostedShape) await approve(host, ON, fixture.owner);
+            await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
+            await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          } finally { await stopStatusPoll?.(); }
           if (process.argv.includes("--account-custody-repro")) {
             const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
             const session = loadIdpSession(home, idpUrl)!;
@@ -2942,9 +2965,10 @@ process.stdin.once('data', () => {
           assert.match(refused.lastRefusal, /no longer registered/);
           console.log("HOSTED_REFUSAL before setup", JSON.stringify(refused));
         }
+        const stopStatusPoll = retiredAppRuntime && !explicitHome ? pollStartupStatus(paths.socket) : undefined;
         const setup = explicitHome
           ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
-          : await cli("setup", "--space", ON, "--idp", idpUrl);
+          : await cli("setup", "--space", ON, "--idp", idpUrl).finally(() => stopStatusPoll?.());
         console.log("  H1 setup", JSON.stringify(setup));
         if (pathRecovery) {
           check("P1 initial setup refuses without applications", setup.code === 2 && setup.doc.error?.cause?.code === "NO_AVAILABLE_CONNECTOR", setup);

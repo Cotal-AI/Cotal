@@ -21,7 +21,7 @@
   "mutations": [
     {
       "name": "a re-entered open ignores the recorded plan and re-plans from the world",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "    let plan: ConclavePlan;\n    if (isConclavePlan(ctx.resume)) {\n      plan = ctx.resume;\n    } else {",
       "replace": "    let plan: ConclavePlan;\n    if (false) {\n      plan = ctx.resume as never;\n    } else {",
       "expectRed": "the re-entered open returns the same channel with the member's presence gone",
@@ -30,7 +30,7 @@
     },
     {
       "name": "presence resolution matches the name alone, not the incarnation",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "  const matches = rows.filter((p) => p.card.name === name && p.lifecycleUid === uid);",
       "replace": "  const matches = rows.filter((p) => p.card.name === name);",
       "expectRed": "a failed resolve bound no plan and wrote no row",
@@ -39,7 +39,7 @@
     },
     {
       "name": "every member is planned joined-by-us, residents included",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,\n          joined: !open,",
       "replace": "          generation: open ? existing.record.generation : (existing?.record.generation ?? 0) + 1,\n          joined: true,",
       "expectRed": "the close left the resident's membership open at its own generation",
@@ -48,7 +48,7 @@
     },
     {
       "name": "the close releases nothing",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "    if (this.services) await this.services.admission();\n    const joined = plan.members.filter((m) => m.joined);",
       "replace": "    if (this.services) await this.services.admission();\n    const joined: ConclavePlanMember[] = [];",
       "expectRed": "both membership rows were committed and then tombstoned by the close",
@@ -66,7 +66,7 @@
     },
     {
       "name": "a minted channel's registry row is never torn down",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "    if (plan.registered) {\n      await (await this.channelRegistry()).delete(plan.channel);\n    }",
       "replace": "    if (false) {\n      await (await this.channelRegistry()).delete(plan.channel);\n    }",
       "expectRed": "the minted channel's registry row is deleted by the close",
@@ -75,7 +75,7 @@
     },
     {
       "name": "an absent member loses its catchable class",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "  if (matches.length === 0)\n    throw new EffectError(\"L4002\", \"conclave\",\n      `conclave member \"${agent}\" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);",
       "replace": "  if (matches.length === 0)\n    throw new Error(\n      `conclave member \"${agent}\" is not present on the mesh: no live presence row carries that name and incarnation, so the agent is down or gone`);",
       "expectRed": "the entry settles as the conclave effect's own catchable L4002",
@@ -84,7 +84,7 @@
     },
     {
       "name": "a re-execute recommits landed rows with a fresh join cursor",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-conclave.ts",
       "find": "      const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);\n      if (existing !== undefined && existing.record.generation >= m.generation) continue;",
       "replace": "      const existing = await readMember(membersKv, plan.channel, m.principal, m.uid);\n      if (false) continue;\n      void existing;",
       "expectRed": "the landed row is untouched: same join cursor, same generation",

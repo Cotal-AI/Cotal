@@ -1,6 +1,7 @@
 import type { CotalEndpoint, ManagerLeaseInfo } from "@cotal-ai/core";
 import { MANAGER_LEASE_TTL_MS, awaitLeaseExpiry, leaseRemainingMs, rejectionText } from "@cotal-ai/core";
 import { probeLiveness } from "@cotal-ai/workspace";
+import type { Manager } from "./manager.js";
 
 /** How long a clean stop keeps trying to release its liveness lease when the broker does not answer
  *  (#3916). The client redials a lost broker every 2 s, so a connection dropped by an outage of up to
@@ -40,6 +41,17 @@ export interface LeaseKeeperDeps {
   instanceId: () => string;
   space: () => string;
   stopping: () => boolean;
+}
+
+/** Builds the {@link LeaseKeeperDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function leaseKeeperDeps(m: Manager): LeaseKeeperDeps {
+  return {
+    endpoint: () => m["ep"],
+    instanceId: () => m["managerInstanceId"],
+    space: () => m["space"],
+    stopping: () => m["leaseStopping"],
+  };
 }
 
 /** This manager instance's liveness lease key: acquire it at start, renew it on a timer, release it
