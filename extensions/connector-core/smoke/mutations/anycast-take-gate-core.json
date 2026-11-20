@@ -18,7 +18,7 @@
   "mutations": [
     {
       "name": "a take waits on its own reply subscription only",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-anycast.ts",
       "find": "      const m = await this.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);",
       "replace": "      const m = await nc.request(subject, JSON.stringify(body), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${subject}.reply.${randomUUID()}` });",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
@@ -28,9 +28,9 @@
     },
     {
       "name": "the probe a take falls back to waits on the probe's reply only",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-anycast.ts",
       "find": "      reply = await this.requestDelivery(ANYCAST_TAKES_OP, {}, ANYCAST_TAKE_TIMEOUT_MS);",
-      "replace": "      const probeSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.owner, this.actor);\n      const probe = { op: ANYCAST_TAKES_OP, args: {}, from: this.ref() };\n      reply = (await this.nc!.request(probeSubject, JSON.stringify(probe), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${probeSubject}.reply.${randomUUID()}` })).json<ControlReply>();",
+      "replace": "      const { controlServiceSubject, CONTROL_DELIVERY } = await import(\"./subjects.js\");\n      const probeSubject = controlServiceSubject(this.space, CONTROL_DELIVERY, this.owner, this.actor);\n      const probe = { op: ANYCAST_TAKES_OP, args: {}, from: this.ref() };\n      reply = (await this.nc!.request(probeSubject, JSON.stringify(probe), { timeout: ANYCAST_TAKE_TIMEOUT_MS, noMux: true, reply: `${probeSubject}.reply.${randomUUID()}` })).json<ControlReply>();",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
       "cell": "11e with nothing serving the take rail, a read waiting on the probe the take falls back to ends with the old link too",
@@ -38,7 +38,7 @@
     },
     {
       "name": "a copy refused as a mismatch on a recreated stream is forgotten without a nak",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-anycast.ts",
       "find": "      if (current !== undefined && current !== epoch) nak();\n",
       "replace": "",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
