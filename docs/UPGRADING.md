@@ -152,6 +152,11 @@ space's services and prints one conversion line. Durable members, channel metada
 history are kept. A running stack, remote broker or adopted listener is not converted automatically.
 Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
 
+If you stopped the stack with `cotal down --preserve-state`, run
+`cotal up --recreate-membership-store` from the same project. It converts the derived feed
+before starting the stack's services and resumes the preserved cut without discarding channel
+history. If conversion fails, `up` stops the broker it started and keeps the cut for a retry.
+
 The command uses one exact short-lived credential to inspect and delete only the membership stream,
 then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and
 manager lease buckets remain File-backed. A missing File lease bucket refuses rather than being
