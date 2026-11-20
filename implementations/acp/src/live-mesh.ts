@@ -15,6 +15,7 @@ import {
   isEventChannel,
   parsePrincipalKey,
   principalKey,
+  remoteManagerActors,
   type CotalEndpoint,
   type CotalMessage,
   type ManagerInstanceListing,
@@ -50,10 +51,13 @@ export function namesDeregister(op: string, instanceId: string | undefined, own:
   return instanceId !== undefined && own.has(instanceId) && READS.has(op) && !reply.ok && reply.unanswered === true;
 }
 
-/** A manager as a choice, its host read from the roster's current row for it. An offline row says
- *  nothing about where the manager runs now, so it is not live and not local. */
-export function managerChoice(instanceId: string, roster: readonly Presence[], here: string): ManagerChoice {
-  const row = roster.find((p) => parsePrincipalKey(p.card.id)?.actor === `manager_${instanceId}` && p.status !== "offline");
+/** A manager as a choice, its host read from the roster's current row for it. On a space where people
+ *  sign in, `owner` is the person's, and only their own manager's row counts: another member may name
+ *  an agent after it. An offline row says nothing about where the manager runs now, so it is not live
+ *  and not local. */
+export function managerChoice(instanceId: string, roster: readonly Presence[], here: string, owner?: string): ManagerChoice {
+  const actor = remoteManagerActors(instanceId).supervisor;
+  const row = roster.find((p) => (owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`) && p.status !== "offline");
   const seen = managerCandidate(instanceId, row).host;
   return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
 }
@@ -257,7 +261,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
-  const choice = (instanceId: string): ManagerChoice => managerChoice(instanceId, observer.getRoster(), hostname());
+  const choice = (instanceId: string): ManagerChoice => managerChoice(instanceId, observer.getRoster(), hostname(), started?.owner);
 
   /** On a user-auth space, the person's managers as the space's auth service lists them. The list
    *  spends no selection, a manager whose presence has not arrived is still listed, and each later
@@ -273,7 +277,6 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
 
   return {
     space: target.space,
-    userMode: target.mode === "user",
     ...(defaultAgent ? { defaultAgent } : {}),
 
     async catalogs(instanceId) {

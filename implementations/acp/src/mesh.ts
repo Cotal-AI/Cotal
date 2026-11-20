@@ -27,8 +27,8 @@ export interface ManagerChoice {
   readonly host?: string;
   /** The manager runs on the host this process runs on. */
   readonly local: boolean;
-  /** The manager's presence is current, or off a signed-in space, it answered for its host. A
-   *  registration whose computer is gone can stay listed. */
+  /** The manager's presence is current, or, with no presence row to read, it answered for its host.
+   *  A registration whose computer is gone can stay listed. */
   readonly live?: boolean;
 }
 
@@ -111,7 +111,7 @@ export class NoLaunchManager extends Error {
 /** What a person on a space where people sign in can do about a registered manager that does not
  *  answer. Its registration stays listed until it is removed, as `cotal ps` says. */
 export function deregisterRemedy(space: string, instanceIds: readonly string[]): string {
-  return `For a computer that is gone, ask the space's auth service to remove your registration, which needs the \`supervise\` scope: ${instanceIds.map((id) => `\`cotal endpoint deregister manager ${id} --space ${space} --yes\``).join(", ")}.`;
+  return `For a computer that is gone, ask the space's auth service to remove your registration. Removing it needs the \`supervise\` scope: ${instanceIds.map((id) => `\`cotal endpoint deregister manager ${id} --space ${space} --yes\``).join(", ")}.`;
 }
 
 /** The seats the managers listed, and the managers that did not answer, whose seats are missing. */
@@ -128,8 +128,6 @@ export interface Mesh {
   readonly space: string;
   /** The application a launch uses when none is chosen, as the operator's preference names it. */
   readonly defaultAgent?: string;
-  /** Whether the space authenticates users, which constrains seat names. */
-  readonly userMode: boolean;
   /** The applications and models a manager offers. Rejects with {@link LaunchListsRefused} when the
    *  caller may not read them. */
   catalogs(managerInstanceId?: string): Promise<AgentCatalog[]>;
