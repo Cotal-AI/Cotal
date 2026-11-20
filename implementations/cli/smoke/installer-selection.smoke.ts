@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -133,6 +133,22 @@ try {
   assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
   assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
   assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage a second installation");
+
+  {
+    const staging = join(npmHome, ".npm-global");
+    const moved = join(npmHome, "moved prefix's");
+    renameSync(staging, moved);
+    const movedBin = join(moved, "bin");
+    const aliasBin = join(npmHome, "linked-bin");
+    symlinkSync(movedBin, aliasBin);
+    for (const [bin, path] of [[movedBin, toolPath], [aliasBin, aliasBin]]) {
+      const start = spawnSync(join(bin, "cotal"), ["--version"], { env: { ...npmEnv, PATH: path }, encoding: "utf8", timeout: 10_000 });
+      assert.equal(start.status, 0, output(start));
+      assert.equal(start.stdout.trim(), "cotal-ai 0.0.0", `npm launcher starts after relocation through ${bin}`);
+    }
+    renameSync(moved, staging);
+  }
+
   const removeSection = installation.split("## Remove Cotal")[1]?.split("## ")[0];
   const removeSteps = removeSection?.match(/```bash\n([^`]+)```/)?.[1];
   assert(removeSteps, "npm removal instructions include a shell command block");
@@ -488,7 +504,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 141 : 120, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 145 : 124, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });
