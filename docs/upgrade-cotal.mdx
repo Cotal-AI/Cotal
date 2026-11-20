@@ -489,6 +489,10 @@ Retired records stay in a timestamped `update-recovery-retained-<timestamp>-<suf
 Cotal home, normally `~/.cotal`. The command prints that folder. It never changes the snapshot
 named by a retired record. The daemon uses the same rules, including unattended updates.
 
+If the interrupted update prevented `cotal up` from starting any member, run `cotal update --self`
+before trying `cotal up` again. The update can reconcile the installation without starting the
+stack when it confirms the recorded processes are gone and the broker address has no listener.
+
 If a machine on 0.164.6 or older is stuck on an unusable interrupted-update record, rerun the installer:
 
 ```bash
