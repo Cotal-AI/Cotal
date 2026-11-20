@@ -40,15 +40,19 @@ entry=$(
   while :; do
     case "$launcher" in /*) ;; *) launcher=./$launcher ;; esac
     # Resolve the directory before interpreting a relative symlink target.
-    CDPATH= cd -P "\${launcher%/*}/" || exit 1
+    CDPATH= cd -P "\${launcher%/*}/" 2>/dev/null || exit 1
     launcher=$PWD/\${launcher##*/}
     if [ ! -L "$launcher" ]; then
+      [ -f "$PWD/cotal.js" ] || exit 1
       printf '%s\\n' "$PWD/cotal.js"
       break
     fi
-    launcher=$(PATH=/usr/bin:/bin readlink "$launcher") || exit 1
+    launcher=$(PATH="\${PATH:+$PATH:}/usr/bin:/bin" readlink "$launcher" 2>/dev/null) || exit 1
   done
-) || exit 1
+) || {
+  printf 'cotal: cannot resolve the JavaScript entry from launcher %s\\n' "$0" >&2
+  exit 1
+}
 exec "$node" "$entry" "$@"
 `, { flag: "wx", mode: 0o755 });
       const temporary = mkdtempSync(join(dirname(link), ".cotal-node-"));

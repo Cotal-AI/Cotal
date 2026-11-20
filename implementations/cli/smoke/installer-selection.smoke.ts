@@ -141,11 +141,28 @@ try {
     const movedBin = join(moved, "bin");
     const aliasBin = join(npmHome, "linked-bin");
     symlinkSync(movedBin, aliasBin);
-    for (const [bin, path] of [[movedBin, toolPath], [aliasBin, aliasBin]]) {
-      const start = spawnSync(join(bin, "cotal"), ["--version"], { env: { ...npmEnv, PATH: path }, encoding: "utf8", timeout: 10_000 });
+    const readlinkBin = join(npmHome, "private-bin");
+    const readlinkLog = join(npmHome, "readlink-used");
+    mkdirSync(readlinkBin);
+    writeFileSync(join(readlinkBin, "readlink"), `#!/bin/sh
+printf '%s\\n' "$1" > "$HOME/readlink-used"
+exec "$FIXTURE_NODE" -e 'console.log(require("node:fs").readlinkSync(process.argv[1]))' -- "$1"
+`, { mode: 0o755 });
+    const readlinkEnv = { ...npmEnv, FIXTURE_NODE: process.execPath };
+    for (const [bin, path] of [[movedBin, toolPath], [aliasBin, readlinkBin]]) {
+      const start = spawnSync(join(bin, "cotal"), ["--version"], { env: { ...readlinkEnv, PATH: path }, encoding: "utf8", timeout: 10_000 });
       assert.equal(start.status, 0, output(start));
       assert.equal(start.stdout.trim(), "cotal-ai 0.0.0", `npm launcher starts after relocation through ${bin}`);
     }
+    const movedLauncher = join(movedBin, "cotal");
+    assert.equal(readFileSync(readlinkLog, "utf8").trim(), join(realpathSync(movedBin), "cotal"), "the pinned Node launch uses readlink from the private PATH first");
+    const movedBootstrap = join(dirname(realpathSync(movedLauncher)), "cotal.js");
+    renameSync(movedBootstrap, `${movedBootstrap}.saved`);
+    const unresolved = spawnSync(movedLauncher, ["--version"], { env: { ...readlinkEnv, PATH: readlinkBin }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(unresolved.status, 1, output(unresolved));
+    assert.equal(unresolved.stdout, "");
+    assert.equal(unresolved.stderr, `cotal: cannot resolve the JavaScript entry from launcher ${movedLauncher}\n`);
+    renameSync(`${movedBootstrap}.saved`, movedBootstrap);
     renameSync(moved, staging);
   }
 
@@ -504,7 +521,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 145 : 124, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 149 : 128, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });
