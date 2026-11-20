@@ -1,7 +1,7 @@
 /** The S2-A record kernel shared by the service host families: record keys and ids, the keyed
  *  reads and writes, capacity release, operation settlement and debt, and the result arms. */
 import { createHash } from "node:crypto";
-import { assertLifecycleToken, canonicalJson, contractDigest, endpointToken, type ContractStoreContext, type EpCapability } from "@cotal-ai/core";
+import { EpEnvelopeError, assertLifecycleToken, canonicalJson, contractDigest, endpointToken, type ContractStoreContext, type EpCapability } from "@cotal-ai/core";
 import { SERVICE_HOST_INVOCATION_MS } from "./authority-client.js";
 import { readNativeServiceName } from "./native-service-name.js";
 import { encodeRoundTrip } from "./service-custody-shapes.js";
@@ -171,3 +171,5 @@ export const finalArm = (operationId: string, f: Exclude<Final, { state: "comple
   f.state === "refused" ? refusedArm(operationId, f.reason, debts) : refusedArm(operationId, "superseded", debts, f.boundOperationId);
 
 export type Live<T> = Extract<Read<T>, { state: "value" }>;
+
+export function badRequest(detail: string): never { throw new EpEnvelopeError("bad-request", `service host request: ${detail}`); }
