@@ -638,7 +638,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with \`cotal space forget ${space}\`, then run ${codeSpan(`cotal space create ${space} --adopt --root ${shellPath(root)}`)}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with ${codeSpan(`cotal space forget ${shellPath(space)}`)}, then run ${codeSpan(`cotal space create ${shellPath(space)} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
 }
 
@@ -660,7 +660,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
       stoppedRemedy = `forget it with ${codeSpan(`cotal space forget ${name}`)}, then run ${codeSpan(`cotal space create ${name} --adopt --root ${shellPath(root)}`)}`;
     }
   } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
+  const adopt = block === undefined ? `adopt it with ${codeSpan(`cotal space create ${space === "<space>" ? space : shellPath(space)} --adopt --root ${shellPath(root)}`)}` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined

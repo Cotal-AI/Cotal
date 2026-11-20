@@ -342,6 +342,21 @@ setCurrent("keep");
   check("the human report says it was added and how to select it", human.status === 0 && /✓ added open4/.test(text) && /broker answered and serves this space/.test(text) && /select it with `cotal use open4`/.test(text), shown(human));
   const plain = await run(["space", "add", "open5", "--server", LIVE, "--root", root, "--plain"], { FORCE_COLOR: "1" });
   check("--plain writes it with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && /added open5/.test(plain.stdout), shown(plain));
+
+  if (process.platform !== "win32") {
+    const spacedRoot = projectRoot("registrations with 'quotes' and `backticks`");
+    const unchecked = await json(["space", "add", "open5", "--server", LIVE, "--root", spacedRoot, "--mode", "open", "--force"]);
+    check("a forced registration keeps a root with spaces and quotes", unchecked.status === 0 && unchecked.env?.result.space.root === spacedRoot && unchecked.env?.result.verified === false, shown(unchecked));
+    const detail = await run(["space", "show", "open5", "--plain"]);
+    const hint = /check its mode by adding it again without --force: (`+)(cotal space forget .+?)\1, then (`+)(cotal space add .+?)\3$/m.exec(detail.stdout);
+    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]} && ${hint[4]}`], {
+      cwd: home, env: runEnv, encoding: "utf8", timeout: 120_000,
+    });
+    const checked = await json(["space", "show", "open5"]);
+    check("the printed verification commands re-register and verify the exact root",
+      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot,
+      { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
+  }
 }
 
 // ── Adding a user-auth space from a bundle ─────────────────────────────────────────────────────────────
@@ -1136,6 +1151,7 @@ if (process.platform === "linux") {
   recordMesh({ space: "a*b", server: DEAD, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
   const odd = await run(["space", "show", "a*b"]);
   check("space show of a registration an earlier release made under such a name still heads it Mesh: <name>", odd.status === 0 && odd.stdout.startsWith("Mesh: a*b"), shown(odd));
+  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes("`cotal use 'a*b'`"), shown(odd));
   removeMesh("a*b");
   // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
   const longName = "y".repeat(65), longest = "y".repeat(64);

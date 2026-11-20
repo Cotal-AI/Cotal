@@ -5549,7 +5549,7 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "pace)} --yes`)}`, tone: \"waiting\" });\n  if (!s.modeChecke",
+      "anchor": "space} --yes`)}`, tone: \"waiting\" });\n  if (!s.modeChecke",
       "class": "non-render/control",
       "rationale": "Space detail hint: \"waiting\" is the color tone for a stack whose folder was moved or deleted, not any peer's presence."
     },
