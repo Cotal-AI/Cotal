@@ -673,8 +673,9 @@ application, `daemon status` shows this recovery under Next.
 
 To connect directly to a user-auth participant space, use `cotal daemon setup --space <s> [--idp <url>]`.
 For a local static-auth or open space, run `cotal up` in the folder that hosts it. The local stack
-runs its Manager. Daemon setup refuses with `UNSUPPORTED` (`NOT_USER_AUTH`) before turning the
-space on or recording a hosted Manager refusal.
+runs its Manager. For these local spaces, `daemon setup` and `daemon connect-check` report
+`UNSUPPORTED` (`NOT_USER_AUTH`) and point to `cotal up`, even if the stack is not running.
+Daemon setup does not turn the space on or record a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
