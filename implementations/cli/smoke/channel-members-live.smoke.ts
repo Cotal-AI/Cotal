@@ -117,6 +117,22 @@ try {
   check("#general lists anna and offers to follow it",
     general.status === 0 && general.out.includes("anna") && general.out.includes("cotal ch members general --follow"), general.out.slice(-600));
 
+  check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
+  const dashShow = cotal("channel", "show", "#-audit", "--plain");
+  check("channel show spells a dash-prefixed channel as a shell-safe operand",
+    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes("cotal history '#-audit' "), dashShow.out);
+  const dashMembers = cotal("ch", "members", "#-audit", "--plain");
+  check("the suggested member read succeeds and its follow command keeps the operand safe",
+    dashMembers.status === 0 && dashMembers.out.includes("cotal ch members '#-audit' --follow"), dashMembers.out);
+  const dashCase = cotal("ch", "members", "#-Audit", "--json");
+  check("a case correction keeps the registered dash-prefixed spelling copyable",
+    dashCase.status === 2 && envelope(dashCase.stdout)?.error?.remedy === "name it as registered: `cotal channel members '#-audit'`", dashCase.out);
+  const dashRemove = cotal("ch", "rm", "#-audit", "--json");
+  check("the removal confirmation prints a shell-safe operand",
+    dashRemove.status === 1 && envelope(dashRemove.stdout)?.error?.remedy === "confirm with `cotal channel remove '#-audit' --yes`", dashRemove.out);
+  const removed = cotal("channel", "remove", "#-audit", "--yes");
+  check("the suggested confirmation removes the same channel", removed.status === 0 && removed.out.includes("Channel removed"), removed.out);
+
   console.log("\nB. a follow writes changes only");
   const followJson = started("channel", "members", "general", "--follow", "--json");
   const followPlain = started("channel", "members", "general", "--follow", "--plain");

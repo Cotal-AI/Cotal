@@ -6,19 +6,20 @@ import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
+  codeSpan, parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
-  assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource,
+  assertLabels, commitPersona, editPersona, personaCatalog, personaNameProblem, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { checkHarness } from "./config.js";
 
 export const personaFlags = [
@@ -143,8 +144,16 @@ async function createSource(name: string, path: string, values: Values): Promise
     const bytes = await readInput(values.file);
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
-    // The file's own name is known, so name it and the create that keeps it.
-    if (def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy: `create it under its own name with \`cotal persona create ${def.name} --file ${values.file}\`, or set its name to '${name}'` });
+    if (def.name !== name) {
+      const file = `--file${values.file !== "-" && values.file.startsWith("-") ? "=" : " "}${shellWord(values.file)}`;
+      const ownName = shellWord(def.name);
+      const retry = def.name.startsWith("-") ? `cotal persona create ${file}${targetWords(values)} -- ${ownName}`
+        : `cotal persona create ${ownName} ${file}${targetWords(values)}`;
+      const rename = `set its name to '${name}'`;
+      const remedy = personaNameProblem(def.name) || reservedPersonaName(def.name) ? rename
+        : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
+    }
     return bytes;
   }
   if (values.subscribe === undefined) throw usage('provide --subscribe <a,b> or --subscribe "" for none');

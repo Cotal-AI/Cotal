@@ -7,7 +7,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import {
   dialerFor, endpointNameOf, isJetStreamMissing, isTransferStream, liveKvEntries, mintCreds,
   mintLifecycleUid, newIdentity, observeBrokerConnectionIdentity, presenceBucket, recordsBucket,
-  spaceDeletionStreams, standaloneConnectOpts, token, validateSpaceAuth,
+  spaceDeletionStreams, standaloneConnectOpts, validateSpaceAuth,
   type ParsedArgs, type Presence, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
@@ -20,6 +20,7 @@ import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { verdictSection } from "../lib/verdict.js";
+import { checkSpaceName } from "./meshes-add.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
@@ -353,7 +354,7 @@ async function applySpaceDeletion(observed: DeletionObservation, progress: Delet
 export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const [mode, name, ...extra] = args.positionals;
-  if (mode !== "delete" || !name || token(name) !== name || extra.length)
+  if (mode !== "delete" || !name || !checkSpaceName(name).ok || extra.length)
     throw new CommandFailure("refused", "USAGE_INVALID", "use space delete <exact-space-name> [--dry-run] [-y|--yes]");
   if (args.values["dry-run"] === true && args.values.yes === true)
     throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to a guarded live deletion, not to a dry-run");

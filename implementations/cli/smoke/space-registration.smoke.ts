@@ -1266,14 +1266,15 @@ if (process.platform === "linux") {
   mkdirSync(longestRoot);
   const sixtyFour = await json(["space", "create", "b".repeat(64)], longestRoot);
   check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
-  // A record an earlier release prepared under a name `up` cannot start: the refusal says no member
-  // was started, and its next step quotes the name.
+  // A record an earlier release prepared under a name `up` cannot start stays prepared.
   const legacy = join(home, "legacy");
   mkdirSync(join(legacy, ".cotal", "agents"), { recursive: true, mode: 0o700 });
   recordPreparedSpace({ space: "sp ace", root: legacy, ts: new Date().toISOString() });
   const legacyUp = await json(["up", "--root", legacy, "--space", "sp ace", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
-  check("up of a legacy name that is not a routing token says no member was started and quotes the name in its next step",
-    refused(legacyUp, 1, "SCHEMA_INVALID") && /started no member/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
+  check("up refuses an explicit legacy name before starting or writing anything",
+    refused(legacyUp, 1, "USAGE_INVALID") && /nothing was started or written/.test(legacyUp.env?.error?.message ?? "") &&
+      legacyUp.env?.error?.remedy === "choose a name of only letters, digits, underscores and hyphens" &&
+      findPreparedSpace("sp ace")?.root === legacy && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(legacyUp));
   const human = await run(["space", "--plain"]);
   // Spaces this suite started and stopped above are listed with it, so the heading has a State column.
   check("the listing shows it under its own heading, as not started", /^Prepared spaces$/m.test(human.stdout) && /demo \(selected\) +not started/.test(human.stdout), shown(human));

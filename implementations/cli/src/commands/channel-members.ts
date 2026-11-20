@@ -1,6 +1,7 @@
 import { CotalEndpoint, durableCovers, subjectMatches, type DeliveryClass, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
 
 type Values = FlagValues<typeof channelFlags>;
@@ -221,6 +222,6 @@ function membersView(result: Members, following = false): Report {
       } : { kind: "lines", lines: [result.asOf === null ? "Membership is not established. An empty feed does not prove there are no members." : "No members in this feed snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived observations, not access grants. This does not establish whether an agent is working or blocked.", tone: "hint" }] },
     ] },
-    ...following ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal ch members ${result.channel} --follow`, description: "Follow membership observations; Ctrl-C leaves without changing members" }] }] }],
+    ...following ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal ch members ${shellWord(result.channel.startsWith("-") ? `#${result.channel}` : result.channel)} --follow`, description: "Follow membership observations; Ctrl-C leaves without changing members" }] }] }],
   ] };
 }

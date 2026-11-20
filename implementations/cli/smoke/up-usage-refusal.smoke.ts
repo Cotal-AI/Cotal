@@ -406,6 +406,12 @@ if (process.platform !== "win32") {
     && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with \`cotal up --space <name>\`\n` && !records(spaced), shown(invalidText));
   const override = run(["up", "--space", "custom", ...probe], spaced);
   check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
+  for (const space of ["bad space", "café", "a.b"]) {
+    const explicit = run(["up", "--open", "--foreground", "--space", space, ...probe], spaced);
+    check(`up refuses explicit space ${JSON.stringify(space)} before startup or writes`,
+      explicit.status === 1 && explicit.envelope?.error?.code === "USAGE_INVALID" &&
+        explicit.envelope.error.remedy === "choose a name of only letters, digits, underscores and hyphens" && !records(spaced), shown(explicit));
+  }
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   process.env.COTAL_HOME = join(home, ".cotal");
   const gammaRoot = realpathSync(folder);

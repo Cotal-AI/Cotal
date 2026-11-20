@@ -578,6 +578,23 @@ try {
       created.status === 0 && shown.status === 0 && shown.stdout.includes(bodyText), created.stderr + shown.stdout + shown.stderr);
   }
 
+  const spacedSource = "sample card.md";
+  const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
+  writeFileSync(join(scratch, spacedSource), importBytes);
+  const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", "--plain"], scratch);
+  const retry = mismatch.stderr.match(/create it under its own name with `([^`]+)`/)?.[1];
+  check("a mismatched import quotes the original filename and preserves the catalog selector",
+    mismatch.status === 1 && mismatch.stderr.includes("SCHEMA_INVALID") &&
+      retry === "cotal persona create sample --file 'sample card.md' --space alpha" && !existsSync(agentFilePath(ALPHA, "other")), mismatch.stderr);
+  if (process.platform !== "win32" && retry === "cotal persona create sample --file 'sample card.md' --space alpha") {
+    const copied = spawnSync("sh", ["-c", `cotal() { "$NODE" "$CLI" "$@"; }; ${retry}`], {
+      cwd: scratch, env: { ...childEnv, NODE: process.execPath, CLI: binary }, encoding: "utf8", timeout: 30_000,
+    });
+    const imported = agentFilePath(ALPHA, "sample");
+    check("the retry works as printed and imports the original bytes into alpha",
+      copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
+  }
+
   const decoyFile = agentFilePath(ALPHA, "encoded");
   const decoy = "---\nname: encoded\n---\nAlpha instructions.\n";
   writeFileSync(decoyFile, decoy);
