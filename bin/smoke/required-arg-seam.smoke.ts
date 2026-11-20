@@ -570,7 +570,10 @@ const SEAMS: Seam[] = [
   // The idle-work observer adds one native connection and its suites add seven fixture calls.
   // 465/372 -> 466/373: run-host-live adds one timer connection factory for broker outage
   // recovery. It supplies delivery credentials and states `tls: false` for the loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 466, untypecheckedSites: 373 },
+  // 466/373 -> 468/374: the channel-exclusions auth smoke adds a managed actor's bearer connection, and
+  // the CLI's provisioner connects to read the broker version an exclusion needs. Each states
+  // `tls` (the smoke `false` for its loopback broker, the provisioner the target's own setting).
+  { fn: "standaloneConnectOpts", key: "tls", sites: 468, untypecheckedSites: 374 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
