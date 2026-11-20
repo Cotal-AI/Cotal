@@ -203,9 +203,21 @@ function userAuthState(conn: Connection, what: string): { provider: AuthProvider
   return { provider, dir: userAuthStateDir(conn.root, conn.space), store: workspaceSecretStore(conn.root), bearer: conn.bearer };
 }
 
-/** {@link userSignInAuth}'s source refused a bearer for another lifecycle: the person's row was
- *  granted again while a reader held the old one. The reader cannot recover in place. */
+/** {@link userSignInAuth}'s source refused a bearer for another sign-in: the person's row was
+ *  granted again, or this machine signed in as another account, while a reader held the old one.
+ *  The reader cannot recover in place. */
 export class SignInChangedError extends Error {}
+
+/** Why `bearer` is not the sign-in `started` names, or undefined when it is the same owner, actor and
+ *  lifecycle. A caller that must act as one sign-in throughout checks each bearer it is handed. */
+export function signInChange(started: { owner: string; actor: string; lifecycleUid: string }, bearer: string): SignInChangedError | undefined {
+  const now = principalFromBearer(bearer);
+  if (now.owner !== started.owner || now.actor !== started.actor)
+    return new SignInChangedError(`this machine is now signed in as ${now.owner}.${now.actor}, not ${started.owner}.${started.actor}; restart to act as that account`);
+  if (now.lifecycleUid !== started.lifecycleUid)
+    return new SignInChangedError(`your sign-in ${started.owner}.${started.actor} was granted again (lifecycle ${now.lifecycleUid}; this reader started on ${started.lifecycleUid}); restart it to read under the new grant`);
+  return undefined;
+}
 
 /** The person's own sign-in as a standing reader's auth material: the plain bearer a user-mode
  *  {@link Connection} carries, and a source that runs the exchange again for each new connection, so
@@ -217,13 +229,12 @@ export function userSignInAuth(conn: Connection): UserViewAuth {
   if (!sentinelCreds) throw new Error("userSignInAuth: the connection carries no sentinel credential");
   const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
   // A reader's history consumer is named for this lifecycle, and a re-grant retires it. A bearer
-  // for another lifecycle is refused, so the reader fails loud instead of reading under a name its
+  // for another sign-in is refused, so the reader fails loud instead of reading under a name its
   // new credential does not hold.
   const source = async () => {
     const next = (await provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR })).bearer;
-    const renewed = principalFromBearer(next);
-    if (renewed.owner !== owner || renewed.actor !== actor || renewed.lifecycleUid !== lifecycleUid)
-      throw new SignInChangedError(`your sign-in ${owner}.${actor} was granted again (lifecycle ${renewed.lifecycleUid}; this reader started on ${lifecycleUid}); restart it to read under the new grant`);
+    const changed = signInChange({ owner, actor, lifecycleUid }, next);
+    if (changed) throw changed;
     return next;
   };
   return { bearer, sentinelCreds, owner, actor, lifecycleUid, source };

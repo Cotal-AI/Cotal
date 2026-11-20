@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
-import { SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
+import { LaunchListsRefused, SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -103,6 +103,13 @@ interface Session {
 }
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
+
+/** A seat no manager listed. When a manager did not answer, the seat may run there, so that is the
+ *  answer, not that the seat does not exist. */
+function notListed(name: string, silent: readonly string[]): RequestError {
+  if (silent.length === 0) return RequestError.resourceNotFound(name);
+  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.`);
+}
 
 function canonical(path: string): string {
   try {
@@ -213,6 +220,18 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     session.mapper = new FrameMapper();
     session.open = new Map();
   };
+
+  /** The offer of a thread opened without the launch lists: the seat's own application and model,
+   *  nothing to launch with. Without the lists the bridge cannot tell whether the application has an
+   *  event plane, so it follows the seat's channel, and a prompt the seat never starts on ends with
+   *  its note. */
+  const seatOffer = (row: SeatRow): Offer => ({
+    catalogs: [{ agent: row.agent, available: true, eventPlane: true, models: row.model ? [{ id: row.model, variants: [] }] : [] }],
+    personas: [],
+    channels: [],
+    managers: [],
+    defaultAgent: row.agent,
+  });
 
   const offerFor = async (m: Mesh, machine?: string): Promise<Offer> => {
     const managers = await m.managers();
@@ -442,7 +461,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const m = await mesh();
       const want = params.cwd ? canonical(params.cwd) : undefined;
       const hidden = options.hidden.read();
-      const rows = (await m.seats()).filter((row) => !hidden.has(row.lifecycleUid) && (want === undefined || (row.cwd !== undefined && canonical(row.cwd) === want)));
+      const rows = (await m.seats()).rows.filter((row) => !hidden.has(row.lifecycleUid) && (want === undefined || (row.cwd !== undefined && canonical(row.cwd) === want)));
       return {
         sessions: rows.map((row) => ({
           sessionId: row.name,
@@ -454,12 +473,22 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     })
     .onRequest(methods.agent.session.load, async ({ params, client }) => {
       const m = await mesh();
-      const matches = (await m.seats()).filter((row) => row.name === params.sessionId);
-      if (matches.length === 0) throw RequestError.resourceNotFound(params.sessionId);
+      const listed = await m.seats();
+      const matches = listed.rows.filter((row) => row.name === params.sessionId);
+      if (matches.length === 0) throw notListed(params.sessionId, listed.silent);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);
       const row: SeatRow = matches[0]!;
-      const offer = await offerFor(m, row.managerInstanceId);
-      const why = refusal(offer.catalogs, row.agent);
+      // A person whose grant does not let them spawn may not read the launch lists. Their thread
+      // controls the agent they have and offers nothing to launch.
+      let launch = true;
+      const offer = await offerFor(m, row.managerInstanceId).catch((e: unknown) => {
+        if (!(e instanceof LaunchListsRefused)) throw e;
+        options.log(`${row.name} opens with only its own model: ${e.message}`);
+        launch = false;
+        return seatOffer(row);
+      });
+      // Only the launch lists say whether an application has an event plane.
+      const why = launch ? refusal(offer.catalogs, row.agent) : undefined;
       if (why) throw RequestError.invalidParams(undefined, why);
       const base = initialSelection(offer);
       const session: Session = {
@@ -497,7 +526,10 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         return {};
       }
       const m = await mesh();
-      for (const row of await m.seats()) if (row.name === params.sessionId) options.hidden.add(row.lifecycleUid);
+      const listed = await m.seats();
+      const rows = listed.rows.filter((row) => row.name === params.sessionId);
+      if (rows.length === 0 && listed.silent.length > 0) throw notListed(params.sessionId, listed.silent);
+      for (const row of rows) options.hidden.add(row.lifecycleUid);
       return {};
     });
 

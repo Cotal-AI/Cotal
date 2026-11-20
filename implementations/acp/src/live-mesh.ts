@@ -15,15 +15,15 @@ import {
   isEventChannel,
   parsePrincipalKey,
   principalKey,
-  remoteManagerActors,
   type CotalEndpoint,
   type CotalMessage,
+  type Profile,
 } from "@cotal-ai/core";
-import { connectTargetOrThrow, instanceIdShaped, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, control, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
+import { connectTargetOrThrow, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
+import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, refusedManagers, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { LaunchListsRefused, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -41,13 +41,14 @@ export interface LiveMeshOptions {
 const SIGN_IN_CHECK_MS = 5_000;
 const SIGN_IN_CHECKS = 12;
 
-/** The managers that listed their agents. A manager that did not hides only its own agents and is
- *  logged. When none answered, the first failure is the answer. */
-export function answeredReads<T>(reads: readonly ({ instanceId: string; rows: T[] } | { instanceId: string; error: Error })[], log: (line: string) => void): { instanceId: string; rows: T[] }[] {
+/** The managers that listed their agents, and the ones that did not. A manager that did not hides
+ *  only its own agents, is logged, and is named in `silent`. When none answered, the first failure is
+ *  the answer. */
+export function answeredReads<T>(reads: readonly ({ instanceId: string; rows: T[] } | { instanceId: string; error: Error })[], log: (line: string) => void): { answered: { instanceId: string; rows: T[] }[]; silent: string[] } {
   const failed = reads.filter((r): r is { instanceId: string; error: Error } => "error" in r);
   if (failed.length > 0 && failed.length === reads.length) throw failed[0]!.error;
   for (const f of failed) log(`manager ${f.instanceId} did not list its agents: ${f.error.message}`);
-  return reads.filter((r): r is { instanceId: string; rows: T[] } => "rows" in r);
+  return { answered: reads.filter((r): r is { instanceId: string; rows: T[] } => "rows" in r), silent: failed.map((f) => f.instanceId) };
 }
 
 /** A seat id as a manager reports it: the principal in user mode, a bare actor otherwise. */
@@ -58,6 +59,11 @@ function principalOf(id: string): { owner: string; actor: string } {
 
 function failure(reply: ManagerReply, what: string): Error {
   return new Error(`${what}: ${reply.error ?? "the manager did not answer"}`);
+}
+
+/** A launch list read's failure: {@link LaunchListsRefused} when the caller may not read it. */
+function listFailure(reply: ManagerReply, what: string): Error {
+  return reply.code === "permission-denied" ? new LaunchListsRefused(`${what}: ${reply.error ?? "permission denied"}`) : failure(reply, what);
 }
 
 /** The frame a message carries, or undefined when it carries none. Only the agent publishes on
@@ -95,8 +101,8 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
   /** The event channels the observer follows, as a subject: every agent's on a static or open
    *  space, and the agents under the person's own owner on a user-auth space. */
   let events: string;
-  /** The person's owner on a user-auth space. */
-  let userOwner: string | undefined;
+  /** The person's sign-in on a user-auth space. The bridge acts as this sign-in throughout. */
+  let started: { owner: string; actor: string; lifecycleUid: string } | undefined;
   try {
     target = await resolveTargetOrThrow({ space: options.space, server: options.server });
     const conn = await connectTargetOrThrow(target, "admin");
@@ -109,7 +115,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
         throw e;
       }),
     };
-    userOwner = user?.owner;
+    started = user && { owner: user.owner, actor: user.actor, lifecycleUid: user.lifecycleUid };
     // Only an agent publishes on its own event channel, so on a user-auth space the sender's owner
     // is the person's too.
     events = user ? chatSubject(conn.space, user.owner, "*", `${EVENT_CHANNEL_PREFIX}${user.owner}.*`) : chatSubject(conn.space, "*", "*", `${EVENT_CHANNEL_PREFIX}*.*`);
@@ -152,9 +158,24 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     roster: async () => observer.getRoster(),
   };
 
+  /** A control instrument's bearer must be the sign-in the bridge started on. One for another account
+   *  or lifecycle stops the bridge before anything is sent. */
+  const checked = <T extends { auth: { bearer?: string } }>(t: T): T => {
+    const changed = started && t.auth.bearer ? signInChange(started, t.auth.bearer) : undefined;
+    if (changed) {
+      options.stop(changed.message);
+      throw changed;
+    }
+    return t;
+  };
+
+  /** The instrument for one command, pinned to an instance when one is named. */
+  const resolve = (profile: Profile, instanceId?: string) =>
+    resolveControlTarget(ctx, profile, instanceId, { onRefusal: "throw" }).then(checked, (e: unknown) => Promise.reject(plain(e)));
+
   /** One manager command, pinned to an instance when one is named. */
   const ask = async (op: string, args?: Record<string, unknown>, instanceId?: string, timeoutMs?: number): Promise<ManagerReply> => {
-    const t = await resolveControlTarget(ctx, "control-caller-privileged", instanceId, { onRefusal: "throw" }).catch((e) => Promise.reject(plain(e)));
+    const t = await resolve("control-caller-privileged", instanceId);
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", timeoutMs, instanceId ? { instanceId } : undefined);
   };
 
@@ -162,19 +183,38 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
    *  bare actor and a user-mode seat by its principal. */
   const expected = (seat: SeatRef) => ({ id: target.mode === "user" ? principalKey(seat.owner, seat.actor).key : seat.actor, lifecycleUid: seat.lifecycleUid });
 
-  /** On a user-auth space, the person's own live managers. Only an operator instrument reads the
-   *  space's manager registry, so they are read from presence as `cotal` reads them there: each
-   *  manager writes its own key, `<owner>.manager_<instanceId>`, so the instance id comes from the
-   *  key. None means the space's own manager, reached unpinned. */
-  const ownManagers = (owner: string): ManagerChoice[] => {
-    const here = hostname();
-    return observer.getRoster().flatMap((p): ManagerChoice[] => {
-      const pr = parsePrincipalKey(p.card.id);
-      const instanceId = pr?.actor.replace(/^manager_/, "") ?? "";
-      if (pr?.owner !== owner || p.card.role !== "manager" || p.status === "offline" || !instanceIdShaped(instanceId) || remoteManagerActors(instanceId).supervisor !== pr.actor) return [];
-      const host = managerCandidate(instanceId, p).host;
-      return [{ instanceId, ...(host ? { host } : {}), local: host === here }];
-    });
+  /** A seat command, sent to the manager that holds the seat and checked against the run the bridge
+   *  bound, so nothing reaches a seat that restarted. The bridge learns the holding manager from the
+   *  spawn reply or from the pinned list read, so no name lookup can pick another manager. */
+  const seatCommand = async (op: "stop" | "interrupt" | "input", seat: SeatRef, args: Record<string, unknown>): Promise<ManagerReply> => {
+    const instanceId = seat.managerInstanceId;
+    if (!instanceId) throw new Error(`${seat.name}: the manager that holds it is not known`);
+    const t = await resolve("control-caller-admin", instanceId);
+    return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedTarget: expected(seat) });
+  };
+
+  /** A manager as a choice, its host read from its presence when the roster carries it. */
+  const choice = (instanceId: string, host?: string | null): ManagerChoice => {
+    const seen = host ?? managerCandidate(instanceId, observer.getRoster().find((p) => parsePrincipalKey(p.card.id)?.actor === `manager_${instanceId}`)).host;
+    return { instanceId, ...(seen ? { host: seen } : {}), local: seen === hostname() };
+  };
+
+  /** On a user-auth space, the managers the space's exchange lets this person reach: the one it
+   *  selects for an unpinned call, or each live one it names when it will not pick among several.
+   *  The exchange is the authority, so a manager whose presence has not arrived is still listed, and
+   *  each later call is pinned to the manager that was read. */
+  const yourManagers = async (): Promise<ManagerChoice[]> => {
+    let t: Awaited<ReturnType<typeof resolveControlTarget>>;
+    try {
+      t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    } catch (e) {
+      const named = await refusedManagers(client, e, ctx);
+      if (!named) throw plain(e);
+      return named.map((m) => choice(m.instanceId, m.host));
+    }
+    const instanceId = checked(t).auth.managerInstanceId;
+    if (!instanceId) throw new Error(`the exchange for space "${t.space}" selected no manager`);
+    return [choice(instanceId)];
   };
 
   const defaultPersona = resolvePreference("persona", { space: target.space }).value;
@@ -187,8 +227,8 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
 
     async catalogs(instanceId) {
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
-      if (!status.ok) throw failure(status, "the manager did not report its applications");
-      if (!models.ok) throw failure(models, "the manager did not list its models");
+      if (!status.ok) throw listFailure(status, "the manager did not report its applications");
+      if (!models.ok) throw listFailure(models, "the manager did not list its models");
       const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; reason?: string }[] } | undefined)?.connectors ?? [];
       if (!Array.isArray(models.data)) throw new Error("the manager did not list its models");
       const catalogs = models.data as { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] }[];
@@ -206,13 +246,13 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     },
 
     async managers() {
-      if (userOwner !== undefined) return ownManagers(userOwner);
-      const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" }).catch((e) => Promise.reject(plain(e)));
+      if (started) return yourManagers();
+      const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth);
       const here = hostname();
       const choices = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
         // A per-instance call needs an instrument minted for that instance.
-        const pinned = await resolveControlTarget(ctx, "control-caller-privileged", instanceId, { onRefusal: "throw" }).catch((e) => Promise.reject(plain(e)));
+        const pinned = await resolve("control-caller-privileged", instanceId);
         // A registration whose host is gone has nothing subscribed on its rail, as `cotal ps`
         // reports it. It is not offered, and its host is not waited for. The probe answers only
         // for a gone rail, so a live manager's host answer ends it.
@@ -227,7 +267,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
 
     async personas(instanceId) {
       const reply = await ask("listPersonas", undefined, instanceId);
-      if (!reply.ok) throw failure(reply, "the manager did not list its personas");
+      if (!reply.ok) throw listFailure(reply, "the manager did not list its personas");
       const rows = (reply.data as { personas?: { name: string }[] } | undefined)?.personas ?? [];
       return rows.map((p) => p.name).sort();
     },
@@ -244,35 +284,35 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
 
     async seats() {
       let answered: { instanceId: string; rows: unknown[] }[];
-      if (userOwner === undefined) {
+      let silent: string[];
+      if (!started) {
         const reply = await controlPs(client, ctx, { readOnly: true });
         if (!reply.ok) throw new Error(reply.error);
         answered = reply.answered;
+        silent = [...reply.silent, ...reply.failed.map((f) => f.instanceId)];
       } else {
-        // A user-auth bearer reads one manager per call: each of the person's own, or with none the
-        // one the space's exchange selects, unpinned. A manager that does not answer hides only its
-        // own agents, as `cotal ps` reports it.
-        const own = ownManagers(userOwner).map((m): string | undefined => m.instanceId);
-        const reads = await Promise.all((own.length ? own : [undefined]).map(async (instanceId) => {
+        // A user-auth bearer reads one manager per call, each pinned. A manager that does not answer
+        // hides only its own agents, as `cotal ps` reports it.
+        const reads = await Promise.all((await yourManagers()).map(async ({ instanceId }) => {
           try {
             const reply = await ask("ps", undefined, instanceId);
             if (!reply.ok) throw failure(reply, "the manager did not list its agents");
-            return { instanceId: instanceId ?? "", rows: (reply.data as unknown[] | undefined) ?? [] };
+            return { instanceId, rows: (reply.data as unknown[] | undefined) ?? [] };
           } catch (e) {
-            return { instanceId: instanceId ?? "", error: plain(e) };
+            if (e instanceof SignInChangedError) throw e;
+            return { instanceId, error: plain(e) };
           }
         }));
-        answered = answeredReads(reads, options.log);
+        ({ answered, silent } = answeredReads(reads, options.log));
       }
-      return answered.flatMap(({ instanceId, rows }) =>
+      const rows = answered.flatMap(({ instanceId, rows }) =>
         rows.map((row): SeatRow => {
           const r = row as unknown as { name: string; id: string; lifecycleUid: string; agent: string; model?: string; cwd?: string; status: string; uptimeMs?: number };
           return {
             name: r.name,
             ...principalOf(r.id),
             lifecycleUid: r.lifecycleUid,
-            // A user-auth bearer's unpinned read names no instance.
-            ...(instanceIdShaped(instanceId) ? { managerInstanceId: instanceId } : {}),
+            managerInstanceId: instanceId,
             agent: r.agent,
             ...(r.model ? { model: r.model } : {}),
             ...(r.cwd ? { cwd: r.cwd } : {}),
@@ -281,20 +321,21 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
           };
         }),
       );
+      return { rows, silent };
     },
 
     async despawn(seat: SeatRef) {
-      const reply = await control(client, ctx, "stop", { name: seat.name, graceful: true }, { expectedTarget: expected(seat) });
+      const reply = await seatCommand("stop", seat, { name: seat.name, graceful: true });
       if (!reply.ok) throw failure(reply, `${seat.name} did not stop`);
     },
 
     async interrupt(seat: SeatRef) {
-      const reply = await control(client, ctx, "interrupt", { name: seat.name }, { expectedTarget: expected(seat) });
+      const reply = await seatCommand("interrupt", seat, { name: seat.name });
       if (!reply.ok) throw failure(reply, `${seat.name} was not interrupted`);
     },
 
     async input(seat: SeatRef, text: string) {
-      const reply = await control(client, ctx, "input", { name: seat.name, text, enter: true }, { expectedTarget: expected(seat) });
+      const reply = await seatCommand("input", seat, { name: seat.name, text, enter: true });
       if (!reply.ok) throw failure(reply, `${seat.name} did not get the prompt`);
     },
 
@@ -310,7 +351,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
 
     async frameHistory(seat: SeatRef) {
       // A person's sign-in reads history through its own lifecycle's reader.
-      const rows = userOwner !== undefined
+      const rows = started
         ? (await observer.channelHistoryPage(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat })).items
         : await observer.channelHistory(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat });
       return rows.map(frameOf).filter((f): f is SeatFrame => f !== undefined);

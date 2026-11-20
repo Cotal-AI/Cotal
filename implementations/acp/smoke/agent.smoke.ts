@@ -16,7 +16,10 @@
  *  - a cancel interrupts the seat through its manager and answers `cancelled` however the run ends,
  *    including a cancel that beats the spawn reply; a refused interrupt is said in the thread;
  *  - `session/list` hides deleted runs and matches a folder through symlinks;
- *  - `session/load` replays before it answers, marked as replay, then follows live;
+ *  - `session/load` replays before it answers, marked as replay, then follows live; a seat whose
+ *    launch lists the caller may not read loads with only its own model; a seat no manager listed
+ *    while one did not answer is not called missing, and deleting it fails;
+ *  - a new session with no manager on this machine starts on the first listed one;
  *  - the slash commands answer locally, and `/despawn` stops the seat.
  *
  * Run: pnpm --filter @cotal-ai/acp test
@@ -27,7 +30,7 @@ import { join } from "node:path";
 import { client, methods, PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { cotalAgent, defaultName, promptText, type HiddenSessions } from "../src/agent.js";
-import { SignInRequired, type AgentCatalog, type AguiEventLike, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
+import { LaunchListsRefused, SignInRequired, type AgentCatalog, type AguiEventLike, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -58,6 +61,12 @@ class FakeMesh implements Mesh {
   /** Presence status by actor. */
   present = new Map<string, string>();
   typed: { seat: string; text: string }[] = [];
+  /** The manager each typed prompt was sent to, as the seat reference names it. */
+  typedTo: (string | undefined)[] = [];
+  /** Managers that did not answer the list. */
+  silent: string[] = [];
+  /** The caller may not read the launch lists. */
+  launchRefused = false;
   /** What a seat does when its manager types a prompt into it. A throw is the manager's refusal. */
   onInput: (seat: SeatRef) => void = () => {};
   /** How long the manager takes to answer an input request. */
@@ -77,11 +86,18 @@ class FakeMesh implements Mesh {
     for (const l of this.listeners) l(f);
   }
   catalogsAsked: (string | undefined)[] = [];
-  async catalogs(instanceId?: string) { this.catalogsAsked.push(instanceId); return CATALOGS; }
+  async catalogs(instanceId?: string) {
+    this.catalogsAsked.push(instanceId);
+    if (this.launchRefused) throw new LaunchListsRefused("the manager did not report its applications: permission-denied");
+    return CATALOGS;
+  }
   managerList = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
   async managers() { return this.managerList; }
   /** Each manager holds its own persona catalog. */
-  async personas(instanceId?: string) { return instanceId === "m2" ? ["default", "builder"] : ["default", "reviewer"]; }
+  async personas(instanceId?: string) {
+    if (this.launchRefused) throw new LaunchListsRefused("the manager did not list its personas: permission-denied");
+    return instanceId === "m2" ? ["default", "builder"] : ["default", "reviewer"];
+  }
   async spawn(req: SpawnRequest): Promise<SeatRef> {
     this.spawned.push(req);
     if (this.spawnDelay) await tick(this.spawnDelay);
@@ -92,13 +108,14 @@ class FakeMesh implements Mesh {
     setTimeout(() => { for (const e of after) this.emit(seat, e); }, 10);
     return seat;
   }
-  async seats() { return this.rows; }
+  async seats() { return { rows: this.rows, silent: this.silent }; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
   async input(seat: SeatRef, text: string) {
     this.onInput(seat);
     if (this.inputDelay) await tick(this.inputDelay);
     this.typed.push({ seat: seat.name, text });
+    this.typedTo.push(seat.managerInstanceId);
   }
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
@@ -304,6 +321,32 @@ check("loading a seat without an event plane is refused", refused?.code === -326
 const missing = await errorOf(agent.request(methods.agent.session.load, { sessionId: "ghost", cwd: dir, mcpServers: [] }));
 check("loading an unknown seat is resource-not-found", missing?.code === -32002, missing);
 
+// A manager that did not answer may hold the seat, so a miss is not called missing.
+mesh.silent = ["m9"];
+const unsure = await errorOf(agent.request(methods.agent.session.load, { sessionId: "ghost", cwd: dir, mcpServers: [] }));
+check("loading a seat no manager listed while one did not answer names that manager, not resource-not-found", unsure?.code === -32603 && String(unsure.message).includes("m9"), unsure);
+const hiddenBefore = hidden.ids.size;
+const unsureDelete = await errorOf(agent.request(methods.agent.session.delete, { sessionId: "ghost" }));
+check("deleting such a seat fails the same way and hides nothing", unsureDelete?.code === -32603 && String(unsureDelete.message).includes("m9") && hidden.ids.size === hiddenBefore, unsureDelete);
+mesh.silent = [];
+
+// A person whose grant does not let them spawn opens their agent and types into it.
+mesh.launchRefused = true;
+let narrowFailed: unknown;
+const narrow = await agent.request(methods.agent.session.load, { sessionId: "outside", cwd: dir, mcpServers: [] }).catch((e: unknown) => { narrowFailed = e; return undefined; });
+const narrowModel = narrow?.configOptions?.find((o) => o.id === "model") as { currentValue?: string } | undefined;
+check("a seat whose launch lists are refused loads with only its own model and nothing to launch with", narrowModel?.currentValue === "claude/haiku" && !narrow?.configOptions?.some((o) => o.id === "persona" || o.id === "channel"), narrowFailed ?? narrow?.configOptions);
+mesh.present.set(outside.actor, "idle");
+mesh.onInput = (seat) => {
+  mesh.present.set(seat.actor, "working");
+  mesh.emit(seat, [{ type: "RUN_STARTED", runId: "r7" }], "r7");
+  after(30, () => { mesh.emit(seat, [{ type: "RUN_FINISHED", runId: "r7" }], "r7"); mesh.present.set(seat.actor, "idle"); });
+};
+const narrowTurn = narrow ? await within(agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "go on" }] })) : undefined;
+check("its prompt is typed into the seat through the manager that holds it", narrowTurn?.stopReason === "end_turn" && mesh.typed.at(-1)?.text === "go on" && mesh.typedTo.at(-1) === "m1", { narrowTurn, typed: mesh.typed.at(-1), to: mesh.typedTo.at(-1) });
+mesh.onInput = () => {};
+mesh.launchRefused = false;
+
 // despawn
 updates.length = 0;
 await agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "/despawn" }] });
@@ -413,8 +456,9 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const machine = s?.configOptions?.find((o) => o.id === "machine") as { currentValue?: string } | undefined;
   check("with no manager on this machine, session/new reads the first listed manager's lists", s !== undefined && away.catalogsAsked[0] === "m2", failed ?? away.catalogsAsked);
   check("and shows that manager as the machine", machine?.currentValue === "m2", machine);
-  if (s) await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }), 500);
-  check("its first prompt spawns pinned to that manager", away.spawned[0]?.managerInstanceId === "m2", away.spawned.map((r) => r.managerInstanceId));
+  away.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const first = s ? await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })) : undefined;
+  check("its first prompt spawns pinned to that manager and answers", first?.stopReason === "end_turn" && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
   c.conn.close();
 }
 rmSync(dir, { recursive: true, force: true });

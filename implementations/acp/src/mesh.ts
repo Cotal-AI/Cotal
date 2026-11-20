@@ -35,6 +35,7 @@ export interface SeatRef {
   readonly owner: string;
   readonly actor: string;
   readonly lifecycleUid: string;
+  /** The manager that holds the seat. Seat commands go to it. */
   readonly managerInstanceId?: string;
 }
 
@@ -92,6 +93,18 @@ export class SignInRequired extends Error {
   override readonly name = "SignInRequired";
 }
 
+/** The caller may not read a manager's launch lists, its applications, models and personas: a person
+ *  whose grant does not let them spawn agents. They still control the agents they have. */
+export class LaunchListsRefused extends Error {
+  override readonly name = "LaunchListsRefused";
+}
+
+/** The seats the managers listed, and the managers that did not answer, whose seats are missing. */
+export interface SeatList {
+  readonly rows: SeatRow[];
+  readonly silent: readonly string[];
+}
+
 export interface Mesh {
   /** The space this process acts in. */
   readonly space: string;
@@ -99,16 +112,18 @@ export interface Mesh {
   readonly defaultAgent?: string;
   /** Whether the space authenticates users, which constrains seat names. */
   readonly userMode: boolean;
-  /** The applications and models a manager offers. */
+  /** The applications and models a manager offers. Rejects with {@link LaunchListsRefused} when the
+   *  caller may not read them. */
   catalogs(managerInstanceId?: string): Promise<AgentCatalog[]>;
   /** The managers this caller can spawn through. */
   managers(): Promise<ManagerChoice[]>;
-  /** Persona names in a manager's catalog. Each manager holds its own. */
+  /** Persona names in a manager's catalog. Each manager holds its own. Rejects with
+   *  {@link LaunchListsRefused} when the caller may not read them. */
   personas(managerInstanceId?: string): Promise<string[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
   /** Every managed seat the caller can see. */
-  seats(): Promise<SeatRow[]>;
+  seats(): Promise<SeatList>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;
   /** Interrupt the seat's live turn: its manager writes the connector's interrupt key into the

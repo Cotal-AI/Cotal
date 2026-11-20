@@ -3,7 +3,7 @@
     "implementations/acp/smoke/agent.smoke.ts",
     "implementations/acp/smoke/frames.smoke.ts"
   ],
-  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events",
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing",
   "command": "pnpm --filter @cotal-ai/acp test",
   "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
   "why": [
@@ -230,6 +230,34 @@
       "find": "  if (failed.length > 0 && failed.length === reads.length) throw failed[0]!.error;",
       "replace": "  if (failed.length > 0) throw failed[0]!.error;",
       "expectRed": "one silent manager leaves the others' agents listed"
+    },
+    {
+      "name": "a miss while a manager was silent is called missing",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "  if (silent.length === 0) return RequestError.resourceNotFound(name);",
+      "replace": "  return RequestError.resourceNotFound(name);",
+      "expectRed": "loading a seat no manager listed while one did not answer names that manager, not resource-not-found"
+    },
+    {
+      "name": "a delete while a manager was silent answers as done",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (rows.length === 0 && listed.silent.length > 0) throw notListed(params.sessionId, listed.silent);\n",
+      "replace": "",
+      "expectRed": "deleting such a seat fails the same way and hides nothing"
+    },
+    {
+      "name": "a person without spawn cannot load their agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "        if (!(e instanceof LaunchListsRefused)) throw e;",
+      "replace": "        throw e;",
+      "expectRed": "a seat whose launch lists are refused loads with only its own model and nothing to launch with"
+    },
+    {
+      "name": "a silent manager is not named",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "silent: failed.map((f) => f.instanceId) };",
+      "replace": "silent: [] };",
+      "expectRed": "and is named as silent, so a miss is not taken for absence"
     }
   ]
 }

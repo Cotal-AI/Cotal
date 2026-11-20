@@ -71,10 +71,12 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
 // A manager that does not list its agents hides only its own.
 {
   const logged: string[] = [];
-  let rows: { instanceId: string; rows: string[] }[] = [];
+  let read: { answered: { instanceId: string; rows: string[] }[]; silent: string[] } | undefined;
   let failed: unknown;
-  try { rows = answeredReads([{ instanceId: "a", error: new Error("did not answer") }, { instanceId: "b", rows: ["onb"] }], (l) => logged.push(l)); } catch (e) { failed = e; }
+  try { read = answeredReads([{ instanceId: "a", error: new Error("did not answer") }, { instanceId: "b", rows: ["onb"] }], (l) => logged.push(l)); } catch (e) { failed = e; }
+  const rows = read?.answered ?? [];
   check("one silent manager leaves the others' agents listed", rows.length === 1 && rows[0]!.instanceId === "b" && rows[0]!.rows[0] === "onb", failed instanceof Error ? failed.message : rows);
+  check("and is named as silent, so a miss is not taken for absence", read?.silent.length === 1 && read.silent[0] === "a", read?.silent);
   check("and the silent one is logged by instance", logged.length === 1 && logged[0]!.includes("manager a") && logged[0]!.includes("did not answer"), logged);
   let thrown: unknown;
   try { answeredReads([{ instanceId: "a", error: new Error("first") }, { instanceId: "b", error: new Error("second") }], () => {}); } catch (e) { thrown = e; }
