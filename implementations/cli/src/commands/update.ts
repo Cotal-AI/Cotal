@@ -162,8 +162,8 @@ export interface UpdateRuntime {
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   /** Authenticate and retain an installed same-version repair before its connector writes. */
   prepareReconciliation?(target: Record<string, unknown>): Promise<void>;
-  /** The binary may await its daemon's replacement generation before the bound child's read. */
-  waitForInstalledGeneration?(version: string): Promise<void>;
+  /** Wait for the replacement, or return why native daemon activation remains incomplete. */
+  waitForInstalledGeneration?(version: string): Promise<string | void>;
   /** Explain whether the machine daemon can act on the saved automatic-update preference. */
   automaticUpdateAdvice(): Promise<string | undefined>;
   extensions(): readonly InstalledExtension[];
@@ -1713,11 +1713,12 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
     return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1, readUpdateRecovery()?.phase === "verified-ready");
   }
+  let activationDeferred: string | void = undefined;
   if (rt.env.COTAL_AUTO_UPDATE !== "1" || rt.automaticGenerationWait) {
     try {
       const recovery = readUpdateRecovery();
       if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: targetVersion, phase: "verified-ready" });
-      await rt.waitForInstalledGeneration?.(targetVersion);
+      activationDeferred = await rt.waitForInstalledGeneration?.(targetVersion);
     } catch (error) {
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return await repairReplacement(`installed daemon generation: ${message(error)}`, 1, true);
@@ -1728,8 +1729,12 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   rt.out("Removing completed update recovery snapshot");
   snapshot.discard();
   clearUpdateRecovery();
-  recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
+  recordUpdateCompletion(targetVersion, activationDeferred || `updated to ${targetVersion}`, !activationDeferred);
   execution?.complete?.();
+  if (activationDeferred) {
+    rt.err(activationDeferred);
+    return interrupted || 1;
+  }
   if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
   else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
   return interrupted;

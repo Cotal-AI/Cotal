@@ -10,7 +10,7 @@ import { update, updateRuntime, installedCliVersion, localUpdateManagers, readMa
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
-import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
+import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
@@ -151,6 +151,8 @@ const composed: Command = { ...command, async run(args) {
     const release = claimUpdateClosureAccess(); release();
     admission = recoveryAdmission.admission;
   }
+  const systemdActivationDeferred = () => process.platform === "linux" && admission?.disposition === "deferred" &&
+    admission.reason.startsWith("the systemd user manager did not answer `systemctl --user show-environment`");
   const deferActivation = (reason: string, occupied: number | null = null) => {
     admission = { disposition: "deferred", occupied, hostedSpaces: admission?.hostedSpaces ?? [], reason: reason.slice(0, 2000) };
   };
@@ -244,7 +246,7 @@ const composed: Command = { ...command, async run(args) {
       });
       let native: string;
       try {
-        native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+        native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { env: daemonUserServiceEnv(), encoding: "utf8", timeout: 6000, stdio: ["ignore", "pipe", "pipe"] }).trim();
       } catch { throw unavailable(); }
       const manager = /^u ([1-9]\d*)$/.exec(native);
       if (!manager) throw unavailable();
@@ -254,7 +256,7 @@ const composed: Command = { ...command, async run(args) {
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
-        submitSystemdUnitControl("stop", plan.unit);
+        submitSystemdUnitControl("stop", plan.unit, daemonUserServiceEnv());
         repairServiceStopped = true;
       }
       for (let pid = process.pid; pid > 1 && !ancestors.has(pid);) {
@@ -407,7 +409,19 @@ const composed: Command = { ...command, async run(args) {
       }
     };
   }, waitForInstalledGeneration: async (version: string) => {
-    if (admission?.disposition === "deferred") return;
+    if (admission?.disposition === "deferred") {
+      // The reconcile child must finish successfully. The publishing parent owns the final outcome.
+      if (!systemdActivationDeferred() || !targetReceipt?.daemon) return;
+      const pid = targetReceipt.daemon.pid;
+      let current: Awaited<ReturnType<typeof queryDaemon>> | undefined;
+      try { current = await queryDaemon({ paths: daemonPaths(), timeoutMs: 5_000 }); }
+      catch { /* Activation is already deferred. Do not claim that an unreadable PID still answers. */ }
+      if (current?.ok && current.result.version === version && current.result.state === "ready") return;
+      const daemon = current?.ok && current.result.pid === pid
+        ? `machine daemon PID ${pid} still runs Cotal ${current.result.version}`
+        : `could not confirm activation of the machine daemon (previous PID ${pid})`;
+      return `machine daemon activation deferred: cotal-ai@${version} was installed and reconciled, but ${daemon}. The systemd user manager did not answer. Run \`cotal update\` from a session where \`systemctl --user show-environment\` answers.`;
+    }
     if (process.platform === "linux" && process.env.COTAL_AUTO_UPDATE === "1") {
       const paths = daemonPaths();
       if (existsSync(unitReceiptFile(paths)) && installedDaemonIdentity(paths).same) {
@@ -591,6 +605,10 @@ const composed: Command = { ...command, async run(args) {
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
+    if (systemdActivationDeferred()) {
+      console.log(`machine daemon: ${admission.reason}. Activation was not attempted.`);
+      return;
+    }
     console.log(`machine daemon activation deferred: ${admission.reason}; software update finished; run \`cotal daemon status\` to inspect what still needs a restart`);
     return;
   }
