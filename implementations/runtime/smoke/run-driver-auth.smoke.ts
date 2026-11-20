@@ -981,10 +981,10 @@ const A = await driver(RUN_A, TK_A);
   prov.on("error", () => {});
   await prov.start();
   const seats: CotalEndpoint[] = [];
-  const member = async (name: string) => {
+  const member = async (name: string, grant: { allowSubscribe: string[]; excludeSubscribe?: string[] } = { allowSubscribe: [CHANNEL] }) => {
     const id = newIdentity();
     const uid = mintLifecycleUid();
-    const creds = await provisionAgent(prov, auth, id, { subscribe: [], allowSubscribe: [CHANNEL], lifecycleUid: uid });
+    const creds = await provisionAgent(prov, auth, id, { subscribe: [], ...grant, lifecycleUid: uid, ...(grant.excludeSubscribe ? { brokerVersion: conns[0]!.info!.version } : {}) });
     const ep = new CotalEndpoint({ space: S, servers: SERVERS, creds, lifecycleUid: uid, card: { id: id.id, name, kind: "agent" }, channels: [], consume: false, registerPresence: true, watchPresence: false, watchChannels: false });
     ep.on("error", () => {});
     await ep.start();
@@ -1045,6 +1045,22 @@ const A = await driver(RUN_A, TK_A);
     c("a conclave whose member row was created after its retirement narrowed the ACL row completes",
       reached === true && fencedPost === "fenced" && outPost !== undefined && "o" in outPost && outPost.o.status === "completed", { reached, fencedPost, out: outPost && ("o" in outPost ? outPost.o.status : short(outPost.e)) });
     c("…and the post-write ACL read took that row back by its exact key (#4995)", rowPost === undefined && lastOp === "PURGE", { row: rowPost?.record, lastOp });
+
+    // EXCLUSION (SPEC §9): a member whose read ACL reaches the channel only through a wildcard that
+    // excludes it gets no row; a member whose exclusion lies elsewhere under the same wildcard does.
+    const conclaveOver = async (m: { handle: string; principal: string; uid: string }, runId: string) => {
+      const takeover = newTakeoverId();
+      const R = await driver(runId, takeover);
+      const out = await withDeadline(startRun(R.js, R.jsm, { space: S, endpoint: EP, runId, source: program(m.handle), kv: R.kv, lease: lease(takeover, 1), handler: R.handler })
+        .then((o) => ({ o }), (e: unknown) => ({ e })), 20_000, `the ${runId} conclave run`);
+      return { out, row: await readMember(membersKv, CHANNEL, m.principal, m.uid) };
+    };
+    const excluded = await conclaveOver(await member("excluded", { allowSubscribe: [">"], excludeSubscribe: [CHANNEL] }), "run-conclave-acl-excluded");
+    c("a conclave over a member whose read ACL excludes the channel under its wildcard completes and writes no row for it",
+      excluded.out !== undefined && "o" in excluded.out && excluded.out.o.status === "completed" && excluded.row === undefined, { row: excluded.row?.record });
+    const sibling = await conclaveOver(await member("sibling", { allowSubscribe: [">"], excludeSubscribe: ["other"] }), "run-conclave-acl-sibling");
+    c("…and a member whose exclusion is a sibling under the same wildcard gets its row",
+      sibling.out !== undefined && "o" in sibling.out && sibling.out.o.status === "completed" && sibling.row !== undefined, { out: sibling.out && ("o" in sibling.out ? sibling.out.o.status : short(sibling.out.e)) });
   } finally {
     for (const ep of seats) await ep.stop().catch(() => {});
     await prov.stop().catch(() => {});

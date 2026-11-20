@@ -12,7 +12,8 @@ import {
   openChannelRegistry,
   openAclRegistry,
   readAcl,
-  channelInAllow,
+  aclExclusions,
+  channelInGrant,
   memberKey,
   writeChannelConfig,
   readMember,
@@ -167,8 +168,9 @@ export class MeshConclave {
     return this.aclKvOpen;
   }
 
-  /** Whether the member lifecycle's exact read-ACL row allows `channel` now; true when the space has
-   *  no ACL registry at all (open mode), which the read is the first to find out. */
+  /** Whether the member lifecycle's exact read-ACL row allows `channel` now, an exclusion in either
+   *  half of the row removing it (SPEC §9); true when the space has no ACL registry at all (open
+   *  mode), which the read is the first to find out. */
   private async memberAclAllows(aclKv: KV, m: { principal: string; uid: string }, channel: string): Promise<boolean> {
     let row: Awaited<ReturnType<typeof readAcl>>;
     try {
@@ -178,7 +180,7 @@ export class MeshConclave {
       this.aclKvOpen = Promise.resolve(undefined);
       return true;
     }
-    return row !== undefined && channelInAllow(row.record.allowSubscribe, channel);
+    return row !== undefined && channelInGrant(row.record.allowSubscribe, aclExclusions(row.record), channel);
   }
 
   /** The post-write half of the conclave's ACL fence: keep the row just written (at `revision`) only
