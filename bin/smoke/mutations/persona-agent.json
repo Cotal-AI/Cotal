@@ -53,7 +53,7 @@
     {
       "cell": "A: the persona's agent: pin built the launch (file beats env, detached)",
       "name": "cli re-collapses flag and env into the control-plane agent field (pre-#869 shape)",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "find": "    agent: values.agent,",
       "replace": "    agent: values.agent ?? (process.env.COTAL_DEFAULT_AGENT || undefined),",
       "expectRed": "A: the persona's agent: pin built the launch",
@@ -62,7 +62,7 @@
     {
       "cell": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
       "name": "cli drops the detached caller's default instead of carrying it separately",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "find": "    agent: values.agent,\n    defaultAgent,\n",
       "replace": "    agent: values.agent,\n    defaultAgent: undefined,\n",
       "expectRed": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
@@ -162,7 +162,7 @@
       "name": "foreground leaves out the caller default",
       "file": "implementations/cli/src/commands/spawn.ts",
       "find": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });",
-      "replace": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });",
+      "replace": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent }); void callerHarness;",
       "expectRed": "G7: foreground, a saved user harness builds the launch of an unpinned persona",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }

@@ -88,7 +88,7 @@
     },
     {
       "name": "M7 the CLI's client-side preflight is removed",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "find": "  if (values.name !== undefined) refuseUnmintableName(values.name, t.mode === \"user\");",
       "replace": "",
       "expectRed": "the CLI calls the shared name door (call sites: detached + foreground)",

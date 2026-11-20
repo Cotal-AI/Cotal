@@ -236,16 +236,16 @@ check("the same hyphenated --name on a STATIC-mode target is accepted",
 // the only moment the difference shows is after the next grammar change. The source is parsed, so
 // the #867 comments, the door's declaration or a string that spells a call cannot pass for one, and
 // requoting an argument changes nothing.
-const CLI_RAW = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands", "spawn.ts"),
-  "utf8",
-);
+const CLI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands");
+const CLI_RAW = readFileSync(join(CLI_DIR, "spawn.ts"), "utf8");
+const CLI_LAUNCH_RAW = readFileSync(join(CLI_DIR, "spawn-managed-launch.ts"), "utf8");
 check("instrument control: the CLI's spawn source was located",
-  CLI_RAW.includes("async function launchManagedPersona") && CLI_RAW.includes("export async function spawn"),
-  { len: CLI_RAW.length });
+  CLI_LAUNCH_RAW.includes("async function launchManagedPersona") && CLI_RAW.includes("export async function spawn"),
+  { len: CLI_RAW.length, launchLen: CLI_LAUNCH_RAW.length });
 const CLI_AST = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest);
+const CLI_LAUNCH_AST = ts.createSourceFile("spawn-managed-launch.ts", CLI_LAUNCH_RAW, ts.ScriptTarget.Latest);
 // Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
-const CORE_IMPORTS = CLI_AST.statements
+const CORE_IMPORTS = CLI_LAUNCH_AST.statements
   .filter(ts.isImportDeclaration)
   .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
   .flatMap((d) => {
@@ -263,6 +263,7 @@ const collectDoorCalls = (node: ts.Node): void => {
   ts.forEachChild(node, collectDoorCalls);
 };
 collectDoorCalls(CLI_AST);
+collectDoorCalls(CLI_LAUNCH_AST);
 check("the CLI calls the shared name door (call sites: detached + foreground)",
   DOOR_CALLS.length === 2,
   { sites: DOOR_CALLS.length });
