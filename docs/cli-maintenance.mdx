@@ -314,7 +314,7 @@ and an unconfirmed native stop cannot be forgotten just because its process disa
 cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]
 cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
-cotal manager status [--space <s>]
+cotal manager status [--instance <full-id>] [--space <s>]
 cotal manager logs [--tail <n>] [--follow] [--space <s>]
 cotal manager install [--dry-run] [--space <s>]
 cotal manager uninstall [--yes|--dry-run] [--space <s>]
@@ -364,8 +364,10 @@ and names `cotal manager stop --yes`, then `cotal up`, which starts the manager 
 running broker. When the stack's manager is stopped, `cotal manager start` refuses the same way and
 names `cotal up`. Two saved
 manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
-command. A manager that `cotal up` or `cotal supervise` started without a saved service is reported
-by `start` and `status` with its PID, and starts nothing beside it. `logs` reads the log `cotal up`
+command. An unpinned `start` or `status` reports the PID of a manager that `cotal up` or
+`cotal supervise` started without a saved service. `start` starts nothing beside it. With
+`--instance`, these commands require a matching owned service instance and refuse `TARGET_NOT_FOUND`
+(exit 2) when there is none. Without a pin, `logs` reads the log `cotal up`
 opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It takes `--tail`,
 `--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is
 gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
