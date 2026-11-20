@@ -24,7 +24,7 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -208,10 +208,13 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       throw plain(e);
     });
 
-  /** One manager command, pinned to an instance when one is named. */
+  /** One manager command, pinned to an instance when one is named. On a space where people sign in,
+   *  a registered manager that does not answer may be one whose computer is gone, so the reply says
+   *  how to remove it. */
   const ask = async (op: string, args?: Record<string, unknown>, instanceId?: string, timeoutMs?: number): Promise<ManagerReply> => {
     const t = await resolve("control-caller-privileged", instanceId);
-    return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", timeoutMs, instanceId ? { instanceId } : undefined);
+    const reply = await askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", timeoutMs, instanceId ? { instanceId } : undefined);
+    return started && instanceId && !reply.ok && reply.unanswered ? { ...reply, error: `${reply.error ?? "the manager did not answer"} ${deregisterRemedy(target.space, [instanceId])}` } : reply;
   };
 
   /** The incarnation a seat command must reach. A manager names an open- or static-mode seat by its
@@ -230,10 +233,12 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
-  /** A manager as a choice, its host read from its presence when the roster carries it. */
-  const choice = (instanceId: string, host?: string | null): ManagerChoice => {
-    const seen = host ?? managerCandidate(instanceId, observer.getRoster().find((p) => parsePrincipalKey(p.card.id)?.actor === `manager_${instanceId}`)).host;
-    return { instanceId, ...(seen ? { host: seen } : {}), local: seen === hostname() };
+  /** A manager as a choice, its host read from its presence when the roster carries a current row.
+   *  An offline row says nothing about where the manager runs now. */
+  const choice = (instanceId: string): ManagerChoice => {
+    const row = observer.getRoster().find((p) => parsePrincipalKey(p.card.id)?.actor === `manager_${instanceId}` && p.status !== "offline");
+    const seen = managerCandidate(instanceId, row).host;
+    return { instanceId, ...(seen ? { host: seen } : {}), local: seen === hostname(), live: row !== undefined };
   };
 
   /** On a user-auth space, the person's managers as the space's auth service lists them. The list
@@ -288,9 +293,18 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
         const reported = reportedManagerHost(client, pinned.space, pinned.server, pinned.auth, instanceId).finally(() => stop.abort());
         if (await managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, stop.signal)) return undefined;
         const host = await reported;
-        return { instanceId, ...(host ? { host } : {}), local: host === here };
+        return { instanceId, ...(host ? { host } : {}), local: host === here, live: host !== undefined };
       }));
       return choices.filter((m): m is ManagerChoice => m !== undefined);
+    },
+
+    async manager(instanceId) {
+      const seen = choice(instanceId);
+      if (seen.host) return seen;
+      // A manager whose presence row is not found here, such as the space's own, is asked its host.
+      const t = await resolve("control-caller-privileged", instanceId);
+      const host = await reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
+      return { instanceId, ...(host ? { host } : {}), local: host === hostname(), live: host !== undefined };
     },
 
     async personas(instanceId) {

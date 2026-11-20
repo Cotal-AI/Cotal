@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
-import { LaunchListsRefused, NoLaunchManager, SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
+import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -107,10 +107,11 @@ interface Session {
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
 
 /** A seat no manager listed. When a manager did not answer, the seat may run there, so that is the
- *  answer, not that the seat does not exist. */
-function notListed(name: string, silent: readonly string[]): RequestError {
+ *  answer, not that the seat does not exist. On a space where people sign in, a manager whose
+ *  computer is gone stays registered, so the answer says how to remove it. */
+function notListed(m: Mesh, name: string, silent: readonly string[]): RequestError {
   if (silent.length === 0) return RequestError.resourceNotFound(name);
-  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}. A manager whose host is gone stays registered until you remove it with \`cotal endpoint deregister manager <id> --yes\`.`);
+  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.${m.userMode ? ` ${deregisterRemedy(m.space, silent)}` : ""}`);
 }
 
 function canonical(path: string): string {
@@ -243,7 +244,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       if (held === undefined || !(e instanceof NoLaunchManager)) throw e;
       return [];
     });
-    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, { instanceId: held, local: false }];
+    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, await m.manager(held)];
     // Read the lists of the manager a new session starts on, never whichever the exchange picks.
     const from = machine ?? defaultManager(managers)?.instanceId;
     const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
@@ -406,16 +407,16 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     .onRequest(methods.agent.session.setConfigOption, async ({ params }) => {
       const session = sessionOf(params.sessionId);
       if (!("value" in params) || typeof params.value !== "string") throw RequestError.invalidParams(undefined, `option "${params.configId}" takes a select value`);
-      if (session.seat) throw RequestError.invalidParams(undefined, `${session.seat.name} is already running; ${params.configId} applies to a new agent, after /despawn`);
+      // A thread that cannot start another agent has nothing a changed option would apply to.
+      const fixed = `${session.id} opened without a grant that may spawn, so its options cannot change`;
+      if (session.seat) throw RequestError.invalidParams(undefined, session.offer.seatOnly ? fixed : `${session.seat.name} is already running; ${params.configId} applies to a new agent, after /despawn`);
       let next: Selection;
       try {
         next = applyOption(session.offer, session.selection, params.configId, params.value);
       } catch (e) {
         throw RequestError.invalidParams(undefined, (e as Error).message);
       }
-      // A thread that cannot start another agent has nothing a changed option would apply to.
-      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection))
-        throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so its options cannot change`);
+      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection)) throw RequestError.invalidParams(undefined, fixed);
       if (next.machine !== session.selection.machine) {
         const m = await mesh();
         const offer = await offerFor(m, next.machine, session.held);
@@ -488,7 +489,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const m = await mesh();
       const listed = await m.seats();
       const matches = listed.rows.filter((row) => row.name === params.sessionId);
-      if (matches.length === 0) throw notListed(params.sessionId, listed.silent);
+      if (matches.length === 0) throw notListed(m, params.sessionId, listed.silent);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);
       const row: SeatRow = matches[0]!;
       // A person whose grant does not let them spawn may not read the launch lists. Their thread
@@ -542,7 +543,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const m = await mesh();
       const listed = await m.seats();
       const rows = listed.rows.filter((row) => row.name === params.sessionId);
-      if (rows.length === 0 && listed.silent.length > 0) throw notListed(params.sessionId, listed.silent);
+      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed.silent);
       for (const row of rows) options.hidden.add(row.lifecycleUid);
       return {};
     });

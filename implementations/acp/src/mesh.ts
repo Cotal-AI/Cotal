@@ -27,6 +27,8 @@ export interface ManagerChoice {
   readonly host?: string;
   /** The manager runs on the host this process runs on. */
   readonly local: boolean;
+  /** The manager's presence is current. A registration whose computer is gone can stay listed. */
+  readonly live?: boolean;
 }
 
 /** One seat incarnation: its name, principal and lifecycle. */
@@ -105,6 +107,12 @@ export class NoLaunchManager extends Error {
   override readonly name = "NoLaunchManager";
 }
 
+/** What a person on a space where people sign in can do about a registered manager that does not
+ *  answer. Its registration stays listed until it is removed, as `cotal ps` says. */
+export function deregisterRemedy(space: string, instanceIds: readonly string[]): string {
+  return `For a computer that is gone, ask the space's auth service to remove your registration: ${instanceIds.map((id) => `\`cotal endpoint deregister manager ${id} --space ${space} --yes\``).join(", ")}.`;
+}
+
 /** The seats the managers listed, and the managers that did not answer, whose seats are missing. */
 export interface SeatList {
   readonly rows: SeatRow[];
@@ -121,8 +129,12 @@ export interface Mesh {
   /** The applications and models a manager offers. Rejects with {@link LaunchListsRefused} when the
    *  caller may not read them. */
   catalogs(managerInstanceId?: string): Promise<AgentCatalog[]>;
-  /** The managers this caller can spawn through. Rejects with {@link NoLaunchManager} when none may. */
+  /** The managers this caller can spawn through. On a space where people sign in, rejects with
+   *  {@link NoLaunchManager} when none may. */
   managers(): Promise<ManagerChoice[]>;
+  /** One manager as a choice, described from its presence, or from its own answer when its presence
+   *  row is not found. */
+  manager(instanceId: string): Promise<ManagerChoice>;
   /** Persona names in a manager's catalog. Each manager holds its own. Rejects with
    *  {@link LaunchListsRefused} when the caller may not read them. */
   personas(managerInstanceId?: string): Promise<string[]>;

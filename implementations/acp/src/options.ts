@@ -68,11 +68,12 @@ export function refusal(catalogs: readonly AgentCatalog[], agent: string): strin
   return undefined;
 }
 
-/** The manager a new session starts on: this machine's, else the first listed. Leaving it unpinned
- *  would let the space's exchange choose, and that refuses when several of a person's own managers
- *  are live. */
+/** The manager a new session starts on: this machine's, else one whose presence is current, else the
+ *  first listed. A registration whose computer is gone stays listed on a space where people sign in,
+ *  so sort order alone could choose it. Leaving it unpinned would let the space's exchange choose,
+ *  and that refuses when several of a person's own managers are live. */
 export function defaultManager(managers: readonly ManagerChoice[]): ManagerChoice | undefined {
-  return managers.find((m) => m.local) ?? managers[0];
+  return managers.find((m) => m.local) ?? managers.find((m) => m.live) ?? managers[0];
 }
 
 /** The selection a new session starts with. */
