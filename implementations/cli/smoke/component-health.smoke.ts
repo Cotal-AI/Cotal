@@ -351,7 +351,7 @@ try {
   check("fixture broker started", await portOpen(port));
 
   // Register an explicit OPEN target so the status command operates on this exact isolated root.
-  const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open");
+  const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open", "--force");
   check("fixture mesh registered", add.status === 0, `${add.stdout}${add.stderr}`);
 
   const ready = join(root, "holder.json");

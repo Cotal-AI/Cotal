@@ -82,7 +82,7 @@ try {
     const entry = symlink ? join(home, "cotal-alias.js") : join(launch, "dist/cotal.js");
     if (symlink) symlinkSync(join(launch, "dist/cotal.js"), entry);
     const space = `deleted-${name}`;
-    const args = ["meshes", "add", space, "--mode", "open", "--root", launch, "--server", `nats://127.0.0.1:${port}`];
+    const args = ["meshes", "add", space, "--mode", "open", "--root", launch, "--server", `nats://127.0.0.1:${port}`, "--force"];
     const register = start(process.execPath, [join(updater, "dist/cotal.js"), ...args], home, `${name}-register`);
     assert.equal(await finish(register), 0, register.text());
     const lower = Date.now();

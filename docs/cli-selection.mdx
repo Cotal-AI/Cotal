@@ -898,9 +898,10 @@ mesh an earlier release registered under such a name still lists, shows and remo
 whose `.cotal/auth` holds that mesh's credentials and whose `.cotal/agents` holds its personas.
 The default is the project you run it in. The registry stores that path, never a secret. `--mode`
 defaults to `auth` when the root holds the space's account record and to `open` otherwise. The
-broker is probed before anything is recorded, so a wrong address, or credentials that mesh will
-not accept, fails here instead of at the first `spawn`; `--force` records without verifying (and
-replaces a record added by hand). `space show` marks the forced registration's mode as unchecked,
+broker is probed before anything is recorded. An open broker must serve the named space. A wrong
+address or credentials that mesh will not accept fail here instead of at the first `spawn`.
+`--force` records without verifying and replaces a record added by hand. The guided form also lets
+you explicitly accept an unchecked registration. `space show` marks the unchecked registration,
 and `whoami` reports conditional access and exits 4 with `MODE_NOT_CHECKED`. A name that is prepared
 on this machine, or that this machine started or a catalog lists, is refused with `CONFLICT` (exit 2), with or without `--force`, as
 `space add` refuses it: `cotal down` finds a running stack through that record.
@@ -946,9 +947,9 @@ stopped counts as running, as it does for `clean`. A hand-added record is remove
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 
-For several names, `meshes rm` loads the registry once, shares the legacy-file scan, and reads the
-selected default once. Each completed entry is reported and its selected default cleared before the
-next entry is attempted. A later removal failure does not roll back earlier removals.
+For several names, `meshes rm` treats repeated names as one target. It loads the registry once,
+shares the legacy-file scan, and reads the selected default once. It reports each removal and clears
+its selected default before attempting the next entry. A later failure does not roll back earlier removals.
 
 Nothing that merely *infers* a record is stale from a dead broker touches it: an
 unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal meshes add`

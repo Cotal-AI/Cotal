@@ -1,7 +1,8 @@
 import { statSync } from "node:fs";
 import { connect as netConnect } from "node:net";
 import { join, resolve } from "node:path";
-import { mkSecretDir, probeConnect, token, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
+import { dialerFor, mkSecretDir, probeConnect, token, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   assertPinnedFetchUrl,
   authDir,
@@ -382,6 +383,34 @@ export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   const r = await preflightTarget(target);
   if (r.ok) return good(undefined);
   return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+}
+
+/** Discover open spaces from their chat or presence streams, using the candidate's TLS policy. */
+export async function openSpaceNames(server: string, tlsRequired: boolean): Promise<string[]> {
+  const nc = await dialerFor(server)({ servers: server, timeout: 2000, reconnect: false, ...(tlsRequired ? { tls: {} } : {}) });
+  try {
+    const names = new Set<string>();
+    for await (const stream of (await jetstreamManager(nc)).streams.names()) {
+      const space = /^(?:CHAT_|KV_cotal_presence_)(.+)$/.exec(stream)?.[1];
+      if (space) names.add(space);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  } finally {
+    await nc.close();
+  }
+}
+
+/** A bare connection alone cannot establish that an open broker serves this space. */
+export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean): Promise<Check<void>> {
+  let served: string[];
+  try { served = await openSpaceNames(server, tlsRequired); }
+  catch { return { ok: false, code: "TARGET_UNAVAILABLE", message: `the broker at ${server} answered, but the spaces it serves could not be read`, remedy: `retry, or pass --force to add "${name}" unchecked` }; }
+  if (served.includes(token(name))) return good(undefined);
+  return {
+    ok: false, code: "TARGET_NOT_FOUND",
+    message: served.length ? `the broker at ${server} serves no space named "${name}"; it serves ${served.map((space) => `"${space}"`).join(", ")}` : `the broker at ${server} serves no space yet, so "${name}" is not running there`,
+    remedy: served.length ? `add one of those names, or pass --force to add "${name}" before it starts there` : `pass --force to add "${name}" unchecked, or start the space on that broker first`,
+  };
 }
 
 /** The {@link verifyTarget} sentence for a TLS broker at `server` whose certificate this machine

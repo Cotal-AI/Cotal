@@ -2,7 +2,6 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync, s
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { listSpaces, token } from "@cotal-ai/core";
 import {
   CommandFailure,
   authDir,
@@ -67,6 +66,7 @@ import {
   checkEnforcement,
   checkEnforcementAt,
   checkMode,
+  checkOpenSpace,
   checkRoot,
   checkServer,
   checkSpaceName,
@@ -254,7 +254,7 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
     // diagnosis's own next step comes first.
     if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
     take(reached, target);
-    if (mode === "open") await servedOrThrow(server, name, target);
+    if (mode === "open") take(await checkOpenSpace(server, name, tlsRequired), target);
   }
   const warnings: OutputWarning[] = [];
   if (dial.residual) warnings.push({ code: "UNENCRYPTED_OVERLAY", target, message: dial.residual });
@@ -271,18 +271,6 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(verified ? {} : { unchecked: true }), ts: new Date().toISOString() };
   recordMesh(entry);
   return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, verified ? "reachable" : "not-checked"), verified, replaced }, warnings };
-}
-
-/** An open broker answers for any name, so an open space must be one it serves, or a mistyped
- *  name is recorded and every later operation on it fails without naming it. The spaces it serves
- *  are read back from their streams, which a bare connection to an open broker may list. */
-async function servedOrThrow(server: string, name: string, target: unknown): Promise<void> {
-  let served: string[];
-  try { served = (await listSpaces({ servers: server })).map((info) => info.space); }
-  catch { throw refuse("TARGET_UNAVAILABLE", `the broker at ${server} answered, but the spaces it serves could not be read`, target, `retry, or pass --force to add "${name}" unchecked`); }
-  if (served.includes(token(name))) return;
-  throw refuse("TARGET_NOT_FOUND", served.length ? `the broker at ${server} serves no space named "${name}"; it serves ${served.map((space) => `"${space}"`).join(", ")}` : `the broker at ${server} serves no space yet, so "${name}" is not running there`,
-    target, served.length ? `add one of those names, or pass --force to add "${name}" before it starts there` : `start it there with \`cotal up --open\`, or pass --force to add "${name}" unchecked`);
 }
 
 /** A user-auth space: its pins come from a bundle exported where it runs, or from its HTTPS

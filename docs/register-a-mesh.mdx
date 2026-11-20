@@ -76,6 +76,7 @@ The flag records that you accept the connection's dependence on the overlay tunn
 Keep that tunnel active whenever you use the entry.
 
 Cotal checks the broker and its trust before writing the entry.
+For an open broker, it checks that the broker serves the named space.
 On a terminal, it shows what it will trust and asks for confirmation.
 If the broker is offline, `--force` can save an unverified entry.
 It never bypasses the address restrictions.
@@ -169,7 +170,7 @@ To forget a registered mesh, run:
 cotal space forget optiplex
 ```
 
-`cotal meshes rm` also forgets an entry. Neither command stops the broker.
+`cotal meshes rm` also forgets entries and treats repeated names as one target. Neither command stops the broker.
 Use `cotal down` to stop a mesh running here.
 
 A hand-registered entry survives `cotal down` and `cotal clean all`, even if its root is the project being stopped.

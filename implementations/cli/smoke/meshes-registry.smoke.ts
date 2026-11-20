@@ -36,6 +36,7 @@ import { connect as netConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { mock } from "node:test";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { SMOKE_BROKER_TOKEN, freePort, listenOn, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, screen } from "./_console-pty.js";
 
@@ -48,7 +49,7 @@ process.env.COTAL_HOME = home;
 // CLI composition root, and `rm`'s "is this mesh running here" check reads them — import it first,
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
-const { createSpaceAuth, isReachable, registry } = await import("@cotal-ai/core");
+const { chatStream, createSpaceAuth, dialerFor, isReachable, registry, spacePrefix } = await import("@cotal-ai/core");
 const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
@@ -217,6 +218,15 @@ function projectRoot(label: string): string {
 const DEAD = `nats://127.0.0.1:${await freePort()}`;
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
+async function serveSpaces(server: string, spaces: string[], tls?: { caFile: string }): Promise<void> {
+  const nc = await dialerFor(server)({ servers: server, ...(tls ? { tls } : {}) });
+  try {
+    const js = await jetstreamManager(nc);
+    for (const space of spaces) await js.streams.add({ name: chatStream(space), subjects: [`${spacePrefix(space)}.chat.>`] });
+  } finally {
+    await nc.close();
+  }
+}
 const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
 teardownOnSignal(broker);
 // A second broker that actually ENFORCES something, so the guided flow's auth branches (the
@@ -271,12 +281,21 @@ try {
   const root = projectRoot("remote");
 
   // ── add: verified registration of a mesh this machine did not start ────────────────────────────
+  await serveSpaces(LIVE, ["beta"]);
   const added = await run(["add", "beta"], { server: LIVE, root });
   check("add records a verified mesh", added.code === 0 && findMesh("beta")?.server === LIVE, added.out);
   check("add records it as operator-registered", findMesh("beta")?.origin === "manual", findMesh("beta"));
   check("add infers open mode from a root with no trust material", findMesh("beta")?.mode === "open", findMesh("beta"));
   check("add adopts the default when there is no usable current", getCurrent() === "beta", getCurrent());
   check("add says what it registered", added.out.includes("registered") && added.out.includes(LIVE), added.out);
+
+  const unserved = await run(["add", "nonexistent"], { server: LIVE, root, mode: "open" });
+  check("add refuses an open name the live broker does not serve without writing or changing current",
+    unserved.code === 1 && unserved.out.includes('serves no space named "nonexistent"; it serves "beta"') &&
+      findMesh("nonexistent") === undefined && getCurrent() === "beta", unserved.out);
+  const unchecked = await run(["add", "nonexistent"], { server: LIVE, root, mode: "open", force: true });
+  check("add --force records an unserved open name as unchecked", unchecked.code === 0 && findMesh("nonexistent")?.unchecked === true, unchecked.out);
+  removeMesh("nonexistent");
 
   // ── add: a failed verification records NOTHING ────────────────────────────────────────────────
   const dead = await run(["add", "ghost"], { server: DEAD, root });
@@ -437,11 +456,12 @@ try {
     writeFileSync(join(pki, "leaf.ext"), "subjectAltName=DNS:localhost\n");
     openssl("x509", "-req", "-in", join(pki, "leaf.csr"), "-CA", join(pki, "ca.pem"), "-CAkey", join(pki, "ca.key"), "-CAcreateserial", "-out", join(pki, "leaf.pem"), "-days", "1", "-extfile", join(pki, "leaf.ext"));
     const tlsPort = await freePort();
-    const tlsBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(tlsPort), "--tls", "--tlscert", join(pki, "leaf.pem"), "--tlskey", join(pki, "leaf.key"), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+    const tlsBroker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(tlsPort), "--tls", "--tlscert", join(pki, "leaf.pem"), "--tlskey", join(pki, "leaf.key"), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
     teardownOnSignal(tlsBroker);
     try {
       const accepts = () => new Promise<boolean>((done) => { const s = netConnect(tlsPort, "127.0.0.1", () => { s.destroy(); done(true); }); s.on("error", () => done(false)); });
       for (let i = 0; i < 50 && !(await accepts()); i++) await new Promise((r) => setTimeout(r, 100));
+      await serveSpaces(`nats://localhost:${tlsPort}`, ["tls-host-live", "tls-guided-live"], { caFile: join(pki, "ca.pem") });
       const bin = new URL("../../../bin/cotal.ts", import.meta.url).pathname;
       const env = { ...trustingChildEnv(join(pki, "ca.pem")), COTAL_HOME: home, COTAL_NO_PROMPT: "1", COTAL_SKIP_CONNECTOR_SEED: "1" };
       const add = (server: string, flags: string[], extra: NodeJS.ProcessEnv = {}) =>
@@ -825,6 +845,7 @@ try {
     }
     if (dirname(dir) === dir) break;
   }
+  await serveSpaces(LIVE, ["rootless"]);
   const rootless = await run(["add", "rootless"], { server: LIVE });
   process.chdir(prevCwd2);
   // ONE cell either way, so the TOTAL COUNT IS THE SAME ON EVERY BOX. The two arms used to run a
@@ -1288,9 +1309,9 @@ try {
   recordMesh({ space: "drop-twice", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
   setCurrent("keep-selected");
   const repeated = await counted(() => run(["rm", "drop-twice", "drop-twice"]));
-  check("repeating a name unregisters it once, reports the second as missing, and keeps an unrelated current",
-    repeated.value.code === 1 && findMesh("drop-twice") === undefined && getCurrent() === "keep-selected" &&
-      repeated.value.out.includes('✓ unregistered "drop-twice"') && repeated.value.out.includes('no mesh named "drop-twice" is registered') &&
+  check("repeating a name unregisters it once without an error and keeps an unrelated current",
+    repeated.value.code === 0 && findMesh("drop-twice") === undefined && getCurrent() === "keep-selected" &&
+      repeated.value.out.split("\n").filter((line) => line.includes('✓ unregistered "drop-twice"')).length === 1 && !repeated.value.out.includes("no mesh named") &&
       !repeated.value.out.includes("no default mesh now") && repeated.listings === 2 && repeated.pointerReads === 1,
     { out: repeated.value.out, listings: repeated.listings, pointerReads: repeated.pointerReads, current: getCurrent() });
   clearCurrent();
@@ -1478,10 +1499,12 @@ try {
   // "use a different address", so accepting an overlay and finishing on loopback would record a
   // consent nobody gave for the address actually written — and the field exists precisely to feed
   // a future use-time fence, which would read it as authorization.
+  await serveSpaces(LIVE, ["openmesh", "seeded-safe", "taken"]);
   const switched = driver([
     true,        // accept the dependency for the OVERLAY
     "retype",    // …then change your mind and use a different address
     LIVE,        // a loopback broker that really answers
+    null,        // choose to type a name
     "openmesh",  // space name
     true,        // register
   ]);
@@ -1538,6 +1561,11 @@ try {
   const newAsk = seededSafe.asked.find((a) => a.kind === "confirm");
   check("a new record's last question keeps its default", newAsk?.message === "Register this mesh?" && newAsk.initialValue === undefined, seededSafe.asked);
   removeMesh("seeded-safe");
+
+  const guidedUnserved = driver(["cancel"]);
+  const guidedUnservedOut = await addWizard({ space: "not-served", server: LIVE, root }, root, guidedUnserved.io as never);
+  check("the guided form does not confirm an unserved name as verified",
+    guidedUnservedOut === false && guidedUnserved.asked[0]?.message === "The check did not pass. What next?" && findMesh("not-served") === undefined, guidedUnserved.asked);
 
   // `--tls` holds in the guided form as it does in the flag form: the probe requires the handshake,
   // and a host name passes the address rule and is recorded with the requirement.
