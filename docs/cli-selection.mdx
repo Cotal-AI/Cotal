@@ -48,6 +48,9 @@ explicitly selected a different space, `space show` says that commands such as `
 target the selection here. Pass `--space <name>` or run `cotal use --clear` to target the folder's
 space instead. Neither `space` nor `space show` writes anything. A registry record that cannot be
 read refuses both with `SCHEMA_INVALID`, exit 1, naming its file.
+Inside a renamed project's folder, bare `space show` uses the stack journal to find the local
+registration that matches its name, original root and broker. If neither a matching record nor a
+selection is available, the refusal names the space and the move.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
 `currentRecorded`, `folder` (this folder's space when it is marked, else null), `items` and
