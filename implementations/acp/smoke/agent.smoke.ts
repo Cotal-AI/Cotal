@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { client, methods, PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { cotalAgent, defaultName, promptText, type HiddenSessions } from "../src/agent.js";
-import { LaunchListsRefused, SignInRequired, type AgentCatalog, type AguiEventLike, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
+import { LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -93,7 +93,12 @@ class FakeMesh implements Mesh {
     return CATALOGS;
   }
   managerList = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
-  async managers() { return this.managerList; }
+  /** Why no manager may start a new agent, when none may. */
+  noLaunch: string | undefined;
+  async managers() {
+    if (this.noLaunch) throw new NoLaunchManager(this.noLaunch);
+    return this.managerList;
+  }
   /** Each manager holds its own persona catalog. */
   async personas(instanceId?: string) {
     if (this.launchRefused) throw new LaunchListsRefused("the manager did not list its personas: permission-denied");
@@ -361,6 +366,30 @@ check("and says that starting another agent there needs a grant that may spawn",
 const spawnsBefore = mesh.spawned.length;
 const noLaunch = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "again" }] })));
 check("a later prompt there is refused with that reason and spawns nothing", noLaunch?.code === -32602 && String(noLaunch.message).includes("may spawn") && mesh.spawned.length === spawnsBefore, noLaunch);
+const otherModel = await errorOf(agent.request(methods.agent.session.setConfigOption, { sessionId: "outside", configId: "model", value: "claude/opus" }));
+check("choosing another model there is refused, since no agent can start with it", otherModel?.code === -32602 && String(otherModel.message).includes("options cannot change"), otherModel);
+
+// A loaded agent on a manager the launch list leaves out, such as the space's own while the person
+// has managers of their own, keeps that manager as its Machine choice.
+const heldRow: SeatRow = { name: "held", owner: "local", actor: "h1", lifecycleUid: "life-h", managerInstanceId: "m3", agent: "claude", model: "haiku", cwd: dir, status: "running" };
+const machineOf = (r: { configOptions?: unknown[] | null } | undefined) => {
+  const o = r?.configOptions?.find((x) => (x as { id: string }).id === "machine") as { currentValue?: string; options?: { value: string }[] } | undefined;
+  return { current: o?.currentValue, choices: (o?.options ?? []).map((c) => c.value) };
+};
+mesh.rows = [heldRow, ...rowsBefore];
+const heldLoad = await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
+check("a loaded agent's manager stays its current Machine choice beside the launch list", JSON.stringify(machineOf(heldLoad)) === JSON.stringify({ current: "m3", choices: ["m1", "m2", "m3"] }), machineOf(heldLoad));
+// While no manager may start a new agent, the agent still loads, read from the manager that holds it,
+// and a new thread still says why it cannot start.
+mesh.noLaunch = "none of your managers is live";
+const asked = mesh.catalogsAsked.length;
+let heldFailed: unknown;
+await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] }).catch((e: unknown) => { heldFailed = e; });
+check("it loads while no manager may start a new agent, its lists read from the manager that holds it", heldFailed === undefined && mesh.catalogsAsked.slice(asked).every((m) => m === "m3") && mesh.catalogsAsked.length > asked, heldFailed ?? mesh.catalogsAsked.slice(asked));
+const noNew = await errorOf(agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+check("a new thread is refused with the reason", JSON.stringify(noNew ?? null).includes("none of your managers is live"), noNew);
+mesh.noLaunch = undefined;
+mesh.rows = rowsBefore;
 
 // a failed run
 const second = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });

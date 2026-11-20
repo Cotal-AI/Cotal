@@ -20,12 +20,12 @@ import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
-import { LaunchListsRefused, SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
+import { LaunchListsRefused, NoLaunchManager, SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
-  { name: "despawn", description: "Stop this session's agent. The session stays; a new prompt spawns a fresh agent." },
+  { name: "despawn", description: "Stop this session's agent. The session stays, and the reply says whether a new prompt can start another." },
   { name: "roster", description: "List who is on the mesh and what each is doing." },
   { name: "channels", description: "List the space's channels." },
 ] as const;
@@ -100,6 +100,8 @@ interface Session {
   open: Map<string, number>;
   turn?: Turn;
   client: AgentContext;
+  /** The manager that held the agent a loaded thread opened with. It stays a Machine choice. */
+  held?: string;
 }
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
@@ -108,7 +110,7 @@ const principal = (p: { owner: string; actor: string }): string => `${p.owner}.$
  *  answer, not that the seat does not exist. */
 function notListed(name: string, silent: readonly string[]): RequestError {
   if (silent.length === 0) return RequestError.resourceNotFound(name);
-  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.`);
+  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}. A manager whose host is gone stays registered until you remove it with \`cotal endpoint deregister manager <id> --yes\`.`);
 }
 
 function canonical(path: string): string {
@@ -234,8 +236,14 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     seatOnly: true,
   });
 
-  const offerFor = async (m: Mesh, machine?: string): Promise<Offer> => {
-    const managers = await m.managers();
+  /** The launch lists of the manager a thread starts on. A loaded thread passes the manager that
+   *  `held` its agent: it stays a choice, and the thread opens while no manager may start a new one. */
+  const offerFor = async (m: Mesh, machine?: string, held?: string): Promise<Offer> => {
+    const listed = await m.managers().catch((e: unknown) => {
+      if (held === undefined || !(e instanceof NoLaunchManager)) throw e;
+      return [];
+    });
+    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, { instanceId: held, local: false }];
     // Read the lists of the manager a new session starts on, never whichever the exchange picks.
     const from = machine ?? defaultManager(managers)?.instanceId;
     const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
@@ -405,9 +413,12 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       } catch (e) {
         throw RequestError.invalidParams(undefined, (e as Error).message);
       }
+      // A thread that cannot start another agent has nothing a changed option would apply to.
+      if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection))
+        throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so its options cannot change`);
       if (next.machine !== session.selection.machine) {
         const m = await mesh();
-        const offer = await offerFor(m, next.machine);
+        const offer = await offerFor(m, next.machine, session.held);
         try {
           next = reconcile(offer, next);
         } catch (e) {
@@ -483,7 +494,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       // A person whose grant does not let them spawn may not read the launch lists. Their thread
       // controls the agent they have and offers nothing to launch.
       let launch = true;
-      const offer = await offerFor(m, row.managerInstanceId).catch((e: unknown) => {
+      const offer = await offerFor(m, row.managerInstanceId, row.managerInstanceId).catch((e: unknown) => {
         if (!(e instanceof LaunchListsRefused)) throw e;
         options.log(`${row.name} opens with only its own model: ${e.message}`);
         launch = false;
@@ -501,6 +512,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         mapper: new FrameMapper(),
         open: new Map(),
         client,
+        ...(row.managerInstanceId ? { held: row.managerInstanceId } : {}),
       };
       const previous = sessions.get(row.name);
       if (previous) unbind(previous);

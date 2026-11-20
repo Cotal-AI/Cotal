@@ -24,7 +24,7 @@ import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveCon
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
-import { LaunchListsRefused, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -53,10 +53,12 @@ export function answeredReads<T>(reads: readonly ({ instanceId: string; rows: T[
 }
 
 /** Which of a person's managers, as the auth service lists them, a new thread may start on, and which
- *  the bridge reads agents from. A new thread follows the service's own rule: the person's registered
- *  managers that are live once they have registered any, else the space's manager. Agents are read
- *  from every live one, so an agent left on the space's manager stays listed. `why` says why nothing
- *  may start. */
+ *  the bridge reads agents from. A new thread may start on each of the person's registered managers
+ *  that is live once they have registered any, else on the space's manager. That is the service's
+ *  default rule for an unnamed call, except that several live managers are each offered where the
+ *  service would refuse to choose. Every call names its manager, so a host's `local-primary` choice
+ *  does not apply. Agents are read from every live one, so an agent left on the space's manager stays
+ *  listed. `why` says why nothing may start. */
 export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch: string[]; read: string[]; why?: string } {
   const live = (placement: ManagerInstanceListing["placement"]) =>
     listed.filter((m) => m.placement === placement && m.state === "candidate").map((m) => m.instanceId).sort();
@@ -270,7 +272,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     async managers() {
       if (started) {
         const plan = await yourManagers();
-        if (plan.why) throw new Error(plan.why);
+        if (plan.why) throw new NoLaunchManager(plan.why);
         return plan.launch.map((instanceId) => choice(instanceId));
       }
       const t = await resolve("control-caller-privileged");

@@ -99,6 +99,12 @@ export class LaunchListsRefused extends Error {
   override readonly name = "LaunchListsRefused";
 }
 
+/** No manager may start a new agent for the caller, as when none of a person's registered managers is
+ *  live. The agents they have stay listed and controllable. The message says why. */
+export class NoLaunchManager extends Error {
+  override readonly name = "NoLaunchManager";
+}
+
 /** The seats the managers listed, and the managers that did not answer, whose seats are missing. */
 export interface SeatList {
   readonly rows: SeatRow[];
@@ -115,7 +121,7 @@ export interface Mesh {
   /** The applications and models a manager offers. Rejects with {@link LaunchListsRefused} when the
    *  caller may not read them. */
   catalogs(managerInstanceId?: string): Promise<AgentCatalog[]>;
-  /** The managers this caller can spawn through. */
+  /** The managers this caller can spawn through. Rejects with {@link NoLaunchManager} when none may. */
   managers(): Promise<ManagerChoice[]>;
   /** Persona names in a manager's catalog. Each manager holds its own. Rejects with
    *  {@link LaunchListsRefused} when the caller may not read them. */
