@@ -81,6 +81,18 @@ const noop = async (): Promise<void> => {};
     assert.match(diagnostic ?? "", /invalid scripted checkpoint 'approve-plan' in \.\/bad-results\.json: status must be "resolved" or "expired"/);
     assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
     assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
+
+    writeFileSync(join(root, "wait.js"), `
+const builder = await spawn("builder");
+const start = now();
+const reply = await wait(replied(builder), { name: "reply", timeout: "1s" });
+log("reply", reply === null ? "timed out" : "received", "elapsed", now() - start);
+`);
+    writeFileSync(join(root, "results.json"), '{"events":{"reply":{"arrived":true}},"clock":{"wait":"2s"}}');
+    const timedOut = run(["run", "simulate", "wait.js", "--handler", "results.json", "--plain"]);
+    assert.equal(timedOut.status, 0, timedOut.stdout + timedOut.stderr);
+    assert.match(timedOut.stdout, /Virtual time:\s+1000 ms/);
+    assert.match(timedOut.stdout, /reply timed out elapsed 1000/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
