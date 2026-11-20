@@ -85,7 +85,7 @@
     },
     {
       "name": "N2 close matches are never suggested",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-messaging.ts",
       "find": "    if (name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);",
       "replace": "    if (false && name !== channel && editDistanceAtMostOne(channel, name)) out.push(name);",
       "expectRed": "send to a one-edit typo reports new and names the close match",
@@ -94,7 +94,7 @@
     },
     {
       "name": "N3 describeSendChannel always reports existing, so a typo looks like a known room",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-messaging.ts",
       "find": "    if (this.ep.getChannelConfig(channel)) return { known: true, hints: [] };",
       "replace": "    if (true) return { known: true, hints: [] };",
       "expectRed": "cotal_send on a typo says new channel so the caller can TELL",
@@ -103,7 +103,7 @@
     },
     {
       "name": "N4 #1229 assertKnownMentions refuses an absent name under a failed read with the old sentence",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-messaging.ts",
       "find": "    if (!unknown.length) return;\n    if (!failure)\n      throw new Error(\n        `unknown mention${unknown.length > 1 ? \"s\" : \"\"}: ${unknown.map((u) => `@${u}`).join(\", \")} — no such peer observed in space \"${this.config.space}\"`,\n      );",
       "replace": "    if (!unknown.length) return;\n    throw new Error(\n      `unknown mention${unknown.length > 1 ? \"s\" : \"\"}: ${unknown.map((u) => `@${u}`).join(\", \")} — no such peer observed in space \"${this.config.space}\"`,\n    );",
       "expectRed": "1229:e send under a failed read refuses naming the read's error and the missing grant, not \"unknown mention\"",
