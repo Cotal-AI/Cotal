@@ -220,6 +220,11 @@ try {
   check("a sequence --since is named in the report", seqPlain.stdout.includes(`--since ${items[0]?.seq} is chat stream sequence ${items[0]?.seq}; only messages after it are shown\n`), shown(seqPlain));
   check("a bare number past the newest sequence is refused USAGE_INVALID with that sequence and how to write a date",
     yearJson.status === 1 && /^--since 2026 is past the chat stream's newest sequence, \d+, so it names no message$/.test(yearJson.envelope?.error?.message ?? "") && /^give a sequence up to \d+, or write a date in full, such as 2026-01-01$/.test(yearJson.envelope?.error?.remedy ?? ""), shown(yearJson));
+  const futureSeq = String(Number(all.envelope?.result?.items.at(-1)?.seq) + 2);
+  const futureRead = await run(["history", "general", "--limit", "1", "--since", futureSeq, "--json"]);
+  check("a future sequence cutoff returns a complete empty window even with older retained messages",
+    futureRead.status === 0 && futureRead.envelope?.result?.items.length === 0
+      && futureRead.envelope.result.window.olderRetained === true && futureRead.envelope.result.window.reachesSince === true, shown(futureRead));
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
   // A bare date is local midnight. ECMAScript reads it as UTC, so east of UTC it dropped the day's
@@ -410,7 +415,18 @@ try {
   const snap = await f.until((l) => l.includes('"type":"snapshot"'));
   const records = () => f.lines.map((l) => JSON.parse(l) as { schemaVersion: number; stream: string; type: string; data: { text?: string; reason?: string; items?: Item[] } });
   check("--follow --json starts with one snapshot record of the window", snap && records()[0]?.type === "snapshot" && records()[0]?.stream === "history" && records()[0]?.schemaVersion === 1 && records()[0]?.data.items?.length === 3, { lines: f.lines.slice(0, 2), stderr: f.stderr() });
-  await alice.multicast("live one", { channel: "general" });
+  const future = follow(["history", "general", "--since", futureSeq, "--follow", "--json"]);
+  try {
+    const ready = await future.until((line) => line.includes('"type":"snapshot"') || line.includes('"error"'));
+    await alice.multicast("live one", { channel: "general" });
+    const liveFuture = await future.until((line) => line.includes('"text":"live one"') || line.includes('"error"'));
+    const [window, event] = future.lines.map((line) => JSON.parse(line) as { type?: string; data?: { items?: Item[]; text?: string } });
+    check("a future sequence cutoff starts with an empty snapshot and still emits a live message before the cutoff",
+      ready && liveFuture && window?.type === "snapshot" && window.data?.items?.length === 0
+        && event?.type === "event" && event.data?.text === "live one", future.lines);
+  } finally {
+    await killAndAwaitExit(future.child, "SIGINT");
+  }
   await bob.multicast("not this channel", { channel: "ops" });
   const event = await f.until((l) => l.includes("live one"));
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
@@ -1040,6 +1056,19 @@ try {
     if (replacement) await killAndAwaitExit(replacement);
     releaseReplacement?.();
   }
+  const stoppedRead = await run(["history", "updates", "--space", space, "--server", servers, "--json"]);
+  const stoppedFollow = await run(["history", "updates", "--space", space, "--server", servers, "--follow", "--json"]);
+  const stoppedRecords = stoppedFollow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    stream?: string; type?: string; schemaVersion?: number; data?: { code?: string; message?: string; remedy?: string; reason?: string };
+  });
+  const stoppedError = stoppedRead.envelope?.error;
+  check("a follow that cannot start writes the finite refusal as a history error followed by end",
+    stoppedRead.status === 2 && stoppedError?.code === "TARGET_UNAVAILABLE" && Boolean(stoppedError.remedy)
+      && stoppedFollow.status === 2 && stoppedRecords.map((r) => r.type).join() === "error,end"
+      && stoppedRecords.every((r) => r.schemaVersion === 1 && r.stream === "history")
+      && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
+      && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
+    { read: shown(stoppedRead), follow: shown(stoppedFollow) });
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
