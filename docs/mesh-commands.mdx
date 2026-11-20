@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 51. 44 commands.
+Cluster `ai.cotal.manager`, revision 52. 44 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -1428,7 +1428,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.spawn",
-  "inputDigest": "sha256:072c681f7760ed7d88cf604c180e7c0247f510f80763df40bd55ba3997837809",
+  "inputDigest": "sha256:e2bec770be5f01b039ea5af11a2e2107a851ebd6ab7fad46688f0d4ec6ae7d82",
   "outputDigest": "sha256:d883a9f97f7c034772c7cbc28b22d63cf69870ba072d470c2f7b104f455e2e83"
 }
 ```
@@ -1538,16 +1538,70 @@ Input schema:
           }
         },
         "allowSubscribe": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "allow",
+                "exclude"
+              ],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exclude": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          ]
         },
         "allowPublish": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "allow",
+                "exclude"
+              ],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exclude": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          ]
         },
         "capabilities": {
           "type": "array",
@@ -1596,16 +1650,70 @@ Input schema:
       }
     },
     "allowSubscribe": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow",
+            "exclude"
+          ],
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "allowPublish": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow",
+            "exclude"
+          ],
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "join": {
       "type": "array",
@@ -1622,16 +1730,70 @@ Input schema:
       ],
       "properties": {
         "allowSubscribe": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "allow",
+                "exclude"
+              ],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exclude": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          ]
         },
         "allowPublish": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "allow",
+                "exclude"
+              ],
+              "properties": {
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "exclude": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                }
+              }
+            }
+          ]
         }
       }
     },
@@ -3712,7 +3874,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.persona",
-  "inputDigest": "sha256:b1aa72d7b2aa88cde94bde2e97e3fd612dfada752b52e8c9b0acbae5f528dea4",
+  "inputDigest": "sha256:e46b5091f04c2b04aa102684a4b71f859fc52b332db224ffb541512c542a6788",
   "outputDigest": "sha256:a121baba27357c3710b20023422927b0c11d4d1d58a542f909efd7ad1152751c"
 }
 ```
@@ -3755,16 +3917,70 @@ Input schema:
       }
     },
     "allowSubscribe": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow",
+            "exclude"
+          ],
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "allowPublish": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow",
+            "exclude"
+          ],
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "capabilities": {
       "type": "array",
@@ -3882,7 +4098,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.chat",
-  "inputDigest": "sha256:372937ec2609c503be78ec18b88ab69171560fb513f4e086d35929f154024897",
+  "inputDigest": "sha256:517104f8595e57609b9398256a046042653fcd9f8a90dde3e351aa8a1ea9dcfb",
   "outputDigest": "sha256:d06af8eb81792c588149d46884195f7e969e6b588bc452ff6890e0a1ec848b96"
 }
 ```
@@ -3909,22 +4125,88 @@ Input schema:
       }
     },
     "allowSubscribe": {
-      "type": "array",
-      "maxItems": 64,
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow",
+            "exclude"
+          ],
+          "properties": {
+            "allow": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "allowPublish": {
-      "type": "array",
-      "maxItems": 64,
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+      "oneOf": [
+        {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allow",
+            "exclude"
+          ],
+          "properties": {
+            "allow": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
     },
     "label": {
       "type": "string",

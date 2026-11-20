@@ -17,6 +17,9 @@ refuse it rather than grant the allow list alone:
 - An older connector does not know its exclusions. The broker refuses its history reads under an
   excluded wildcard, and a start that backfills such a channel fails.
 
+The Manager cluster advances to revision 52. The read and post lists of `spawn`, `define-persona`
+and `chat-session-open` accept the `{ allow, exclude }` form, which a revision 51 schema refuses.
+
 Exclusions need nats-server 2.12.7 or later on the 2.12 line, or 2.14.0 or later. A credential
 with exclusions is not signed for an older or unknown server. Update the broker first, then the
 auth service and delivery daemon, then managers and connectors, and only then add exclusions.

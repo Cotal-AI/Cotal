@@ -429,6 +429,10 @@ allowPublish?, capabilities?, endpoints?, save? }`. A record with `prompt` is in
 `persona` names the catalog. An inline record is closed: one that also names `persona`, carries another
 key, names no `name`, has a blank `prompt`, a string field that is blank, a list that is not of
 strings, or a `save` that is not a boolean is refused (L3049) before the step key is minted.
+`allowSubscribe` and `allowPublish` also take `{ allow, exclude }`, two lists of strings with at least
+one exclusion, to leave channels or patterns out of a wildcard (SPEC §9). A record with another key or
+an empty `exclude` is refused the same way, and the manager checks the exclusions as it does a persona
+file's.
 `endpoints` is a list of `{ endpoint, commands, instanceId? }` records, and an entry with another key,
 a blank `endpoint` or an empty `commands` list is refused the same way. The manager reads the names
 and bounds each command as it does a persona file's (SPEC 13.15).
@@ -1401,3 +1405,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-11-04 | A client deadline is an instance of the NATS client's `TimeoutError`, not an error that carries that name. The client's request and API deadlines reject that class with no cause. `AbortSignal.timeout` raises a `DOMException` of the same name, and any error can be renamed to it; matching the name retried those and, after the bound, failed the step as L4026. They are not a client deadline, so they fail on the first attempt as `L4000`. |
 | 2026-11-04 | An inline persona takes `endpoints`, a list of `{ endpoint, commands, instanceId? }` records naming the endpoint commands handed to the helper (§6.1). A malformed entry is refused with L3049 before the step key is minted, and the list is hashed with the rest of the definition (§6.4). |
 | 2026-11-17 | The free `map`, `filter`, `find`, `some` and `every` read the array's length once, before the first call, as their methods do (§5.2). Measured before it: a callback that pushed onto the array it walked was called for the appended element, so `map([1, 2], f)` with a push in the first call answered `[10, 20, 30]` where `xs.map(f)` answered `[10, 20]`, and a callback that pushed on every call ran until the run failed with L4013. |
+| 2026-11-20 | An inline persona's `allowSubscribe` and `allowPublish` take `{ allow, exclude }` as well as a list, to leave channels or patterns out of a wildcard (§6.1). A record with another key or no exclusion is refused with L3049 before the step key is minted. |
