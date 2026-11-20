@@ -92,7 +92,6 @@ import {
   stackJournalPath,
   readRenewalRecord,
   recordOperationSpace,
-  renderWorkspaceError,
   resolveMeshTarget,
   serverFlag,
   spaceFlag,
@@ -134,7 +133,7 @@ import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservati
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { selectResetTarget } from "./reset-store-apply.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { c } from "../ui.js";
@@ -1513,11 +1512,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       if (block) {
         result.channelSeedBlocksRestart = true;
         hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
-      } else hints.push(remedy ?? message);
+      } else hints.push(remedy === undefined ? message : displayRemedy(remedy, cmd));
     } else if (!d.unsettled || !servedStack(folder, result)) {
-      const step = remedy ?? message;
-      hints.push(e.code === "no-meshes" && d.root === undefined ? step.replaceAll("`cotal ", () => `\`${cmd} `) : step);
-    } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with \`cotal up\` in ${d.root}`);
+      hints.push(remedy === undefined ? message : displayRemedy(remedy, cmd));
+    } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with ${codeSpan(`${cmd} up`)} in ${d.root}`);
     return result;
   }
   const target = selected.target;
@@ -1595,11 +1593,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);
       else if (seedBlock) hints.push(`${message}. Restart blocked: ${seedBlock.message}. ${seedBlock.remedy}`);
-      else hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
+      else hints.push(remedy === undefined ? message : `${message}; ${displayRemedy(remedy, cmd)}`);
     }
     if (preflight.kind === "non-nats-listener" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported") {
       const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false });
-      hints.push(remedy === undefined ? message : `${message}; ${remedy}`);
+      hints.push(remedy === undefined ? message : `${message}; ${displayRemedy(remedy, cmd)}`);
     }
     return { ...base, connection: preflight.kind, ...(seedBlock ? { channelSeedBlocksRestart: true as const } : {}), ...(preflight.pid === undefined ? {} : { brokerPid: preflight.pid }), staleRecord: preflight.prune && !offline, snapshot: { state: "skipped", reason: "broker not connected" } };
   }
@@ -2973,7 +2971,8 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
     }
     if (isWorkspaceTargetError(e)) {
       const verdict = e.code === "not-started" ? "absent" : "refused";
-      printComponent({ name: "target", verdict, facts: [e.code, renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")] });
+      const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
+      printComponent({ name: "target", verdict, facts: [e.code, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] });
       process.exitCode = COMPONENT_EXIT[verdict];
       return;
     }

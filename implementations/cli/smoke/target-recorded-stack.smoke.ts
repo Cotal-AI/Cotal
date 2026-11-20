@@ -54,6 +54,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveOnPath } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, assertSmokeSandboxLinkedDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -79,6 +80,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
+const readRemedy = (text: string) => text.replaceAll("`cotal ", `\`${launcher} `);
 const anchors = new Map<string, SmokeSandboxAnchor>();
 /** Record `at`, which already holds its `.cotal`, as a root a down may run in. */
 const sandbox = (at: string) => anchors.set(at, recordSmokeSandbox({ root: at, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }));
@@ -112,7 +115,7 @@ const statusOnSelection = (text: ReturnType<typeof run>, json: ReturnType<typeof
     json.envelope.result?.selected?.space === "sel07" && json.envelope.result.selected.resolved === true;
 const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UNAVAILABLE",
   'no broker answered at nats://127.0.0.1:24712; "sel07" is registered here but its mesh is not up',
-  'start it where it runs, or `cotal space forget sel07` to unregister it') && r.envelope?.target?.space === "sel07";
+  `start it where it runs, or \`${launcher} space forget sel07\` to unregister it`) && r.envelope?.target?.space === "sel07";
 
 const before = run(["whoami", "--json"]);
 check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
@@ -277,7 +280,7 @@ renameSync(moved, root);
 check("up in a moved folder whose space this machine does not record refuses CONFLICT and names only --adopt",
   movedUp.status === 2 && movedUp.envelope?.error?.code === "CONFLICT" && (movedUp.envelope.error.message ?? "").includes(`recorded at ${root}, so this folder was moved from there`) && movedUp.envelope.error.remedy === adoptOnly, shown(movedUp));
 check("status and whoami there name the same next step",
-  (movedStatus.envelope?.result?.hints ?? []).includes(adoptOnly) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === adoptOnly, { status: shown(movedStatus), whoami: shown(movedWho) });
+  (movedStatus.envelope?.result?.hints ?? []).includes(readRemedy(adoptOnly)) && movedWho.status === 2 && movedWho.envelope?.error?.remedy === readRemedy(adoptOnly), { status: shown(movedStatus), whoami: shown(movedWho) });
 check("ps in a moved folder targets the explicit selection",
   selectedRefusal(movedSelected), shown(movedSelected));
 {
@@ -305,9 +308,9 @@ check("with empty folders at the old path it is still moved, and names the same 
   rmSync(root, { recursive: true });
   renameSync(moved, root);
   check("up, down, whoami and whoami --space there all name moving back, or forgetting and adopting",
-    routes.every((r) => r.status === 2 && r.envelope?.error?.remedy === back), routes.map(shown));
+    routes.every((r, i) => r.status === 2 && r.envelope?.error?.remedy === (i < 2 ? back : readRemedy(back))), routes.map(shown));
   check("status --space there says the folder was moved and names the same step",
-    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(back), shown(status));
+    (status.envelope?.result?.selected?.message ?? "") === `"la07" is prepared in ${root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there` && (status.envelope?.result?.hints ?? []).includes(readRemedy(back)), shown(status));
   check("with empty folders at the old path, up says to move them aside first",
     recreated.status === 2 && recreated.envelope?.error?.remedy === `move what is now at ${root} aside, such as empty folders a running broker created there, then move this folder back to ${root} and run the command again there; ${adopt}`, shown(recreated));
   check("rig: forget la07", run(["space", "forget", "la07", "--json"]).status === 0);
@@ -437,7 +440,7 @@ rmSync(linked, { recursive: true, force: true });
     plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with \`${command}\``, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
-    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(up.envelope?.error?.remedy ?? "-"), { status: shown(status), up: shown(up) });
+    up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(readRemedy(up.envelope?.error?.remedy ?? "-")), { status: shown(status), up: shown(up) });
   const adopted = run(["space", "create", "la07", "--adopt", "--json"], brought);
   const journal = JSON.parse(readFileSync(path, "utf8")) as { root: string; space: string; server: string; broker?: { storeDir: string }; members: { instanceId: string | null; state: string }[] };
   renameSync(away, root);
@@ -476,7 +479,8 @@ writeFileSync(join(legacy, ".cotal", "server-open.conf"), "# Generated by `cotal
 for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const r = run([command, "--json"], legacy);
   check(`${command} in a stopped legacy root refuses as not started, exit 2`, r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_UNAVAILABLE", shown(r));
-  check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`cotal up\` in ${legacy}`, r.envelope?.error);
+  const cmd = command === "whoami" || command === "ps" ? launcher : "cotal";
+  check(`${command} names the address its last start configured and the bare up`, (r.envelope?.error?.message ?? "").includes("last ran at nats://127.0.0.1:24712") && r.envelope?.error?.remedy === `start it again with \`${cmd} up\` in ${legacy}`, r.envelope?.error);
   check(`${command} in a stopped legacy root names no default broker address`, noDefault(r), shown(r));
 }
 // `watch` refuses that target like every other read. It used to end on one red line with exit 1,
@@ -540,7 +544,7 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   writeFileSync(join(legacyAuth, ".cotal", "auth", "server.conf"), "# Generated by `cotal up` - do not edit by hand.\nhost: 127.0.0.1\nport: 24714\n", { mode: 0o600 });
   writeFileSync(join(legacyAuth, ".cotal", "auth", `account.${key}.json`), JSON.stringify({ space: "lg01", account: { pub: "P", jwt: "J", signingSeed: "S", signingPub: "SP" } }) + "\n", { mode: 0o600 });
   const lastRan = `the mesh "lg01" in ${legacyAuth} last ran at nats://127.0.0.1:24714`;
-  const ownUp = `start it again with \`cotal up\` in ${legacyAuth}`;
+  const ownUp = `start it again with \`${launcher} up\` in ${legacyAuth}`;
   const record = join(home, ".cotal", "meshes", `space.${key}.json`);
   mkdirSync(join(home, ".cotal", "meshes"), { recursive: true, mode: 0o700 });
   const registerAt = (at: string, origin: string) =>

@@ -372,8 +372,8 @@ export class ConnectRefusal extends Error {
 
   /** This refusal as a command's classified failure under its code: the message, and the remedy
    *  apart from it. */
-  failure(): CommandFailure {
-    const remedy = this.parts?.remedy ?? this.hint?.trim();
+  failure(renderRemedy?: (remedy: string) => string): CommandFailure {
+    const remedy = this.parts?.remedy === undefined ? this.hint?.trim() : renderRemedy?.(this.parts.remedy) ?? this.parts.remedy;
     return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), { ...(remedy ? { remedy } : {}), ...(this.target ? { target: this.target } : {}), ...(this.native ? { native: this.native } : {}) });
   }
 }

@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, codeSpan, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { workingFolderRemoved } from "./paths.js";
@@ -213,6 +213,12 @@ export function displayCmd(): string {
     return command;
   }
   return "pnpm cotal";
+}
+
+/** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */
+export function displayRemedy(remedy: string, cmd?: string): string {
+  return remedy.replace(/(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (span, _fence, command: string) =>
+    command.startsWith("cotal ") ? codeSpan(`${cmd ??= displayCmd()}${command.slice("cotal".length)}`) : span);
 }
 
 /** The self-invocation as a shell-ready, double-quoted command prefix (for cmux pane commands).
