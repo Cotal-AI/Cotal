@@ -32,6 +32,7 @@ import {
   type PresenceStatus,
   type PresenceView,
 } from "@cotal-ai/core";
+import { concreteChannelProblem } from "../messaging.js";
 import type { RefusalCode } from "../output.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "../space-streams.js";
 import { mentionsName } from "./compose.js";
@@ -393,6 +394,8 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
+    const problem = concreteChannelProblem(channel);
+    if (problem) return refusedUsage(problem);
     const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
