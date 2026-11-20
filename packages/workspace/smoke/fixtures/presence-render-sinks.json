@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1100,
+    "total": 1103,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 878
+    "non-render/control": 881
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5493,6 +5493,13 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
+      "anchor": "from ${p.root})`, tone: \"waiting\" } : p.rootMissing ? { t",
+      "class": "non-render/control",
+      "rationale": "Space list root cell: the color tone describes a moved project, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
       "anchor": " longer exists)`, tone: \"waiting\" } : { text: p.root, ton",
       "class": "non-render/control",
       "rationale": "Space list root cell: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
@@ -5514,7 +5521,7 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: displa",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedP",
       "class": "non-render/control",
       "rationale": "Prepared space view: \"waiting\" is the color tone for a stack journal whose folder was moved, not any peer's presence."
     },
@@ -7795,6 +7802,20 @@
       "anchor": "this.turns.yieldTurn(status, opts)",
       "class": "non-render/control",
       "rationale": "Forwards the caller's yield verdict (done, blocked or handoff) to the turn component; the argument is a turn-control token, not a peer's presence, and nothing is rendered here."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.setStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status to the presence component, which publishes it on the wire; the forwarder renders nothing."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.resetStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status reset to the presence component, which publishes it on the wire; the forwarder renders nothing."
     },
     {
       "path": "implementations/cli/src/commands/ext.ts",

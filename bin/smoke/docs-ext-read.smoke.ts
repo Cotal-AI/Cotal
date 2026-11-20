@@ -91,6 +91,11 @@ let specBody = "";
 {
   const installation = run(["docs", "installation", "--plain"]);
   const removal = installation.stdout.split("\n## Remove Cotal\n")[1]?.split("\n## ")[0] ?? "";
+  const status = removal.indexOf("`cotal daemon status`");
+  const uninstall = removal.indexOf("`cotal daemon uninstall`");
+  check("the bundled uninstall guide checks and removes the daemon before either CLI removal route",
+    installation.status === 0 && status >= 0 && status < uninstall && uninstall < removal.indexOf("npm uninstall -g cotal-ai") &&
+    uninstall < removal.indexOf("For a shell installation"), removal || shown(installation));
   check("the bundled uninstall guide names the retained connector store and when to leave it in place",
     installation.status === 0 && removal.includes("`$XDG_CONFIG_HOME/cotal`") && removal.includes("`~/.config/cotal`") &&
     removal.includes("connector seed store") && removal.includes("only if no other Cotal installation or running Cotal process uses it"),

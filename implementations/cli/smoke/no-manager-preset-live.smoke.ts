@@ -86,15 +86,27 @@ try {
     text.status === 0 && text.stdout.split("\n").some((line) => /^\s+Manager:\s+/.test(line) && line.trimEnd().endsWith(`● the mgr service · instance ${id} · outside this stack, which was started with --no-manager`))
       && !text.stdout.includes("bare `cotal up` adds it"), shown(text));
 
+  const launcher = /^\s{2}(.+) <command> \[options\]$/m.exec(cotal().stdout)?.[1];
+  const stop = `stop it with \`${launcher} svc stop mgr --instance ${id} --space ${space} --yes\``;
   const refused = cotal("up", "--json");
   check("bare up refuses LIFECYCLE_BLOCKED, exit 2, naming the service, its instance and its exact stop",
     refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED"
       && refused.env.error.message.startsWith(`the mgr service of this space runs this root's manager (pid ${mgr?.pid}, instance ${id})`)
-      && refused.env.error.remedy === `stop it with \`cotal svc stop mgr --instance ${id} --space ${space} --yes\`, then run \`cotal up\` again`
+      && launcher !== undefined && refused.env.error.remedy === `${stop}, then run \`${launcher} up\` again`
       && JSON.stringify(refused.env.target?.services) === JSON.stringify([{ definition: "mgr", instanceId: id }]), shown(refused));
+  const brokerOnly = cotal("up", "--no-manager", "--json");
+  const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
+  const expectedRetry = `${launcher} up --space ${space} --no-manager`;
+  check("the broker-only refusal retains the selected space and --no-manager",
+    brokerOnly.status === 2 && brokerOnly.env?.error?.code === "LIFECYCLE_BLOCKED"
+      && launcher !== undefined && brokerOnly.env.error.remedy === `${stop}, then run \`${expectedRetry}\` again`, shown(brokerOnly));
 
   const stopped = cotal("svc", "stop", "mgr", "--instance", id, "--space", space, "--yes");
   check("the named stop stops the service", stopped.status === 0 && running("mgr") === undefined, shown(stopped));
+  if (launcher !== undefined && retry === expectedRetry) {
+    const retried = cotal(...retry.slice(launcher.length + 1).split(" "), "--json");
+    check("the printed retry succeeds without starting the stack's manager", retried.status === 0 && running("stack-manager") === undefined, shown(retried));
+  }
   const again = cotal("up", "--json");
   check("bare up starts the stack's own manager without saving the refused cap", again.status === 0 && running("stack-manager") !== undefined && cap() === undefined, shown(again));
   const after = cotal("status", "--json");

@@ -889,7 +889,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
       const renderRemedy = ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
-      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure(renderRemedy)), scope.space), json, parsed.values.plain === true, scope);
+      if (isConnectRefusal(e)) {
+        const failure = e.failure(renderRemedy), cause = e.cause;
+        if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
+          const { stoppedStackAddressProblem } = await import("./commands/stack-up.js");
+          const held = await stoppedStackAddressProblem(cause.details.root, cause.details.space);
+          if (held) failureExit(cmd, inOperationSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }), scope.space), json, parsed.values.plain === true, scope);
+        }
+        failureExit(cmd, inOperationSpace(await choice(failure), scope.space), json, parsed.values.plain === true, scope);
+      }
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         const target = spaceRootTarget({ root: e.details.root, space: targetErrorSpace(e.details) });

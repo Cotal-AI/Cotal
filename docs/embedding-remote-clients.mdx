@@ -39,7 +39,8 @@ produced, then carries the connection's orientation card and the shared
 system prompt. `GATEWAY_TOOLS` names the mesh tools the gateway offers, `cotal_docs` included. A native
 embedder whose host issues each conversation its own grant may pass `options.tools` from
 `NATIVE_GATEWAY_TOOLS`, which adds spawn, despawn, persona, run and reconnect but not yield.
-Registering a tool offers it to no connection by itself: a connection calls only the tools its
+The briefing names only tools the connection can call. Registering a tool offers it to no
+connection by itself: a connection calls only the tools its
 host lists in `GatewayConnection.tools`, default `GATEWAY_TOOLS`, and only those its credential's
 capabilities allow. With `options.selection`, `cotal_connect` takes channels, a role and capabilities,
 builds a canonical proposal with core's `conversationSelection`, and hands it to `open`. Its

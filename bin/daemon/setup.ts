@@ -408,6 +408,13 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);
     const signedInToProvider = () => discovered.ok && !("event" in discovered) && "signedInProviders" in discovered.result && discovered.result.signedInProviders?.includes(opts.idp ?? "");
+    if (!hasSpace() && discovered.ok) {
+      // Signed-in catalogs do not list a prepared local stack. Rule it out before signing in.
+      const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
+      if (check.ok && check.result.outcome === "not-user-auth") {
+        throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+      }
+    }
     if (!hasSpace() && opts.idp && !signedInToProvider()) {
       opts.report("sign-in: approve this machine on another device", { step: "sign-in", outcome: "running", detail: "approve this machine on another device" });
       const signed = await loginFromCli({ ...opts, idp: opts.idp });

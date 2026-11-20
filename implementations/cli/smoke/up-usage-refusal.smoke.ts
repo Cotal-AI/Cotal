@@ -538,11 +538,13 @@ try {
 
   // A port nothing listens on can still refuse the bind: an open client connection's local end holds
   // it, and after that client closes first, its TIME-WAIT holds it for up to a minute. The refusal
-  // says which, and a TIME-WAIT's next step is to wait, since no process holds it. Only Linux's
-  // kernel table shows it.
+  // says which, and a TIME-WAIT's next step is to wait, since no process holds it. A connection on
+  // another local address that shares the port number holds nothing here. Only Linux's kernel table
+  // shows it.
   if (process.platform === "linux") {
-    const states = (port: number) => ["/proc/net/tcp", "/proc/net/tcp6"].flatMap((table) => readFileSync(table, "utf8").split("\n").slice(1))
-      .map((row) => row.trim().split(/\s+/)).filter(([, local]) => local && Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16) === port).map(([, , , state]) => state);
+    // The kernel's table prints 127.0.0.1 little-endian, plain in tcp and IPv4-mapped in tcp6.
+    const states = (port: number, local = ["0100007F", "0000000000000000FFFF00000100007F"]) => ["/proc/net/tcp", "/proc/net/tcp6"].flatMap((table) => readFileSync(table, "utf8").split("\n").slice(1))
+      .map((row) => row.trim().split(/\s+/)).filter(([, at]) => at && local.includes(at.slice(0, at.lastIndexOf(":"))) && Number.parseInt(at.slice(at.lastIndexOf(":") + 1), 16) === port).map(([, , , state]) => state);
     const peer = createServer((socket) => socket.on("end", () => socket.end()).on("error", () => {}));
     const at = await new Promise<number>((resolve) => peer.listen(0, "127.0.0.1", () => resolve((peer.address() as AddressInfo).port)));
     const client = connect(at, "127.0.0.1");
@@ -557,9 +559,11 @@ try {
         && openLegacy.status === 2 && openLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but an open connection's local end holds its port`) && !started(unprepared), { open: shown(open), legacy: shown(openLegacy) });
     client.end();
     await once(client, "close");
-    peer.close();
+    const elsewhere = connect({ port: at, host: "127.0.0.1", localAddress: "127.0.0.2", localPort: port });
+    await once(elsewhere, "connect");
     const waiting = states(port);
     check("after the client closed first, its port is in TIME-WAIT with no listener", waiting.length > 0 && waiting.every((state) => state === "06"), waiting);
+    check("an open connection from 127.0.0.2 shares the port number", states(port, ["0200007F"]).includes("01"), states(port, ["0200007F"]));
     const timeWait = run(["up", "--server", `nats://127.0.0.1:${port}`, "--json"], prepared);
     const timeWaitLegacy = run(["up", "--server", `nats://127.0.0.1:${port}`], unprepared);
     check("a port in TIME-WAIT with no listener refuses CONFLICT on both routes, saying so, with waiting as the next step",
@@ -567,6 +571,8 @@ try {
         && (timeWait.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port (bind failed: address already in use)`)
         && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and retry this start") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
         && timeWaitLegacy.status === 2 && timeWaitLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port`) && !started(unprepared), { timeWait: shown(timeWait), legacy: shown(timeWaitLegacy) });
+    elsewhere.destroy();
+    peer.close();
   }
 
   // The scheme's case and a bare trailing slash are not part of the address: a prepared root records

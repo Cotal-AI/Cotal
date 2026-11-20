@@ -1,7 +1,6 @@
 /**
- * Smoke for the shared briefing — pure (no broker). Every harness renders the same paragraphs from
- * one module; what differs is the one sentence saying how a peer message arrives, and the gateway
- * leaves that sentence out because its connect result says so itself. Run: `pnpm smoke:briefing`.
+ * Smoke for the shared briefing. Each harness renders guidance from its tool catalog.
+ * Run: `pnpm smoke:briefing`.
  */
 import assert from "node:assert/strict";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -11,13 +10,17 @@ import {
   BRIEFING_HARNESSES,
   briefing,
   CHANNEL_GUIDANCE,
+  cotalToolSpecs,
   feedbackLine,
+  GATEWAY_TOOLS,
   MESH_FIRST_STEER,
   ORIENTATION_BOOTSTRAP,
   REPLY_ETIQUETTE,
   REPLY_GUIDANCE,
   TOOL_STEER,
   WORKFLOW_STEER,
+  NATIVE_GATEWAY_TOOLS,
+  type AgentConfig,
   type BriefingHarness,
 } from "../src/index.js";
 
@@ -34,8 +37,12 @@ function cell(name: string, run: () => void): void {
   }
 }
 
-const cfg = { name: "alice", role: "reviewer", space: "demo" };
-const all = BRIEFING_HARNESSES.map((h) => [h, briefing(cfg, h)] as const);
+const cfg: AgentConfig = {
+  name: "alice", role: "reviewer", space: "demo", servers: "nats://127.0.0.1:4222", kind: "agent", tls: false,
+  subscribe: [], allowSubscribe: [], allowPublish: [],
+};
+const native = BRIEFING_HARNESSES.filter((h) => h !== "gateway");
+const all = BRIEFING_HARNESSES.map((h) => [h, briefing(cfg, h, h === "gateway" ? GATEWAY_TOOLS : undefined)] as const);
 
 cell("every harness opens with the identity line", () => {
   for (const [h, text] of all)
@@ -43,15 +50,34 @@ cell("every harness opens with the identity line", () => {
 });
 
 cell("the identity line omits the role when there is none", () => {
-  const text = briefing({ name: "bob", space: "demo" }, "codex");
+  const text = briefing({ ...cfg, name: "bob", role: undefined }, "codex");
   assert.ok(text.startsWith('You are connected to the Cotal mesh as "bob" in space "demo".'), text.slice(0, 90));
   assert.ok(!text.includes("(role:"));
 });
 
 cell("every harness carries the shared paragraphs", () => {
   for (const [h, text] of all)
-    for (const p of [ORIENTATION_BOOTSTRAP, TOOL_STEER, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
+    for (const p of [ORIENTATION_BOOTSTRAP, TOOL_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
       assert.ok(text.includes(p), `${h} lacks: ${p.slice(0, 50)}`);
+});
+
+cell("each connector's briefing names only tools its connection can call", () => {
+  const subsets = [GATEWAY_TOOLS, NATIVE_GATEWAY_TOOLS, new Set(["cotal_orientation"])];
+  const auth = { ...cfg, creds: "CREDS" };
+  for (const config of [cfg, auth, { ...auth, capabilities: ["spawn"] }, { ...auth, capabilities: ["run"] }, { ...auth, capabilities: ["spawn", "run"] }]) {
+    for (const [harness, offered] of [
+      ...native.map((h) => [h, undefined] as const),
+      ...subsets.map((tools) => ["gateway", tools] as const),
+    ]) {
+      const served = new Set(cotalToolSpecs(config, harness, undefined, offered).map((spec) => spec.name));
+      const text = briefing(config, harness, offered);
+      const names = new Set(text.match(/\bcotal_[a-z][a-z_]*\b/g));
+      assert.deepEqual([...names].filter((name) => !served.has(name)), [], harness);
+      for (const name of ["cotal_feedback", "cotal_run", "cotal_spawn"]) {
+        assert.equal(names.has(name), served.has(name), `${harness}: ${name}`);
+      }
+    }
+  }
 });
 
 cell("every harness tells agents to use their tools and not the cotal command line", () => {
@@ -67,7 +93,7 @@ cell("the workflow steer points agents at cotal_run and not cotal run start", ()
   assert.ok(WORKFLOW_STEER.includes("driven with `cotal_run`"), WORKFLOW_STEER);
   assert.ok(!WORKFLOW_STEER.includes("cotal run start"), WORKFLOW_STEER);
   for (const [h, text] of all) {
-    assert.ok(text.includes("driven with `cotal_run`"), `${h}: missing cotal_run in workflow steer`);
+    assert.ok(text.includes(h === "gateway" ? "Durable workflow runs are not available through this connection." : WORKFLOW_STEER), h);
     assert.ok(!text.includes("cotal run start"), `${h}: still contains cotal run start`);
   }
 });
@@ -111,7 +137,7 @@ cell("every harness carries the reply etiquette", () => {
 
 cell("the feedback paragraph follows the key: keyless names the public intake, keyed does not", () => {
   const keyless = feedbackLine({}).trim();
-  for (const [h, text] of all) assert.ok(text.includes(keyless), h);
+  for (const [h, text] of all) assert.ok(text.includes(h === "gateway" ? "Feedback is not available through this connection." : keyless), h);
   const keyed = briefing({ ...cfg, feedbackKey: "k" }, "codex");
   assert.ok(keyed.includes(feedbackLine({ feedbackKey: "k" }).trim()) && !keyed.includes("public cotal.ai intake"), keyed);
 });
@@ -129,7 +155,7 @@ cell("each launched harness says how a peer message arrives, in its own shape", 
 });
 
 cell("the gateway briefing leaves the arrival sentence out", () => {
-  const text = briefing(cfg, "gateway");
+  const text = briefing(cfg, "gateway", GATEWAY_TOOLS);
   assert.ok(!text.includes("📨") && !text.includes("<channel"), text);
   assert.ok(text.includes(`Other agents coordinate with you here as lateral peers. ${REPLY_GUIDANCE}`), text);
 });

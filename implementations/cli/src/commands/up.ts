@@ -314,7 +314,7 @@ import { cliControl } from "../lib/control.js";
 const pendingRestores = new Map<string, PreparedRestore>();
 
 /** What a guarded restore returned, for `backup restore` to report as its own receipt. `up --restore`
- *  never sets a sink and its output is unchanged. Delivered only after the native activation wrote
+ *  never sets a sink and prints its own startup receipt. Delivered only after the native activation wrote
  *  the active journal; every earlier failure still throws through the same restore guards. */
 export interface RestoreStartupResult {
   attemptId: string;
@@ -2256,6 +2256,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     checkStartStore(values["store-dir"], values.space ?? folderSpace());
   }
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+  const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
   const boundListener: DetachOpts["boundListener"] = restored ? {
     serverName: restored.serverName,
     serverNonce: restored.serverNonce,
@@ -2269,7 +2270,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   } : undefined;
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
-    const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
     // The receipt names its space before the launch prints anything, as every report does. A start that
     // refuses the space reports that on stderr under its own `Mesh:` heading, so those checks run
     // first; the launch below repeats them and finds them settled.
@@ -2336,18 +2336,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       server,
       startupLock,
     );
-    // `backup restore` prints its own receipt; `up --restore` names the attempt and its next step here.
-    if (restored && !quietRestore) {
-      console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
-      const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
-      console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
-      if (composition.note) console.log(c.yellow(composition.note));
-      const cleanupRoot = values.__invokedRoot && values.__invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
-      for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot)) console.log(c.yellow(line));
-      const journal = readMaintenanceJournal(restored.root);
-      if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot)}`));
-    }
+    if (restored && !quietRestore) printRestoreReceipt(restored, values.__invokedRoot);
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);
       console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
@@ -2601,12 +2590,27 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       startupLock,
     );
     activationFinished = true;
+    if (restored && !quietRestore) printRestoreReceipt(restored, values.__invokedRoot);
   }
   releaseStartupLock();
   await new Promise<void>(() => {});
   } finally {
     releaseStartupLock();
   }
+}
+
+/** The human receipt for a completed `up --restore`. `backup restore` prints its own receipt. */
+function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: string): void {
+  console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
+  const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
+  console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
+  if (composition.note) console.log(c.yellow(composition.note));
+  const cleanupRoot = invokedRoot && invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
+  const cmd = displayCmd();
+  for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
+  const journal = readMaintenanceJournal(restored.root);
+  if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
@@ -4456,7 +4460,7 @@ async function assertBrokerAddressFree(server: string, command: string, bindHost
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
   const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
   const host = bindHost ?? dialHost;
-  const { says, frees } = addressHolder("the broker address", host, port);
+  const { says, frees } = await addressHolder("the broker address", host, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
     remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,

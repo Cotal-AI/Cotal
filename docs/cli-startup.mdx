@@ -72,6 +72,9 @@ per-agent ACLs. It runs in the background by default and records the mesh so `co
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
 native stack in this terminal.
 
+If a separately started manager service at the same root blocks `up --no-manager`, the refusal
+names the command to stop that instance and the retry retains both `--space` and `--no-manager`.
+
 A stopped controller stack that used the default bind accepts `--host 127.0.0.1` on restart without saving a bind override.
 A running broker that used the default payload limit accepts `--max-payload 1048576` without restarting.
 
@@ -693,7 +696,8 @@ When another process holds it, `up` refuses `CONFLICT`, names the address and th
 launches nothing. A first start names another `--server` as its next step without pinning that
 port. A stack that ran keeps its recorded
 address. On Linux, when nothing listens there and a connection's local end holds the port, the
-refusal says so in place of another process. For a closed connection in TIME-WAIT, its next step is
+refusal says so in place of another process. Only a connection on the bind host's own address or a
+wildcard counts, so one elsewhere on the machine that shares the port number changes nothing. For a closed connection in TIME-WAIT, its next step is
 to wait up to a minute and run `up` again. When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
 on stderr before each member it starts, with the readiness timeout it waits for. A started stack's

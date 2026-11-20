@@ -572,9 +572,10 @@ export function registerCotalGatewayTools(
               const listening = wake ? `\n${wake.listening(c)}` : "";
               // A conversation that joins here had no launch-time system prompt, so the connect result
               // is where it is handed its bearings: the orientation card, then the shared briefing.
-              const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
+              const tools = toolsOf(c);
+              const card = await orientationCard(c.agent, c.config, source, undefined, tools);
               return toContent({
-                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
+                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway", tools)}`,
               });
             } catch (e) {
               if (!(e instanceof ApprovalRequired)) throw e;

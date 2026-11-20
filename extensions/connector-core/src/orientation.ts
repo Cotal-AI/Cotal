@@ -261,6 +261,7 @@ export function buildOrientation(
 /** Render the card as compact, glanceable text — the view the model reads. */
 export function renderOrientation(o: Orientation): string {
   const fmt = (cs: string[]) => (cs.length ? cs.map((c) => `#${c}`).join(", ") : "—");
+  const tools = new Set([...o.tools.core, ...o.tools.more].map((t) => t.name));
   const who = peerLabel(o.identity);
   const aclDiffers =
     o.access.readAcl.length !== o.access.read.length ||
@@ -273,8 +274,10 @@ export function renderOrientation(o: Orientation): string {
     `  • principal: ${o.identity.principal.owner}.${o.identity.principal.actor}`,
     `  • lifecycle UID: ${o.identity.lifecycleUid}`,
     `  • replacement: ${o.identity.replacement.state} · predecessor lifecycle UID: ${o.identity.replacement.predecessorLifecycleUid}`,
-    `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
-      "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
+    tools.has("cotal_docs")
+      ? `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
+        "Consult it before answering about Cotal or writing code against it; don't rely on training memory."
+      : `Cotal v${o.identity.cotalVersion}.`,
     o.identity.model
       ? `Model pin: ${o.identity.model} (from COTAL_MODEL; the harness default is not knowable from here when this line is absent).`
       : "Model pin: none recorded (COTAL_MODEL was unset; the harness default is not knowable from here).",
@@ -284,11 +287,15 @@ export function renderOrientation(o: Orientation): string {
   ];
   if (aclDiffers) lines.push(`  • may join (read ACL): ${fmt(o.access.readAcl)}`);
   if (o.access.joinable.length)
-    lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")} · join one with cotal_join`);
+    lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")}${tools.has("cotal_join") ? " · join one with cotal_join" : ""}`);
+  const endpointHelp = tools.has("cotal_endpoints") ? "cotal_endpoints lists what your credential's grants cover" : "";
+  const pinHelp = o.endpoints.some((e) => e.includes("(instance ")) && tools.has("cotal_describe") && tools.has("cotal_invoke")
+    ? "pass a command's instance to cotal_describe and cotal_invoke as instance" : "";
+  const endpointAdvice = [endpointHelp, pinHelp].filter(Boolean).join("; ");
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,
-    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")} (cotal_endpoints lists what your credential's grants cover${o.endpoints.some((e) => e.includes("(instance ")) ? "; pass a command's instance to cotal_describe and cotal_invoke as instance" : ""})`] : []),
+    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")}${endpointAdvice ? ` (${endpointAdvice})` : ""}`] : []),
     "",
     `Tools — core loop: ${o.tools.core.map((t) => t.name).join(", ") || "—"}`,
     `Tools — more: ${o.tools.more.map((t) => t.name).join(", ") || "—"}`,
@@ -298,9 +305,11 @@ export function renderOrientation(o: Orientation): string {
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
     `  • presence view: ${o.presence.live ? "live" : `NOT LIVE — ${o.presence.detail}`}`,
     `  • unread: ${o.unread.total}`,
-    "",
-    `Act → read: ${o.actions.read} · reply on a channel: ${o.actions.replyChannel} · ` +
-      `private: ${o.actions.replyPrivate} · ask a role: ${o.actions.askRole}`,
   );
+  const actions = ([
+    ["read", o.actions.read], ["reply on a channel", o.actions.replyChannel],
+    ["private", o.actions.replyPrivate], ["ask a role", o.actions.askRole],
+  ] as const).filter(([, tool]) => tools.has(tool)).map(([action, tool]) => `${action}: ${tool}`);
+  if (actions.length) lines.push("", `Act → ${actions.join(" · ")}`);
   return lines.join("\n");
 }

@@ -1152,7 +1152,9 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       }
     };
     const hint = loopbackHintKey(flags.server);
-    if (hint !== undefined && rootHidesNoManifest(local.root)) {
+    // A named open stack can leave project records without an auth account, so the local
+    // target above can still be the implicit open default even in that stack's own folder.
+    if (hint !== undefined && ((local.mode === "open" && local.space === DEFAULT_SPACE) || rootHidesNoManifest(local.root))) {
       const nearby = meshes.filter((e) => loopbackHintKey(e.server) === hint);
       if (nearby.length) throw new MeshTargetError("server-host-mismatch", "the requested loopback host spelling matches no registration", {
         server: brokerAddressForDisplay(flags.server),
