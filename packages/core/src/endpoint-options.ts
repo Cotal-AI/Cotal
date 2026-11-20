@@ -134,6 +134,10 @@ export interface EndpointOptions {
    * bind from their presented publish permissions; bearer callers need the resolved ACL. A denied
    * bind still refuses startup. */
   allowSubscribe?: string[];
+  /** The read exclusions of that ACL (SPEC §9). History under an allow entry that an exclusion
+   *  overlaps has no create row in the credential, so it is read through the delivery daemon's
+   *  mediated range read. Requires `allowSubscribe`. */
+  excludeSubscribe?: string[];
   /** Presence heartbeat interval (ms). */
   heartbeatMs?: number;
   /** Presence liveness window (ms); a peer is considered gone after this. */

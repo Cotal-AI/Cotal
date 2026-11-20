@@ -49,7 +49,6 @@ import {
   type Consumer,
   type ConsumerMessages,
   type ConsumerInfo,
-  type JsMsg,
 } from "@nats-io/jetstream";
 import { type PushConsumer } from "@nats-io/jetstream";
 import { type KV } from "@nats-io/kv";
@@ -111,6 +110,7 @@ import {
 import {
   assertValidRole,
   chatStream,
+  chatSubject,
   controlServiceSubject,
   CONTROL_DELIVERY,
   CONTROL_DELIVERY_ADMIN,
@@ -132,6 +132,7 @@ import {
 } from "./subjects.js";
 
 import { isPermissionDenied } from "./permission-denied.js";
+import { assertExclusions } from "./channel-grant.js";
 export { isPermissionDenied };
 import {
   DEFAULT_SERVER,
@@ -196,6 +197,7 @@ export class CotalEndpoint extends EventEmitter {
   readonly space: string;
   readonly channels: string[];
   private readonly allowSubscribe?: string[];
+  private readonly excludeSubscribe: readonly string[];
 
   private readonly servers: string;
   private readonly token?: string;
@@ -308,6 +310,7 @@ export class CotalEndpoint extends EventEmitter {
     maxPayload: () => this.maxPayload,
     aclForAlias: (...args) => this.aclForAlias(...args),
     channelHistory: (...args) => this.channelHistory(...args),
+    readChatRange: (...args) => this.history.readChatRange(...args),
     deliveryClassFresh: (...args) => this.deliveryClassFresh(...args),
     durableJoinFor: (...args) => this.durableJoinFor(...args),
     durableLeaveFor: (...args) => this.durableLeaveFor(...args),
@@ -367,7 +370,9 @@ export class CotalEndpoint extends EventEmitter {
     requestDelivery: (op, args) => this.requestDelivery(op, args),
     deleteConsumerIfPresent: (stream, name) => this.consumers.deleteConsumerIfPresent(stream, name),
     joinPolicyFresh: (channel) => this.joinPolicyFresh(channel),
-    chatMayHaveLost: (subject, sinceSeq) => this.chatMayHaveLost(subject, sinceSeq),
+    chatMayHaveLost: (channel, sinceSeq) => this.chatMayHaveLost(channel, sinceSeq),
+    allowSubscribe: () => this.allowSubscribe,
+    excludeSubscribe: () => this.excludeSubscribe,
     emit: (event, ...args) => this.emit(event, ...args),
     decodeHistory: historyMessageFromDelivery,
     isRecord,
@@ -701,6 +706,11 @@ export class CotalEndpoint extends EventEmitter {
     // No implicit channel: an endpoint reads exactly what its caller lists. Omitted means none.
     this.channels = opts.channels ?? [];
     this.allowSubscribe = opts.allowSubscribe;
+    if (opts.excludeSubscribe?.length) {
+      if (!opts.allowSubscribe) throw new Error("EndpointOptions excludeSubscribe requires allowSubscribe, the list it removes channels from");
+      assertExclusions(opts.allowSubscribe, opts.excludeSubscribe, "excludeSubscribe");
+    }
+    this.excludeSubscribe = opts.excludeSubscribe ?? [];
     this.heartbeatMs = opts.heartbeatMs ?? 2000;
     this.ttlMs = opts.ttlMs ?? 6000;
     this.doRegister = opts.registerPresence ?? true;
@@ -3451,25 +3461,6 @@ export class CotalEndpoint extends EventEmitter {
     return { replay: effectiveReplay(cfg, defaults), windowMs: effectiveReplayWindowMs(cfg, defaults) };
   }
 
-  /**
-   * Read retained chat history on ONE channel subject through a name-scoped, single-filter
-   * EPHEMERAL pull consumer — the broker-contained replacement for the removed Direct Get. The
-   * create rides `$JS.API.CONSUMER.CREATE.<CHAT>.<chathist_id>.<subject>`, whose trailing filter
-   * token nats-server pins to the request body (JSConsumerCreateFilterSubjectMismatchErr, code
-   * 10131) — so an agent can only ever replay a channel its `allowSubscribe` grants. Single filter
-   * only (plural isn't ACL-constrainable); `AckPolicy.None` + `mem_storage` so it leaves no durable
-   * state, and it is deleted right after. Returns raw messages in stream order from `start`,
-   * stopping once past `untilSeq` (exclusive of it) or after `limit`. The per-instance name means
-   * calls must be serial — every reader here awaits to completion, so they are.
-   */
-  private async collectHistory(
-    subject: string,
-    start: { seq: number } | { time: Date },
-    opts: { untilSeq?: number; limit?: number } = {},
-  ): Promise<JsMsg[]> {
-    return this.history.collectHistory(subject, start, opts);
-  }
-
   /** Read a channel's retained history up to `upToSeq` (the join frontier) and emit each message
    *  as a `historical` "message" event. `sinceMs` bounds how far back via a native consumer
    *  `start_time` (now − window); unset ⇒ the full retained window. `floorSeq`, when set, is a
@@ -3522,15 +3513,16 @@ export class CotalEndpoint extends EventEmitter {
    *  per-sender limit and the channel's oldest retained post is past the watermark, so that sender's
    *  eviction may have reached into the window; a sender at exactly the limit may have lost nothing.
    *  A hole behind a retained older post, as a channel-filtered purge leaves, sets neither. */
-  private async chatMayHaveLost(subject: string, sinceSeq: number): Promise<boolean> {
+  private async chatMayHaveLost(channel: string, sinceSeq: number): Promise<boolean> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
+    const subject = chatSubject(this.space, "*", "*", channel);
     const info = await this.jsm.streams.info(chatStream(this.space), { subjects_filter: subject });
     if (info.state.first_seq > sinceSeq + 1) return true;
     const cap = info.config.max_msgs_per_subject;
     let maxPerSubject = 0;
     for (const count of Object.values(info.state.subjects ?? {})) maxPerSubject = Math.max(maxPerSubject, count);
     if (cap < 1 || maxPerSubject < cap) return false; // no sender at the cap ⇒ none evicted
-    const oldest = (await this.collectHistory(subject, { seq: 1 }, { limit: 1 }))[0]?.seq;
+    const oldest = await this.history.oldestChannelSeq(channel);
     return oldest !== undefined && oldest > sinceSeq + 1;
   }
 

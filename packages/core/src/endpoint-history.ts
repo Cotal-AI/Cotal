@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { nanos, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, AckPolicy, DeliverPolicy, JetStreamApiError, type JetStreamClient, type JetStreamManager, type Consumer, type ConsumerInfo, type ConsumerConfig, type JsMsg } from "@nats-io/jetstream";
-import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, type ParsedSubject } from "./subjects.js";
+import { chatStream, dmStream, chatSubject, chatHistDurable, spacePrefix, parseSubject, subjectMatches, assertValidChannel, assertValidOwnerToken, isConcreteChannel, isChannelFamily, historyReaderConsumer, HISTORY_READERS, calloutReaderId, patternCovers, type ParsedSubject } from "./subjects.js";
+import { channelInGrant, exclusionsOverlapping } from "./channel-grant.js";
 import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import type { CotalMessage, HistoryMessage, Delivery, MessageMeta, ControlReply } from "./types.js";
@@ -25,7 +26,9 @@ export interface EndpointHistoryDeps {
   requestDelivery: (op: string, args: Record<string, unknown>) => Promise<ControlReply>;
   deleteConsumerIfPresent: (stream: string, name: string) => Promise<void>;
   joinPolicyFresh: (channel: string) => Promise<{ replay: boolean; windowMs?: number }>;
-  chatMayHaveLost: (subject: string, sinceSeq: number) => Promise<boolean>;
+  chatMayHaveLost: (channel: string, sinceSeq: number) => Promise<boolean>;
+  allowSubscribe: () => string[] | undefined;
+  excludeSubscribe: () => readonly string[];
   emit: (event: string, ...args: unknown[]) => boolean;
   decodeHistory: (message: { subject: string; json: <T>() => T }) => HistoryMessage | undefined;
   isRecord: (value: unknown) => value is Record<string, unknown>;
@@ -182,6 +185,7 @@ export class EndpointHistory {
     const limit = opts?.limit ?? 50;
     if (!Number.isSafeInteger(limit) || limit < 1)
       throw new Error("channelHistoryPage limit must be a positive safe integer");
+    if (this.mediated(channel)) return this.readHistory(channel, { limit });
     if (!this.nc || !this.js) throw new Error(this.deps.notLiveMsg());
     const jsm = this.jsm ??= await jetstreamManager(this.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
@@ -391,6 +395,65 @@ export class EndpointHistory {
   }
 
 
+  /** Is history under `filter` read through the delivery daemon? It is when no allow entry that
+   *  covers `filter` is free of read exclusions: the mint withholds the history create row of every
+   *  entry an exclusion overlaps (SPEC §9), so the broker would refuse the direct read. */
+  mediated(filter: string): boolean {
+    const exclude = this.deps.excludeSubscribe();
+    if (exclude.length === 0) return false;
+    return !(this.deps.allowSubscribe() ?? []).some((a) => patternCovers(a, filter) && exclusionsOverlapping(a, exclude).length === 0);
+  }
+
+
+  /** Read `filter`'s history from `fromSeq` through the delivery daemon's mediated range read
+   *  (`readRange`, SPEC §8), ascending, draining its pages until `untilSeq` (or the newest row when
+   *  absent) or `limit` rows. `sinceMs` bounds the start by age when `fromSeq` is 1. The daemon
+   *  authenticates each row's sender and channel from its subject and drops what this caller may
+   *  not read; a row outside `filter` or this endpoint's own grant is refused here as a daemon fault.
+   *  A refusal or a malformed page throws: it is never read as an empty history. */
+  async readRange(
+    filter: string,
+    opts: { fromSeq: number; untilSeq?: number; sinceMs?: number; limit?: number },
+  ): Promise<{ seq: number; message: CotalMessage }[]> {
+    const out: { seq: number; message: CotalMessage }[] = [];
+    const allow = this.deps.allowSubscribe() ?? [], exclude = this.deps.excludeSubscribe();
+    let fromSeq = opts.fromSeq, untilSeq = opts.untilSeq;
+    for (;;) {
+      const reply = await this.deps.requestDelivery("readRange", {
+        filter, fromSeq,
+        ...(untilSeq !== undefined ? { untilSeq } : {}),
+        ...(fromSeq === 1 && opts.sinceMs !== undefined ? { sinceMs: opts.sinceMs } : {}),
+        ...(opts.limit !== undefined ? { limit: opts.limit - out.length } : {}),
+      });
+      if (!reply.ok) throw new Error(reply.error ?? "readRange failed");
+      const data = reply.data as { items?: unknown; untilSeq?: unknown; next?: unknown; done?: unknown } | undefined;
+      const seq = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+      if (!Array.isArray(data?.items) || !seq(data.untilSeq) || !seq(data.next) || typeof data.done !== "boolean"
+        || (!data.done && data.next <= fromSeq))
+        throw new Error("readRange: the delivery daemon returned a malformed page (expected { items, untilSeq, next, done } that advances)");
+      for (const item of data.items as unknown[]) {
+        const row = item as { seq?: unknown; message?: unknown };
+        const channel = this.deps.isRecord(row?.message) ? row.message.channel : undefined;
+        if (!seq(row?.seq) || row.seq < fromSeq || row.seq > data.untilSeq || typeof channel !== "string"
+          || !subjectMatches(filter, channel) || !channelInGrant(allow, exclude, channel))
+          throw new Error(`readRange: the delivery daemon served a row outside "${filter}" or this grant - refused`);
+        out.push({ seq: row.seq, message: row.message as CotalMessage });
+      }
+      if (data.done || (opts.limit !== undefined && out.length >= opts.limit)) return out;
+      fromSeq = data.next;
+      untilSeq = data.untilSeq;
+    }
+  }
+
+
+  /** The sequence of the oldest retained message on concrete `channel` this endpoint may read, or
+   *  `undefined` when it holds none. */
+  async oldestChannelSeq(channel: string): Promise<number | undefined> {
+    if (this.mediated(channel)) return (await this.readRange(channel, { fromSeq: 1, limit: 1 }))[0]?.seq;
+    return (await this.collectHistory(chatSubject(this.space, "*", "*", channel), { seq: 1 }, { limit: 1 }))[0]?.seq;
+  }
+
+
   /** Fetch recent DMs (any sender→any recipient) from the space's DM backlog. `signal` cancels the
    *  active pull and reclaims its ephemeral consumer. God-view only:
    *  a normal agent/observer's ACL denies CONSUMER.CREATE on DM_<space>, so this throws-and-
@@ -555,24 +618,35 @@ export class EndpointHistory {
   }
 
 
-  /** Scan CHAT under `subject` in ascending sequence from `fromSeq` (or from `sinceMs` ago, when
-   *  given) up to and including `untilSeq`, keeping the rows `keep` accepts, until `limit` rows or
-   *  `budget` serialized bytes are held. The served side of the mediated range read (SPEC §8): the
-   *  delivery daemon reads with its own CHAT grant and `keep` applies the caller's grant to each row
-   *  BEFORE the page is cut, so rows the caller may not read never take a place in it. `next` is the
-   *  first sequence not yet scanned and moves past every row looked at, kept or not; `done` says the
-   *  scan reached `untilSeq`. A single kept row larger than `budget` throws: it can never be sent. */
+  /** One ascending page of CHAT under `subject`, the served side of the mediated range read
+   *  (`readRange`, SPEC §8). The delivery daemon reads with its own CHAT grant, and `keep` applies the
+   *  caller's grant to each row BEFORE the page is cut, so rows the caller may not read never take a
+   *  place in it.
+   *
+   *  The page starts at `fromSeq` (or `sinceMs` ago when `fromSeq` is 1) and ends at `untilSeq`. With
+   *  no `untilSeq` the newest matching sequence is resolved and returned, so a caller paging on passes
+   *  it back and a busy stream cannot extend the read. A page stops at `limit` kept rows, at `budget`
+   *  encoded bytes, or after `scanLimit` scanned rows, so a stretch of rows the caller may not read
+   *  still ends the call. `next` is the first sequence not yet scanned and moves past every row looked
+   *  at, kept or not; `done` says the scan reached `untilSeq`. A kept row larger than `budget` throws,
+   *  because it can never be sent, and a read the stream cuts short throws rather than passing for a
+   *  short page. */
   async readChatRange(
     subject: string,
-    opts: { fromSeq: number; untilSeq: number; sinceMs?: number; limit: number; budget: number; keep: (msg: HistoryMessage) => boolean },
-  ): Promise<{ rows: { seq: number; msg: HistoryMessage }[]; next: number; done: boolean }> {
+    opts: {
+      fromSeq: number; untilSeq?: number; sinceMs?: number;
+      limit: number; budget: number; scanLimit: number;
+      keep: (msg: HistoryMessage) => boolean;
+    },
+  ): Promise<{ rows: { seq: number; message: HistoryMessage }[]; untilSeq: number; next: number; done: boolean }> {
     if (!this.nc) throw new Error(this.deps.notLiveMsg());
-    const rows: { seq: number; msg: HistoryMessage }[] = [];
-    if (opts.fromSeq > opts.untilSeq) return { rows, next: opts.fromSeq, done: true };
     const nc = this.nc;
+    const rows: { seq: number; message: HistoryMessage }[] = [];
     const reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), chatStream(this.space));
     try {
-      const since = opts.sinceMs === undefined ? undefined : Date.now() - opts.sinceMs;
+      const untilSeq = opts.untilSeq ?? await this.lastMatchingSeq(reader, [subject]);
+      if (untilSeq < opts.fromSeq) return { rows, untilSeq, next: opts.fromSeq, done: true };
+      const since = opts.fromSeq === 1 && opts.sinceMs !== undefined ? Date.now() - opts.sinceMs : undefined;
       const consumer = await this.openHistoryReader(reader, {
         filter_subjects: [subject],
         ...(since !== undefined && since > 0
@@ -581,33 +655,35 @@ export class EndpointHistory {
       });
       try {
         const pending = (await consumer.info(true)).num_pending;
-        if (pending === 0) return { rows, next: opts.untilSeq + 1, done: true };
+        if (pending === 0) return { rows, untilSeq, next: untilSeq + 1, done: true };
         const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });
-        let delivered = 0, bytes = 0, next = opts.fromSeq, done = false;
+        const enc = new TextEncoder();
+        let delivered = 0, bytes = 0, next = opts.fromSeq, done = false, full = false;
         try {
           for await (const m of iter) {
             delivered++;
             if (m.info.deliverySequence !== delivered)
               throw new Error(`history: delivery ${m.info.deliverySequence} arrived where ${delivered} was due on ${subject} - the range has a gap, so the page is not served`);
-            if (m.seq > opts.untilSeq) { done = true; break; }
-            const msg = this.deps.decodeHistory(m);
-            if (msg && opts.keep(msg)) {
-              const size = JSON.stringify({ seq: m.seq, message: msg }).length;
+            if (m.seq > untilSeq) { done = true; break; }
+            const message = this.deps.decodeHistory(m);
+            if (message && opts.keep(message)) {
+              const size = enc.encode(JSON.stringify({ seq: m.seq, message })).length + 1; // + the `,` separator
               if (size > opts.budget)
-                throw new Error(`history: the message at sequence ${m.seq} alone exceeds the reply budget (${opts.budget} bytes) - refused loudly rather than skipped`);
-              if (bytes + size > opts.budget || rows.length >= opts.limit) break; // this row starts the next page
-              rows.push({ seq: m.seq, msg });
+                throw new Error(`history: the message at sequence ${m.seq} on ${subject} alone exceeds the reply budget (${opts.budget} bytes) - refused loudly rather than skipped`);
+              if (rows.length >= opts.limit || bytes + size > opts.budget) { full = true; break; } // it opens the next page
+              rows.push({ seq: m.seq, message });
               bytes += size;
             }
             next = m.seq + 1;
-            if (m.seq === opts.untilSeq || delivered >= pending) { done = true; break; }
+            if (m.seq === untilSeq || delivered >= pending) { done = true; break; }
+            if (delivered >= opts.scanLimit) { full = true; break; }
           }
         } finally {
           iter.stop();
         }
-        if (!done && rows.length < opts.limit && bytes === 0 && delivered === 0)
-          throw new Error(`history: the range read on ${subject} ended before it delivered anything - the window was cut short, not empty`);
-        return { rows, next, done };
+        if (!done && !full)
+          throw new Error(`history: read ${delivered} of ${pending} messages on ${subject} before the stream ended early - the range was cut short, not empty`);
+        return { rows, untilSeq, next: done ? untilSeq + 1 : next, done };
       } finally {
         await this.closeHistoryReader(reader);
       }
@@ -1029,6 +1105,24 @@ export class EndpointHistory {
     const since = sinceMs === undefined ? undefined : Date.now() - sinceMs;
     const start =
       floorSeq !== undefined ? { seq: floorSeq + 1 } : since === undefined || !(since > 0) ? { seq: 1 } : { time: new Date(since) };
+    const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
+    if (this.mediated(channel)) {
+      // The daemon authenticated each row's sender from its subject, as the direct path checks below.
+      let rows: { seq: number; message: CotalMessage }[];
+      try {
+        rows = await this.readRange(channel, { fromSeq: floorSeq !== undefined ? floorSeq + 1 : 1, untilSeq: upToSeq, ...(floorSeq === undefined && sinceMs !== undefined ? { sinceMs } : {}) });
+      } catch (e) {
+        this.deps.emit("error", e as Error);
+        return 0;
+      }
+      let n = 0;
+      for (const { message } of rows) {
+        if (message.from.id === this.card.id) continue;
+        this.deps.emit("message", message, noop, { historical: true, kind: "channel" } satisfies MessageMeta);
+        n++;
+      }
+      return n;
+    }
     let msgs: JsMsg[];
     try {
       msgs = await this.collectHistory(subject, start, { untilSeq: upToSeq });
@@ -1037,7 +1131,6 @@ export class EndpointHistory {
       if (isPermissionDenied(e)) throw e;
       return 0;
     }
-    const noop: Delivery = { ack: () => {}, nak: () => {}, durable: false };
     let n = 0;
     for (const sm of msgs) {
       let msg: CotalMessage;
@@ -1086,6 +1179,21 @@ export class EndpointHistory {
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
     const policy = await this.deps.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
+    const collected: CotalMessage[] = [];
+    const seqs: number[] = [];
+    if (this.mediated(channel)) {
+      try {
+        for (const { seq, message } of await this.readRange(channel, { fromSeq: sinceSeq + 1 })) {
+          if (message.from.id === this.card.id) continue;
+          collected.push(message);
+          seqs.push(seq);
+        }
+      } catch (e) {
+        this.deps.emit("error", e as Error);
+        return { messages: [], seqs: [], dropped: true, unanswered: true };
+      }
+      return this.recallVerdict(channel, sinceSeq, collected, seqs);
+    }
     const subject = chatSubject(this.space, "*", "*", channel);
     let raw: JsMsg[];
     try {
@@ -1095,8 +1203,6 @@ export class EndpointHistory {
       if (isPermissionDenied(e)) throw e;
       return { messages: [], seqs: [], dropped: true, unanswered: true };
     }
-    const collected: CotalMessage[] = [];
-    const seqs: number[] = [];
     for (const sm of raw) {
       let msg: CotalMessage;
       try {
@@ -1111,15 +1217,26 @@ export class EndpointHistory {
       collected.push(this.deps.authenticatedMessage(msg, parsed));
       seqs.push(sm.seq);
     }
+    return this.recallVerdict(channel, sinceSeq, collected, seqs);
+  }
+
+
+  /** Attach the completeness verdict to a recall read. */
+  private async recallVerdict(
+    channel: string,
+    sinceSeq: number,
+    messages: CotalMessage[],
+    seqs: number[],
+  ): Promise<{ messages: CotalMessage[]; seqs: number[]; dropped: boolean; unanswered: boolean }> {
     let dropped: boolean;
     try {
-      dropped = await this.deps.chatMayHaveLost(subject, sinceSeq);
+      dropped = await this.deps.chatMayHaveLost(channel, sinceSeq);
     } catch (e) {
       // Completeness could not be read, so the read is reported as unanswered: nothing settles on it.
       this.deps.emit("error", e as Error);
       if (isPermissionDenied(e)) throw e;
       return { messages: [], seqs: [], dropped: true, unanswered: true };
     }
-    return { messages: collected, seqs, dropped, unanswered: false };
+    return { messages, seqs, dropped, unanswered: false };
   }
 }

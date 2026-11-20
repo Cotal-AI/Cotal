@@ -13,9 +13,10 @@ import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, readMember } from "./members.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
-import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
-import { channelInGrant, membershipInGrant } from "./channel-grant.js";
-import type { AgentCard, ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
+import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, chatSubject, patternInAllow, subjectMatches, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
+import { channelInGrant, membershipInGrant, patternInGrant } from "./channel-grant.js";
+import type { EndpointHistory } from "./endpoint-history.js";
+import type { AgentCard, ControlReply, ControlRequest, CotalMessage, HistoryMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { JetStreamApiCodes, type ConsumerConfig, type ConsumerMessages, type JetStreamClient, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { headers, type NatsConnection, type Subscription } from "@nats-io/transport-node";
@@ -52,6 +53,16 @@ const READ_HISTORY_DEFAULT_LIMIT = 100;
  *  request pull a channel's whole retained set through it. Clamped, not refused — a UI asking for
  *  more than a page should get a page, and `complete: false` already tells it more remains. */
 const READ_HISTORY_MAX_LIMIT = 200;
+
+/** How many stored rows one mediated range page may scan. A stretch of rows the caller may not read
+ *  still ends the call, and `next` carries the caller past it. */
+const READ_RANGE_SCAN_LIMIT = 1_000;
+
+/** The largest reply envelope a range page wraps its items in, so the items' budget leaves room for
+ *  it whatever the sequences are. */
+const READ_RANGE_ENVELOPE = new TextEncoder().encode(JSON.stringify({
+  ok: true, data: { items: [], untilSeq: Number.MAX_SAFE_INTEGER, next: Number.MAX_SAFE_INTEGER, done: false },
+})).length;
 
 function isPlane3DeliveryFrame(value: unknown): value is Plane3DeliveryFrame {
   if (!isRecord(value)) return false;
@@ -117,6 +128,7 @@ export interface EndpointDeliveryPlaneDeps {
   maxPayload: () => number;
   aclForAlias: CotalEndpoint["aclForAlias"];
   channelHistory: CotalEndpoint["channelHistory"];
+  readChatRange: EndpointHistory["readChatRange"];
   deliveryClassFresh: CotalEndpoint["deliveryClassFresh"];
   durableJoinFor: CotalEndpoint["durableJoinFor"];
   durableLeaveFor: CotalEndpoint["durableLeaveFor"];
@@ -204,6 +216,7 @@ export class EndpointDeliveryPlane {
 
   private readonly aclForAlias: EndpointDeliveryPlaneDeps["aclForAlias"];
   private readonly channelHistory: EndpointDeliveryPlaneDeps["channelHistory"];
+  private readonly readChatRange: EndpointDeliveryPlaneDeps["readChatRange"];
   private readonly deliveryClassFresh: EndpointDeliveryPlaneDeps["deliveryClassFresh"];
   private readonly durableJoinFor: EndpointDeliveryPlaneDeps["durableJoinFor"];
   private readonly durableLeaveFor: EndpointDeliveryPlaneDeps["durableLeaveFor"];
@@ -230,6 +243,7 @@ export class EndpointDeliveryPlane {
   constructor(private readonly deps: EndpointDeliveryPlaneDeps) {
     this.aclForAlias = deps.aclForAlias;
     this.channelHistory = deps.channelHistory;
+    this.readChatRange = deps.readChatRange;
     this.deliveryClassFresh = deps.deliveryClassFresh;
     this.durableJoinFor = deps.durableJoinFor;
     this.durableLeaveFor = deps.durableLeaveFor;
@@ -320,6 +334,7 @@ export class EndpointDeliveryPlane {
     if (req.op === "durableJoin") return this.deliveryJoin(caller, args);
     if (req.op === "durableLeave") return this.deliveryLeave(caller, args);
     if (req.op === "readHistory") return this.deliveryReadHistory(caller, args);
+    if (req.op === "readRange") return this.deliveryReadRange(caller, args);
     if (req.op === ANYCAST_TAKES_OP)
       return this.anycastUnavailable ? { ok: false, error: `delivery: ${this.anycastUnavailable}` } : { ok: true, data: { takes: true } };
     if (req.op === ANYCAST_STATUS_OP || req.op === ANYCAST_CANCEL_OP) return this.deliveryAnycast(req.op, caller, args);
@@ -545,6 +560,56 @@ export class EndpointDeliveryPlane {
     if (wanted.length > 0 && fitted.length === 0)
       return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.maxPayload} bytes) - refused loudly rather than served as an empty page` };
     return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
+  }
+
+  /** Serve one MEDIATED RANGE READ (`readRange`, SPEC §8): the history a credential cannot read on
+   *  its own because an exclusion overlaps the allow entry that covers it, so the mint withheld that
+   *  entry's history create row (SPEC §9). A wildcard filter would replay the excluded channels, and
+   *  no deny row can stop it without stopping every sibling, so the daemon reads and filters instead.
+   *
+   *  Authorization is read FRESH per call, as {@link deliveryReadHistory} reads it: the filter must be
+   *  admitted by the live row and lie inside the mint-time ceiling, and each stored row is kept only
+   *  when its channel, taken from the subject, is within the live grant (allow minus the live and
+   *  mint-time exclusions) and the ceiling. Rows are dropped before the page is cut, so excluded
+   *  traffic never fills a page, and `next` still moves past them. The daemon keeps no cursor: the
+   *  caller pages with `next` and the `untilSeq` the first page returns. */
+  private async deliveryReadRange(caller: string, args: Record<string, unknown>): Promise<ControlReply> {
+    const fail = (error: string): ControlReply => ({ ok: false, error: `readRange: ${error}` });
+    const filter = args.filter;
+    if (typeof filter !== "string") return fail(`filter must be a channel name or pattern (got ${JSON.stringify(filter)})`);
+    try { assertValidChannel(filter); } catch (e) { return fail((e as Error).message); }
+    const count = (v: unknown, min: number): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= min;
+    if (!count(args.fromSeq, 1)) return fail(`fromSeq must be a positive integer (got ${JSON.stringify(args.fromSeq)})`);
+    if (args.untilSeq !== undefined && !count(args.untilSeq, 0)) return fail(`untilSeq must be a non-negative integer (got ${JSON.stringify(args.untilSeq)})`);
+    if (args.sinceMs !== undefined && !(typeof args.sinceMs === "number" && Number.isFinite(args.sinceMs) && args.sinceMs > 0))
+      return fail(`sinceMs must be a positive number of milliseconds (got ${JSON.stringify(args.sinceMs)})`);
+    const asked = args.limit === undefined ? READ_HISTORY_MAX_LIMIT : args.limit;
+    if (!count(asked, 1)) return fail(`limit must be a positive integer (got ${JSON.stringify(args.limit)})`);
+
+    let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; excludeSubscribe: string[] } | undefined;
+    try { acl = await this.aclForAlias(caller); }
+    catch (e) { return fail((e as Error).message); }
+    if (acl === undefined) return fail(`no read ACL on record for ${caller} - not permitted`);
+    const { allowSubscribe, issuedAllowSubscribe, excludeSubscribe } = acl;
+    if (!patternInGrant(allowSubscribe, excludeSubscribe, filter) || !patternInAllow(issuedAllowSubscribe, filter))
+      return fail(`"${filter}" is not within your read ACL [${allowSubscribe.join(", ")}] - refused`);
+    const keep = (msg: HistoryMessage): boolean =>
+      typeof msg.channel === "string" && subjectMatches(filter, msg.channel)
+      && channelInGrant(allowSubscribe, excludeSubscribe, msg.channel) && channelInAllow(issuedAllowSubscribe, msg.channel);
+    try {
+      const page = await this.readChatRange(chatSubject(this.space, "*", "*", filter), {
+        fromSeq: args.fromSeq,
+        ...(args.untilSeq !== undefined ? { untilSeq: args.untilSeq } : {}),
+        ...(args.sinceMs !== undefined ? { sinceMs: args.sinceMs } : {}),
+        limit: Math.min(asked, READ_HISTORY_MAX_LIMIT),
+        budget: this.maxPayload - READ_RANGE_ENVELOPE,
+        scanLimit: READ_RANGE_SCAN_LIMIT,
+        keep,
+      });
+      return { ok: true, data: { items: page.rows, untilSeq: page.untilSeq, next: page.next, done: page.done } };
+    } catch (e) {
+      return fail((e as Error).message);
+    }
   }
 
   /** Stop serving Plane-3 WITHOUT tearing down the connection, so a daemon that has just learned its
