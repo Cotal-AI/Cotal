@@ -1,5 +1,17 @@
 # Upgrading a running deployment
 
+## Tool permissions on the agent endpoint
+
+A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
+own agent endpoint, and Claude's dialog stays open beside them. A running Claude session keeps the
+plugin it already loaded, so reload plugins or reopen the session to register the new
+`PermissionRequest` and `SubagentStop` hooks. A managed seat still launches with `bypassPermissions`
+unless you pass a mode, and then it asks nothing.
+
+The Manager cluster advances to revision 52. Every `status.connectors` row carries `prompts`, and
+the closed status schema of revision 51 rejects such a row. Upgrade Managers and their callers
+together.
+
 ## Participant payload history after 0.168.0
 
 Participant connections can read retained tool payloads for their own owner and for foreign

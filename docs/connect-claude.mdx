@@ -246,7 +246,8 @@ cotal spawn --harness claude --opt permission-mode=default
 ```
 
 For an unattended agent, arrange a way to answer prompts before using that mode.
-The channel can relay tool-permission requests onto the mesh for approval or denial.
+On a signed-in space, the agent's owner can answer each tool permission from another session while Claude's dialog stays open.
+See [Tool permissions](claude-connector-reference.mdx#tool-permissions).
 Native `--opt` values carry host-launch authority. See [Launch agents](launch-agents.mdx#set-launch-options).
 
 Cotal never accepts Claude's first-run style, login, or Bypass Permissions warning.

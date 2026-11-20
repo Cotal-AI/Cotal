@@ -35,6 +35,7 @@ import { claimOnceHandoff } from "./once.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
 import type { CommandDispatch, CommandDispatcher } from "./agent-commands.js";
+import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
 import { AgentSupervision } from "./agent-supervision.js";
 import { AgentChannels, isLocalServer } from "./agent-channels.js";
@@ -625,6 +626,13 @@ export class MeshAgent extends EventEmitter {
     } catch (e) {
       this.log(`the agent endpoint is not served: ${(e as Error).message}`);
     }
+  }
+
+  /** The prompt desk of this process's `agent` endpoint, where a harness adapter opens the dialogs it
+   *  offers remotely. Undefined until the broker accepted the serve, and on an open or static mesh or
+   *  when the endpoint was refused. Once the endpoint closed, `open` refuses with `closed`. */
+  get prompts(): PromptDesk | undefined {
+    return this.agentEndpoint?.prompts;
   }
 
   /** Commands waiting for {@link dispatchNextCommand}. */

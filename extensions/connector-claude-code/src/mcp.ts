@@ -36,6 +36,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
+import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
 import type { ClaudeEntry } from "./agui-map.js";
 import { createClaudeEventPlane } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
@@ -252,6 +253,11 @@ async function startSession(
   const agent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true });
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
+  // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
+  // stays open. The desk exists once the agent serves that endpoint, which only a user-auth mesh does.
+  const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
+  const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
+  const hooks = launchedSessionHooks(prompts, claude, warn);
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
@@ -278,6 +284,7 @@ async function startSession(
     (stopping ??= (async () => {
       opts.input.off("end", onInputClose);
       opts.input.off("close", onInputClose);
+      prompts.sessionEnd();
       plane?.stop();
       try {
         controlServer?.close();
@@ -307,8 +314,8 @@ async function startSession(
   controlServer = startControlServer(
     agent,
     control,
-    claude.handle,
-    { fatalBind: opts.fatalBind ?? false, onShutdown: () => void shutdown(), onReply: claude.onReply },
+    hooks.handle,
+    { fatalBind: opts.fatalBind ?? false, onShutdown: () => void shutdown(), onReply: hooks.onReply },
   );
   await new Promise<void>((resolve, reject) => {
     controlServer!.once("listening", resolve);
