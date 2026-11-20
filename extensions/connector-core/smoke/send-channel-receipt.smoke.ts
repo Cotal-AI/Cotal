@@ -15,7 +15,7 @@
  */
 import { MAX_CHANNEL_LENGTH } from "@cotal-ai/core";
 import { MeshAgent, type MeshAgent as MeshAgentType } from "../src/agent.js";
-import { closeChannelNames } from "../src/agent-messaging.js";
+import { AgentMessaging, closeChannelNames, type AgentMessagingDeps } from "../src/agent-messaging.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import type { AgentConfig } from "../src/config.js";
 
@@ -50,8 +50,10 @@ function stubAgent(opts: {
     },
     getChannelConfig: (channel: string) => (registered.has(channel) ? { description: "from registry" } : undefined),
   };
+  // MeshAgent.describeSendChannel delegates to its messaging member; the receipt reads only the endpoint.
   return {
     ep,
+    messaging: new AgentMessaging({ ep: () => ep } as unknown as AgentMessagingDeps),
     joinedChannels: () => opts.joined,
     readChannels: async () => {},
     connected: true,
