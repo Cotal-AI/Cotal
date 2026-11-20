@@ -12,6 +12,10 @@ export function daemonServiceRequirement(home?: string): CommandFailure | undefi
 export const NON_USER_AUTH_MESSAGE = "this space does not use user sign-in. The machine service hosts Managers only for user-auth participant spaces";
 export const NON_USER_AUTH_REMEDY = "run `cotal up` in the folder that hosts the local space. Its stack runs the Manager";
 
+export function foreignDaemonUpdateReport(entry: string): string {
+  return `machine daemon: the background service belongs to another Cotal installation (${entry}). This update did not start or stop it.`;
+}
+
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {

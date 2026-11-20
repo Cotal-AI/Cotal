@@ -217,7 +217,10 @@ for (const self of [true, false]) {
     process.env.PATH = `${native}:${priorPath}`;
     process.env.COTAL_HOME = join(root, "receipts");
     try {
-      const source = 'ExecStart="/other/node" "/other/cotal.js" daemon serve\n';
+      const foreign = join(root, "other");
+      mkdirSync(foreign, { mode: 0o700 });
+      for (const file of ["node", "cotal.js"]) writeFileSync(join(foreign, file), "");
+      const source = `ExecStart="${join(foreign, "node")}" "${join(foreign, "cotal.js")}" daemon serve\n`;
       const unitPath = join(directory, "cotal-daemon.service");
       writeFileSync(unitPath, source, { mode: 0o600 });
       const receipt = { v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: "2026-11-12" };
@@ -290,6 +293,7 @@ for (const self of [true, false]) {
         } finally { console.log = priorLog; }
         assert.equal(lines.filter(line => line.includes("the background service belongs to another Cotal installation")).length, 1,
           currentParent ? "the marked child and parent report another installation once" : "the child of an older parent keeps the other installation fact");
+        assert.ok(lines.includes(`machine daemon: the background service belongs to another Cotal installation (${join(foreign, "cotal.js")}). This update did not start or stop it.`));
       }
       writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
       writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });

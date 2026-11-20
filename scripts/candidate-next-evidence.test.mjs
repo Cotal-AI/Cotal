@@ -648,7 +648,7 @@ test('candidate evidence binds captured artifacts, public command receipts and d
     writeFileSync(join(f.output, 'stopped-desktop-after-update.txt'), afterBytes, {mode: 0o600});
     desktop.stoppedDaemonBeforeUpdate = {passed: true, unit: 'cotal-daemon.service', stopCommand: stopCmd, statusWhileStopped: stoppedStatus, commands: {artifact: 'stopped-desktop-before-update.txt', bytes: stoppedBytes.length, sha256: hash(stoppedBytes)}};
     desktop.stoppedDesktopAfterUpdate = {status: stoppedStatus, unitShowAfter: showAfter, updateNamesDesktopOwner: true, remainsStopped: true, commands: {artifact: 'stopped-desktop-after-update.txt', bytes: afterBytes.length, sha256: hash(afterBytes)}};
-    const updateCall = {...desktop.calls[0], stdout: `machine daemon: the background service belongs to another Cotal installation (${entryPath}). This update left it stopped.\n`, stderr: '', startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt};
+    const updateCall = {...desktop.calls[0], stdout: `machine daemon: the background service belongs to another Cotal installation (${entryPath}). This update did not start or stop it.\n`, stderr: '', startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt};
     desktop.nextHop.secondHop.update = {exit: 0, signal: null, timeout: false, stdout: updateCall.stdout, stderr: ''};
     desktop.calls = [
       {label: 'stop native daemon before manual repair', argv: ['systemctl', '--user', 'stop', 'cotal-daemon.service'], ...stopCmd, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
