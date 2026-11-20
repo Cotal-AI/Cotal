@@ -1448,6 +1448,11 @@ main() {
 
   _t0=$(date +%s)
 
+  if [ -d "$BIN_DIR/cotal" ]; then
+    die "$(shquote "$BIN_DIR/cotal") is a directory." \
+      "Move the directory aside or set COTAL_BIN_DIR to a different launcher directory."
+  fi
+
   if [ "$OPT_DRY_RUN" = 1 ]; then
     # Report the runtime decision without acting on it: probe the system Node only.
     if [ "$OPT_VENDOR_NODE" = 0 ] && have node && have npm &&
@@ -1458,11 +1463,6 @@ main() {
     fi
     dry_run_report
     exit 0
-  fi
-
-  if [ -d "$BIN_DIR/cotal" ]; then
-    die "$(shquote "$BIN_DIR/cotal") is a directory." \
-      "Move the directory aside or set COTAL_BIN_DIR to a different launcher directory."
   fi
 
   # A recorded service may still run the npm installation after the shell install. Do not
