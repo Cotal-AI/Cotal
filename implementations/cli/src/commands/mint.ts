@@ -10,7 +10,7 @@ import {
   parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, credentialMintFlags,
   isCommandFailure, preflightTarget, presentationOf,
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
-  validateCredentialMintArguments,
+  validateCredentialMintArguments, workspaceErrorParts,
   writeResult, type MeshTarget, type OutputWarning, type Report,
   recordOperationSpace, agentGrants, grantMintFlags, type AgentGrants,
 } from "@cotal-ai/workspace";
@@ -27,6 +27,8 @@ export { resolveMintTarget } from "../lib/credential-authority.js";
 const DEFAULT_LIFETIME_SECONDS = 86_400;
 // NATS rounds the issue time down to a whole second, so one second can leave almost no usable time.
 const MIN_PROVISIONED_LIFETIME_SECONDS = 2;
+/** The other step when `--provision` cannot reach a running broker: a file-only mint never dials it. */
+const OFFLINE_MINT = "omit --provision to mint only the private credential file, which needs no running broker and creates no inbox";
 const expiry = (seconds: number | undefined): string => {
   if (seconds === undefined) return "no expiry claim in the native result";
   const date = new Date(seconds * 1000);
@@ -133,7 +135,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   let held: ReturnType<typeof acquireLock> | undefined;
   let target: { space?: string; name: string; profile: string; path?: string; identity?: string; lifecycleUid?: string } = { name, profile };
   try {
-    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target, !values.provision);
+    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target, !values.provision, values.provision ? OFFLINE_MINT : undefined);
     const { root, space } = resolvedTarget;
     target = { ...target, space };
     recordOperationSpace(space);
@@ -218,7 +220,13 @@ export async function mint(args: ParsedArgs): Promise<void> {
     if (values.provision) {
       if (!resolvedTarget.auth || resolvedTarget.auth.account.pub !== auth.account.pub) throw new CommandFailure("refused", "CONFLICT", "the broker target and credential signer do not share one account authority", { target });
       const preflight = await preflightTarget(resolvedTarget);
-      if (!preflight.ok) throw new CommandFailure("refused", preflight.kind.includes("creds") || preflight.kind === "stale-auth" ? "AUTH_REQUIRED" : "TARGET_UNAVAILABLE", "the selected broker did not pass the native authenticated provisioning preflight; no stale registration was pruned", { target });
+      if (!preflight.ok) {
+        // The shared sentence names the broker and its next step, as status does for the same target.
+        const { message, remedy } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target: resolvedTarget, pruned: false, ...(preflight.pid === undefined ? {} : { pid: preflight.pid }), ...(preflight.heldBy === undefined ? {} : { heldBy: preflight.heldBy }) });
+        const offline = preflight.kind === "unreachable" || preflight.kind === "broker-stopped";
+        const next = offline ? (remedy === undefined ? OFFLINE_MINT : `${remedy}, or ${OFFLINE_MINT}`) : remedy;
+        throw new CommandFailure("refused", preflight.kind.includes("creds") || preflight.kind === "stale-auth" ? "AUTH_REQUIRED" : "TARGET_UNAVAILABLE", `${message}; no stale registration was pruned`, { target, ...(next === undefined ? {} : { remedy: next }) });
+      }
       checkProvisionedExpiry();
       mayHaveProvisioned = true;
       const provisionedIdentity = identity;

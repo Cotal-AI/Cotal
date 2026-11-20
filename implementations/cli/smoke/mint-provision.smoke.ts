@@ -457,7 +457,7 @@ try {
     process.chdir(root);
     await new Promise<void>((resolve) => holder.close(() => resolve()));
     check("--provision naming no mesh, from an unrecorded root, stays local and is refused at the preflight of the broker it dials",
-      r3.code === 2 && /provisioning preflight/.test(r3.out) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
+      r3.code === 2 && r3.out.includes(`nothing answered at ${held}, the broker address --server named`) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 
@@ -954,10 +954,12 @@ try {
         check(`stopped root ${space.length ? "with" : "without"} --space names the restart and publishes no provisioned credential`,
           provision.code === 2 && provision.out.includes("TARGET_UNAVAILABLE") && provision.out.includes("start it again with `cotal up`") &&
           !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
+        check(`  #8379: ${space.length ? "with" : "without"} --space it says the mesh is not running and offers a file-only mint without --provision`,
+          /the mesh "offlinecheck" in .* last ran at/.test(provision.out) && /omit --provision to mint only the private credential file/.test(provision.out), provision.out);
       }
       const endpoint = await runMint(["caller", "--space", "offlinecheck", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds"), "--plain"]);
       check("stopped root still refuses named endpoint discovery and publishes no caller",
-        endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")), endpoint.out);
+        endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")) && !endpoint.out.includes("omit --provision"), endpoint.out);
       check("offline signing started no stack process", !(await down()).out.includes("✓ stopped"));
     } finally {
       await down();
