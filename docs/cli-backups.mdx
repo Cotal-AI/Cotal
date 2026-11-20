@@ -544,8 +544,9 @@ or ambiguous owner is preserved and refused, never adopted by reachability alone
 daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
 because the interrupted `up` may have stopped before it made them. The mesh record it then writes
 keeps the recorded attach host and session ceiling and the store cap the adopted broker started with.
-A restore journals its `--max-file-store` for this. An attempt interrupted after commit intent and
-before it bound a listener recovers forward with bare `cotal up`, which starts that listener. It does
+A restore journals its `--max-file-store` for this. If SIGINT, SIGTERM or SIGHUP interrupts a restore
+after commit intent and before the listener starts, the command names the attempt and tells you to run
+bare `cotal up` from that root. That command continues the same attempt and starts the listener. It does
 so only when no process of this account names the attempt and the recorded port is free, because a
 listener spawned and never bound may still be opening the restored store, and NATS does not stop a
 second server from opening it too. While such a process runs, `up` names its pid and refuses, and

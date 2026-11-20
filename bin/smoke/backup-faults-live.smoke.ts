@@ -48,6 +48,7 @@ const journalState = (root: string): string | undefined => {
 interface ClaimedJournal {
   state: string;
   restore?: { attemptId: string };
+  listenerProof?: unknown;
   claim?: { attemptId?: string; deadline: string; owners: unknown[]; coordinator: { startedAt: string } };
 }
 
@@ -505,8 +506,51 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(/Next\s+cotal up\s+Resume the space from its preserved state\s+cotal backup restore <directory>\s+Try the restore again/.test(recovered.stdout), `the recovery receipt names resume and a retried restore as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
-    must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down", "--yes"));
+    // Send a real SIGTERM after publishing commit intent. Node can dispatch it only after the
+    // synchronous preparation returns, so it exercises the handoff without racing a journal poll.
+    const signalAtCommit = join(root, "signal-at-commit.cjs");
+    const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    writeFileSync(signalAtCommit, `
+      const fs = require("node:fs");
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        rename(from, to);
+        if (to !== ${JSON.stringify(journalPath)}) return;
+        const journal = JSON.parse(fs.readFileSync(to, "utf8"));
+        if (journal.state === "commit-intent" && !journal.listenerProof) {
+          process.kill(process.pid, "SIGTERM");
+        }
+      };
+      require("node:module").syncBuiltinESMExports();
+    `);
+    const committed = spawnSync(process.execPath,
+      ["--require", signalAtCommit, "--import", tsxImport, cliPath, "up", "--foreground", "--restore", artifact, "--store-dir", join(root, "new store")],
+      { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+    const intent = readJournal(root);
+    assert.equal(intent?.state, "commit-intent", "SIGTERM leaves commit intent intact");
+    assert.equal(intent.listenerProof, undefined, "the signal precedes the listener bind");
+    assert.ok(intent.restore);
+    assert.equal(committed.status, 143, `SIGTERM exits 143\n${committed.stderr}`);
+    const launch = /^\s{2}(.+) <command> \[options\]$/m.exec(run().stdout)?.[1];
+    assert.ok(launch);
+    assert.ok(committed.stderr.includes(`Interrupted: restore attempt ${intent.restore.attemptId} committed before it stopped`) && committed.stderr.includes(`bare \`${launch} up\``), committed.stderr);
+    assert.doesNotMatch(committed.stderr, /backup recover/);
+    const resumed = spawn(process.execPath, ["--import", tsxImport, cliPath, "up"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let resumeErrors = "";
+    resumed.stderr!.on("data", (chunk: Buffer) => { resumeErrors += chunk.toString(); });
+    const resumedExit = new Promise<number | null>((resolveExit) => resumed.once("close", resolveExit));
+    const timeout = setTimeout(() => resumed.kill("SIGKILL"), 120_000);
+    try {
+      while (journalState(root) !== "active" && resumed.exitCode === null && resumed.signalCode === null) await sleep(50);
+      assert.equal(journalState(root), "active", `bare up continues the committed restore\n${resumeErrors}`);
+      assert.equal(readJournal(root)?.restore?.attemptId, intent.restore.attemptId);
+      must("down", run("down", "--yes"));
+      assert.equal(await resumedExit, 0, resumeErrors);
+    } finally {
+      clearTimeout(timeout);
+      resumed.kill("SIGKILL");
+      await resumedExit;
+    }
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });

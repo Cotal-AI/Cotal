@@ -153,6 +153,8 @@ export interface PreparedRestore {
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
   managerCommit?: ManagerCommitEvidence;
   listenerProof?: ListenerProof;
+  /** A new restore hands its interrupt notice to the startup that continues it. */
+  releaseInterruptNotice?(): void;
   cleanupStage(): void;
 }
 
@@ -1010,6 +1012,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
   };
   // From here an interrupt leaves whatever this attempt journaled; the notice names it and its recovery.
   const releaseNotice = noticeOnInterrupt(() => restoreInterruptNotice(root, attemptId));
+  let handedOff = false;
   try {
     let journal = readMaintenanceJournal(root);
     if (journal?.state === "restore-ready") {
@@ -1302,6 +1305,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     if (controller) assertControllerCoupling(root, controller, journal.cut.launch.server, journal.source.path, { stackOperationId: controllerLaunch!.controller.stackOperationId, attemptId });
     releaseMaintenanceLock(lock);
     lock = undefined as never;
+    handedOff = true;
     return {
       root,
       attemptId,
@@ -1320,6 +1324,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       serverNonce,
       reentry: false,
       journalState: "commit-intent",
+      releaseInterruptNotice: releaseNotice,
       cleanupStage: () => {
         artifact.cleanup();
         if (sanitized) removeOwnedDirectory(sanitized.path, sanitized.identity);
@@ -1352,7 +1357,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       throw new Error(`${error instanceof Error ? error.message : String(error)}; pre-commit rollback also failed: ${rollbackFailure.message}`);
     throw error;
   } finally {
-    releaseNotice();
+    if (!handedOff) releaseNotice();
     if (lock) releaseMaintenanceLock(lock);
   }
 }
@@ -1363,7 +1368,8 @@ function restoreInterruptNotice(root: string, attemptId: string): string {
   const ours = journal !== undefined && "restore" in journal && journal.restore.attemptId === attemptId;
   if (ours && journal.state === "restore-ready")
     return `Interrupted: restore attempt ${attemptId} stopped before it committed, and nothing was restored.\nRoll it back with \`cotal backup recover ${attemptId} --yes\`, or run the restore again, which rolls it back first.`;
-  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with bare \`cotal up\` from ${root}.`;
+  if (ours && journal.state === "active") return `Interrupted after restore attempt ${attemptId} finished. Check it with ${codeSpan(`${displayCmd()} status`)} from ${root}.`;
+  if (ours) return `Interrupted: restore attempt ${attemptId} committed before it stopped. Continue it with bare ${codeSpan(`${displayCmd()} up`)} from ${root}.`;
   return `Interrupted: restore attempt ${attemptId} stopped before it claimed this root; nothing was restored.`;
 }
 
