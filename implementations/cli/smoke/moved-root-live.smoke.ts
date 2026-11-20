@@ -1,10 +1,11 @@
-/** Status and space show diagnose renamed stacks, both running and stopped.
+/** Status and space inventory diagnose renamed stacks, both running and stopped.
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
+import { codeSpan, shellPath } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const tree = resolve(import.meta.dirname, "../../..");
@@ -13,10 +14,13 @@ const scratch = mkdtempSync(join(tmpdir(), "cotal-moved-root-"));
 const home = join(scratch, "home"), root = join(scratch, "project"), moved = join(scratch, "renamed"), other = join(scratch, "other");
 const cotalHome = join(home, ".cotal"), config = join(home, ".config");
 for (const path of [home, root, other]) mkdirSync(path, { mode: 0o700 });
+const launcherDir = join(home, "bin");
+mkdirSync(launcherDir, { mode: 0o700 });
+writeFileSync(join(launcherDir, "cotal"), `#!/bin/sh\nexec ${shellPath(process.execPath)} ${shellPath(bin)} "$@"\n`, { mode: 0o700 });
 // Stop the project search here rather than walking into the host account's project.
 mkdirSync(join(other, ".cotal"), { mode: 0o700 });
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-const env = { ...hostEnv, HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const env = { ...hostEnv, PATH: `${launcherDir}${delimiter}${process.env.PATH ?? ""}`, HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { check, finish } = createSuite();
 type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[] }; error?: unknown };
 const cli = (cwd: string, ...args: string[]) => {
@@ -138,7 +142,7 @@ for (const open of [false, true]) {
   }
 }
 {
-  const space = "movedstopped", project = join(home, space), renamed = `${project} renamed`, copy = `${project} copy`;
+  const space = "movedstopped", project = join(home, space), renamed = `${project} $renamed\` records`, copy = `${project} copy`;
   mkdirSync(project, { mode: 0o700 });
   check("prepare a project to move after shutdown", cli(project, "space", "create", space).status === 0);
   const server = `nats://127.0.0.1:${await freePort()}`;
@@ -150,6 +154,7 @@ for (const open of [false, true]) {
   };
   if (cli(project, "up", "--no-manager", "--server", server).status !== 0) throw new Error("private stack did not start");
   try {
+    check("store channel metadata before moving the project", cli(project, "channel", "set", "move.history", "--desc", "description before rename").status === 0);
     check("store a post before stopping and moving the project", cli(project, "send", "-c", "move.history", "retained after project rename").status === 0);
   } finally {
     stop(project);
@@ -159,33 +164,50 @@ for (const open of [false, true]) {
   const copiedOutput = `${copiedUp.stdout}${copiedUp.stderr}`;
   check("a stopped stack's copy points to the original without adoption commands",
     copiedUp.status === 2 && copiedOutput.includes(`use the stack from ${project}`) && !/space forget|--adopt/.test(copiedOutput));
+  for (const flags of [[], ["--adopt"]]) {
+    const result = cli(copy, "space", "create", space, ...flags, "--plain");
+    check(`create ${flags.join(" ")} refuses a copy while its original still exists`, result.status === 2 && result.stderr.includes("CONFLICT") && !result.stderr.includes(`cotal space create ${space} --adopt`));
+  }
   renameSync(project, renamed);
   const journal = join(renamed, ".cotal", "stack-controller.json"), before = readFileSync(journal);
   const movedUp = cli(renamed, "up", "--plain"), movedStatus = cli(renamed, "status", "--plain");
   check("up still refuses and does not rewrite the moved journal",
     movedUp.status === 2 && `${movedUp.stdout}${movedUp.stderr}`.includes("CONFLICT") && readFileSync(journal).equals(before));
-  for (const [command, result] of [["up", movedUp], ["status", movedStatus]] as const) {
+  const forget = `cotal space forget ${space}`, adopt = `cotal space create ${space} --adopt --root '${renamed}'`;
+  const remedy = `move this folder back to ${project}, then run the command again there; or, to run it from this folder, forget it with ${codeSpan(forget)}, then run ${codeSpan(adopt)}`;
+  const outside = cli(other, "space", "--plain");
+  check("inventory outside the moved project still offers forget and plain create for the missing path",
+    outside.status === 0 && outside.stdout.includes(`cotal space create ${space} --root <dir>`) && !outside.stdout.includes(adopt));
+  const list = cli(renamed, "space", "--plain"), show = cli(renamed, "space", "show", space, "--plain");
+  for (const [command, result] of [["up", movedUp], ["status", movedStatus], ["space", list], ["space show", show]] as const) {
     const output = `${result.stdout}${result.stderr}`;
-    check(`${command} gives both recovery options and quotes the renamed path`,
-      result.status === (command === "up" ? 2 : 0) && output.includes(`move this folder back to ${project}`) &&
-      output.includes(`\`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root '${renamed}'\``));
+    check(`${command} gives the same recovery commands and quotes the renamed path`,
+      result.status === (command === "up" ? 2 : 0) && output.includes(remedy) && !output.includes(`cotal space create ${space} --root <dir>`));
   }
-  const selected = cli(renamed, "use", space, "--plain");
-  const show = cli(renamed, "space", "show", space, "--plain");
-  check("space show recognizes the stopped stack from its matching moved journal",
-    selected.status === 0 && show.status === 0 && /broker: +stopped/.test(show.stdout) && show.stdout.includes(`was moved from ${project}`) && show.stdout.includes(`move this folder back to ${project}`));
-  check("space show prints the exact forget and adopt commands for the renamed path",
-    show.stdout.includes(`\`cotal space forget ${space}\`, then \`cotal space create ${space} --adopt --root '${renamed}'\``) && !show.stdout.includes("--root <dir>"));
-  check("following the printed forget succeeds", cli(renamed, "space", "forget", space, "--plain").status === 0);
+  const subdir = join(renamed, "subdir");
+  mkdirSync(subdir);
+  const implicit = cli(subdir, "space", "show", "--plain");
+  check("space show from a subfolder recognizes the matching moved stopped stack without a name",
+    implicit.status === 0 && /broker: +stopped/.test(implicit.stdout) && implicit.stdout.includes(`was moved from ${project}`) && implicit.stdout.includes(remedy));
+  const shell = (command: string) => spawnSync("sh", ["-c", command], { cwd: renamed, env, encoding: "utf8", timeout: 120_000 });
+  const printedForget = list.stdout.match(/forget it with `([^`]+)`/)?.[1];
+  check("following the inventory's exact forget command succeeds", printedForget === forget && shell(printedForget).status === 0);
+  const plainCreate = cli(renamed, "space", "create", space, "--root", renamed, "--plain");
+  const printedAdopt = plainCreate.stderr.match(/\nNext\n  (.+)\n/)?.[1];
+  check("plain create after forget refuses without rewriting the journal and prints a directly runnable adopt command",
+    plainCreate.status === 2 && plainCreate.stderr.includes("CONFLICT") && printedAdopt === adopt && readFileSync(journal).equals(before));
   check("following the printed adopt prepares the space in the renamed folder",
-    cli(renamed, "space", "create", space, "--adopt", "--root", renamed, "--plain").status === 0 &&
+    printedAdopt === adopt && shell(printedAdopt).status === 0 &&
       cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
+  const restarted = cli(renamed, "up", "--no-manager");
+  check("the adopted stack starts at the renamed root and recorded broker address", restarted.status === 0 && restarted.stdout.includes(server));
   try {
-    check("the adopted stack starts at the renamed root", cli(renamed, "up", "--no-manager").status === 0);
     const history = cli(renamed, "history", "move.history");
     check("history survives the printed recovery commands", history.status === 0 && history.stdout.includes("retained after project rename"));
+    const channel = cli(renamed, "channel", "show", "move.history");
+    check("channel metadata survives the printed recovery commands", channel.status === 0 && channel.stdout.includes("description before rename"));
   } finally {
-    stop(renamed);
+    if (restarted.status === 0) stop(renamed);
   }
 }
 finish();
