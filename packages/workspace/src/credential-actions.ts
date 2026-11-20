@@ -1,4 +1,4 @@
-import { assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { assertExclusions, assertValidOwnerToken, assertValidRole, assertValidChannel, boundedValue, endpointToken, oneLine, type Extension, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { parseCommaList, spaceFlag, serverFlag } from "./flags.js";
 import { CommandFailure, jsonFlag, plainFlag, SHOWN_VALUE_MAX } from "./output.js";
 import { presentationOf } from "./present.js";
@@ -12,6 +12,8 @@ export const credentialMintFlags = [
   { name: "channels", type: "string", value: "<a,b>", description: "endpoint callers: explicit read/post channel ACL; omitted or empty grants none" },
   { name: "allow-subscribe", type: "string", value: "<a,b>", description: "agent: channel read ACL; empty means no entries" },
   { name: "allow-publish", type: "string", value: "<a,b>", description: "agent: channel post ACL; empty means no entries" },
+  { name: "exclude-subscribe", type: "string", value: "<a,b>", description: "agent: channels or patterns removed from --allow-subscribe; needs --provision" },
+  { name: "exclude-publish", type: "string", value: "<a,b>", description: "agent: channels or patterns removed from --allow-publish" },
   { name: "role", type: "string", value: "<role>", description: "agent: scope its role task queue" },
   { name: "no-persona", type: "boolean", description: "agent: ignore the label's persona; use only explicit or --identity grants" },
   { name: "provision", type: "boolean", description: "agent: also pre-create this new lifecycle's bind-only inbox and delivery footprint" },
@@ -69,7 +71,7 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   });
 }
 
-function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", entry: string, error: unknown): CommandFailure {
+function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish" | "--exclude-subscribe" | "--exclude-publish", entry: string, error: unknown): CommandFailure {
   const shown = oneLine(boundedValue(entry, SHOWN_VALUE_MAX));
   if (entry.startsWith("#")) {
     const stripped = entry.replace(/^#+/, "");
@@ -136,8 +138,8 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   if (values.channels !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--channels belongs to auth mint --endpoint; it was not ignored for a fixed profile");
   const profile = values.profile ?? "agent";
   if (!["agent", "observer", "admin"].includes(String(profile))) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint supports agent, observer or admin; internal service profiles are not exposed");
-  if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision", "no-persona"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
-  for (const key of ["allow-subscribe", "allow-publish"] as const) {
+  if (profile !== "agent" && ["allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish", "role", "provision", "no-persona"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
+  for (const key of ["allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish"] as const) {
     const raw = values[key];
     if (raw === undefined) continue;
     if (typeof raw !== "string" || raw.length > 16384) throw new CommandFailure("refused", "USAGE_INVALID", `--${key} must be bounded text; no input coercion was used`);
@@ -145,6 +147,14 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
       try { assertValidChannel(channel); }
       catch (error) { throw channelPatternRefusal(`--${key}`, channel, error); }
     }
+  }
+  // An exclusion flag and its list flag together replace the list a persona or --identity gives, so
+  // an exclusion is never read against a list the command line does not show.
+  for (const [allow, exclude] of [["allow-subscribe", "exclude-subscribe"], ["allow-publish", "exclude-publish"]] as const) {
+    if (values[exclude] === undefined) continue;
+    if (values[allow] === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--${exclude} removes channels from --${allow}, so it needs --${allow}; nothing was minted`, { remedy: `name the list it removes channels from with --${allow}`, selfContained: true });
+    try { assertExclusions(parseCommaList(String(values[allow])), parseCommaList(String(values[exclude])), `--${exclude}`); }
+    catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine((error as Error).message)}; nothing was minted`, { selfContained: true }); }
   }
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
