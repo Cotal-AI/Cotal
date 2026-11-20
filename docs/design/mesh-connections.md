@@ -227,7 +227,7 @@ argument that defaults to the home mesh. There is no ambient current-mesh and no
 Reason. The alternative, a `current mesh` the seat sets and every later call inherits, makes a
 `cotal_send` posting to the wrong mesh a silent event whose cause is a call several turns earlier.
 Cotal already refuses that class of ambiguity elsewhere: tool inputs are closed objects precisely so
-a supplied identity argument is refused rather than silently dropped (`tool-specs.ts:43-52`), and
+a supplied identity argument is refused rather than silently dropped (`tool-specs-shared.ts:43-52`), and
 `configFromEnv` refuses two identity carriers at once rather than resolving them by precedence,
 because "two answers to who is this session is how a seat ends up connected as something nobody
 chose" (#614). A default that can be moved is a second answer.
