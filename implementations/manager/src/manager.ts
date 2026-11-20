@@ -44,7 +44,7 @@ import { ConnectorInventory, connectorInventoryDeps } from "./connector-inventor
 import { Preservation, preservationDeps } from "./preservation.js";
 import { PreservedResume, preservedResumeDeps, bearerEntryArgv } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
-import { CredentialRenewal, credentialRenewalDeps, credRenewIntervalMs } from "./credential-renewal.js";
+import { CredentialRenewal, credentialRenewalDeps } from "./credential-renewal.js";
 import { SeatLaunch, seatLaunchDeps, type SpawnRun, type StaticSpawnBound } from "./seat-launch.js";
 import { ManagerBoot, bootDeps } from "./boot.js";
 import { withTimeout } from "./manager-timeout.js";
@@ -533,7 +533,7 @@ export class Manager {
   /** The broker ws listener port (loopback) `cotal up` allocated, for the console session
    *  client's wsUrl. Undefined ⇒ no console session client (POST /session 503s). */
   protected readonly wsPort?: number;
-  private readonly name: string;
+  protected readonly name: string;
   protected readonly workspaceRoot: string;
   protected readonly eventsRequired: boolean;
   protected readonly eventPayloadsWithheld: boolean;
@@ -585,8 +585,8 @@ export class Manager {
   protected managerServeIdentity!: Identity;
   /** The local instance identity {@link admitExecutionState} already resolved. The ordinary start
    *  adopts it instead of reading the same record again. */
-  private admittedLocalIdentity?: ManagerInstanceIdentity;
-  private readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
+  protected admittedLocalIdentity?: ManagerInstanceIdentity;
+  protected readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
   /** The manager's v0.4 service-endpoint serve state — the serve handle +
    *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
    *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
@@ -707,7 +707,7 @@ export class Manager {
   private retirementsRunning = 0;
   /** Retirements waiting for a slot, oldest first. */
   private readonly retirementQueue: Array<() => void> = [];
-  private readonly attach: AttachEndpoint;
+  protected readonly attach: AttachEndpoint;
   protected ep!: CotalEndpoint;
   /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
    *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
@@ -741,15 +741,15 @@ export class Manager {
   }
   protected readonly retirement = new Retirement(retirementDeps(this));
   private readonly lease = new LeaseKeeper(leaseKeeperDeps(this));
-  private get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
-  private set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
-  private get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
-  private set leaseRevision(revision: number | undefined) { this.lease.leaseRevision = revision; }
-  private get leaseTimer(): ReturnType<typeof setInterval> | undefined { return this.lease.leaseTimer; }
-  private set leaseTimer(timer: ReturnType<typeof setInterval> | undefined) { this.lease.leaseTimer = timer; }
+  protected get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
+  protected set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
+  protected get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
+  protected set leaseRevision(revision: number | undefined) { this.lease.leaseRevision = revision; }
+  protected get leaseTimer(): ReturnType<typeof setInterval> | undefined { return this.lease.leaseTimer; }
+  protected set leaseTimer(timer: ReturnType<typeof setInterval> | undefined) { this.lease.leaseTimer = timer; }
   private get leaseRenewTask(): Promise<void> | undefined { return this.lease.leaseRenewTask; }
-  private acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> { return this.lease.acquireInstanceLease(info); }
-  private renewLease(): Promise<void> { return this.lease.renewLease(); }
+  protected acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> { return this.lease.acquireInstanceLease(info); }
+  protected renewLease(): Promise<void> { return this.lease.renewLease(); }
   private releaseOwnManagerLease(): Promise<void> { return this.lease.releaseOwnManagerLease(); }
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
@@ -772,7 +772,7 @@ export class Manager {
    *  another store or the challenge refused. Without it the heartbeat re-takes the lease the claim
    *  just released and holds it against every manager and `doctor auth --fix` that can remint. */
   protected daemonRenewalEligible = false;
-  private daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
+  protected daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   protected maintenanceState: ManagerMaintenanceState = "active";
   protected lifecycleInFlight = 0;
   private lifecycleDrainWaiters: Array<() => void> = [];
@@ -1069,7 +1069,7 @@ export class Manager {
     return this.managerStatusData(undefined).stopImpact?.preservation;
   }
 
-  private serviceIdentityObservation(): ManagerServiceIdentity {
+  protected serviceIdentityObservation(): ManagerServiceIdentity {
     if (!this.managerInstanceId || !this.managerServeIdentity) throw new Error("manager native service identity has not been selected");
     const principal: EpCaller = this.remoteAuthority
       ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
@@ -1163,7 +1163,7 @@ export class Manager {
     return wrapped;
   }
 
-  private executionRecordPath(instanceId: string): string {
+  protected executionRecordPath(instanceId: string): string {
     return join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${instanceId}.json`);
   }
 
@@ -1181,9 +1181,9 @@ export class Manager {
   /** {@link CredentialRenewal.absentByLeaseRow}. */
   absentByLeaseRow(...args: Parameters<CredentialRenewal["absentByLeaseRow"]>): ReturnType<CredentialRenewal["absentByLeaseRow"]> { return this.credentialRenewal.absentByLeaseRow(...args); }
   /** {@link CredentialRenewal.keepDaemonRenewalLease}. */
-  private keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
+  protected keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
   /** {@link CredentialRenewal.claimDaemonRenewalOwnership}. */
-  private claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
+  protected claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
   /** {@link CredentialRenewal.scheduleServeRenewal}. */
   protected scheduleServeRenewal(...args: Parameters<CredentialRenewal["scheduleServeRenewal"]>): ReturnType<CredentialRenewal["scheduleServeRenewal"]> { return this.credentialRenewal.scheduleServeRenewal(...args); }
 
@@ -1280,7 +1280,7 @@ export class Manager {
   private releaseManagedAgents(...args: Parameters<Preservation["releaseManagedAgents"]>): ReturnType<Preservation["releaseManagedAgents"]> { return this.preservationComponent.releaseManagedAgents(...args); }
 
   /** {@link Preservation.adoptReleasedSeats}. */
-  private adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
+  protected adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
 
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -1743,7 +1743,7 @@ export class Manager {
   protected logSeatReaped(...args: Parameters<SeatStop["logSeatReaped"]>): ReturnType<SeatStop["logSeatReaped"]> { return this.seatStopComponent.logSeatReaped(...args); }
 
   /** {@link SeatStop.logSeatMeshTransitions}. */
-  private logSeatMeshTransitions(...args: Parameters<SeatStop["logSeatMeshTransitions"]>): ReturnType<SeatStop["logSeatMeshTransitions"]> { return this.seatStopComponent.logSeatMeshTransitions(...args); }
+  protected logSeatMeshTransitions(...args: Parameters<SeatStop["logSeatMeshTransitions"]>): ReturnType<SeatStop["logSeatMeshTransitions"]> { return this.seatStopComponent.logSeatMeshTransitions(...args); }
 
   /** {@link SeatStop.isOwnPresence}. */
   protected isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence { return this.seatStopComponent.isOwnPresence(a, p); }
@@ -1871,7 +1871,7 @@ export class Manager {
   protected connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
   /** {@link ConnectorInventory.inspectConnectorsAtBoot}. */
-  private inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
+  protected inspectConnectorsAtBoot(...args: Parameters<ConnectorInventory["inspectConnectorsAtBoot"]>): ReturnType<ConnectorInventory["inspectConnectorsAtBoot"]> { return this.connectorInventoryComponent.inspectConnectorsAtBoot(...args); }
 
   /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
   protected async prepareClaudeWake(): Promise<string | undefined> {
@@ -2063,28 +2063,28 @@ export class Manager {
   }
 
   /** {@link ManagerBoot.healFrozenRegistrationGate}. */
-  private healFrozenRegistrationGate(...args: Parameters<ManagerBoot["healFrozenRegistrationGate"]>): ReturnType<ManagerBoot["healFrozenRegistrationGate"]> { return this.bootComponent.healFrozenRegistrationGate(...args); }
+  protected healFrozenRegistrationGate(...args: Parameters<ManagerBoot["healFrozenRegistrationGate"]>): ReturnType<ManagerBoot["healFrozenRegistrationGate"]> { return this.bootComponent.healFrozenRegistrationGate(...args); }
   protected dialServeConnection(
     state: { nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string },
     readCreds: () => string = () => state.creds!,
     deadline?: number,
   ): Promise<{ nc: NatsConnection; handle: EpServeHandle }> { return this.servePlane.dialServeConnection(state, readCreds, deadline); }
-  private registerManagerService(): Promise<void> { return this.servePlane.registerManagerService(); }
+  protected registerManagerService(): Promise<void> { return this.servePlane.registerManagerService(); }
 
   /** {@link GoalWriter.mintAndStageGoalWriter}. */
   protected mintAndStageGoalWriter(...args: Parameters<GoalWriter["mintAndStageGoalWriter"]>): ReturnType<GoalWriter["mintAndStageGoalWriter"]> { return this.goalWriterComponent.mintAndStageGoalWriter(...args); }
 
   /** {@link GoalWriter.startGoalWriter}. */
-  private startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
+  protected startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
   /** {@link GoalWriter.stopGoalWriter}. */
   private stopGoalWriter(...args: Parameters<GoalWriter["stopGoalWriter"]>): ReturnType<GoalWriter["stopGoalWriter"]> { return this.goalWriterComponent.stopGoalWriter(...args); }
   protected mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
-  private startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
+  protected startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
   private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
   /** {@link GoalWriter.reconcileGoalIndex}. */
-  private reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
+  protected reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
 
   /** {@link GoalWriter.emitGoalProgress}. */
   protected emitGoalProgress(...args: Parameters<GoalWriter["emitGoalProgress"]>): ReturnType<GoalWriter["emitGoalProgress"]> { return this.goalWriterComponent.emitGoalProgress(...args); }
@@ -2394,7 +2394,7 @@ export class Manager {
   protected withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withProvisioner(fn); }
 
   /** {@link BrokerTransport.withTransferReader}. */
-  private withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
+  protected withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
 
   /** {@link SeatStop.opPurge}. */
   protected opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }
