@@ -211,7 +211,7 @@ async function askManagerEp(
       const row = info.reply.data as { id: string; lifecycleUid: string };
       // The caller's own pin is checked first, so a run the caller chose that was replaced says so.
       if (pin?.expectedTarget && (row.id !== pin.expectedTarget.id || row.lifecycleUid !== pin.expectedTarget.lifecycleUid))
-        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again` };
+        return { ok: false, code: "not-found", error: `${name} was replaced by a new run since it was selected, so nothing was sent; refresh the agent list and try again`, preSubmitRefusal: true, selectedSeatChanged: true };
       if (selected && ((row.id !== selected.id && `${caller.owner}.${row.id}` !== selected.id) || row.lifecycleUid !== selected.lifecycleUid))
         return { ok: false, code: "expired", error: `${name} changed lifecycle after owner resolution, so nothing was sent`, preSubmitRefusal: true, selectedSeatChanged: true };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
