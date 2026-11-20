@@ -28,6 +28,7 @@ The broker authenticates senders and checks each agent's permissions.
 The broker and local services bind to loopback, so other machines cannot connect through that listener.
 If the default broker address is occupied by another project, Cotal chooses a free local port.
 An explicit `--server` fails on a collision.
+In an unprepared project, the refusal names the local space and project folder registered at that address, if known.
 
 Cotal requires nats-server 2.12 or newer.
 Older spaces with a file-backed presence bucket need 2.14.5 or newer to avoid a known write failure.

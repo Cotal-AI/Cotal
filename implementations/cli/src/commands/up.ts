@@ -2251,7 +2251,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ manager: managerRecord.state === "alive", controlPlane: controlPlane !== undefined, machineHome: canonicalRoot(root) === canonicalRoot(homedir()), ...(values.root ? { root } : {}), ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, held.space) }] }, "rich", process.stdout)}`);
       return;
     }
-    const who = held ? `mesh "${held.space}" (${held.root})` : "a broker not started here";
+    // The address explains the collision even when this invocation cannot refresh that space.
+    // The registration does not prove that the process answering the probe belongs to it.
+    const address = brokerAddressKey(server);
+    const registered = address === undefined ? undefined : meshes.find((m) =>
+      m.origin !== "manual" && m.origin !== "catalog" && brokerAddressKey(m.server) === address);
+    const registeredAt = registered && `address registered to mesh "${registered.space}" (${registered.root})`;
+    const occupant = "a broker not started here";
+    const occupied = registeredAt ? `already in use (${registeredAt})` : `already in use by ${occupant}`;
     // Reaching here with `--rotate-sys` means something IS answering at the requested address and it
     // is not this root's recorded mesh (that case was refused above). The ordinary response is to pick
     // a free port and carry on, which for a rotation is the wrong instinct: the unidentified listener
@@ -2261,19 +2268,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // here can identify it (that is what unidentified means), so refuse instead of stepping past it.
     if (values["rotate-sys"]) {
       console.error(
-        c.red(`✗ ${server} is answering and it is not this root's recorded mesh (${who})`) +
+        c.red(`✗ ${server} is answering and it is not this root's recorded mesh (${registeredAt ?? occupant})`) +
           c.dim(" - `--rotate-sys` will not start on another port around an unidentified broker: it may be serving this root's own server.conf and JetStream store. Stop whatever is listening there (`cotal down` if it was started here), then rotate."),
       );
       process.exit(1);
     }
     if (values.server === undefined && (!held || held.root !== root)) {
       const next = await serverWithFreePort(server, host);
-      console.log(c.dim(`${server} is already in use by ${who}; starting "${space}" at ${next} instead`));
+      console.log(c.dim(`${server} is ${occupied}; starting "${space}" at ${next} instead`));
       server = next;
     } else {
       console.error(
         c.red(
-          `✗ ${server} is already in use by ${who} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
+          `✗ ${server} is ${occupied} - to run "${space}" use \`--server nats://${host}:<port>\` with a free port`,
         ),
       );
       process.exit(1);
