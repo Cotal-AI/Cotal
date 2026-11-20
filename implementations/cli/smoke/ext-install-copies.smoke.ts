@@ -1,5 +1,6 @@
 /** Real npm removal and failed-add cleanup must preserve copied file-based extensions.
- * Uses the built CLI and Claude connector in private prefixes; never starts a connector or broker.
+ * Exercises both paths offline with an empty npm cache, using the built CLI and Claude connector
+ * in private prefixes. Never starts a connector or broker.
  * Build the workspace first. Run: pnpm smoke:ext-install-copies
  */
 import assert from "node:assert/strict";
@@ -71,7 +72,7 @@ if (process.argv[2] === "--restore") {
     }
     for (const arm of ["remove", "restore"] as const) {
       const dir = join(root, arm);
-      const { prefix, child, cli } = sandbox(dir);
+      const { prefix, env, child, cli } = sandbox(dir);
       const invalidAdd = cli(["ext", "add", source, "unexpected-extra-argument"]);
       check(`${arm}: surplus add operand refuses with usage`, invalidAdd.status === 1 && invalidAdd.stderr.includes("ext add <npm-package>"));
       check(`${arm}: invalid add leaves the prefix absent`, !existsSync(prefix));
@@ -96,8 +97,13 @@ if (process.argv[2] === "--restore") {
         const installed = cli(["ext", "add", sibling]);
         assert.equal(installed.status, 0, installed.stderr.slice(-800));
         check("remove: adding a sibling preserves the built-in copy", !lstatSync(kept).isSymbolicLink());
+      }
+      env.npm_config_cache = join(dir, "empty-npm-cache");
+      env.npm_config_offline = "true";
+      if (arm === "remove") {
         const removed = cli(["ext", "remove", siblingName]);
-        check("remove: the real command succeeds", removed.status === 0);
+        if (removed.status !== 0) console.error(removed.stderr.trim());
+        check("remove: the real command succeeds offline with an empty npm cache", removed.status === 0);
       } else {
         const refused = child([tsx, fileURLToPath(import.meta.url), "--restore", sibling, siblingName]);
         check("restore: failure reaches the no-registration refusal", refused.status === 1 && /registered no extensions/.test(refused.stderr));
