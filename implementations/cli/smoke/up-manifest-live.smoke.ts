@@ -103,7 +103,15 @@ try {
     && preview.stdout.includes(`Broker log file: ${JSON.stringify(logFile)}`)
     && preview.stdout.includes("Broker log rotation size limit: 1048576 bytes")
     && preview.stdout.includes("Maximum broker log files: 3"), preview);
-  ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
+
+  const unavailableArgs = ["up", "-f", manifest, "--server", SERVER, "--runtime", "example-uninstalled-runtime"];
+  const unavailablePreview = cli(...unavailableArgs, "--dry-run");
+  const unavailableApply = cli(...unavailableArgs);
+  ok("an unavailable runtime refuses preview and apply with the same dependency diagnosis",
+    unavailablePreview.status === 2 && unavailableApply.status === 2 && unavailablePreview.stdout === ""
+    && unavailablePreview.stderr === unavailableApply.stderr && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unavailablePreview.stderr)
+    && unavailablePreview.stderr.includes('unknown runtime "example-uninstalled-runtime"'), { unavailablePreview, unavailableApply });
+  ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && !await portOpen(DECOY_PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
 
   const noLog = join(manifestDir, "no-log.yaml");
   writeFileSync(noLog, readFileSync(manifest, "utf8").replace(', logFile: "./broker.log"', ""));

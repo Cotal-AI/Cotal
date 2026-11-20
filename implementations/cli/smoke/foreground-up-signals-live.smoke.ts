@@ -58,16 +58,17 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; externalDown?: "named" | "folder" }): Promise<boolean> {
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder" }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, options.externalDown === "folder" ? name : "mesh");
-  for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  for (const p of [root, home, mesh, ...(options.nativeLog ? [] : [join(mesh, ".cotal")]), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = options.nativeLog ? undefined : recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
-  const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true });
+  const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true, throwIfNoEntry: false });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = options.externalDown === "folder" ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : ["--open", "--no-manager"])];
+  const logFile = join(mesh, "broker.log");
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : ["--open", "--no-manager"]), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -95,6 +96,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       // The auth cell deliberately interrupts earlier at the natural manager birth record.
       return options.auth ? token(managerPath) !== undefined : token(brokerPath) !== undefined && existsSync(join(home, "machine", "meshes", `space.${spaceKey(space)}.json`)) && await portOpen(port);
     }, 90_000, () => err.slice(-3000), options.refusal || options.managerCrash ? 2 : 20);
+    if (options.nativeLog) {
+      const config = readFileSync(join(mesh, ".cotal/server-open.conf"), "utf8");
+      assert.ok(config.includes(`log_file: ${JSON.stringify(logFile)}`) && config.includes("logfile_size_limit: 1048576"), "fresh foreground config contains native logging and rotation"); passed++;
+      assert.equal(statSync(logFile).mode & 0o777, 0o600, "foreground native log is owner-private"); passed++;
+      assert.match(readFileSync(logFile, "utf8"), /Server is ready/, "the broker writes readiness to its native log"); passed++;
+    }
     if (options.managerCrash) {
       const manager = token(managerPath); assert.ok(manager && live(manager));
       assert.equal(existsSync(capabilityPath), false, "owned manager has not published readiness before the crash");
@@ -173,6 +180,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       const registration = JSON.parse(readFileSync(registryPath, "utf8")) as { root?: string; space?: string; server?: string };
       const currentIdentity = statSync(mesh, { bigint: true });
       const currentMarker = statSync(join(mesh, ".cotal"), { bigint: true });
+      assert.ok(markerIdentity);
       assert.equal(currentMarker.dev, markerIdentity.dev); assert.equal(currentMarker.ino, markerIdentity.ino);
       assert.ok(refusalBirths.every(live), "original refused stack births still live after resumed readiness");
       assert.equal(currentIdentity.dev, rootIdentity.dev); assert.equal(currentIdentity.ino, rootIdentity.ino);
@@ -233,7 +241,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     } else {
       const signalExit = options.signal === "SIGTERM" ? 143 : 130;
       assert.equal(state.code, signalExit, `guarded shutdown exits ${signalExit} (${state.signal ?? "no signal"}): ${err}`); passed++;
-      assert.match(err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
+      assert.match(options.nativeLog ? readFileSync(logFile, "utf8") : err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
       assert.doesNotMatch(err, /Trapped "interrupt" signal|could not list managed agents|control plane degraded|exited unexpectedly|spare.*unavailable/i); passed++;
       if (options.auth) {
         assert.equal(out.match(/stopped manager \(pid /g)?.length, 1, "one guarded manager stop"); passed++;
@@ -518,6 +526,7 @@ await cell("external-folder", { auth: true, ready: true, externalDown: "folder" 
 await checkInheritedPipeCleanup();
 passed += 10;
 await cell("group", {});
+await cell("native-log", { nativeLog: true });
 await cell("term", { signal: "SIGTERM" });
 await cell("double", { twice: true });
 await cell("auth-startup-failure", { auth: true, managerCrash: true });

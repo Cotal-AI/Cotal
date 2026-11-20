@@ -377,8 +377,8 @@ export const upFlags: FlagSpec[] = [
   { name: "store-dir", type: "string", value: "<dir>", description: "JetStream store directory" },
   { name: "max-file-store", type: "string", value: "<bytes>", description: "JetStream file storage cap in bytes (default: nats-server's dynamic cap). Fixed at broker start and recorded for the next `up`; a legacy root also keeps it across `down --preserve-state`" },
   { name: "log-file", type: "string", value: "<path>", description: "nats-server log file path; recorded and reused by later starts" },
-  { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file or broker.logFile in a manifest" },
-  { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file or broker.logFile in a manifest" },
+  { name: "logfile-size-limit", type: "string", value: "<bytes>", description: "nats-server log rotation threshold in bytes; requires --log-file, a saved controller log path, or broker.logFile in a manifest" },
+  { name: "logfile-max-num", type: "string", value: "<count>", description: "maximum total broker log files retained; requires --log-file, a saved controller log path, or broker.logFile in a manifest" },
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
   { name: "max-payload", type: "string", value: "<bytes>", description: `broker-wide message size limit in bytes (default: nats-server's ${NATS_DEFAULT_MAX_PAYLOAD}). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next \`up\`` },
   { name: "account-resolver", type: "string", value: "<memory|full>", description: "how the broker resolves space accounts: memory (default) knows only the accounts its configuration lists, so adding one means a reload; full also keeps pushed account claims in .cotal/account-jwts, so a host can add and retire accounts on the running broker without a reload. Fixed at broker start and recorded for the next `up`" },
@@ -503,7 +503,9 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "--log-file must be a non-empty file path without control characters");
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", args.values["logfile-size-limit"] as string | undefined);
   const logfileMaxNum = parsePositiveIntegerFlag("--logfile-max-num", args.values["logfile-max-num"] as string | undefined);
-  if (!args.values.file && logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined))
+  // A controller restart can use its saved path. A restore still needs an explicit path.
+  if (!args.values.file && logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined)
+    && (args.values.restore !== undefined || readStackJournal(tlsRoot)?.journal.broker?.logFile === undefined))
     throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
   // The timeout belongs to the auth callout, which only a user-auth space has. A manifest or a
   // restore starts the broker its own record describes, so neither takes it.
@@ -1479,8 +1481,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const logFile = values["log-file"] === undefined ? undefined : resolve(values["log-file"]);
   const logfileSizeLimit = parsePositiveIntegerFlag("--logfile-size-limit", values["logfile-size-limit"]);
   const logfileMaxNum = parsePositiveIntegerFlag("--logfile-max-num", values["logfile-max-num"]);
-  if (!values.file && logFile === undefined && (logfileSizeLimit !== undefined || logfileMaxNum !== undefined))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
   const authTimeout = parseAuthTimeout(values["auth-timeout"]);
   const maxPayload = parseMaxPayload(values["max-payload"]);
   const accountResolver = parseAccountResolver(values["account-resolver"]);
@@ -2407,6 +2407,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       throw new Error(`resume store ${storeDir} no longer matches the preserved source identity; refusing to open JetStream over it`);
   }
   if (values["store-dir"]) warnForeignStoreEntries(storeDir);
+  if (logFile !== undefined) {
+    mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
+    closeSync(openBrokerLog(logFile));
+  }
   // Owner-private regardless of umask: a recursive create also makes a missing `.cotal`, which every
   // later protection check walks as an ancestor.
   mkdirSync(storeDir, { recursive: true, mode: 0o700 });
@@ -2415,7 +2419,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);
-  const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true }) : undefined;
+  const brokerSetup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore, false, { authTimeout, maxPayload, accountResolver, manager: values["no-manager"] !== true, logFile, logfileSizeLimit, logfileMaxNum }) : undefined;
   const brokerMaxPayload = brokerSetup?.maxPayload ?? maxPayload ?? readBrokerPolicy(cotalRoot())?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
@@ -2424,13 +2428,14 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // open-mode `up` would have been accepted while the listener came up in cleartext.
   const renderingBinary = brokerSetup?.brokerBinary ?? await resolveNatsServer();
   if (!renderingBinary.version) throw unreadVersion(renderingBinary);
-  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload });
+  const confPath = brokerSetup ? brokerSetup.confPath : writeOpenBrokerConf(storeDir, space, { brokerVersion: renderingBinary.version, port, host, transport, maxFileStore, maxPayload: brokerMaxPayload, logFile, logfileSizeLimit, logfileMaxNum });
   const natsArgs = [
     "-c", confPath,
     ...(boundListener ? ["--name", boundListener.serverName] : []),
   ];
   const natsServer = renderingBinary;
   const bin = natsServer.path;
+  const brokerOutput = logFile ?? "the terminal output above";
   await seedBeforeLaunch();
   const setup = brokerSetup && { ...brokerSetup, creds: await brokerSetup.mintProvisioner() };
 
@@ -2532,10 +2537,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // The record is kept ON PURPOSE: it still names the store this broker opened, so a repair
       // `up` reopens that SAME store instead of falling back to the root's default, and a
       // supervising unit's restart takes the refresh path against the recorded store rather than
-      // racing a second broker into existence. Foreground stdio is inherited (its own log lines
-      // are already on this terminal, above), so there is no `.cotal/nats.log` to name here.
+      // racing a second broker into existence. NATS logs to this terminal unless a native log was
+      // requested, so there is no `.cotal/nats.log` to name here.
       const detail = signal ? `signal ${signal}` : `code ${code}`;
-      const repair = `log: see the terminal output above; repair: \`cotal up --server ${server} --space ${space}\``;
+      const repair = `log: see ${brokerOutput}; repair: ${codeSpan(`cotal up --server ${shellWord(server)} --space ${shellWord(space)}`)}`;
       // Retention is read from the registry, not assumed: a broker that exits before it first
       // answers was never recorded, and running the same `up` again only repeats that exit, so its
       // step is the one a detached start gives. A registry that cannot be read is not claimed
@@ -2545,7 +2550,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         const mine = findMesh(space);
         outcome = mine && mine.server === server && mine.root === cotalRoot()
           ? `; the mesh "${space}" stays recorded (\`cotal meshes\` lists it offline); ${repair}`
-          : ` before the mesh "${space}" was recorded; next: ${listenerExitRemedy(natsServer, "the terminal output above")}`;
+          : ` before the mesh "${space}" was recorded; next: ${listenerExitRemedy(natsServer, brokerOutput)}`;
       } catch {
         outcome = `; whether the mesh "${space}" stays recorded could not be read; ${repair}`;
       }
@@ -2558,7 +2563,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   });
 
-  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: "the terminal output above", boundListener });
+  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener });
   listenerReady = true;
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
@@ -3762,6 +3767,12 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl);
   checkStartStore(opts.storeDir, m.space);
 
+  // Preview and apply resolve and probe the same runtime before showing a plan or starting a broker.
+  try { await preflightRuntime(runtime); }
+  catch (error) {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the requested runtime did not pass preflight; ${opts.freshTeamBoot ? "no fresh boot intent or broker was started" : "no broker was started"}`, { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
+  }
+
   if (opts.dryRun) {
     // Dial-host SAN must refuse here too (S6). The real route runs assertServesDialHost after
     // the plan is computed; dry-run used to return before that check and green-lit a launch
@@ -3783,13 +3794,6 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     if (effectiveNoManager)
       console.log(c.dim("  no manager will start on this host (--no-manager): broker, channels and, in auth mode, the delivery daemon come up, and no agents launch from here"));
     return;
-  }
-
-  // Preflight an extension runtime before starting the broker. The detached manager re-execs this
-  // CLI and resolves the same installed package when `supervise --runtime <name>` starts.
-  try { await preflightRuntime(runtime); }
-  catch (error) {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the requested runtime did not pass preflight; ${opts.freshTeamBoot ? "no fresh boot intent or broker was started" : "no broker was started"}`, { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
   }
 
   // up -f never adopts a running broker. The old spawn -f route is no longer a manifest deploy.
@@ -4428,7 +4432,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
 }
 
 /**
- * Open the detached broker's log with {@link openPrivateAppend}: created `0600` whatever the umask,
+ * Open a broker log with {@link openPrivateAppend}: created `0600` whatever the umask,
  * never through a symlink, and an earlier log this user owns set to `0600`. A symlink, a log another
  * user owns or a name that is not a regular file is refused and left unchanged.
  */
@@ -4438,7 +4442,7 @@ export function openBrokerLog(path: string): number {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `no broker was started: ${(error as Error).message}`,
-      { target: { path }, remedy: `remove ${path} or replace it with a regular file you own, then run \`cotal up\` again` });
+      { target: { path }, remedy: `remove ${shellWord(path)} or replace it with a regular file you own, then repeat the same startup command` });
   }
 }
 
@@ -4869,8 +4873,7 @@ async function waitReady(server: string, creds?: string, tls = false, log?: stri
 }
 
 /** Bytes plus completed-restore lines in the broker log, and whether a restore is in flight. A
- *  foreground launch inherits the terminal and has no file to read, so it contributes no evidence
- *  and keeps the silent-probe bound. */
+ *  foreground broker logging to the terminal has no file to read, so it keeps the silent-probe bound. */
 function brokerRecoveryEvidence(log?: string): { evidence: number; restoring: boolean } {
   const none = { evidence: 0, restoring: false };
   if (!log || log.startsWith("the terminal")) return none;
