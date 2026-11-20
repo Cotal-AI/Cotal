@@ -1,9 +1,9 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, sep } from "node:path";
-import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
+import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parseOptionalChannelGrant, parsePersonaEndpoints, principalKey, registry, rejectionText, renderOnceTask, resolveReadGrant, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type ChannelGrantField, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
-import type { KV } from "@nats-io/kv";
+import type { IssuerWindow } from "./broker-transport.js";
 import { inlinePersonaDir } from "./launch.js";
 import { listDirectory } from "./list-dir.js";
 import { MANAGER_ENDPOINT, type ManagerConnectorStatus } from "./manager-service-contract.js";
@@ -18,14 +18,26 @@ import { onceTurnNote, turnHoldToken } from "./turn-relay.js";
  *  fit it, and is refused at admission when it cannot. */
 const TURN_NOTE_MAX = 65536;
 
+/** A list's own copy: an array, or the `{ allow, exclude }` form with its own arrays. A shape the
+ *  reader will refuse is copied as far as it goes. */
+function ownList<T>(list: T): T {
+  if (Array.isArray(list)) return [...list] as T;
+  if (list === null || typeof list !== "object") return list;
+  const owned = { ...list } as Record<string, unknown>;
+  for (const k of ["allow", "exclude"]) if (Array.isArray(owned[k])) owned[k] = [...(owned[k] as unknown[])];
+  return owned as T;
+}
+
 /** The caller keeps the arrays it passed, so a launch form is admitted with its own copies: a later
  *  write to the caller's array cannot change what the manager grants, shares or preserves. */
-export function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: readonly string[]; allowPublish?: readonly string[]; capabilities?: readonly string[]; shareTools?: readonly string[] }>(form: T): T {
+export function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: readonly string[] | ChannelGrantField; allowPublish?: readonly string[] | ChannelGrantField; excludeSubscribe?: readonly string[]; excludePublish?: readonly string[]; capabilities?: readonly string[]; shareTools?: readonly string[] }>(form: T): T {
   return {
     ...form,
     ...(form.subscribe && { subscribe: [...form.subscribe] }),
-    ...(form.allowSubscribe && { allowSubscribe: [...form.allowSubscribe] }),
-    ...(form.allowPublish && { allowPublish: [...form.allowPublish] }),
+    ...(form.allowSubscribe && { allowSubscribe: ownList(form.allowSubscribe) }),
+    ...(form.allowPublish && { allowPublish: ownList(form.allowPublish) }),
+    ...(form.excludeSubscribe && { excludeSubscribe: [...form.excludeSubscribe] }),
+    ...(form.excludePublish && { excludePublish: [...form.excludePublish] }),
     ...(form.capabilities && { capabilities: [...form.capabilities] }),
     ...(form.shareTools && { shareTools: [...form.shareTools] }),
   };
@@ -92,9 +104,12 @@ function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: bo
     if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) throw new Error(`persona.${k}: expected an array of strings`);
     return [...v] as string[];
   };
+  // A read or post list is a plain array, or `{ allow, exclude }` when it removes channels (SPEC §9).
+  const grant = (k: "allowSubscribe" | "allowPublish") => parseOptionalChannelGrant(rec[k], `persona.${k}`);
   const prompt = text("prompt");
   if (prompt === undefined) throw new Error("persona.prompt: required; it is the persona body");
   if (rec.save !== undefined && typeof rec.save !== "boolean") throw new Error("persona.save: expected a boolean");
+  const read = grant("allowSubscribe"), post = grant("allowPublish");
   const def: AgentDef = {
     name,
     persona: prompt.trim(),
@@ -103,15 +118,18 @@ function inlinePersonaDef(name: string, raw: unknown): { def: AgentDef; save: bo
     variant: text("variant"),
     description: text("description"),
     subscribe: list("subscribe"),
-    allowSubscribe: list("allowSubscribe"),
-    allowPublish: list("allowPublish"),
+    allowSubscribe: read && [...read.allow],
+    allowPublish: post && [...post.allow],
+    ...(read?.exclude.length ? { excludeSubscribe: [...read.exclude] } : {}),
+    ...(post?.exclude.length ? { excludePublish: [...post.exclude] } : {}),
     capabilities: list("capabilities"),
     endpoints: parsePersonaEndpoints(rec.endpoints, "persona"),
   };
-  // The checks a file load makes on these fields: channel names, and the read set within the read ACL.
+  // The checks a file load makes on these fields: channel names, and the read set within the read
+  // grant, its exclusions included.
   try {
-    for (const ch of [...(def.subscribe ?? []), ...(def.allowSubscribe ?? []), ...(def.allowPublish ?? [])]) assertValidChannel(ch);
-    resolveReadAcl(def.subscribe ?? [], def.allowSubscribe);
+    for (const ch of def.subscribe ?? []) assertValidChannel(ch);
+    resolveReadGrant(def.subscribe ?? [], def.allowSubscribe, def.excludeSubscribe);
   } catch (e) {
     throw new Error(`persona: ${rejectionText(e)}`);
   }
@@ -215,7 +233,7 @@ export interface SeatLaunchDeps {
   userProvision: () => Manager["userProvision"];
   watchExit: (...args: Parameters<Manager["watchExit"]>) => ReturnType<Manager["watchExit"]>;
   watchOnceExit: (...args: Parameters<Manager["watchOnceExit"]>) => ReturnType<Manager["watchOnceExit"]>;
-  withIssuer: <T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>) => Promise<T>;
+  withIssuer: <T>(fn: (i: IssuerWindow) => Promise<T>) => Promise<T>;
   withLifecycleExecutor: <T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>) => Promise<T>;
   withProvisioner: <T>(fn: (prov: CotalEndpoint) => Promise<T>) => Promise<T>;
 }

@@ -221,7 +221,7 @@ try {
     check("an unknown key in the persona is refused by name", refused(await shape({ prompt: "x", owner: "someone" }), /persona: unknown key owner/));
     check("a persona without a prompt is refused", refused(await shape({ role: "r" }), /persona\.prompt: required/));
     check("a blank prompt is refused", refused(await shape({ prompt: "   " }), /persona\.prompt: expected a non-blank string/));
-    check("a channel list item that is not a string is refused", refused(await shape({ prompt: "x", allowSubscribe: ["review", 7] }), /persona\.allowSubscribe: expected an array of strings/));
+    check("a channel list item that is not a string is refused", refused(await shape({ prompt: "x", allowSubscribe: ["review", 7] }), /persona\.allowSubscribe must be a list of channel names/));
     check("a save that is not a boolean is refused", refused(await shape({ prompt: "x", save: "yes" }), /persona\.save: expected a boolean/));
     check("a read set outside the persona's read ACL is refused as a file load refuses it", refused(await shape({ prompt: "x", subscribe: ["ops"], allowSubscribe: ["review"] }), /persona: .*ops/));
     check("a persona with config is refused", refused(await shape({ prompt: "x" }, { config: join(agentsDir, "lead.md") }), /takes no config, identity or manifest launch/));
@@ -318,6 +318,45 @@ try {
     const heldAcl = minted(heldReply);
     check("a caller's write to its inline record after the call changes neither the bound nor the mint",
       heldReply.ok && posts(heldAcl, "review") && !posts(heldAcl, "ops") && !reads(heldAcl, "general"), heldReply.ok ? heldAcl : heldReply.error);
+  }
+
+  console.log("exclusions (SPEC 9)");
+  {
+    // The deny rows a seat's credential carries on chat subjects.
+    const denied = (r: ControlReply) => {
+      const d = okData(r);
+      if (!d) return undefined;
+      const creds = agentLifecycleSecretFilePaths(workspaceRoot, space, d.name, d.lifecycleUid).creds;
+      const jwt = readFileSync(creds, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
+      const nats = JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")).nats ?? {};
+      // A read exclusion also denies the history consumer create on the publish side; keep chat posts only.
+      const chat = (rows: string[] | undefined) => (rows ?? []).filter((x) => x.includes(".chat.") && !x.startsWith("$JS"));
+      return { sub: chat(nats.sub?.deny), pub: chat(nats.pub?.deny) };
+    };
+    const read = { allow: ["team.>"], exclude: ["team.secret"] };
+    const post = { allow: ["team.>"], exclude: ["team.audit"] };
+    const r = await spawnAs(undefined, "fenced", { persona: { prompt: "x", allowSubscribe: read, allowPublish: post, save: true } });
+    const deny = denied(r);
+    check("an inline record in the { allow, exclude } form spawns", r.ok, r);
+    check("and its credential denies each exclusion on its own side", deny !== undefined && deny.sub.some((x) => x.endsWith(".team.secret")) && deny.pub.some((x) => x.endsWith(".team.audit"))
+      && !deny.sub.some((x) => x.endsWith(".team.audit")) && !deny.pub.some((x) => x.endsWith(".team.secret")), deny);
+    const entry = seatOf(S.M, "fenced") ? S.M.resumeEntryOf(seatOf(S.M, "fenced")!) : undefined;
+    check("the seat's resume entry records both lists in the object form", JSON.stringify(entry?.launch.allowSubscribe) === JSON.stringify(read) && JSON.stringify(entry?.launch.allowPublish) === JSON.stringify(post), entry?.launch);
+    const def = existsSync(catalog("fenced")) ? loadAgentFile(catalog("fenced")) : undefined;
+    check("the saved catalog copy loads back with its exclusions", JSON.stringify(def?.allowSubscribe) === JSON.stringify(["team.>"]) && JSON.stringify(def?.excludeSubscribe) === JSON.stringify(["team.secret"])
+      && JSON.stringify(def?.allowPublish) === JSON.stringify(["team.>"]) && JSON.stringify(def?.excludePublish) === JSON.stringify(["team.audit"]), def);
+    const again = denied(await spawnAs(undefined, "fenced"));
+    check("and a spawn of it by name mints the same deny rows", again !== undefined && again.sub.some((x) => x.endsWith(".team.secret")) && again.pub.some((x) => x.endsWith(".team.audit")), again);
+  }
+  {
+    const before = snapshots(workspaceRoot);
+    const shape = (p: Record<string, unknown>) => spawnAs(undefined, "misfenced", { persona: { prompt: "x", ...p } });
+    check("an object form without an exclusion is refused", refused(await shape({ allowSubscribe: { allow: ["team.>"], exclude: [] } }), /persona\.allowSubscribe: the \{ allow, exclude \} form needs at least one exclusion/));
+    check("an exclusion that removes nothing is refused", refused(await shape({ allowPublish: { allow: ["team.>"], exclude: ["ops"] } }), /persona\.allowPublish: exclusion "ops" overlaps no entry .* removes nothing/));
+    check("an exclusion that removes a whole allow entry is refused", refused(await shape({ allowSubscribe: { allow: ["team.a"], exclude: ["team.a"] } }), /persona\.allowSubscribe: "team\.a" is both allowed and excluded in full/));
+    check("an unknown key in the object form is refused", refused(await shape({ allowSubscribe: { allow: ["team.>"], deny: ["team.secret"] } }), /persona\.allowSubscribe carries unknown key\(s\) deny/));
+    check("a read set the exclusion removes is refused", refused(await shape({ subscribe: ["team.secret"], allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] } }), /persona: subscribe "team\.secret" is excluded from allowSubscribe/));
+    check("and none of them wrote a snapshot or allocated a seat", JSON.stringify(snapshots(workspaceRoot)) === JSON.stringify(before) && seatOf(S.M, "misfenced") === undefined, snapshots(workspaceRoot));
   }
 
   console.log("endpoints (SPEC 13.15)");

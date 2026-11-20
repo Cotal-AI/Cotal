@@ -14,7 +14,8 @@
  *   D. `runtimeIntent` on the enrollment result: an older host omits it, a current host sends
  *      `{ state: "reserved" }`, and neither changes the material the manager launches against.
  *   E. a host that grants other read or post channels than the enrollment asked for, as one that
- *      narrows a request to the account's grant does, is reported with both lists.
+ *      narrows a request to the account's grant does, or other exclusions, is reported with both
+ *      lists.
  *
  * Run: pnpm smoke:managed-agent-runtime-client   (needs nats-server on PATH)
  */
@@ -193,6 +194,15 @@ try {
     catch (e) { fromCurrent = (e as Error).message; }
     check("a host that sends runtimeIntent { state: \"reserved\" } enrolls to the SAME material (never authority)",
       JSON.stringify(fromCurrent) === JSON.stringify(material), fromCurrent);
+    const excluding = { ...material, allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] } };
+    let fromExcluding: unknown;
+    try { fromExcluding = remoteManagedAgentEnrollmentMaterial({ ...older, material: excluding }, enroll); }
+    catch (e) { fromExcluding = (e as Error).message; }
+    check("a host row with a read exclusion enrolls to its { allow, exclude } list unchanged", JSON.stringify(fromExcluding) === JSON.stringify(excluding), fromExcluding);
+    throws("a host list whose exclusion removes nothing is refused",
+      () => remoteManagedAgentEnrollmentMaterial({ ...older, material: { ...material, allowSubscribe: { allow: ["team.>"], exclude: ["ops"] } } }, enroll), /invalid allowSubscribe list.*removes nothing/);
+    throws("a host list in neither shape is refused",
+      () => remoteManagedAgentEnrollmentMaterial({ ...older, material: { ...material, allowPublish: { allow: ["team.>"] } } as never }, enroll), /invalid allowPublish list/);
     throws("a runtimeIntent in another state is refused",
       () => remoteManagedAgentEnrollmentMaterial({ ...older, runtimeIntent: { state: "bound" } } as never, enroll), /runtimeIntent other than/);
     throws("a runtimeIntent carrying a provider handle is refused",
@@ -223,13 +233,22 @@ try {
   console.log("E. a host that grants other channels than the enrollment asked for is reported");
   {
     const events = `events.${OWNER}.worker`;
-    const enroll = remoteManagedAgentEnrollmentRequest(state, "cli", proof, EPOCH, { actor: "worker", tokenHash: "b".repeat(64), allowSubscribe: [">"], allowPublish: [">", events] });
+    const asked = { allowSubscribe: [">"], allowPublish: [">", events] };
     const granted = { allowSubscribe: ["general"], allowPublish: ["general", events] };
-    const narrowed = enrolledAcl(enroll.target, granted);
+    const narrowed = enrolledAcl(asked, granted);
     check("a host that narrows the request to the account's grant reports what was asked and what was granted",
       JSON.stringify(narrowed) === JSON.stringify({ requested: { allowSubscribe: [">"], allowPublish: [">", events] }, effective: granted }), narrowed);
-    const same = enrolledAcl(enroll.target, { allowSubscribe: [">"], allowPublish: [events, ">"] });
+    const same = enrolledAcl(asked, { allowSubscribe: [">"], allowPublish: [events, ">"] });
     check("a host that grants what was asked, in any order, reports nothing", same === undefined, same);
+    // Exclusions (SPEC §9): the comparison covers them, and the receipt carries each list's object form.
+    const excluding = { ...asked, excludeSubscribe: ["team.secret"] };
+    const dropped = enrolledAcl(excluding, asked);
+    check("a host that drops a read exclusion is reported, the request in the { allow, exclude } form",
+      JSON.stringify(dropped) === JSON.stringify({ requested: { allowSubscribe: { allow: [">"], exclude: ["team.secret"] }, allowPublish: [">", events] }, effective: asked }), dropped);
+    const kept = enrolledAcl(excluding, { allowSubscribe: { allow: [">"], exclude: ["team.secret"] }, allowPublish: [">", events] });
+    check("a host that grants the exclusion asked for reports nothing", kept === undefined, kept);
+    const added = enrolledAcl(asked, { allowSubscribe: [">"], allowPublish: { allow: [">", events], exclude: ["team.secret"] } });
+    check("a host that adds a post exclusion is reported too", added !== undefined && JSON.stringify(added.effective.allowPublish) === JSON.stringify({ allow: [">", events], exclude: ["team.secret"] }), added);
   }
 } catch (e) {
   fail++;
@@ -242,6 +261,6 @@ try {
   rmSync(tmp, { recursive: true, force: true });
   releaseBroker();
 }
-const EXPECTED = 21;
+const EXPECTED = 27;
 console.log(`\nMANAGED-AGENT-RUNTIME-CLIENT SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);

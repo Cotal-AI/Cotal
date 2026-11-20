@@ -9,7 +9,13 @@
  * is the one the issuer recorded. The manager resolves it from the real issuer store. Each cell
  * passes the spawner's issued caller to `startAgent` the way the served `spawn` door passes the
  * subject's caller (manager.ts, the `spawn` handler). The runtime and the endpoint are fakes, so no
- * seat process starts. Run with: pnpm smoke:spawn-grant-bound
+ * seat process starts.
+ *
+ * Exclusions (SPEC §9): a spawner whose lists remove channels hands on a part of what it holds,
+ * which keeps those exclusions, and never the wildcard without them. The served door reads the
+ * `{ allow, exclude }` form, the `callerAcl` default keeps the caller's exclusions, and a renewal
+ * re-mints them for a broker at the exclusion floor and refuses below it.
+ * Run with: pnpm smoke:spawn-grant-bound
  */
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
@@ -25,6 +31,7 @@ import {
   newIdentity,
   principalKey,
   registry,
+  SealRecipient,
   setupSpaceStreams,
   DEV_OWNER,
   type AgentHandle,
@@ -71,6 +78,19 @@ persona("worker", "role: worker\n");
 persona("deputy", "capabilities: [role:worker]\n");
 persona("dispatcher", "capabilities: [spawn, role:worker]\n");
 persona("silent", "allowSubscribe: []\n");
+// Exclusions: a spawner that reads and posts team.> minus team.secret, and the children it may and
+// may not hand on, as persona files.
+const teamMinusSecret = '{ allow: ["team.>"], exclude: [team.secret] }';
+persona("xlead", `allowSubscribe: ${teamMinusSecret}\nallowPublish: ${teamMinusSecret}\ncapabilities: [spawn]\n`);
+persona("xkeep", `allowSubscribe: ${teamMinusSecret}\nallowPublish: ${teamMinusSecret}\n`);
+persona("xsibling", "allowSubscribe: [team.a]\nallowPublish: [team.a]\n");
+persona("xunder", 'allowSubscribe: ["team.x.>"]\n');
+persona("xdrop", 'allowSubscribe: ["team.>"]\n');
+persona("xsecret", "allowSubscribe: [team.secret]\n");
+persona("xpostdrop", 'allowPublish: ["team.>"]\n');
+// Pattern exclusions: team.> minus every team.*.private, and team.> minus the team.secret.> subtree.
+persona("plead", 'allowSubscribe: { allow: ["team.>"], exclude: ["team.*.private"] }\ncapabilities: [spawn]\n');
+persona("slead", 'allowSubscribe: { allow: ["team.>"], exclude: ["team.secret.>"] }\ncapabilities: [spawn]\n');
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 (mgr as unknown as { auth: unknown }).auth = auth;
@@ -114,6 +134,21 @@ const minted = (reply: ControlReply) => {
     : undefined;
 };
 const reads = (acl: { sub: string[] } | undefined, ch: string) => acl !== undefined && acl.sub.some((s) => s.endsWith(`.${ch}`));
+/** The chat deny rows of a minted credential: what its exclusions remove (SPEC §9). */
+const denyRows = (creds: string): { sub: string[]; pub: string[] } => {
+  const jwt = creds.split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
+  const nats = JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")).nats ?? {};
+  const chat = (rows: string[] | undefined) => (rows ?? []).filter((r) => r.includes(".chat."));
+  return { sub: chat(nats.sub?.deny), pub: chat(nats.pub?.deny) };
+};
+const denies = (path: string) => denyRows(readFileSync(path, "utf8"));
+const credsOf = (reply: ControlReply) => {
+  const d = reply.data as { name?: string; lifecycleUid?: string } | undefined;
+  return reply.ok && d?.name && d.lifecycleUid ? agentLifecycleSecretFilePaths(workspaceRoot, space, d.name, d.lifecycleUid).creds : undefined;
+};
+const deniedRead = (reply: ControlReply, ch: string) => { const p = credsOf(reply); return p !== undefined && denies(p).sub.some((r) => r.endsWith(`.chat.*.*.${ch}`)); };
+const deniedPost = (reply: ControlReply, ch: string) => { const p = credsOf(reply); return p !== undefined && denies(p).pub.some((r) => r.endsWith(`.${ch}`)); };
+const noDeny = (reply: ControlReply) => { const p = credsOf(reply); return p !== undefined && denies(p).sub.length === 0 && denies(p).pub.length === 0; };
 const posts = (acl: { pub: string[] } | undefined, ch: string) => acl !== undefined && acl.pub.some((s) => s.endsWith(`.${ch}`));
 const empty = (acl: { sub: string[]; pub: string[] } | undefined) => acl !== undefined && acl.sub.length === 0 && acl.pub.length === 0;
 const refused = (reply: ControlReply, part: RegExp) => reply.ok === false && part.test(reply.error ?? "");
@@ -225,6 +260,124 @@ try {
     check("control: the retirement completed", !M.retirement.retiring.has("retiree"));
     const after = await spawnAs(gone, "inside");
     check("a retired spawner's evidence does not resolve, so it hands on no grant", refused(after, /holds no issued evidence.*does not resolve/), after);
+  }
+
+  console.log("exclusions: a spawner hands on its exclusions with every wildcard they cut");
+  {
+    const xlead = await spawnAs(undefined, "xlead");
+    check("control: the composition root spawns a spawner minus team.secret, minted with its deny rows",
+      xlead.ok === true && reads(minted(xlead), "team.>") && deniedRead(xlead, "team.secret") && deniedPost(xlead, "team.secret"), xlead);
+    const x = issuedCallerOf("xlead");
+    const keep = await spawnAs(x, "xkeep");
+    check("(b) a child that keeps the exclusion is admitted, and minted the wildcard with its deny rows",
+      keep.ok === true && reads(minted(keep), "team.>") && deniedRead(keep, "team.secret") && posts(minted(keep), "team.>") && deniedPost(keep, "team.secret"), keep);
+    const sib = await spawnAs(x, "xsibling");
+    check("(a) a concrete sibling under the excluded wildcard is admitted, with no exclusion of its own",
+      sib.ok === true && reads(minted(sib), "team.a") && posts(minted(sib), "team.a") && noDeny(sib), sib);
+    const under = await spawnAs(x, "xunder");
+    check("(c) a wildcard no exclusion cuts is admitted", under.ok === true && reads(minted(under), "team.x.>"), under);
+    const drop = await spawnAs(x, "xdrop");
+    check("(d) the wildcard without the exclusion is refused, naming the wildcard",
+      refused(drop, /more than the spawner holds: allowSubscribe team\.>\. /), drop);
+    const secret = await spawnAs(x, "xsecret");
+    check("(e) the excluded channel itself is refused", refused(secret, /allowSubscribe team\.secret/), secret);
+    const postDrop = await spawnAs(x, "xpostdrop");
+    check("a post wildcard without the post exclusion is refused too", refused(postDrop, /more than the spawner holds: allowPublish team\.>\. /), postDrop);
+    const wider = await spawnAs(x, "helper", { allowSubscribe: ["team.>"], excludeSubscribe: ["team.*"] });
+    check("a raw override that keeps a wider exclusion is admitted", wider.ok === true && deniedRead(wider, "team.*"), wider);
+    const orphan = await spawnAs(x, "helper", { excludeSubscribe: ["team.secret"] });
+    check("an exclusion with no list beside it is refused", refused(orphan, /needs the allowSubscribe list/), orphan);
+    const join = await spawnAs(x, "xkeep", { join: ["team.secret"] });
+    check("a join on the excluded channel is refused, a join on a sibling admitted",
+      refused(join, /subscribe "team\.secret" is excluded/) && (await spawnAs(x, "xkeep", { join: ["team.b"] })).ok === true, join);
+  }
+  {
+    const plead = await spawnAs(undefined, "plead");
+    check("control: the composition root spawns a spawner minus team.*.private", plead.ok === true, plead);
+    const p = issuedCallerOf("plead");
+    const keep = await spawnAs(p, "helper", { allowSubscribe: ["team.a.>"], excludeSubscribe: ["team.a.private"] });
+    check("a pattern part keeps the pattern exclusion's share: team.a.> minus team.a.private is admitted", keep.ok === true && deniedRead(keep, "team.a.private"), keep);
+    const pub = await spawnAs(p, "helper", { allowSubscribe: ["team.a.public"] });
+    check("a concrete sibling of the private channels is admitted", pub.ok === true && reads(minted(pub), "team.a.public"), pub);
+    const wide = await spawnAs(p, "helper", { allowSubscribe: ["team.a.>"] });
+    check("team.a.> alone is refused", refused(wide, /more than the spawner holds: allowSubscribe team\.a\.>\. /), wide);
+    const priv = await spawnAs(p, "helper", { allowSubscribe: ["team.a.private"] });
+    check("a channel the pattern excludes is refused", refused(priv, /allowSubscribe team\.a\.private/), priv);
+    const slead = await spawnAs(undefined, "slead");
+    check("control: the composition root spawns a spawner minus team.secret.>", slead.ok === true, slead);
+    const sl = issuedCallerOf("slead");
+    const same = await spawnAs(sl, "helper", { allowSubscribe: ["team.>"], excludeSubscribe: ["team.secret.>"] });
+    const widerPattern = await spawnAs(sl, "helper", { allowSubscribe: ["team.>"], excludeSubscribe: ["team.*.>"] });
+    check("team.> minus team.secret.>, or minus the wider team.*.>, is admitted", same.ok === true && widerPattern.ok === true, [same, widerPattern]);
+    const narrower = await spawnAs(sl, "helper", { allowSubscribe: ["team.>"], excludeSubscribe: ["team.secret.a"] });
+    check("team.> minus only team.secret.a is refused", refused(narrower, /more than the spawner holds: allowSubscribe team\.>\. /), narrower);
+  }
+
+  console.log("exclusions: the served door, the callerAcl default and renewal");
+  {
+    const x = issuedCallerOf("xlead");
+    const callerKey = principalKey(x.owner, x.actor).key;
+    const opStart = (args: Record<string, unknown>) =>
+      (mgr as unknown as { opStart: (a: Record<string, unknown>, c: string, admin: boolean, h: undefined, r: "inst", ac: EpCaller) => Promise<ControlReply> })
+        .opStart({ agent: "smoke-gb", events: false, ...args }, callerKey, false, undefined, "inst", x);
+    const door = await opStart({ name: "helper", allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: { allow: ["team.>"], exclude: ["team.secret"] } });
+    check("the door reads { allow, exclude } and mints the exclusion", door.ok === true && reads(minted(door), "team.>") && deniedRead(door, "team.secret") && deniedPost(door, "team.secret"), door);
+    const doorDrop = await opStart({ name: "helper", allowSubscribe: ["team.>"] });
+    check("the door bounds the plain wildcard as the persona path does", refused(doorDrop, /more than the spawner holds: allowSubscribe team\.>\. /), doorDrop);
+    const doorNothing = await opStart({ name: "helper", allowSubscribe: { allow: ["team.>"], exclude: ["ops"] } });
+    check("the door refuses an exclusion that removes nothing", refused(doorNothing, /removes nothing/), doorNothing);
+    const doorWhole = await opStart({ name: "helper", allowPublish: { allow: ["team.a"], exclude: ["team.a"] } });
+    check("the door refuses an exclusion that removes a whole entry", refused(doorWhole, /excluded in full/), doorWhole);
+    const scoped = await opStart({ name: "helper", callerAcl: { allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: ["team.a"] } });
+    check("a channel-less persona takes the callerAcl default with its exclusions",
+      scoped.ok === true && reads(minted(scoped), "team.>") && deniedRead(scoped, "team.secret") && posts(minted(scoped), "team.a"), scoped);
+    const bare = await opStart({ name: "helper", callerAcl: { allowSubscribe: ["team.>", "team.a"], allowPublish: [] } });
+    check("a callerAcl that drops the exclusion keeps only what is held: the wildcard goes, the sibling stays",
+      bare.ok === true && !reads(minted(bare), "team.>") && reads(minted(bare), "team.a") && noDeny(bare), bare);
+
+    // Renewal re-mints the exclusions under the same issuance, for a broker at the floor only.
+    const keepName = (door.data as { name?: string } | undefined)?.name;
+    const seat = keepName ? seatOf(keepName) : undefined;
+    const renew = (a: unknown) => (mgr as unknown as { renewManagedStaticCred: (a: unknown) => Promise<void> }).renewManagedStaticCred(a);
+    const before = seat?.secretPaths?.creds ? readFileSync(seat.secretPaths.creds, "utf8") : undefined;
+    // A renewal in the spawn's own second signs the same claims, so let the clock move first.
+    await new Promise((r) => setTimeout(r, 1100));
+    let renewed: unknown;
+    try { await renew(seat); renewed = true; } catch (e) { renewed = (e as Error).message; }
+    const after = seat?.secretPaths?.creds ? readFileSync(seat.secretPaths.creds, "utf8") : undefined;
+    check("a renewal re-signs the credential and keeps the exclusion",
+      renewed === true && after !== before && deniedRead(door, "team.secret") && deniedPost(door, "team.secret") && reads(minted(door), "team.>"), renewed);
+    // A static chat session opens with its exclusions minted, for a broker at the floor only.
+    const chatOpen = async (lists: Record<string, unknown>): Promise<string | { sub: string[]; pub: string[] }> => {
+      const recipient = new SealRecipient();
+      try {
+        const r = await (mgr as unknown as { openStaticChatSession: (raw: unknown) => Promise<{ sealer: string; sealed: string }> })
+          .openStaticChatSession({ label: "smoke", ttl: 60, sealTo: recipient.publicKey, ...lists });
+        return denyRows((recipient.openJson(r.sealed, r.sealer) as { creds: string }).creds);
+      } catch (e) { return (e as Error).message; }
+    };
+    const fencedChat = { allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: { allow: ["team.>"], exclude: ["team.audit"] } };
+    const chat = await chatOpen(fencedChat);
+    check("a static chat session opens with its read and post exclusions minted",
+      typeof chat === "object" && chat.sub.some((r) => r.endsWith(".chat.*.*.team.secret")) && chat.pub.some((r) => r.endsWith(".team.audit")), chat);
+    const M2 = mgr as unknown as { withIssuer: <T>(fn: (i: { brokerVersion: string | undefined }) => Promise<T>) => Promise<T> };
+    const realIssuer = M2.withIssuer.bind(mgr);
+    M2.withIssuer = (fn) => realIssuer((i) => fn({ ...i, brokerVersion: "2.12.6" }));
+    try {
+      let below: unknown;
+      try { await renew(seat); below = "renewed"; } catch (e) { below = (e as Error).message; }
+      check("a renewal for a broker below the exclusion floor is refused", typeof below === "string" && /channel exclusions need nats-server 2\.12\.7/.test(below), below);
+      const spawnBelow = await spawnAs(x, "xkeep");
+      check("so is a spawn that carries an exclusion", refused(spawnBelow, /channel exclusions need nats-server 2\.12\.7/), spawnBelow);
+      const plain = await spawnAs(x, "xsibling");
+      check("and a spawn without one is not", plain.ok === true, plain);
+      const chatBelow = await chatOpen(fencedChat);
+      check("a static chat session that carries an exclusion is refused too", typeof chatBelow === "string" && /channel exclusions need nats-server 2\.12\.7/.test(chatBelow), chatBelow);
+      const chatPlain = await chatOpen({ allowSubscribe: ["team.>"] });
+      check("and one without an exclusion opens", typeof chatPlain === "object", chatPlain);
+    } finally {
+      M2.withIssuer = realIssuer;
+    }
   }
 
   console.log("exempt");

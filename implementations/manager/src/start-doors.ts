@@ -1,4 +1,4 @@
-import { MAX_SCHEDULE_MS, parsePrincipalKey, rejectionText } from "@cotal-ai/core";
+import { MAX_SCHEDULE_MS, parseChannelGrant, parseOptionalChannelGrant, parsePrincipalKey, rejectionText } from "@cotal-ai/core";
 import type { ControlReply, EpCaller, InlinePersona } from "@cotal-ai/core";
 import { authorizeLaunch } from "./authorize.js";
 import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
@@ -54,9 +54,11 @@ export class StartDoors {
 
   /** Parse a served `spawn` request into {@link StartAgentOpts}. The compiled spawn input contract
    *  is the shape check: it already refused a non-mapping `launchOptions`, a `supervise` that is not
-   *  the closed `{ restarts, windowMs }` pair, and a list on `subscribe`, `allowSubscribe`,
-   *  `allowPublish`, `shareTools`, `join` or `callerAcl` that is not an array of strings. This reads
-   *  those fields as admitted, the way it reads the string fields. The connector still validates the
+   *  the closed `{ restarts, windowMs }` pair, and a list on `subscribe`, `shareTools` or `join` that
+   *  is not an array of strings. `allowSubscribe` and `allowPublish`, at the top and in `callerAcl`,
+   *  may also be `{ allow, exclude }` (SPEC §9); they are read here into the list and its exclusions,
+   *  and one the grant rules refuse is refused here. This reads the other fields as admitted, the
+   *  way it reads the string fields. The connector still validates the
    *  launch-option keys, and `startAgent` still refuses a supervise budget the seat record would not
    *  take. `once` is shape-checked by that same contract. Its omitted `deadlineMs` takes the default
    *  here, and a deadline past the scheduler's last instant is refused here, which the schema does
@@ -72,7 +74,27 @@ export class StartDoors {
         return Promise.resolve({ ok: false, error: "once.deadlineMs: expected -1 (no deadline) or a positive whole number of milliseconds that ends by the deadline scheduler's last instant (the end of year 9999)" });
       once = { deadlineMs: d === -1 ? undefined : d };
     }
-    const callerAcl = args.callerAcl as StartAgentOpts["callerAcl"];
+    // A read or post list arrives as an array or as `{ allow, exclude }`, and is held as the list
+    // and its exclusions.
+    let grants;
+    try {
+      const acl = args.callerAcl as { allowSubscribe?: unknown; allowPublish?: unknown } | undefined;
+      grants = {
+        read: parseOptionalChannelGrant(args.allowSubscribe, "allowSubscribe"),
+        post: parseOptionalChannelGrant(args.allowPublish, "allowPublish"),
+        callerRead: acl && parseChannelGrant(acl.allowSubscribe, "callerAcl.allowSubscribe"),
+        callerPost: acl && parseChannelGrant(acl.allowPublish, "callerAcl.allowPublish"),
+      };
+    } catch (e) {
+      return Promise.resolve({ ok: false, error: rejectionText(e) });
+    }
+    const { read, post, callerRead, callerPost } = grants;
+    const callerAcl: StartAgentOpts["callerAcl"] = callerRead && callerPost ? {
+      allowSubscribe: [...callerRead.allow],
+      allowPublish: [...callerPost.allow],
+      ...(callerRead.exclude.length ? { excludeSubscribe: [...callerRead.exclude] } : {}),
+      ...(callerPost.exclude.length ? { excludePublish: [...callerPost.exclude] } : {}),
+    } : undefined;
     // #373: the event-plane admission gate. `startAgent` resolves `eventsRequired || opts.events
     // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
     // omitting it. The gate is on the DECISION, and it runs before connector resolution and
@@ -130,8 +152,10 @@ export class StartDoors {
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
         subscribe: args.subscribe as string[] | undefined,
-        allowSubscribe: args.allowSubscribe as string[] | undefined,
-        allowPublish: args.allowPublish as string[] | undefined,
+        allowSubscribe: read && [...read.allow],
+        allowPublish: post && [...post.allow],
+        ...(read?.exclude.length ? { excludeSubscribe: [...read.exclude] } : {}),
+        ...(post?.exclude.length ? { excludePublish: [...post.exclude] } : {}),
         join: args.join as string[] | undefined,
         callerAcl,
         shareTools: args.shareTools as string[] | undefined,

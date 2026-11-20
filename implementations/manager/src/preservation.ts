@@ -6,7 +6,7 @@ import { credRenewIntervalMs } from "./credential-renewal.js";
 import { inlineSnapshotPath } from "./launch.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager, ManagerPreservationPlan, ManagerPreserveFailure, ManagerPreserveOptions, ManagerPreserveResult, ManagerResumeAgent, ManagerResumeInventory } from "./manager.js";
-import { parseResumeControlArgs, readReleasedSeatReference, readSeatRecord, writeReleasedSeatReference, writeSeatRecord } from "./resume.js";
+import { launchGrants, parseResumeControlArgs, readReleasedSeatReference, readSeatRecord, writeReleasedSeatReference, writeSeatRecord } from "./resume.js";
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ManagedAgent } from "./seat-types.js";
@@ -646,8 +646,7 @@ export class Preservation {
         model: launch.model,
         variant: launch.variant,
         subscribe: launch.subscribe,
-        allowSubscribe: launch.allowSubscribe,
-        allowPublish: launch.allowPublish,
+        ...launchGrants(launch),
         capabilities: launch.capabilities,
         events: launch.events,
         eventPayloads: launch.eventPayloads,

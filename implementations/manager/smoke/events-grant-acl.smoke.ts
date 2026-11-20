@@ -401,7 +401,7 @@ try {
     check("the inventory carries the arming flag, not just the grant", entry?.launch.events === true, entry?.launch);
     check(
       "the inventory carries the SAME principal-keyed channel, not a re-derivation",
-      entry?.launch.allowPublish?.includes(armedChannel) === true,
+      Array.isArray(entry?.launch.allowPublish) && entry.launch.allowPublish.includes(armedChannel),
       { allowPublish: entry?.launch.allowPublish, expected: armedChannel },
     );
     check("the persisted copy carries it too", captured[0]?.agents.find((a) => a.name === armedName)?.launch.events === true, captured[0]?.agents.length);
@@ -470,7 +470,7 @@ try {
     const foreign = eventChannel({ owner: DEV_OWNER, actor: "UVICTIMPRINCIPALNOTOURS" });
     const smuggled = JSON.parse(JSON.stringify(preserved)) as ManagerResumeInventory;
     const victimEntry = smuggled.agents[0]!;
-    victimEntry.launch.allowSubscribe = [...(victimEntry.launch.allowSubscribe ?? []), foreign];
+    victimEntry.launch.allowSubscribe = [...(victimEntry.launch.allowSubscribe as string[]), foreign];
 
     // Driven through `resumePreserved`, the real door, rather than through the private validator:
     // the defect was that a door did not call the rule, so calling the rule directly would prove
@@ -503,7 +503,7 @@ try {
       const mgr3 = newManager();
       const post = JSON.parse(JSON.stringify(preserved)) as ManagerResumeInventory;
       const e3 = post.agents[0]!;
-      e3.launch.allowPublish = [...(e3.launch.allowPublish ?? []), foreign];
+      e3.launch.allowPublish = [...((e3.launch.allowPublish ?? []) as string[]), foreign];
       const rp = JSON.stringify(await mgr3.resumePreserved(post));
       check(
         "an inventory naming another agent's event channel to POST to is refused at the resume door too",

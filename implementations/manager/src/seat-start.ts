@@ -1,9 +1,9 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadGrant, saveAgentFile, assertExclusions, exclusionsOverlapping, parseChannelGrant, patternsOverlap, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
-import type { KV } from "@nats-io/kv";
+import type { IssuerWindow } from "./broker-transport.js";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
 import type { Manager } from "./manager.js";
@@ -88,7 +88,7 @@ export class SeatStart {
   private get userProvision() { return this.deps.userProvision(); }
   private watchExit(...args: Parameters<Manager["watchExit"]>): ReturnType<Manager["watchExit"]> { return this.deps.watchExit(...args); }
   private watchOnceExit(...args: Parameters<Manager["watchOnceExit"]>): ReturnType<Manager["watchOnceExit"]> { return this.deps.watchOnceExit(...args); }
-  private withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.deps.withIssuer(fn); }
+  private withIssuer<T>(fn: (i: IssuerWindow) => Promise<T>): Promise<T> { return this.deps.withIssuer(fn); }
   private withLifecycleExecutor<T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>): Promise<T> { return this.deps.withLifecycleExecutor(pin, fn); }
   private withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.deps.withProvisioner(fn); }
   private get workspaceRoot() { return this.deps.workspaceRoot(); }
@@ -278,6 +278,9 @@ export class SeatStart {
     let subscribe: string[] | undefined;
     let allowSubscribe: string[];
     let allowPublish: string[] | undefined;
+    // The channels each list removes (SPEC §9), taken from the same source as the list.
+    let excludeSubscribe: string[] = [];
+    let excludePublish: string[] = [];
     let capabilities: string[] | undefined;
     // The endpoint commands the persona hands on (SPEC 13.15), as the persona names them and as the
     // mint grants them. A manifest launch carries none: its schema has no slot for them.
@@ -292,14 +295,21 @@ export class SeatStart {
     if (opts.resolved) {
       // A manifest launch is the access + identity authority: imperative overrides arriving
       // alongside `resolved` are a caller contract error, not something to merge (no fallbacks).
-      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.join || opts.callerAcl || opts.prompt || opts.shareTools || opts.identity)
-        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/join/callerAcl/prompt/shareTools)" };
+      if (opts.subscribe || opts.allowSubscribe || opts.allowPublish || opts.excludeSubscribe || opts.excludePublish || opts.join || opts.callerAcl || opts.prompt || opts.shareTools || opts.identity)
+        return { ok: false, error: "a manifest launch (resolved) rejects imperative overrides (identity/subscribe/allow*/exclude*/join/callerAcl/prompt/shareTools)" };
       const r = opts.resolved;
       identityName = r.name;
       role = opts.role ?? r.role;
       subscribe = r.subscribe;
-      allowSubscribe = r.allowSubscribe;
-      allowPublish = r.allowPublish;
+      try {
+        const read = parseChannelGrant(r.allowSubscribe, "allowSubscribe"), post = parseChannelGrant(r.allowPublish, "allowPublish");
+        allowSubscribe = [...read.allow];
+        excludeSubscribe = [...read.exclude];
+        allowPublish = [...post.allow];
+        excludePublish = [...post.exclude];
+      } catch (e) {
+        return { ok: false, error: `launch agent: ${rejectionText(e)}` };
+      }
       capabilities = r.capabilities;
       model = opts.model ?? r.model;
       variant = opts.variant ?? r.variant;
@@ -326,15 +336,21 @@ export class SeatStart {
       // static mesh it is clamped to what the caller's evidence shows it holds, and a caller with
       // no evidence gets no default at all.
       const personaNamesChannels = def.subscribe !== undefined || def.allowSubscribe !== undefined || def.allowPublish !== undefined;
-      const heldChannels = (field: "allowSubscribe" | "allowPublish", channels: string[]) => {
+      // Each kept entry is checked with the caller's exclusions under it, and the default keeps
+      // those exclusions that still remove something from what it kept.
+      const heldChannels = (field: "allowSubscribe" | "allowPublish", channels: string[], exclude: readonly string[] = []) => {
         const own = channels.filter((ch) => eventChannelPrincipal(ch) === null);
-        return bound.kind === "bounded" ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch] }).length === 0) : own;
+        const excludeField = field === "allowSubscribe" ? "excludeSubscribe" : "excludePublish";
+        const allow = bound.kind === "bounded"
+          ? own.filter((ch) => grantOverreach(this.space, bound.caller, bound.ceiling, { [field]: [ch], [excludeField]: exclusionsOverlapping(ch, exclude) }).length === 0)
+          : own;
+        return { allow, exclude: exclude.filter((x) => allow.some((ch) => patternsOverlap(ch, x))) };
       };
-      let scoped: { allowSubscribe: string[]; allowPublish: string[] } | undefined;
+      let scoped: { read: { allow: string[]; exclude: string[] }; post: { allow: string[]; exclude: string[] } } | undefined;
       try {
         scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== "none" ? {
-          allowSubscribe: heldChannels("allowSubscribe", opts.callerAcl.allowSubscribe),
-          allowPublish: heldChannels("allowPublish", opts.callerAcl.allowPublish),
+          read: heldChannels("allowSubscribe", opts.callerAcl.allowSubscribe, opts.callerAcl.excludeSubscribe),
+          post: heldChannels("allowPublish", opts.callerAcl.allowPublish, opts.callerAcl.excludePublish),
         } : undefined;
       } catch (e) {
         return { ok: false, error: `callerAcl: ${rejectionText(e)}` };
@@ -342,8 +358,22 @@ export class SeatStart {
       const base = opts.subscribe ?? def.subscribe;
       ownSubscribe = base;
       subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
-      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
-      allowPublish = opts.allowPublish ?? def.allowPublish ?? scoped?.allowPublish;
+      // An override replaces the persona's list together with its exclusions, so an exclusion
+      // always travels with the list it was written against.
+      if (opts.excludeSubscribe?.length && opts.allowSubscribe === undefined)
+        return { ok: false, error: "excludeSubscribe: an exclusion needs the allowSubscribe list it removes channels from" };
+      if (opts.excludePublish?.length && opts.allowPublish === undefined)
+        return { ok: false, error: "excludePublish: an exclusion needs the allowPublish list it removes channels from" };
+      const read = opts.allowSubscribe !== undefined ? { allow: opts.allowSubscribe, exclude: opts.excludeSubscribe }
+        : def.allowSubscribe !== undefined ? { allow: def.allowSubscribe, exclude: def.excludeSubscribe }
+        : scoped?.read;
+      const post = opts.allowPublish !== undefined ? { allow: opts.allowPublish, exclude: opts.excludePublish }
+        : def.allowPublish !== undefined ? { allow: def.allowPublish, exclude: def.excludePublish }
+        : scoped?.post;
+      allowSubscribe = read?.allow ?? [];
+      excludeSubscribe = [...(read?.exclude ?? [])];
+      allowPublish = post?.allow;
+      excludePublish = [...(post?.exclude ?? [])];
       capabilities = def.capabilities;
       personaEndpoints = copyPersonaEndpoints(def.endpoints);
       // A user-auth mesh grants endpoint access through the service owner's records, which a spawn
@@ -363,7 +393,8 @@ export class SeatStart {
     // Resolved once for both branches, because this one list is granted, minted, recorded on the
     // launch and forwarded to the session, and each of those must read the list the provisioner does.
     try {
-      allowSubscribe = resolveReadAcl(subscribe ?? [], allowSubscribe);
+      allowSubscribe = resolveReadGrant(subscribe ?? [], allowSubscribe, excludeSubscribe);
+      assertExclusions(allowPublish ?? [], excludePublish, "allowPublish");
     } catch (e) {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
@@ -384,6 +415,8 @@ export class SeatStart {
     const boundRefusal = this.spawnBoundRefusal(bound, {
       allowSubscribe,
       ...(allowPublish !== undefined ? { allowPublish } : {}),
+      ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+      ...(excludePublish.length ? { excludePublish } : {}),
       ...(role !== undefined ? { role } : {}),
       ...(capabilities !== undefined ? { capabilities } : {}),
       ...(endpoints.length ? { endpoints } : {}),
@@ -406,6 +439,8 @@ export class SeatStart {
           subscribe: [...(ownSubscribe ?? [])],
           allowSubscribe: [...allowSubscribe],
           allowPublish: [...(allowPublish ?? [])],
+          ...(excludeSubscribe.length ? { excludeSubscribe: [...excludeSubscribe] } : {}),
+          ...(excludePublish.length ? { excludePublish: [...excludePublish] } : {}),
           capabilities: capabilities?.length ? [...capabilities] : undefined,
           endpoints: copyPersonaEndpoints(personaEndpoints?.length ? personaEndpoints : undefined),
         }
@@ -683,7 +718,11 @@ export class SeatStart {
             `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,
         );
       }
-      if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
+      if (events) {
+        allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
+        // A post exclusion may not remove the event channel the helper must post to.
+        assertExclusions(allowPublish, excludePublish, "allowPublish");
+      }
       await hooks?.onReadinessWindow?.(readinessTimeoutMs);
       // The hosted enrollment arm accepts only once the host has answered: the floor names the uid
       // the agent runs at, and before the host picks it there is no such uid to name.
@@ -717,6 +756,8 @@ export class SeatStart {
           subscribe,
           allowSubscribe,
           allowPublish,
+          ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+          ...(excludePublish.length ? { excludePublish } : {}),
           role,
           capabilities,
           label: ref,
@@ -796,6 +837,11 @@ export class SeatStart {
               subscribe,
               allowSubscribe,
               allowPublish,
+              ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+              ...(excludePublish.length ? { excludePublish } : {}),
+              // An exclusion is minted only for a broker at the exclusion floor; this is the version
+              // of the broker the issuance window reached.
+              brokerVersion: i.brokerVersion,
               role,
               capabilities,
               ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
@@ -873,6 +919,8 @@ export class SeatStart {
         subscribe,
         allowSubscribe,
         allowPublish,
+        ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+        ...(excludePublish.length ? { excludePublish } : {}),
         capabilities,
         // Always the list the launch resolved, `[]` included, so the session never reads a persona
         // file that may have changed since.
@@ -955,6 +1003,8 @@ export class SeatStart {
           subscribe,
           allowSubscribe,
           allowPublish,
+          ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+          ...(excludePublish.length ? { excludePublish } : {}),
           capabilities,
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
@@ -1126,7 +1176,7 @@ export class SeatStart {
       // otherwise fail its succeeded terminal. The CLI/connector already render an absent role as
       // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
       // A host that granted other channels than this spawn asked for: the receipt carries both.
-      const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish }, enrolled.material) : undefined;
+      const acl = enrolled ? enrolledAcl({ allowSubscribe, allowPublish, excludeSubscribe, excludePublish }, enrolled.material) : undefined;
       const okData = { name, agent, id: managed.id, mode: handle.kind, streamsTerminal: runtime.streamsTerminal, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}), ...(managed.startupNotice !== undefined ? { startupNotice: managed.startupNotice } : {}), ...(acl ? { acl } : {}), ...(readiness.operator !== undefined ? { waitingFor: readiness.operator } : {}), ...(onceTask ? { once: { goalId: onceTask.ref.goalId, ...(onceTask.deadlineAt !== undefined ? { deadlineAt: onceTask.deadlineAt } : {}) } } : {}) };
       // The task is served once the succeeded terminal is written, so a served task always has it
       // and a successor reads it as the readiness verdict. Every failure arm above ran before it. A

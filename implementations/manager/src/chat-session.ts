@@ -9,7 +9,7 @@
  * routing only: it keys the durable slot row and is never a caller input at open.
  */
 import { randomBytes } from "node:crypto";
-import { assertValidChannel, isCurvePublicKey, resolveReadAcl, sealJson, type EpErrorCode, type StaticManagedSlotRow } from "@cotal-ai/core";
+import { assertExclusions, assertValidChannel, isCurvePublicKey, resolveReadGrant, sealJson, type EpErrorCode, type StaticManagedSlotRow } from "@cotal-ai/core";
 
 /** Every static chat alias starts with this. An ordinary spawn refuses any name that does. */
 export const CHAT_ALIAS_PREFIX = "chat_";
@@ -33,6 +33,10 @@ interface ChatSessionOpenInput {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Channels or patterns removed from the list beside it; the wire writes the pair as
+   *  `{ allow, exclude }` (SPEC §9). */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   label: string;
   ttl: number;
   sealTo: string;
@@ -58,13 +62,29 @@ export function readChatOpenInput(raw: unknown): ChatSessionOpenInput | { error:
   if (!a) return bad("the arguments must be an object");
   const extra = Object.keys(a).find((key) => !OPEN_FIELDS.includes(key));
   if (extra !== undefined) return bad(`unknown field "${extra}"`);
-  const lists: Pick<ChatSessionOpenInput, "subscribe" | "allowSubscribe" | "allowPublish"> = {};
-  for (const key of ["subscribe", "allowSubscribe", "allowPublish"] as const) {
-    const list: unknown = a[key];
-    if (list === undefined) continue;
-    if (!Array.isArray(list) || list.length > CHAT_OPEN_BOUNDS.listItems || !list.every((c) => typeof c === "string" && c.length > 0) || new Set(list).size !== list.length)
-      return bad(`${key} must be a list of at most ${CHAT_OPEN_BOUNDS.listItems} distinct, non-empty channel names`);
-    lists[key] = [...(list as string[])];
+  const lists: Pick<ChatSessionOpenInput, "subscribe" | "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish"> = {};
+  const bounded = (list: unknown): list is string[] =>
+    Array.isArray(list) && list.length <= CHAT_OPEN_BOUNDS.listItems && list.every((c) => typeof c === "string" && c.length > 0) && new Set(list).size === list.length;
+  const listRule = `a list of at most ${CHAT_OPEN_BOUNDS.listItems} distinct, non-empty channel names`;
+  if (a.subscribe !== undefined) {
+    if (!bounded(a.subscribe)) return bad(`subscribe must be ${listRule}`);
+    lists.subscribe = [...a.subscribe];
+  }
+  // A read or post list is such a list, or `{ allow, exclude }` of two of them when it removes
+  // channels (SPEC §9). The exclusions are checked against the list in `chatOpenLists`.
+  for (const [key, excludeKey] of [["allowSubscribe", "excludeSubscribe"], ["allowPublish", "excludePublish"]] as const) {
+    const value: unknown = a[key];
+    if (value === undefined) continue;
+    if (Array.isArray(value)) {
+      if (!bounded(value)) return bad(`${key} must be ${listRule}`);
+      lists[key] = [...value];
+      continue;
+    }
+    const pair = argObject(value);
+    if (!pair || Object.keys(pair).some((k) => k !== "allow" && k !== "exclude") || !bounded(pair.allow) || !bounded(pair.exclude) || pair.exclude.length === 0)
+      return bad(`${key} must be ${listRule}, or { allow, exclude } of two such lists with at least one exclusion`);
+    lists[key] = [...pair.allow];
+    lists[excludeKey] = [...pair.exclude];
   }
   const { label, ttl, sealTo } = a;
   if (typeof label !== "string" || label.length === 0 || label.length > CHAT_OPEN_BOUNDS.labelLength)
@@ -92,23 +112,33 @@ export function readChatRetireInput(raw: unknown): { alias: string; actor: strin
 
 /** The three lists of an open request under a spawn's own rules, or the refusal. Every entry must
  *  be a valid channel, as the provisioner and the mint require; the initial channels must lie
- *  within the read ceiling, which falls back to them when empty (`resolveReadAcl`); the post list
- *  is default-deny. The foreign event-channel rule needs the drawn actor, so the handler applies
- *  it. {@link readChatOpenInput} bounds the label, each list and the ttl first. */
+ *  within the read ceiling, which falls back to them when empty (`resolveReadGrant`), and survive
+ *  its exclusions; each exclusion must remove part of its list and no whole entry (SPEC §9); the
+ *  post list is default-deny. The foreign event-channel rule needs the drawn actor, so the handler
+ *  applies it. {@link readChatOpenInput} bounds the label, each list and the ttl first. */
 export function chatOpenLists(input: {
   subscribe?: readonly string[];
   allowSubscribe?: readonly string[];
   allowPublish?: readonly string[];
+  excludeSubscribe?: readonly string[];
+  excludePublish?: readonly string[];
   label: string;
   sealTo: string;
-}): { subscribe: string[]; allowSubscribe: string[]; allowPublish: string[] } | { error: string } {
+}): { subscribe: string[]; allowSubscribe: string[]; allowPublish: string[]; excludeSubscribe: string[]; excludePublish: string[] } | { error: string } {
   if (!input.label.trim()) return { error: "chat-session-open: label must not be blank" };
   if (!isCurvePublicKey(input.sealTo)) return { error: "chat-session-open: sealTo is not a curve public key" };
   const subscribe = [...(input.subscribe ?? [])];
   const allowPublish = [...(input.allowPublish ?? [])];
+  const excludeSubscribe = [...(input.excludeSubscribe ?? [])], excludePublish = [...(input.excludePublish ?? [])];
+  // An empty read list falls back to the initial channels, and an exclusion needs the list it was
+  // written against.
+  if (excludeSubscribe.length && !input.allowSubscribe?.length)
+    return { error: "chat-session-open: an exclusion needs the allowSubscribe list it removes channels from" };
   try {
     for (const channel of [...subscribe, ...(input.allowSubscribe ?? []), ...allowPublish]) assertValidChannel(channel);
-    return { subscribe, allowSubscribe: resolveReadAcl(subscribe, [...(input.allowSubscribe ?? [])]), allowPublish };
+    const allowSubscribe = resolveReadGrant(subscribe, [...(input.allowSubscribe ?? [])], excludeSubscribe);
+    assertExclusions(allowPublish, excludePublish, "allowPublish");
+    return { subscribe, allowSubscribe, allowPublish, excludeSubscribe, excludePublish };
   } catch (e) {
     return { error: `chat-session-open: ${(e as Error).message}` };
   }

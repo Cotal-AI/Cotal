@@ -27,7 +27,7 @@ import { admitSeatCheckpoints } from "../../cli/src/lib/seat-admission.js";
 import { restoreSeatCheckpoints } from "../../cli/src/lib/seat-restore.js";
 import { admitAndRestoreSeatCheckpoints } from "../../cli/src/lib/seat-resume.js";
 import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
-import { MAX_RESUME_CONTROL_BYTES, parseResumeControlArgs } from "../src/resume.js";
+import { MAX_RESUME_CONTROL_BYTES, launchGrants, parseResumeControlArgs, readSeatRecord, storedGrants, writeSeatRecord } from "../src/resume.js";
 
 let failures = 0;
 function check(label: string, condition: boolean, extra?: unknown): void {
@@ -601,6 +601,48 @@ let openInventory: ManagerResumeAgent;
   let absentAccepted = true;
   try { parseResumeControlArgs(absentArgs); } catch { absentAccepted = false; }
   check("schema accepts an inventory with no backfillFloor", absentAccepted);
+}
+
+// Channel exclusions (SPEC 9): a seat minted with them stores each list in the { allow, exclude }
+// form, every reader takes that form back with its exclusions, and a list without them stays a
+// plain array.
+{
+  const inMemory = { allowSubscribe: ["general", "team.>"], excludeSubscribe: ["team.secret"], allowPublish: ["team.>"], excludePublish: ["team.audit"] };
+  const stored = storedGrants(inMemory);
+  check("a seat with exclusions stores both lists in the object form",
+    JSON.stringify(stored) === JSON.stringify({ allowSubscribe: { allow: ["general", "team.>"], exclude: ["team.secret"] }, allowPublish: { allow: ["team.>"], exclude: ["team.audit"] } }), stored);
+  check("and reads them back with their exclusions", JSON.stringify(launchGrants(stored)) === JSON.stringify(inMemory), launchGrants(stored));
+  check("a seat without exclusions keeps plain arrays", JSON.stringify(storedGrants({ allowSubscribe: ["general"], allowPublish: [] })) === JSON.stringify({ allowSubscribe: ["general"], allowPublish: [] }));
+
+  const fenced: ManagerResumeAgent = { ...openInventory, launch: { ...openInventory.launch, ...stored } };
+  const parsed = parseResumeControlArgs({ attemptId: "exclusions", inventory: inventoryOf(fenced) });
+  check("the resume wire parser accepts the object form unchanged", JSON.stringify(parsed.inventory.agents[0]?.launch.allowSubscribe) === JSON.stringify(stored.allowSubscribe)
+    && JSON.stringify(parsed.inventory.agents[0]?.launch.allowPublish) === JSON.stringify(stored.allowPublish), parsed.inventory.agents[0]?.launch);
+  const refusal = (allowSubscribe: unknown) => {
+    try { parseResumeControlArgs({ attemptId: "exclusions", inventory: inventoryOf({ ...openInventory, launch: { ...openInventory.launch, allowSubscribe } } as ManagerResumeAgent) }); return ""; }
+    catch (e) { return (e as Error).message; }
+  };
+  check("it refuses an object form without an exclusion", /allowSubscribe/.test(refusal({ allow: ["general"], exclude: [] })), refusal({ allow: ["general"], exclude: [] }));
+  check("it refuses an exclusion that removes nothing", /removes nothing/.test(refusal({ allow: ["general"], exclude: ["ops"] })), refusal({ allow: ["general"], exclude: ["ops"] }));
+  check("it refuses an unknown key in the object form", /allowSubscribe/.test(refusal({ allow: ["team.>"], deny: ["team.secret"] })), refusal({ allow: ["team.>"], deny: ["team.secret"] }));
+
+  const recordRoot = mkdtempSync(join(tmpdir(), "cotal-seat-record-exclusions-"));
+  writeSeatRecord(recordRoot, { version: "cotal-seat-record/v1", instanceId: "i1", crashes: [], agent: fenced });
+  const record = readSeatRecord(recordRoot, fenced.space, fenced.name);
+  check("a seat record keeps the object form across a write and a read", JSON.stringify(record?.agent.launch.allowSubscribe) === JSON.stringify(stored.allowSubscribe)
+    && JSON.stringify(record?.agent.launch.allowPublish) === JSON.stringify(stored.allowPublish), record?.agent.launch);
+  rmSync(recordRoot, { recursive: true, force: true });
+
+  const manager = managerWith((name) => fakeHandle(name));
+  resetCapturedLaunch();
+  const result = await manager.resumePreserved(inventoryOf(fenced));
+  check("an open resume of that entry succeeds", result.ok && result.agents[0]?.reply?.ok === true, JSON.stringify(result));
+  check("and launches the seat with its lists and exclusions", JSON.stringify(capturedLaunch?.allowSubscribe) === JSON.stringify(inMemory.allowSubscribe)
+    && JSON.stringify(capturedLaunch?.excludeSubscribe) === JSON.stringify(inMemory.excludeSubscribe)
+    && JSON.stringify(capturedLaunch?.allowPublish) === JSON.stringify(inMemory.allowPublish)
+    && JSON.stringify(capturedLaunch?.excludePublish) === JSON.stringify(inMemory.excludePublish),
+    { allowSubscribe: capturedLaunch?.allowSubscribe, excludeSubscribe: capturedLaunch?.excludeSubscribe, allowPublish: capturedLaunch?.allowPublish, excludePublish: capturedLaunch?.excludePublish });
+  await manager.stop();
 }
 
 // A manager replacement after the coordinator fsyncs commit evidence re-adopts the inventory,

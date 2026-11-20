@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import {
-  MANAGED_HANDOFF_KIND, assertLifecycleToken, canonicalJson, parsePrincipalKey, principalKey,
+  MANAGED_HANDOFF_KIND, assertLifecycleToken, canonicalJson, channelGrantField, parsePrincipalKey, principalKey,
   provisionAgentDurables, resolveAuthProvider, runAgentBearer, rejectionText, attemptCleanup, describeCleanupFailures,
   type CleanupFailure, type CotalEndpoint, type EpCaller, type EpErrorCode, type EpErrorDetail,
   type ManagedLifecycleHandoff, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult,
@@ -38,6 +38,9 @@ export interface ProvisionUserAgentOpts {
   subscribe?: string[];
   allowSubscribe: string[];
   allowPublish?: string[];
+  /** Channels or patterns removed from the two lists above (SPEC §9). */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   role?: string;
   capabilities?: string[];
   label: string;
@@ -194,6 +197,8 @@ export class UserProvision {
         scope,
         allowSubscribe: opts.allowSubscribe,
         allowPublish: opts.allowPublish ?? [],
+        ...(opts.excludeSubscribe?.length ? { excludeSubscribe: opts.excludeSubscribe } : {}),
+        ...(opts.excludePublish?.length ? { excludePublish: opts.excludePublish } : {}),
         ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
         role: opts.role,
         parent: spawnerPr ? opts.spawner : undefined,
@@ -210,6 +215,7 @@ export class UserProvision {
         provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
           subscribe: opts.subscribe,
           allowSubscribe: opts.allowSubscribe,
+          ...(opts.excludeSubscribe?.length ? { excludeSubscribe: opts.excludeSubscribe } : {}),
           role: opts.role,
         }),
       );
@@ -291,8 +297,10 @@ export class UserProvision {
         label: opts.label,
         ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-        allowSubscribe: opts.allowSubscribe,
-        ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+        // Each list travels with its exclusions as `{ allow, exclude }`, which a host that predates
+        // exclusions refuses (SPEC §9).
+        allowSubscribe: channelGrantField(opts.allowSubscribe, opts.excludeSubscribe),
+        ...(opts.allowPublish !== undefined ? { allowPublish: channelGrantField(opts.allowPublish, opts.excludePublish) } : {}),
         ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       },
       ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),

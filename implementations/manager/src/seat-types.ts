@@ -67,6 +67,10 @@ export interface StartAgentOpts {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  /** Channels or patterns removed from {@link allowSubscribe} / {@link allowPublish} (SPEC §9). Each
+   *  needs its list here: an override replaces the persona's list together with its exclusions. */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   /** Channels the seat joins on top of its resolved read set (the peer door's `join`). Each must
    *  fall within the read ACL that resolves below, or the spawn is refused; nothing is widened.
    *  Imperative-only, rejected with `resolved`. */
@@ -76,7 +80,7 @@ export interface StartAgentOpts {
    *  its spawner, never wider. A persona that names any channel field is the authority and this is
    *  ignored. The spawner's event channel is never inherited (the seat mints its own below).
    *  Imperative-only, rejected with `resolved`. */
-  callerAcl?: { allowSubscribe: string[]; allowPublish: string[] };
+  callerAcl?: { allowSubscribe: string[]; allowPublish: string[]; excludeSubscribe?: string[]; excludePublish?: string[] };
   /** The request subject the served `spawn` door answered. A hosted enrollment forwards it, and the
    *  issuing host makes the caller it saw publish that subject the helper's parent (SPEC 13.6).
    *  Set by the served door only. */
@@ -127,6 +131,9 @@ export interface ManagedLaunch {
   subscribe?: string[];
   allowSubscribe: string[];
   allowPublish?: string[];
+  /** The exclusions minted with the two lists above (SPEC §9). Renewal re-mints them. */
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   capabilities?: string[];
   /** The persona's endpoint commands, as minted. Renewal re-mints their rows. */
   endpoints?: PersonaEndpoint[];

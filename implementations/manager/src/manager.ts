@@ -3,11 +3,11 @@ import { TurnRelay, goalKey, TURN_ANSWER_RETENTION_MS, type PendingTurn, type On
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, oneLine, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
+import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, mintLifecycleUid, oneLine, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { logicalExecutionEntry } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, ManagerLeaseInfo, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, ChannelGrantField, EpCapability, PersonaEndpoint, RunAdmission, Connector, ConnectorSetupProvider, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, ManagerLeaseInfo, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -37,7 +37,7 @@ import { PersonaCatalog, personaCatalogDeps } from "./persona-catalog.js";
 import { TerminalInput, terminalInputDeps } from "./terminal-input.js";
 import { StatusAndModels, statusAndModelsDeps, MANAGER_VERSION } from "./status-and-models.js";
 import { ReadinessWait, readinessWaitDeps } from "./readiness-wait.js";
-import { BrokerTransport, brokerTransportDeps } from "./broker-transport.js";
+import { BrokerTransport, brokerTransportDeps, type IssuerWindow } from "./broker-transport.js";
 import { StartDoors, startDoorsDeps } from "./start-doors.js";
 import { HarnessResolution, harnessResolutionDeps, resolveHarness } from "./harness-resolution.js";
 import { ConnectorInventory, connectorInventoryDeps } from "./connector-inventory.js";
@@ -244,8 +244,9 @@ export interface ManagerOptions {
         label?: string;
         capabilities?: string[];
         subscribe?: string[];
-        allowSubscribe?: string[];
-        allowPublish?: string[];
+        /** A plain list, or `{ allow, exclude }` when it removes channels (SPEC §9). */
+        allowSubscribe?: ChannelGrantField;
+        allowPublish?: ChannelGrantField;
       };
       /** The served spawn request this enrollment answers, when a caller asked for it. The host
        *  makes the caller it saw publish that subject the helper's parent, or the run's starter for
@@ -257,8 +258,8 @@ export interface ManagerOptions {
       lifecycleUid: string;
       sentinelCreds: string;
       subscribe: string[];
-      allowSubscribe: string[];
-      allowPublish: string[];
+      allowSubscribe: ChannelGrantField;
+      allowPublish: ChannelGrantField;
       agentBearerExchangeUrl: string;
     }>;
     /** Host-owned continuity check for a retained managed actor. A signerless participant cannot
@@ -395,8 +396,10 @@ export interface ManagerResumeAgent {
     /** Kickoff prompt from the persona/manifest launch form; a stale-restart re-submits it. */
     prompt?: string;
     subscribe?: string[];
-    allowSubscribe: string[];
-    allowPublish?: string[];
+    /** A plain list, or `{ allow, exclude }` when the seat was minted with exclusions (SPEC §9), which
+     *  a manager that predates exclusions refuses. */
+    allowSubscribe: ChannelGrantField;
+    allowPublish?: ChannelGrantField;
     capabilities?: string[];
     endpoints?: PersonaEndpoint[];
     events: boolean;
@@ -2038,7 +2041,7 @@ export class Manager {
   protected withLifecycleExecutor<T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withLifecycleExecutor(pin, fn); }
 
   /** {@link BrokerTransport.withIssuer}. */
-  protected withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withIssuer(fn); }
+  protected withIssuer<T>(fn: (i: IssuerWindow) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withIssuer(fn); }
 
   /** {@link BrokerTransport.issuanceSeam}. */
   protected issuanceSeam(...args: Parameters<BrokerTransport["issuanceSeam"]>): ReturnType<BrokerTransport["issuanceSeam"]> { return this.brokerTransportComponent.issuanceSeam(...args); }

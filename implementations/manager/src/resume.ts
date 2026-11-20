@@ -1,8 +1,9 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { channelGrantField, parseChannelGrant, parseOptionalChannelGrant, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
-import type { ManagerResumeInventory } from "./manager.js";
+import type { ManagerResumeAgent, ManagerResumeInventory } from "./manager.js";
+import type { ManagedLaunch } from "./seat-types.js";
 
 export const MAX_RESUME_CONTROL_BYTES = 512 * 1024;
 export const MAX_RESUME_COMMIT_BYTES = 1024;
@@ -21,6 +22,13 @@ const short = z.string().max(512);
 const path = z.string().min(1).max(4096);
 const digest = z.string().regex(SHA256, "must be a lowercase SHA-256 digest");
 const stringList = z.array(z.string().min(1).max(512)).max(256);
+// A read or post list: a plain array, or `{ allow, exclude }` when the seat was minted with
+// exclusions (SPEC §9), read under the grant rules. A manager that predates exclusions refuses the
+// object form, so it never resumes the seat on the allow list alone.
+const grantList = (field: string) => z.union([stringList, z.strictObject({ allow: stringList, exclude: stringList.min(1) })])
+  .superRefine((v, ctx) => {
+    try { parseChannelGrant(v, field); } catch (e) { ctx.addIssue({ code: "custom", message: (e as Error).message }); }
+  });
 const fileRef = z.strictObject({ kind: z.literal("file"), path, sha256: digest });
 
 // The original incarnation UID (`[a-z0-9]{26,32}`, mirrors core assertLifecycleToken). A resumed
@@ -88,8 +96,8 @@ const agent = z.strictObject({
     model: short.optional(),
     variant: short.min(1).optional(),
     subscribe: stringList.optional(),
-    allowSubscribe: stringList,
-    allowPublish: stringList.optional(),
+    allowSubscribe: grantList("allowSubscribe"),
+    allowPublish: grantList("allowPublish").optional(),
     capabilities: z.array(z.string().min(1).max(256)).max(64).optional(),
     // The persona's endpoint commands as the seat was minted with them (SPEC 13.15), read under the
     // same rule a persona is, so renewal re-mints exactly these rows. Absent means none, which is
@@ -163,6 +171,30 @@ const finalizeArgsSchema = z.strictObject({
   attemptId,
   durableCommitToken: z.string().regex(SHA256, "must be a lowercase 32-byte token"),
 });
+
+type LaunchGrants = Pick<ManagedLaunch, "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish">;
+
+/** A seat's read and post lists as its inventory entry and seat record store them (SPEC §9): each a
+ *  plain array, or `{ allow, exclude }` when the seat was minted with exclusions. */
+export function storedGrants(launch: LaunchGrants): Pick<ManagerResumeAgent["launch"], "allowSubscribe" | "allowPublish"> {
+  return {
+    allowSubscribe: channelGrantField(launch.allowSubscribe, launch.excludeSubscribe),
+    ...(launch.allowPublish !== undefined ? { allowPublish: channelGrantField(launch.allowPublish, launch.excludePublish) } : {}),
+  };
+}
+
+/** A stored entry's read and post lists back in memory: each list and its exclusions, so a resumed
+ *  or adopted seat renews with the exclusions it was minted with. */
+export function launchGrants(launch: Pick<ManagerResumeAgent["launch"], "allowSubscribe" | "allowPublish">): LaunchGrants {
+  const read = parseChannelGrant(launch.allowSubscribe, "allowSubscribe");
+  const post = parseOptionalChannelGrant(launch.allowPublish, "allowPublish");
+  return {
+    allowSubscribe: [...read.allow],
+    ...(read.exclude.length ? { excludeSubscribe: [...read.exclude] } : {}),
+    ...(post ? { allowPublish: [...post.allow] } : {}),
+    ...(post?.exclude.length ? { excludePublish: [...post.exclude] } : {}),
+  };
+}
 
 export interface ResumeControlArgs {
   attemptId: string;

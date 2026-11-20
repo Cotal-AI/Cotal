@@ -20,6 +20,7 @@ import type { Manager, ManagedAgent } from "./manager.js";
 import type { TeardownTarget, RetirementHold } from "./retirement.js";
 import type { EvictionResult } from "@cotal-ai/core";
 import { foreignEventChannels } from "./seat-launch.js";
+import type { IssuerWindow } from "./broker-transport.js";
 
 
 /** One initial terminal entry plus three re-drives. The short first retry absorbs a one-shot
@@ -68,7 +69,7 @@ export interface ManagedStaticLifecycleDeps {
   noteRetiredPrincipal: (principal: string) => void;
 
   foreignEventChannels: (channels: readonly string[], owner: string, actor: string) => string[];
-  withIssuer: <T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>) => Promise<T>;
+  withIssuer: <T>(fn: (i: IssuerWindow) => Promise<T>) => Promise<T>;
   deprovisionBroker: (a: { id: string; name: string; lifecycleUid: string; launch?: { allowSubscribe: readonly string[] } }) => Promise<DeprovisionResourceAccounting>;
   reapOrphanSeat: (a: { name: string; runtime?: RuntimeReference }) => Promise<void>;
   withLifecycleExecutor: <T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>) => Promise<T>;
@@ -327,8 +328,16 @@ export class ManagedStaticLifecycle {
       await this.deps.withLifecycleExecutor(pin, (t) =>
         activateStaticLifecycle(t, { owner: DEV_OWNER, alias, actor: identity.id, lifecycleUid, managerInstance: this.deps.processUid(), ownerInstanceId: this.deps.instanceId() }),
       );
+      // A leaf that carries an exclusion is minted only for a broker at the exclusion floor (SPEC §9),
+      // so it names the version an issuer window on this manager's broker reports.
+      const excluded = lists.excludeSubscribe.length + lists.excludePublish.length > 0;
+      const brokerVersion = excluded ? await this.deps.withIssuer(async (i) => i.brokerVersion) : undefined;
       const creds = await this.deps.withProvisioner((prov) =>
-        provisionAgent(prov, this.deps.auth()!, identity, { subscribe: lists.subscribe, allowSubscribe: lists.allowSubscribe, allowPublish: lists.allowPublish, lifecycleUid, expiresAt: exp }),
+        provisionAgent(prov, this.deps.auth()!, identity, {
+          subscribe: lists.subscribe, allowSubscribe: lists.allowSubscribe, allowPublish: lists.allowPublish,
+          ...(excluded ? { excludeSubscribe: lists.excludeSubscribe, excludePublish: lists.excludePublish, brokerVersion } : {}),
+          lifecycleUid, expiresAt: exp,
+        }),
       );
       // The same credential id the issuance path derives, so a re-sent identical credential maps to
       // the same row.
@@ -549,6 +558,11 @@ export class ManagedStaticLifecycle {
         eventPayloads: this.deps.eventPayloadsWithheld() ? false : a.launch.eventPayloads,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
+        // The exclusions the spawn minted, renewed for a broker at the exclusion floor only (SPEC §9):
+        // the version is that of the broker this issuance window reached.
+        ...(a.launch.excludeSubscribe?.length ? { excludeSubscribe: a.launch.excludeSubscribe } : {}),
+        ...(a.launch.excludePublish?.length ? { excludePublish: a.launch.excludePublish } : {}),
+        brokerVersion: i.brokerVersion,
         role: a.role,
         capabilities: a.launch.capabilities,
         ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),

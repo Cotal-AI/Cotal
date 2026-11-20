@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, channelInGrant, ensureDirNoSymlink, isConcreteChannel, parseChannelGrant, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -20,6 +20,9 @@ import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDir
 // path (channel policies are re-validated at provision time; these complete the untrusted contract).
 const TOKEN = /^[A-Za-z0-9_-]+$/;
 const RunId = z.string().regex(TOKEN, "runId must be a path-safe token ([A-Za-z0-9_-])");
+// A read or post list: a plain array, or `{ allow, exclude }` when it removes channels (SPEC §9). The
+// grant rules are applied by `validateLaunchPolicy`.
+const GrantList = z.union([z.array(z.string()), z.strictObject({ allow: z.array(z.string()), exclude: z.array(z.string()) })]);
 
 const LaunchAgentSchema = z.strictObject({
   name: z.string().min(1),
@@ -36,8 +39,8 @@ const LaunchAgentSchema = z.strictObject({
   events: z.boolean().optional(),
   capabilities: z.array(z.string().regex(/^[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)?$/, "capability must be a safe token, optionally role-namespaced (role:<r>)")).optional(),
   subscribe: z.array(z.string()),
-  allowSubscribe: z.array(z.string()),
-  allowPublish: z.array(z.string()),
+  allowSubscribe: GrantList,
+  allowPublish: GrantList,
   personaPath: z.string().optional(),
   hash: z.string().regex(/^[A-Za-z0-9]+$/, "hash must be alphanumeric"),
 });
@@ -131,11 +134,19 @@ const isKnownCapability = (c: string): boolean => c === "spawn" || c === "run" |
 
 /** Re-enforce the v1 manifest's policy constraints at the manager boundary so a hand-edited/malicious
  *  launch spec can't smuggle in what the CLI schema would reject: concrete channels only (no wildcard
- *  scopes — the v1 wildcard deferral), `subscribe ⊆ allowSubscribe`, and known capabilities. Channel
- *  policies are re-checked again at provision time, but this fails BEFORE any provisioning side effect. */
+ *  scopes: the v1 wildcard deferral), the grant rules on any exclusion (SPEC §9), `subscribe` within
+ *  the read grant, and known capabilities. Channel policies are re-checked again at provision time,
+ *  but this fails BEFORE any provisioning side effect. */
 function validateLaunchPolicy(a: MeshLaunchAgent): void {
   const where = `launch agent "${a.name}"`;
-  for (const [field, list] of [["subscribe", a.subscribe], ["allowSubscribe", a.allowSubscribe], ["allowPublish", a.allowPublish]] as const)
+  let read, post;
+  try {
+    read = parseChannelGrant(a.allowSubscribe, "allowSubscribe");
+    post = parseChannelGrant(a.allowPublish, "allowPublish");
+  } catch (e) {
+    throw new Error(`${where}: ${(e as Error).message}`);
+  }
+  for (const [field, list] of [["subscribe", a.subscribe], ["allowSubscribe", read.allow], ["allowPublish", post.allow]] as const)
     for (const ch of list) {
       try {
         assertValidChannel(ch);
@@ -144,7 +155,7 @@ function validateLaunchPolicy(a: MeshLaunchAgent): void {
       }
       if (!isConcreteChannel(ch)) throw new Error(`${where}: ${field} "${ch}" is a wildcard - not allowed in a v1 launch spec`);
     }
-  const missing = a.subscribe.filter((c) => !a.allowSubscribe.includes(c));
+  const missing = a.subscribe.filter((c) => !channelInGrant(read.allow, read.exclude, c));
   if (missing.length) throw new Error(`${where}: subscribe [${missing.join(", ")}] not within allowSubscribe`);
   for (const cap of a.capabilities ?? [])
     if (!isKnownCapability(cap)) throw new Error(`${where}: unknown capability "${cap}" (known: spawn, run, role:<r>)`);

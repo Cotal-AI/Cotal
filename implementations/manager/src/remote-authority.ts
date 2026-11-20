@@ -2,7 +2,10 @@ import { join } from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
 import {
   assertLifecycleToken,
+  channelGrantField,
   credsFromJwt,
+  parseChannelGrant,
+  type ChannelGrantField,
   admissionSnapshot,
   revocationSnapshot,
   type RemoteRunRevokeRequest,
@@ -528,12 +531,23 @@ export function retainedAgentAuthority(
       authority.owner !== request.target.owner || authority.actor !== request.target.actor ||
       authority.lifecycleUid !== request.target.lifecycleUid || !Array.isArray(authority.scope) ||
       !authority.scope.every((value) => typeof value === "string") ||
-      !Array.isArray(authority.allowSubscribe) || !authority.allowSubscribe.every((value) => typeof value === "string") ||
-      !Array.isArray(authority.allowPublish) || !authority.allowPublish.every((value) => typeof value === "string") ||
       (authority.role !== undefined && typeof authority.role !== "string") ||
       (authority.parent !== undefined && typeof authority.parent !== "string"))
     throw new Error("manager retained-agent validation returned an invalid or replacement authority");
-  return authority;
+  // Each list is a plain array, or `{ allow, exclude }` when the row removes channels (SPEC §9).
+  let lists;
+  try {
+    lists = { allowSubscribe: retainedGrant(authority.allowSubscribe, "allowSubscribe"), allowPublish: retainedGrant(authority.allowPublish, "allowPublish") };
+  } catch (e) {
+    throw new Error(`manager retained-agent validation returned an invalid authority: ${(e as Error).message}`);
+  }
+  return { ...authority, ...lists };
+}
+
+/** A grant list a host returned, in its canonical shape. Throws on anything the grant rules refuse. */
+function retainedGrant(value: unknown, field: string): ChannelGrantField {
+  const grant = parseChannelGrant(value, field);
+  return channelGrantField(grant.allow, grant.exclude);
 }
 
 export function remoteManagerGoalIndexScanRequest(
@@ -757,9 +771,16 @@ export function remoteManagedAgentEnrollmentMaterial(
     throw new Error("managed agent enrollment returned no valid host-selected lifecycle uid");
   if (typeof m.sentinelCreds !== "string" || m.sentinelCreds.length === 0)
     throw new Error("managed agent enrollment returned no sentinel credentials");
-  for (const key of ["subscribe", "allowSubscribe", "allowPublish"] as const)
-    if (!Array.isArray(m[key]) || !m[key].every((value) => typeof value === "string" && value.length > 0))
-      throw new Error(`managed agent enrollment returned an invalid ${key} list`);
+  if (!Array.isArray(m.subscribe) || !m.subscribe.every((value) => typeof value === "string" && value.length > 0))
+    throw new Error("managed agent enrollment returned an invalid subscribe list");
+  // A read or post list is a plain array, or `{ allow, exclude }` when the host's row removes
+  // channels (SPEC §9).
+  for (const key of ["allowSubscribe", "allowPublish"] as const)
+    try {
+      retainedGrant(m[key], key);
+    } catch (e) {
+      throw new Error(`managed agent enrollment returned an invalid ${key} list: ${(e as Error).message}`);
+    }
   // The bearer endpoint the CHILD will present its standing token to. A plaintext or non-URL pin
   // would put that token on the wire in the clear, so it is refused here rather than at first
   // exchange, and a loopback literal is the only HTTP exception (the same rule agent-bearer keeps).
@@ -772,25 +793,35 @@ export function remoteManagedAgentEnrollmentMaterial(
 }
 
 /** A managed agent's read and post channels as its enrollment asked for them and as the host
- *  granted them. */
+ *  granted them, each a plain list or `{ allow, exclude }` (SPEC §9). */
 export interface EnrolledAcl {
-  requested: { allowSubscribe: string[]; allowPublish: string[] };
-  effective: { allowSubscribe: string[]; allowPublish: string[] };
+  requested: { allowSubscribe: ChannelGrantField; allowPublish: ChannelGrantField };
+  effective: { allowSubscribe: ChannelGrantField; allowPublish: ChannelGrantField };
 }
 
 /** What the host granted beside what `requested` asked for, when the host's read or post list is
  *  not the one asked for: a host may narrow a request to the account's grant instead of refusing
- *  it. Undefined when the host granted what was asked. */
+ *  it, and a host that drops or changes an exclusion granted another list too. Undefined when the
+ *  host granted what was asked. */
 export function enrolledAcl(
-  requested: { allowSubscribe?: readonly string[]; allowPublish?: readonly string[] },
+  requested: { allowSubscribe?: readonly string[]; allowPublish?: readonly string[]; excludeSubscribe?: readonly string[]; excludePublish?: readonly string[] },
   material: Pick<RemoteManagedAgentEnrollmentResult["material"], "allowSubscribe" | "allowPublish">,
 ): EnrolledAcl | undefined {
-  const asked = { allowSubscribe: [...(requested.allowSubscribe ?? [])], allowPublish: [...(requested.allowPublish ?? [])] };
-  const granted = { allowSubscribe: [...material.allowSubscribe], allowPublish: [...material.allowPublish] };
-  const same = (a: string[], b: string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
+  const asked = {
+    allowSubscribe: { allow: [...(requested.allowSubscribe ?? [])], exclude: [...(requested.excludeSubscribe ?? [])] },
+    allowPublish: { allow: [...(requested.allowPublish ?? [])], exclude: [...(requested.excludePublish ?? [])] },
+  };
+  const granted = { allowSubscribe: parseChannelGrant(material.allowSubscribe, "allowSubscribe"), allowPublish: parseChannelGrant(material.allowPublish, "allowPublish") };
+  const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
+  const same = (a: { allow: readonly string[]; exclude: readonly string[] }, b: { allow: readonly string[]; exclude: readonly string[] }) =>
+    sameSet(a.allow, b.allow) && sameSet(a.exclude, b.exclude);
+  const field = (g: { allow: readonly string[]; exclude: readonly string[] }) => channelGrantField(g.allow, g.exclude);
   return same(asked.allowSubscribe, granted.allowSubscribe) && same(asked.allowPublish, granted.allowPublish)
     ? undefined
-    : { requested: asked, effective: granted };
+    : {
+        requested: { allowSubscribe: field(asked.allowSubscribe), allowPublish: field(asked.allowPublish) },
+        effective: { allowSubscribe: field(granted.allowSubscribe), allowPublish: field(granted.allowPublish) },
+      };
 }
 
 /** Build one host-owned prepare-retirement request (#1972 phase P0/P1). The opId is DERIVED from the

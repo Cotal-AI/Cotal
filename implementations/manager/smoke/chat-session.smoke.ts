@@ -13,7 +13,7 @@
  *
  * Run: pnpm smoke:manager-chat-session
  */
-import { SealRecipient, isCurvePublicKey, type StaticManagedSlotRow } from "@cotal-ai/core";
+import { SealRecipient, compileContract, isCurvePublicKey, type StaticManagedSlotRow } from "@cotal-ai/core";
 import {
   CHAT_ALIAS_PREFIX, CHAT_OPEN_BOUNDS, ChatSessionExpiry, chatOpenLists, chatRetireRefusal, drawChatAlias, isChatAlias, readChatOpenInput, readChatRetireInput,
   sealChatAdmission,
@@ -57,6 +57,38 @@ console.log("2. the open lists follow a spawn's rules");
     !("error" in lists({ allowSubscribe: ["events.local.UABC"] })));
   check("a blank label refuses", "error" in lists({ label: "   " }));
   check("a sealTo that is not a curve key refuses", "error" in lists({ sealTo: "UABC" }) && "error" in lists({ sealTo: `X${"A".repeat(55)}` }));
+}
+
+console.log("2c. a read or post list may remove channels (SPEC §9)");
+{
+  const sealTo = new SealRecipient().publicKey;
+  const lists = (input: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; excludeSubscribe?: string[]; excludePublish?: string[] }) =>
+    chatOpenLists({ label: "alice", sealTo, ...input });
+  const read = readChatOpenInput({ subscribe: ["team.a"], allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: { allow: ["team.>"], exclude: ["team.*.private"] }, label: "a", ttl: 60, sealTo });
+  check("the { allow, exclude } form is read into each list and its exclusions",
+    !("error" in read) && read.allowSubscribe?.join() === "team.>" && read.excludeSubscribe?.join() === "team.secret" && read.allowPublish?.join() === "team.>" && read.excludePublish?.join() === "team.*.private", read);
+  const opened = "error" in read ? read : chatOpenLists(read);
+  check("and opens with them: a sibling under the excluded wildcard is an initial channel",
+    !("error" in opened) && opened.subscribe.join() === "team.a" && opened.excludeSubscribe.join() === "team.secret" && opened.excludePublish.join() === "team.*.private", opened);
+  check("an excluded initial channel refuses", "error" in lists({ subscribe: ["team.secret"], allowSubscribe: ["team.>"], excludeSubscribe: ["team.secret"] }));
+  check("an initial pattern the exclusions cover in full refuses, one they cover in part opens",
+    "error" in lists({ subscribe: ["team.secret.>"], allowSubscribe: ["team.>"], excludeSubscribe: ["team.secret.>"] })
+    && !("error" in lists({ subscribe: ["team.>"], allowSubscribe: ["team.>"], excludeSubscribe: ["team.secret"] })));
+  check("an exclusion that removes nothing refuses", "error" in lists({ allowSubscribe: ["team.>"], excludeSubscribe: ["ops"] }) && "error" in lists({ allowPublish: ["team.>"], excludePublish: ["ops"] }));
+  check("an exclusion that removes a whole entry refuses", "error" in lists({ allowSubscribe: ["team.a", "ops"], excludeSubscribe: ["team.a"] }));
+  check("a read exclusion with no read list refuses rather than applying to the initial channels",
+    (() => { const r = lists({ subscribe: ["team.>"], excludeSubscribe: ["team.secret"] }); return "error" in r && /needs the allowSubscribe list/.test(r.error); })());
+  const refusedPair: [string, unknown][] = [
+    ["a pair with no exclusion", { allow: ["team.>"], exclude: [] }],
+    ["a pair with no exclude key", { allow: ["team.>"] }],
+    ["a pair with another key", { allow: ["team.>"], exclude: ["team.secret"], deny: ["x"] }],
+    ["a pair whose exclusion is not a string", { allow: ["team.>"], exclude: [7] }],
+    ["a pair with a repeated exclusion", { allow: ["team.>"], exclude: ["team.secret", "team.secret"] }],
+  ];
+  for (const [what, value] of refusedPair) {
+    const r = readChatOpenInput({ allowSubscribe: value, label: "a", ttl: 60, sealTo });
+    check(`open refuses ${what}`, "error" in r && /or \{ allow, exclude \}/.test(r.error), r);
+  }
 }
 
 console.log("2a. each raw request is read field by field before any effect");
@@ -138,7 +170,7 @@ console.log("4. the served contract");
   const shipped = managerShippedSurface();
   const doc = managerClusterDocument();
   const rows = doc.commands.filter((c) => c.name.startsWith("chat-session-"));
-  check("revision 51 retains chat-session-open and chat-session-retire", shipped.revision === 51 && shipped.names.includes("chat-session-open") && shipped.names.includes("chat-session-retire"));
+  check("revision 52 retains chat-session-open and chat-session-retire", shipped.revision === 52 && shipped.names.includes("chat-session-open") && shipped.names.includes("chat-session-retire"));
   check("both rows are untargeted, ephemeral and in the manager.chat class", rows.length === 2 && rows.every((r) => r.targeted === false && r.class === "ephemeral" && r.capability === "manager.chat" && r.modes === undefined), rows);
   const open = MANAGER_CONTRACTS["chat-session-open"];
   const retire = MANAGER_CONTRACTS["chat-session-retire"];
@@ -151,6 +183,15 @@ console.log("4. the served contract");
   check("open input refuses a ttl beyond the 900-second leaf", open.input.validate({ label: "a", ttl: 901, sealTo }) === false);
   check("open input refuses 65 entries and a duplicate in a list", open.input.validate({ allowSubscribe: Array.from({ length: 65 }, (_, i) => `c${i}`), label: "a", ttl: 60, sealTo }) === false && open.input.validate({ allowPublish: ["a", "a"], label: "a", ttl: 60, sealTo }) === false);
   check("open input refuses a 129-character label", open.input.validate({ label: "x".repeat(129), ttl: 60, sealTo }) === false);
+  const pair = { allow: ["team.>"], exclude: ["team.secret"] };
+  check("open input admits { allow, exclude } on the read and post lists, and refuses a pair with no exclusion",
+    open.input.validate({ allowSubscribe: pair, allowPublish: pair, label: "a", ttl: 60, sealTo }) === true
+    && open.input.validate({ allowSubscribe: { allow: ["team.>"], exclude: [] }, label: "a", ttl: 60, sealTo }) === false
+    && open.input.validate({ subscribe: pair, label: "a", ttl: 60, sealTo }) === false);
+  // The revision-51 contract took a plain list there, and its closed schema refuses the pair, so a
+  // manager that predates exclusions never opens a session on the allow list alone.
+  const revision51 = compileContract({ root: { type: "object", additionalProperties: false, properties: { allowSubscribe: { type: "array", items: { type: "string" } } } } }).validate;
+  check("a revision-51 list schema refuses the { allow, exclude } form", revision51({ allowSubscribe: ["team.>"] }) === true && revision51({ allowSubscribe: pair }) === false);
   const { listItems, labelLength, ttlSec } = CHAT_OPEN_BOUNDS;
   const atBounds = { allowSubscribe: Array.from({ length: listItems }, (_, i) => `c${i}`), label: "x".repeat(labelLength), ttl: ttlSec, sealTo };
   check("the request reader's bounds are the served schema's",

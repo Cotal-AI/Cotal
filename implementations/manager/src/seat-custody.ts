@@ -7,7 +7,7 @@ import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, retainConnectorSe
 import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProvedExit, type AgentHandle, type Runtime } from "./runtime/index.js";
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
-import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { launchGrants, readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
@@ -271,8 +271,7 @@ export class SeatCustody {
         model: entry.launch.model,
         variant: entry.launch.variant,
         subscribe: entry.launch.subscribe,
-        allowSubscribe: entry.launch.allowSubscribe,
-        allowPublish: entry.launch.allowPublish,
+        ...launchGrants(entry.launch),
         capabilities: entry.launch.capabilities,
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,

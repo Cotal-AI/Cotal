@@ -204,6 +204,19 @@ function writeSpec(name: string, body: unknown): string {
   throws("unknown capability rejected (not just unsafe token)", () => loadLaunchSpec(writeSpec("p3.json", agent1({ capabilities: ["teleport"] }))));
   // Belt-and-suspenders (review-fact): allowPublish-only wildcard is rejected too (same validateLaunchPolicy loop).
   throws("wildcard allowPublish rejected", () => loadLaunchSpec(writeSpec("p4.json", agent1({ allowPublish: ["team.>"] }))));
+  // The object form (SPEC 9) reaches the same policy. A v1 spec names concrete channels only, and an
+  // exclusion that overlaps a concrete entry removes all of it, so the grant rules refuse every one.
+  check("a plain-array spec still loads with plain arrays", JSON.stringify(loadLaunchSpec(writeSpec("x0.json", agent1({ allowSubscribe: ["general"] }))).agents[0].allowSubscribe) === JSON.stringify(["general"]));
+  const refusedBy = (label: string, part: RegExp, file: string, over: Record<string, unknown>) => {
+    let error = "";
+    try { loadLaunchSpec(writeSpec(file, agent1(over))); } catch (e) { error = (e as Error).message; }
+    check(label, part.test(error), error || "did not throw");
+  };
+  refusedBy("an exclusion of a concrete allow entry rejected", /allowSubscribe: "ops" is both allowed and excluded in full/, "x1.json", { allowSubscribe: { allow: ["general", "ops"], exclude: ["ops"] } });
+  refusedBy("an exclusion of a concrete post entry rejected", /allowPublish: "general" is both allowed and excluded in full/, "x2.json", { allowPublish: { allow: ["general"], exclude: ["general"] } });
+  refusedBy("an exclusion under a wildcard allow rejected", /allowSubscribe "team\.>" is a wildcard/, "x3.json", { allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] } });
+  refusedBy("an object form without an exclusion rejected", /needs at least one exclusion/, "x4.json", { allowSubscribe: { allow: ["general"], exclude: [] } });
+  refusedBy("an unknown key in the object form rejected (strict)", /allowSubscribe/, "x5.json", { allowSubscribe: { allow: ["general"], deny: ["ops"] } });
   // Envelope-rule vocabulary: a delegable `role:<r>` capability is a KNOWN manifest capability
   // (strict shape), while `admin` stays deliberately manifest-inadmissible — a hand-editable file
   // must not mint an authority-root agent.

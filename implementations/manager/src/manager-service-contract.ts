@@ -580,6 +580,18 @@ const PURGE_OUTPUT_SCHEMA = {
 } as const;
 
 const CHANNEL_LIST = { type: "array", items: { type: "string" } } as const;
+/** A read or post list: `list`, or `{ allow, exclude }` of two such lists with at least one exclusion,
+ *  when it removes channels or patterns (SPEC §9). A manager that predates exclusions accepts only the
+ *  list, so it refuses the object form instead of granting the allow list alone. */
+const grantList = <L extends object>(list: L) => ({
+  oneOf: [
+    { ...list },
+    {
+      type: "object", additionalProperties: false, required: ["allow", "exclude"],
+      properties: { allow: { ...list }, exclude: { ...list, minItems: 1 } },
+    },
+  ],
+}) as const;
 const PERSONA_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "persona"],
   properties: {
@@ -589,8 +601,8 @@ const PERSONA_INPUT_SCHEMA = {
     role: nonBlank(),
     agent: nonBlank(),
     subscribe: CHANNEL_LIST,
-    allowSubscribe: CHANNEL_LIST,
-    allowPublish: CHANNEL_LIST,
+    allowSubscribe: grantList(CHANNEL_LIST),
+    allowPublish: grantList(CHANNEL_LIST),
     capabilities: { type: "array", items: { type: "string" } },
     endpoints: PERSONA_ENDPOINTS_SCHEMA,
   },
@@ -623,8 +635,8 @@ const CHAT_SESSION_OPEN_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["label", "ttl", "sealTo"],
   properties: {
     subscribe: CHAT_CHANNEL_LIST,
-    allowSubscribe: CHAT_CHANNEL_LIST,
-    allowPublish: CHAT_CHANNEL_LIST,
+    allowSubscribe: grantList(CHAT_CHANNEL_LIST),
+    allowPublish: grantList(CHAT_CHANNEL_LIST),
     label: { type: "string", minLength: 1, maxLength: 128 },
     ttl: { type: "integer", minimum: 1, maximum: 900 },
     sealTo: CURVE_PUBLIC_KEY,
@@ -1293,9 +1305,13 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  51 = `status.connectors` rows no longer carry `permissionRequests`. The status output schema is
  *  closed, so a revision-50 contract rejects a row without the field and this one rejects a row
- *  with it. The number moves forward because revision 50 was published. */
+ *  with it. The number moves forward because revision 50 was published.
+ *
+ *  52 = a read or post list may be `{ allow, exclude }` (SPEC §9) on `spawn` (its own lists,
+ *  `callerAcl` and the inline `persona`), on `define-persona` and on `chat-session-open`. Each
+ *  input schema is closed, so a revision-51 contract rejects the object form. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 51, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 52, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

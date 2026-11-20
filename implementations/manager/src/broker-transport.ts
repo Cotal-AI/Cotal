@@ -11,6 +11,14 @@ import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import { appendStaticCredentialRow, recordSlotCredential, staticLifecycleTransport } from "./static-lifecycle.js";
 
+/** One issuance window: the issued-authority stores, and the version of the nats-server the
+ *  window's connection reached, which a mint carrying an exclusion must name (SPEC §9). */
+export interface IssuerWindow {
+  store: IssuedStore;
+  accepted: KV;
+  brokerVersion: string | undefined;
+}
+
 /** What {@link BrokerTransport} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface BrokerTransportDeps {
@@ -164,13 +172,13 @@ export class BrokerTransport {
    *  stage/release of one mint, or the retirement walk of one lifecycle's issuances. The store
    *  handle and the accepted-row KV live only for this window; the standing supervisor holds no
    *  grant on either bucket. */
-  async withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> {
+  async withIssuer<T>(fn: (i: IssuerWindow) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withIssuer: no space auth (an open mesh issues nothing)");
     const creds = await mintCreds(this.auth, newIdentity(), "issuer");
     const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
-      return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
+      return await fn({ ...await bindIssuedStores(kvm, await jetstreamManager(nc), this.space), brokerVersion: nc.info?.version });
     } finally {
       await drainAndClose(nc);
     }

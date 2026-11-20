@@ -1,5 +1,5 @@
-import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadAgentFile, loadCotalConfig, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
-import type { Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
+import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadAgentFile, loadCotalConfig, parseChannelGrant, parseOptionalChannelGrant, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import type { ChannelGrantField, Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { sameStrings } from "./credential-renewal.js";
 import { launchSpecForRun } from "./launch.js";
 import type { Manager, FreeSlotCause, ManagerResumeAgent, ManagerResumeIdentity, ManagerResumeInventory, ManagerResumeResult, SupervisedRestart } from "./manager.js";
-import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
+import { launchGrants, MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, storedGrants } from "./resume.js";
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { CustodialRuntime } from "./runtime/index.js";
 import { foreignEventChannels } from "./seat-launch.js";
@@ -22,6 +22,13 @@ const LATE_JOIN_POLL_MS = 1_000;
 /** How long a resume waits for a reaped orphan's principal to leave presence. Presence rows age
  * out after their 6s TTL, so three TTLs covers a killed seat that never published its leave. */
 const ORPHAN_PRESENCE_CLEAR_MS = 20_000;
+
+/** Whether the authority's list and the inventory's name the same channels and the same exclusions
+ *  (SPEC §9). An inventory with no post list means none. */
+function sameGrant(authority: ChannelGrantField, recorded: ChannelGrantField | undefined): boolean {
+  const a = parseChannelGrant(authority, "authority list"), r = parseOptionalChannelGrant(recorded, "inventory list") ?? { allow: [], exclude: [] };
+  return sameStrings(a.allow, r.allow) && sameStrings(a.exclude, r.exclude);
+}
 
 /** The owner a retained seat resumes under: its inventory identity's, which is the same value the
  *  adopted seat records as `userOwner`, so a resumed seat is counted against the owner that held
@@ -319,8 +326,7 @@ export class PreservedResume {
         model: a.launch.model,
         variant: a.launch.variant,
         subscribe: a.launch.subscribe,
-        allowSubscribe: a.launch.allowSubscribe,
-        allowPublish: a.launch.allowPublish,
+        ...storedGrants(a.launch),
         capabilities: a.launch.capabilities,
         ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
@@ -724,8 +730,9 @@ export class PreservedResume {
       // independently, so judging the channel against `name` would judge it against the half that
       // does not own the plane.
       const actor = entry.identity.mode === "user" ? entry.identity.actor : entry.identity.id;
+      const grants = launchGrants(entry.launch);
       const foreign = foreignEventChannels(
-        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],
+        [...grants.allowSubscribe, ...(grants.allowPublish ?? [])],
         owner,
         actor,
       );
@@ -831,8 +838,8 @@ export class PreservedResume {
       // never left to broker-fail after the child is already running (SPEC §13.1).
       if (adopted.lifecycleUid !== entry.identity.lifecycleUid)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} is incarnation ${adopted.lifecycleUid}, not the inventory's ${entry.identity.lifecycleUid}; a resume binds the exact recovered uid before any spawn (SPEC 13.1)`);
-      if (!sameStrings(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
-          !sameStrings(adopted.allowPublish, entry.launch.allowPublish) ||
+      if (!sameGrant(adopted.allowSubscribe, entry.launch.allowSubscribe) ||
+          !sameGrant(adopted.allowPublish, entry.launch.allowPublish) ||
           !sameStrings(adopted.scope, entry.launch.capabilities) ||
           adopted.role !== entry.role || adopted.parent !== entry.authorityParent)
         throw new Error(`retained user authority for ${entry.identity.owner}.${entry.identity.actor} no longer matches the inventory`);
@@ -1036,8 +1043,7 @@ export class PreservedResume {
           continueSession: exact ? undefined : retainedSession,
           reopenSession: exact ? retainedSession : undefined,
           subscribe: entry.launch.subscribe,
-          allowSubscribe: entry.launch.allowSubscribe,
-          allowPublish: entry.launch.allowPublish,
+          ...launchGrants(entry.launch),
           capabilities: entry.launch.capabilities,
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
@@ -1122,8 +1128,7 @@ export class PreservedResume {
           model: entry.launch.model,
           variant: entry.launch.variant,
           subscribe: entry.launch.subscribe,
-          allowSubscribe: entry.launch.allowSubscribe,
-          allowPublish: entry.launch.allowPublish,
+          ...launchGrants(entry.launch),
           capabilities: entry.launch.capabilities,
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,

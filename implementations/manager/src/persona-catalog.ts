@@ -1,5 +1,5 @@
 import { agentFilePath, capabilityWithin, composeWirePersona, copyPersonaEndpoints, EpEnvelopeError, listPersonaCatalog, loadAgentFile, lowerPersonaEndpoints, parsePersonaEndpoints, parsePrincipalKey, personaCatalogDescription, personaCatalogReadable, rejectionText, resolveAuthProvider, saveAgentFile } from "@cotal-ai/core";
-import type { AgentDef, ControlReply, EpCaller, EpCapability, PersonaEndpoint } from "@cotal-ai/core";
+import type { AgentDef, ChannelGrantField, ControlReply, EpCaller, EpCapability, PersonaEndpoint } from "@cotal-ai/core";
 import { userAuthStateDir } from "@cotal-ai/workspace";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
@@ -91,6 +91,10 @@ export class PersonaCatalog {
       if (v === undefined || v === null) return undefined;
       return (Array.isArray(v) ? v : [v]).map((x) => String(x));
     };
+    // A read or post list may be `{ allow, exclude }` (SPEC §9), which `composeWirePersona` reads and
+    // validates whole; it is passed on as sent.
+    const grantArg = (v: unknown): ChannelGrantField | undefined =>
+      v !== null && typeof v === "object" && !Array.isArray(v) ? v as ChannelGrantField : strList(v);
     const capabilities = strList(args.capabilities);
     let endpointArg: PersonaEndpoint[] | undefined;
     try {
@@ -129,8 +133,8 @@ export class PersonaCatalog {
               role: args.role as string | undefined,
               agent: args.agent as string | undefined,
               subscribe: strList(args.subscribe),
-              allowSubscribe: strList(args.allowSubscribe),
-              allowPublish: strList(args.allowPublish),
+              allowSubscribe: grantArg(args.allowSubscribe),
+              allowPublish: grantArg(args.allowPublish),
               capabilities,
               endpoints: copyPersonaEndpoints(endpointArg),
             },
