@@ -1,7 +1,7 @@
 /**
  * A read installs nothing. Each read runs through the built binary in a fresh sandbox with the seed
  * gate live (no `COTAL_SKIP_CONNECTOR_SEED`). From a source checkout the gate refuses to seed, so a
- * read that still reached it would exit 1 with that refusal; a read must run past it and leave the
+ * read that still reached it would fail with that refusal; a read must run past it and leave the
  * seed store and the extension manifest unwritten. A command that is not a read still meets the
  * gate. A read that would load a built-in installed at another version than the binary's names it
  * with `cotal ext seed` instead of importing it.
@@ -104,12 +104,25 @@ const GATE = /refusing to reconcile the operator-global seed store/;
       !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")), shown(after));
 }
 
+{
+  const { home, xdg, run } = sandbox();
+  const offline = { npm_config_offline: "true", npm_config_cache: join(home, "empty-npm-cache"), DO_NOT_TRACK: "1", USER: "config-smoke", LOGNAME: "config-smoke" };
+  const saved = run(["config", "set", "name", "Audit", "--user", "--json"], offline);
+  const unset = run(["config", "unset", "name", "--user", "--json"], offline);
+  const get = run(["config", "get", "name", "--user", "--json"], offline);
+  check("config unset removes a saved name offline without seeding connectors",
+    saved.status === 0 && unset.status === 0 && JSON.parse(unset.stdout).result.previous === "Audit" &&
+      get.status === 0 && JSON.parse(get.stdout).result.setting.winner?.source !== "user" &&
+      unset.stderr === "" && !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")),
+    { saved: shown(saved), unset: shown(unset), get: shown(get) });
+}
+
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
 {
   const { run } = sandbox();
   for (const args of [["space", "forget", "nope"], ["meshes", "rm", "nope"], ["ext", "add", "@acme/none"]]) {
     const r = run(args);
-    check(`${args.join(" ")} is not a read: the seed gate runs first and refuses from a source checkout`, r.status === 1 && GATE.test(r.stderr), shown(r));
+    check(`${args.join(" ")} is not a read: the seed gate runs first and refuses from a source checkout`, r.status === (args[0] === "space" ? 2 : 1) && GATE.test(r.stderr), shown(r));
   }
 }
 

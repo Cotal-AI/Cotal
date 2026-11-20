@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { BIN, HOST_ENV, boot, cotal, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario, spawn, existsSync, readFileSync } from "./harness.js";
+import { BIN, HOST_ENV, boot, bootArgs, cotal, join, check, freshCfg, seedDir, writeJson, listNames, track, finishScenario, spawn, existsSync, readFileSync } from "./harness.js";
 import { acquireReconcileLock, markSeedChildLive, seedChildStatus, clearChildMarker, writePendingChildMarker } from "../../src/seed/lock.js";
 import { processStartToken } from "@cotal-ai/workspace";
 import { randomBytes } from "node:crypto";
@@ -16,7 +16,7 @@ try {
     writeJson(join(seedDir(cfg), "reconcile.cursor.json"), { nonce, package: "hermes", phase: "add" });
     writeJson(marker, { state: "pending", parentPid: 2147483646, nonce, ts: 1, ...extra });
   };
-  for (const args of [["ext", "seed", "--repair"], ["update"], ["config", "unset", "color", "--user"]]) {
+  for (const args of [["ext", "seed", "--repair"], ["update"], bootArgs]) {
     pending();
     const result = cotal(cfg, args);
     check(`released marker: ${args.join(" ")} recovers`, result.status === 0 && /cleared an interrupted connector seed child marker/.test(result.stderr), result);
