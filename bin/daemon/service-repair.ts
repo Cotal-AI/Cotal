@@ -69,7 +69,7 @@ export function readServiceRepair(state: string): ServiceRepairIntent | undefine
   if (value.v !== 1 || typeof value.enabled !== "boolean" || typeof value.previousSource !== "string" || typeof value.nextSource !== "string"
     || !Array.isArray(value.argv) || !value.argv.every(item => typeof item === "string") || typeof value.version !== "string"
     || !Array.isArray(value.hostedSpaces) || !value.hostedSpaces.every(item => typeof item === "string") || !["prepared", "published"].includes(value.phase)
-    || value.receipt?.v !== 1 || value.receipt.mechanism !== "launchd-agent" || typeof value.receipt.unitSha256 !== "string"
+    || value.receipt?.v !== 1 || ![undefined, "systemd-user", "launchd-agent"].includes(value.receipt.mechanism) || typeof value.receipt.unitSha256 !== "string"
     || typeof value.receipt.unit !== "string" || typeof value.receipt.unitPath !== "string" || typeof value.receipt.installedAt !== "string"
     || !isAbsolute(value.receipt.unitPath) || !/^[a-f0-9]{64}$/.test(value.receipt.unitSha256)
     || sourceDigest(value.previousSource) !== value.receipt.unitSha256) throw new Error("the daemon service repair intent is invalid; nothing was changed");

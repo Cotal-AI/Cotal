@@ -825,8 +825,8 @@ platform; where none is built or shipped, daemon endpoint operations refuse `UNS
 The default daemon and CLI share the sign-in in the same Cotal home, so signing in through either one does not require a second approval in the other. An explicit `--daemon-home` keeps its own sign-in, separate from the CLI's Cotal home.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
-On macOS, `daemon status`, `daemon install` and an explicit `update --self` repair a recorded
-LaunchAgent whose program is missing. They verify its unchanged plist, receipt and loaded job
+On Linux and macOS, `daemon status`, `daemon install` and an explicit `update --self` repair a recorded
+systemd user unit or LaunchAgent whose program is missing. They verify its unchanged source, receipt and native job
 before moving it to the current CLI installation. The repair preserves sign-in and hosting records,
 refuses to stop occupied or unreadable Managers, and keeps an operator-disabled service stopped.
 An interrupted repair retains its source and receipt intent for the next command to finish.

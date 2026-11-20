@@ -645,7 +645,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
-      Object.assign(env, { HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "rt"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"), PATH: `${join(dir, "native")}:${join(dir, "nodebin")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      Object.assign(env, { HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"), PATH: `${join(dir, "native")}:${join(dir, "nodebin")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
       const call = (verb: string, flags: string[] = []) => {
         const args = [cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
         const result = spelling === "path"
@@ -696,7 +696,7 @@ try {
       writeFileSync(receiptFile, JSON.stringify({ ...JSON.parse(receipt), unitSha256: sha(legacy) }), { mode: 0o600 });
       const refusal = call("install");
       const repair = `${daemonCommandCopy("uninstall", home, ["--yes"])} && ${daemonCommandCopy("install", home)}`;
-      check(`Node ${spelling} legacy unit refuses with a copyable explicit repair`, refusal.status === 2 && refusal.doc.error?.code === "CONFLICT" && refusal.doc.error.remedy?.includes(repair) === true && readFileSync(unitPath, "utf8") === legacy, refusal);
+      check(`Node ${spelling} missing runtime refuses without native authority and names repair`, refusal.status === 2 && refusal.doc.error?.code === "TARGET_UNAVAILABLE" && refusal.doc.error.remedy?.includes(repair) === true && readFileSync(unitPath, "utf8") === legacy, refusal);
       // A changed source still refuses before replacement guidance can grant any native effect.
       writeFileSync(unitPath, `${legacy}\n# edited\n`);
       const callsBefore = readFileSync(context.calls, "utf8");
@@ -876,7 +876,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of available ? ["systemctl", "loginctl"] : ["systemctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       // No host PATH entries: the missing-tool cell must not find the machine's loginctl.
-      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "runtime"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       for (const format of ["plain", "json"]) {
         const child = spawnSync(process.execPath, [cli, "daemon", "install", "--daemon-home", daemonHome, "--dry-run", `--${format}`], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N7 ${format} did not exit normally`);
@@ -940,7 +940,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       // Only recording stand-ins can run, including during the private-group proof.
-      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(dir, "runtime"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       const call = (verb: string, flags: string[]) => {
         const child = spawnSync(process.execPath, [cli, "daemon", verb, ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N8 ${kind} ${verb} did not exit normally`);

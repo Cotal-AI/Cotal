@@ -12,7 +12,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { isDaemonStatusInterrupted, waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -203,7 +203,15 @@ const composed: Command = { ...command, async run(args) {
     }
   };
   try {
-  if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
+  if (args.values.self === true && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_AUTO_UPDATE && !process.env.COTAL_UPDATE_PARENT && (process.platform === "darwin" || process.platform === "linux")) {
+    let paths: DaemonPaths | undefined;
+    try { paths = daemonPaths(); }
+    catch (error) {
+      if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error;
+      if (linuxMissingProgram({ state: join(homeCotalDir(), "daemon") })) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the recorded daemon program is missing and this session cannot reach the user service", { remedy: "run `cotal daemon install` from a logged-in session using the working Cotal installation" });
+    }
+    if (paths && await repairMissingInstalledProgram(paths)) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
+  }
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
     if (prefix && existsSync(join(prefix, "lib/node_modules/.cotal-update-child"))) {
@@ -612,6 +620,7 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   if (process.env.COTAL_INSTALL_RECONCILE === "1") reconcileMissingShellRuntime(paths);
+  if (process.platform === "linux" && linuxMissingProgram(paths)) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon program is missing", { remedy: "run `cotal daemon install` from a working Cotal installation to repair the recorded service" });
   const installation = installedDaemonIdentity(paths);
   if (!installation.same) {
     console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
