@@ -41,7 +41,7 @@ import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { canonicalRoot, findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { findPreparedSpace } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
@@ -560,11 +560,26 @@ export function staticOperatorActor(): string {
   return actor;
 }
 
+function credsBrokerEntry(server: string): MeshEntry | undefined {
+  const key = brokerUrlKey(server);
+  const matches = loadMeshes().filter((entry) => brokerUrlKey(entry.server) === key);
+  if (matches.length > 1) throw new MeshTargetError(
+    "ambiguous-target",
+    `${matches.length} spaces are recorded at ${server} (${matches.map((entry) => entry.space).join(", ")}) - name one with --space`,
+    { server, available: matches.map((entry) => `${entry.space} (${entry.root})`) },
+  );
+  return matches[0];
+}
+
 /** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
  *  and no dial. Undefined when those records name no single space, which connecting then reports. A
  *  command reads it before it connects, so a refusal of its own input still names the mesh. */
 export function connectSpace(flags: ConnectFlags): string | undefined {
-  if (flags.creds) return flags.space ?? DEFAULT_SPACE;
+  if (flags.creds) {
+    try {
+      return flags.space ?? (flags.server === undefined ? credsSpace(process.cwd()) : credsBrokerEntry(flags.server))?.space ?? DEFAULT_SPACE;
+    } catch { return undefined; }
+  }
   if (flags.server && flags.space && !findMesh(flags.space)) return flags.space;
   try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }).space; }
   catch { return undefined; }
@@ -575,7 +590,8 @@ export function connectSpace(flags: ConnectFlags): string | undefined {
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
  * and the exit; a caller that must survive a refusal (a reconnect loop) calls this one.
  *  • Explicit `--creds` → a RAW connection to `--server`, or to the address its space is registered
- *    at: `--space`, else the selected space or this folder's ({@link credsSpace}), else the default.
+ *    at. Without `--space`, use the broker's unique registration when `--server` is given,
+ *    or the selected space or this folder's ({@link credsSpace}) otherwise. The fallback is the default.
  *    Except when the target is a known per-user-auth mesh. Those refuse static creds fail-closed
  *    because old local creds remain broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
@@ -584,25 +600,28 @@ export function connectSpace(flags: ConnectFlags): string | undefined {
 export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: ConnectOpts = {}): Promise<Connection> {
   if (flags.creds) {
     let resolved: { space: string; selected: boolean } | undefined;
-    if (flags.space === undefined && flags.server === undefined) {
-      try { resolved = credsSpace(process.cwd()); }
-      catch (e) {
+    let brokerEntry: ReturnType<typeof credsBrokerEntry>;
+    if (flags.space === undefined) {
+      try {
+        if (flags.server === undefined) resolved = credsSpace(process.cwd());
+        else brokerEntry = credsBrokerEntry(flags.server);
+      } catch (e) {
         if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, code: targetErrorCode(e.code) });
         throw e;
       }
     }
-    const space = flags.space ?? resolved?.space ?? DEFAULT_SPACE;
-    // A space the caller named, selected or is in is named in a refusal; the default is not.
-    const named = flags.space !== undefined || resolved !== undefined;
+    const space = flags.space ?? brokerEntry?.space ?? resolved?.space ?? DEFAULT_SPACE;
+    // An explicit or resolved space is named in a refusal; the fallback is not.
+    const named = flags.space !== undefined || brokerEntry !== undefined || resolved !== undefined;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
     // as "any recorded server for this space", so a user mesh on a NON-default port is still
     // recognized when the caller omits --server. Defaulting the server BEFORE the guard would make
     // its `recorded.server === server` match miss every non-4222 user mesh, letting a static --creds
     // slip past the flip.
-    refuseStaticCredsForKnownUserAuth(space, flags.server, "--creds");
+    refuseStaticCredsForKnownUserAuth(space, brokerEntry?.server ?? flags.server, "--creds");
     // The credential goes only to a broker the caller paired it with: `--server`, or the address the
     // space is registered at. The default address is never assumed for it.
-    const recorded = flags.server === undefined ? findMesh(space) : undefined;
+    const recorded = flags.server === undefined ? findMesh(space) : brokerEntry;
     const server = flags.server ?? recorded?.server;
     if (server === undefined)
       throw new ConnectRefusal(

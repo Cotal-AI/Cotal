@@ -200,6 +200,9 @@ try {
   const chatAfter = await state(chatStream(space));
   check("the channel mint remedy produces a credential that stores on the requested channel", recovered.status === 0 && recovered.envelope?.result?.stored === true
     && chatAfter.messages === chatBefore.messages + 1 && chatAfter.last_seq === chatBefore.last_seq + 1, { reply: shown(recovered), chatBefore, chatAfter });
+  const brokerOnly = run(["send", "--channel=--audit", "registered broker with explicit creds", "--server", servers, "--creds", credsPath("audit_poster"), "--json"], empty);
+  check("--server with --creds and no --space stores in the broker's registered space", brokerOnly.status === 0
+    && brokerOnly.envelope?.target?.space === space && brokerOnly.envelope.result?.stored === true, shown(brokerOnly));
 
   // #7045: an open space that runs elsewhere gets its streams from its first participant, and a
   // one-shot send may be that participant. The space is not registered and its broker is open.

@@ -572,7 +572,9 @@ will not load, such as an `auth.json` that is not JSON, and says to repair or re
 name running spaces or pick another space, and it changes no file. `--space <name>` still targets a
 space by name.
 
-`--creds <file>` presents that credential to `--server`. Without `--server`, it goes to the broker
+`--creds <file>` presents that credential to `--server`. Without `--space`, it uses the space
+registered at that broker, or `main` if none is registered there. If several spaces are registered
+at that broker, name one with `--space`. Without `--server`, the credential goes to the broker
 its space is registered at and keeps that registration's TLS requirement. The space is `--space`,
 else the selected space, else the space of the project the command runs in, else `main`. Inside a
 project whose root has one space other than the selection, it is that space. A command never picks the only running space for a credential. A space not registered here is refused with
