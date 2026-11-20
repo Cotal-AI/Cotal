@@ -292,7 +292,7 @@ export class CotalEndpoint extends EventEmitter {
   private readonly membershipFeedWatches = new Set<MembershipFeedWatch>();
   /** The plane-3 delivery daemon side of this endpoint (fan-out writer, trusted reader, control
    *  responders) and the agent's DELIVER pump. Every dependency is read when it is used. */
-  private readonly deliveryPlane = new EndpointDeliveryPlane({
+  private readonly deliveryPlane: EndpointDeliveryPlane = new EndpointDeliveryPlane({
     ackWaitMs: () => this.ackWaitMs,
     actor: () => this.actor,
     owner: () => this.owner,
@@ -2505,7 +2505,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The Plane-3 registries, manager and daemon-renewal leases, and durable membership writes of this
    *  endpoint. Every dependency is read when it is used, so a field assigned after construction is seen. */
-  private readonly durableBackstop = new EndpointDurableBackstop({
+  private readonly durableBackstop: EndpointDurableBackstop = new EndpointDurableBackstop({
     nc: () => this.nc,
     js: () => this.js,
     jsm: () => this.jsm,
@@ -2897,7 +2897,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The agent-side durable membership of this endpoint. Every dependency is read when it is used, so a
    *  field assigned after construction is seen. */
-  private readonly durable = new EndpointDurable({
+  private readonly durable: EndpointDurable = new EndpointDurable({
     js: () => this.js,
     jsm: () => this.jsm,
     space: () => this.space,
@@ -2990,7 +2990,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The anycast request rail of this endpoint. Every dependency is read when it is used, so a field
    *  assigned after construction is seen. */
-  private readonly anycastRail = new EndpointAnycast({
+  private readonly anycastRail: EndpointAnycast = new EndpointAnycast({
     nc: () => this.nc,
     jsm: () => this.jsm,
     js: () => this.js,
@@ -3450,7 +3450,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The durable consumers of this endpoint. Every dependency is read when it is used, so a field
    *  assigned after construction is seen. */
-  private readonly consumers = new EndpointConsumers({
+  private readonly consumers: EndpointConsumers = new EndpointConsumers({
     nc: () => this.nc,
     jsm: () => this.jsm,
     setJsm: (value) => { this.jsm = value; },
