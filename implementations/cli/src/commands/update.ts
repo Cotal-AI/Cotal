@@ -47,6 +47,7 @@ import {
   liveUpdateClosureOwner,
   recoveryProcessStartToken,
   observeUnownedRecovery,
+  UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
@@ -344,6 +345,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
+  let connectorSelection: UnreadableConnectorSelection | undefined;
   if (args.values.self === true) {
     try { rt.preflightExecution?.(); }
     catch (error) {
@@ -360,18 +362,24 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
         if (recoverExtensionPromotion(true)) prepareConnectorConfigForUpdate();
       } else recoverExtensionPromotion();
     } catch (error) {
-      const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
-        native: { outcome: "not-executed" }, remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
-      });
-      recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
-      throw failure;
+      if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
+      else {
+        const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
+          native: { outcome: "not-executed" }, remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
+        });
+        recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
+        throw failure;
+      }
     }
-    // Built-in self-update skips the extension overlay. Validate its inventory after recovery, not before.
-    try { loadExtensionsManifest(); }
+    // Built-in self-update skips the extension overlay. Validate its inventory after recovery.
+    if (!connectorSelection) try { loadExtensionsManifest(); }
     catch (error) {
-      rt.err(c.red(`✗ ${message(error)}`));
-      process.exitCode = 1;
-      return;
+      if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
+      else {
+        rt.err(c.red(`✗ ${message(error)}`));
+        process.exitCode = 1;
+        return;
+      }
     }
   }
   const restored = await recoverInterruptedUpdate(rt);
@@ -397,7 +405,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
     if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
   }
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
@@ -570,7 +578,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -642,9 +650,17 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       recordUpdateDeferral(current, "waiting for update preflight");
     }
     if (upgrading) {
+      // Replacing packages still requires an identifiable graph for dependency checks and rollback.
+      if (unreadableSelection) throw unreadableSelection;
       const code = await upgradeAndReconcile(latest.version, current, rt, target);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
+    }
+    if (unreadableSelection) {
+      rt.err(unreadableSelection.message);
+      rt.out("No newer CLI version. No connector reconciliation was run.");
+      reportVersion(current, latest.version, rt, false);
+      return 0;
     }
     if (rt.isCurrent?.()) {
       reportUncheckedPreparedRecords(rt, target);

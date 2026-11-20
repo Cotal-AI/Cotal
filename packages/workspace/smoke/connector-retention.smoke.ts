@@ -42,7 +42,7 @@ assert.equal(existsSync(before),true);
 `], { env: { ...childEnv, XDG_CONFIG_HOME: freshConfig, COTAL_HOME: join(root, "fresh-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(fresh.status, 0, `${fresh.stdout}${fresh.stderr}`);
   passed++;
-  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "initial-inherit", "checkout", "desktop", "windows"] as const) {
+  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -85,6 +85,36 @@ assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'
 writeFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'new graph\\n');
 assert.equal(readFileSync(join(original,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
 assert.equal(readFileSync(join(original,'seed/stamp.json'),'utf8'),JSON.stringify({generation:'0.162.0'}));
+${scenario === "interrupted-canonical-move" || scenario === "interrupted-canonical-cleanup" ? `
+const set=dirname(selected), aside=join(set,'.retired-cotal');
+const records=[join(set,'selection.json'),join(dirname(set),'current.json')];
+const prior=records.map(path=>readFileSync(path));
+const oldInode=fs.statSync(selected).ino;
+renameSync(selected,aside);
+${scenario === "interrupted-canonical-move" ? `
+assert.equal(fs.existsSync(selected),false,'interrupted first rename leaves the canonical path absent');
+prepareConnectorConfigForUpdate();
+assert.equal(fs.statSync(selected).ino,oldInode,'self-update preflight restores the original directory');
+assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'utf8'),'new graph\\n');
+` : `
+fs.cpSync(aside,selected,{recursive:true});
+fs.chmodSync(selected,0o700);
+writeFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'replacement graph\\n');
+const newInode=fs.statSync(selected).ino;
+inheritConnectorConfig();
+assert.equal(fs.statSync(selected).ino,newInode,'reconcile leaves the published replacement in place');
+assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'utf8'),'replacement graph\\n');
+`}
+assert.equal(fs.existsSync(aside),false,'no retired directory remains after recovery');
+assert.deepEqual(records.map(path=>readFileSync(path)),prior,'recovery does not republish the selection');
+assert.equal(connectorConfigDir(),selected);
+${scenario === "interrupted-canonical-move" ? `
+renameSync(selected,aside);
+assert.equal(canRecoverConnectorConfig(),true,'extension writer gate restores the directory before reading the selection');
+assert.equal(fs.statSync(selected).ino,oldInode);
+assert.equal(fs.existsSync(aside),false);
+` : ""}
+` : ""}
 ${scenario === "pnpm-dlx-refresh" ? `currentDlx=join(dlxB,'dist/cotal.js');assert.equal(connectorConfigDir(),selected,'refreshed pnpm dlx cache instance reuses the retained connector directory');assert.equal(retainConnectorConfig(),selected,'refreshed pnpm dlx cache instance does not create a second retained tree');assert.equal(fs.readdirSync(join(original,'installs')).length,1,'pnpm dlx cache refresh keeps one installs/<key> directory');` : ""}
 ${scenario === "unselected-holder" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const before=snapshot(dirname(selected));writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));assert.equal(connectorConfigDir(),selected,'unselected version reads predecessor');const holder=retainConnectorSeat('manager-B','worker');assert.equal(holder.active,false,'unselected version must not reserve a holder');holder.launched(process.pid);holder.ended();pruneRetainedConnectorConfig([]);assert.deepEqual(snapshot(dirname(selected)),before,'unselected version neither writes predecessor nor prunes');assert.equal(fs.existsSync(join(dirname(dirname(selected)),'0.165.5')),false,'unselected version creates no set');` : ""}
 ${scenario === "seat-holder" ? `const {retainConnectorSeat,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});const {launchSeat,reapSeat,identityVerdict}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../../seat/dist/index.js")).href)});const custody=join(process.env.HOME,'custody-${scenario}');const holder=retainConnectorSeat('manager-A','worker');const rec=launchSeat({root:custody,name:'worker',cwd:process.env.HOME,spec:{command:process.execPath,args:['-e','setInterval(()=>{},1000)']}});holder.launched(rec.childPid);try{writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.5',bin:{cotal:'./dist/cotal.js'}}));retainConnectorConfig();pruneRetainedConnectorConfig(['0.165.5']);assert(fs.existsSync(join(selected,'extensions/node_modules/old/lazy.js')),'orphan seat keeps its plugin');assert.equal(identityVerdict(rec.childPid,rec.childStart,rec.bootId),'live');await reapSeat(custody,rec.id);pruneRetainedConnectorConfig(['0.165.5']);assert(!fs.existsSync(selected),'dead custody identity releases its set without Manager cleanup');}finally{await reapSeat(custody,rec.id);}` : ""}
@@ -146,7 +176,11 @@ console.log('PASS');
     passed++;
   }
   rmSync(join(installed, "desktop-runtime.json"), { force: true });
-  for (const source of ["canonical", "retained", "linked-retained"] as const) {
+  // Published 0.171.2's previousConfig accepts exactly this selection shape.
+  const accepts01712 = `(record, entry, sets) => record.v === 1 && record.entry === entry && /^\\d+\\.\\d+\\.\\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) && record.root === join(sets, record.version, 'cotal')`;
+  for (const source of ["canonical", "other-retained", "retained", "linked-retained", "identical", "seat-held"] as const) {
+    const canonical = ["canonical", "other-retained", "identical"].includes(source);
+    const expected = source === "identical" ? "pi installed" : "tmux added; pi removed";
     const config = join(root, `update-${source}`);
     mkdirSync(join(config, "cotal/seed"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions"), { mode: 0o700 });
@@ -156,26 +190,33 @@ console.log('PASS');
     }
     const childScript = `
 import assert from 'node:assert/strict';
-import {chmodSync,readFileSync,mkdirSync,statSync} from 'node:fs';
+import {chmodSync,existsSync,readFileSync,mkdirSync,statSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
 const {connectorConfigDir,inheritConnectorConfig,prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
 assert.equal(connectorConfigDir(),process.env.SNAPSHOT,'reconciliation reads the updater snapshot, not the stale target');
 const staleExtensions=join(process.env.STALE,'extensions');
-chmodSync(staleExtensions,0o500);
+${source === "identical" ? "" : "chmodSync(staleExtensions,0o500);"}
 prepareConnectorConfigForUpdate();
-assert.equal(statSync(staleExtensions).mode&0o777,0o500,'snapshot preflight leaves the stale target untouched');
+${source === "identical" ? "" : "assert.equal(statSync(staleExtensions).mode&0o777,0o500,'snapshot preflight leaves the stale target untouched');"}
 const configHome=process.env.XDG_CONFIG_HOME;
 const stage=join(dirname(process.env.STALE),'.extensions.stage-fixture','config');
 mkdirSync(join(stage,'cotal/extensions'),{recursive:true,mode:0o700});
 process.env.XDG_CONFIG_HOME=stage;
 assert.equal(connectorConfigDir(),join(stage,'cotal'),'extension validation must keep its private stage');
 process.env.XDG_CONFIG_HOME=configHome;
+const oldInode=statSync(process.env.STALE).ino;
 inheritConnectorConfig();
 const selected=connectorConfigDir();
-assert.notEqual(selected,process.env.STALE);
-assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),'tmux added; pi removed');
-assert.equal(readFileSync(join(process.env.STALE,'extensions/state'),'utf8'),'pi installed');
+const accepts01712=${accepts01712};
+const sets=dirname(dirname(process.env.STALE));
+for (const record of [join(sets,'current.json'),join(dirname(process.env.STALE),'selection.json')]) {
+  assert.equal(accepts01712(JSON.parse(readFileSync(record,'utf8')),${JSON.stringify(entry)},sets),${canonical});
+}
+${canonical ? "assert.equal(selected,process.env.STALE);" : "assert.notEqual(selected,process.env.STALE);assert.equal(readFileSync(join(process.env.STALE,'extensions/state'),'utf8'),'pi installed');"}
+assert.equal(statSync(process.env.STALE).ino === oldInode, ${source !== "canonical" && source !== "other-retained"}, 'reuse keeps the inode but replacement installs the whole staged directory');
+assert.equal(existsSync(join(dirname(process.env.STALE),'.retired-cotal')),false,'successful replacement removes the retired directory');
+assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),${JSON.stringify(expected)});
 const selectedExtensions=join(selected,'extensions');
 chmodSync(selectedExtensions,0o500);
 prepareConnectorConfigForUpdate();
@@ -186,21 +227,25 @@ assert.equal(connectorConfigDir(),selected,'one transaction inherits only once')
 `;
     const script = `
 import assert from 'node:assert/strict';
-import {cpSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync} from 'node:fs';
+import {chmodSync,cpSync,readFileSync,writeFileSync,mkdirSync,mkdtempSync,rmSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
-const {retainConnectorConfig,connectorConfigDir}=await import(${JSON.stringify(module)});
+const {retainConnectorConfig,connectorConfigDir,retainConnectorSeat}=await import(${JSON.stringify(module)});
 const {claimUpdateClosureAccess,updateClosureChildEnv,updateClosureOwner}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/update-closure.ts")).href)});
 const {writeUpdateRecovery,clearUpdateRecovery}=await import(${JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/updates.ts")).href)});
 const metadata=${JSON.stringify(join(installed, "package.json"))};
 writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));
 const stale=retainConnectorConfig();
 writeFileSync(join(stale,'extensions/state'),'pi installed');
-const current=${source === "canonical" ? JSON.stringify(join(config, "cotal")) : "stale"};
+${source === "seat-held" ? "retainConnectorSeat('manager','worker');" : ""}
+${source === "other-retained" ? "writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.166.0',bin:{cotal:'./dist/cotal.js'}}));const other=retainConnectorConfig();writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));" : ""}
+const current=${["canonical", "identical", "seat-held"].includes(source) ? JSON.stringify(join(config, "cotal")) : source === "other-retained" ? "other" : "stale"};
+${source === "identical" ? "rmSync(join(stale,'seed'),{recursive:true,force:true});mkdirSync(join(stale,'seed'),{mode:0o700});" : ""}
 const snapshot=mkdtempSync(join(current,'.update-snapshot-'));
-cpSync(join(current,'extensions'),join(snapshot,'extensions'),{recursive:true});
-writeFileSync(join(snapshot,'extensions/state'),'tmux added; pi removed');
+cpSync(join(${source === "identical" ? "stale" : "current"},'extensions'),join(snapshot,'extensions'),{recursive:true});
+${source === "identical" ? "mkdirSync(join(snapshot,'seed'),{mode:0o700});for(const path of [stale,snapshot]){chmodSync(join(path,'extensions'),0o700);chmodSync(join(path,'extensions/state'),0o600);}" : ""}
+writeFileSync(join(snapshot,'extensions/state'),${JSON.stringify(expected)});
 const release=claimUpdateClosureAccess();
 try {
 writeUpdateRecovery({previous:'0.166.0',target:'0.165.4',installed:'0.166.0',phase:'replacing',reason:'test update',owner:updateClosureOwner(),snapshot});
@@ -208,8 +253,8 @@ const child=spawnSync(process.execPath,['--import','tsx','--input-type=module','
 assert.equal(child.status,0,child.stdout+child.stderr);
 clearUpdateRecovery();
 const selected=connectorConfigDir();
-assert.notEqual(selected,stale,'completed update keeps its new selection');
-assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),'tmux added; pi removed');
+assert.equal(selected === stale,${canonical},'completed update keeps its published selection');
+assert.equal(readFileSync(join(selected,'extensions/state'),'utf8'),${JSON.stringify(expected)});
 } finally { release(); }
 `;
     const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...childEnv, XDG_CONFIG_HOME: config, COTAL_HOME: join(config, "home") }, encoding: "utf8", timeout: 30_000 });

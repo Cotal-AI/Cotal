@@ -278,6 +278,15 @@ cotal update
 This reconciles installed extensions and connector integrations with the running CLI's release.
 A self-update inherits the extension state captured by the updating CLI, including added extensions
 and deliberate connector removals, even when that release has an older retained connector set.
+It reuses a matching retained copy or replaces an idle copy at the directory older releases expect.
+If a seat might still use the existing copy, or an update rollback needs it, Cotal keeps that
+directory and selects a separate copy. If replacement is interrupted, the next reconciliation
+restores the old copy if necessary or removes it once the new copy is in place.
+An unreadable connector selection does not prevent `cotal --version`, `cotal status` or a bare
+`cotal down`. `cotal status` reports the connector inventory as unreadable.
+`cotal update --self` still checks for a newer release. When no newer release is available, it
+reports that it did not reconcile connectors. Replacing packages still needs a readable selection
+to preserve the installed connector state.
 If the connector seed store is newer than the running CLI, reconciliation refuses before creating
 or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
 If you copied the standalone pi extension into your own host, Cotal leaves that copy unchanged.
