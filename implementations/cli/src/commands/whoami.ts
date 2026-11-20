@@ -1,8 +1,9 @@
 import { resolve } from "node:path";
-import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
+import { credsClaims, dlvStream, dmStream, parseChannelGrant, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
+import { agentGrants, authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
+import { exceptText } from "../lib/grant-exclusions.js";
 
 const credsFlag = { name: "creds", type: "string", value: "<file>", description: "report what this credential file may do, from its own claims; no broker is contacted" } as const satisfies FlagSpec;
 
@@ -41,6 +42,9 @@ export interface WhoamiResult {
   };
   readonly read: Grant | null;
   readonly post: Grant | null;
+  /** Channels or patterns removed from `read` / `post` (SPEC §9); present only when nonempty. */
+  readonly excludeRead?: readonly string[];
+  readonly excludePost?: readonly string[];
   readonly dms: boolean | null;
   readonly capabilities: Grant | null;
 }
@@ -68,6 +72,10 @@ export interface WhoamiCredentialResult {
   readonly revokedAt: string | null;
   readonly read: Grant | null;
   readonly post: Grant | null;
+  /** The channels or patterns its deny rows remove from `read` / `post` (SPEC §9); present only
+   *  when nonempty. */
+  readonly excludeRead?: readonly string[];
+  readonly excludePost?: readonly string[];
   /** Direct-message history: every DM in the space, only its own, or none. */
   readonly dms: "all" | "own" | "none" | null;
 }
@@ -157,7 +165,10 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       grant,
     } as const;
     if (grant === null || grant === "not-granted") result = { ...base, identity, read: [], post: [], dms: false, capabilities: [] };
-    else if (currentGrant) result = { ...base, identity, read: [...currentGrant.allowSubscribe], post: [...currentGrant.allowPublish], dms: issuerAuthority?.grant.dmHistory === "own", capabilities: [...currentGrant.scope] };
+    else if (currentGrant) {
+      const read = parseChannelGrant(currentGrant.allowSubscribe, "allowSubscribe"), post = parseChannelGrant(currentGrant.allowPublish, "allowPublish");
+      result = { ...base, identity, read: [...read.allow], post: [...post.allow], ...excluded(read.exclude, post.exclude), dms: issuerAuthority?.grant.dmHistory === "own", capabilities: [...currentGrant.scope] };
+    }
     else {
       warnings.push(authorityWarning ?? { code: "GRANT_NOT_LOCAL", target, message: `the grant ledger for ${t.space} is not on this machine, so what this identity may read, post and do is unknown here` });
       result = { ...base, identity, read: null, post: null, dms: null, capabilities: null };
@@ -183,6 +194,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
     (r) => whoamiView(r),
   );
 }
+
+/** The exclusion fields of a result, each present only when nonempty. */
+const excluded = (read: readonly string[], post: readonly string[]) => ({ ...(read.length ? { excludeRead: [...read] } : {}), ...(post.length ? { excludePost: [...post] } : {}) });
 
 /** The channels a credential's allowed subjects reach on the space's chat plane: `all` for the whole
  *  plane, else the channel of each `chat.<owner>.<actor>.<channel>` row. */
@@ -225,6 +239,7 @@ async function whoamiCredential(path: string, presentation: Presentation): Promi
     : "none";
   const iso = (seconds: unknown) => typeof seconds === "number" && Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
   const revokedAt = space === null ? undefined : await recordedRevocation(space, creds);
+  const denied = space === null ? undefined : agentGrants(nats, space);
   const result: WhoamiCredentialResult = {
     kind: "credential",
     file,
@@ -238,6 +253,7 @@ async function whoamiCredential(path: string, presentation: Presentation): Promi
     revokedAt: iso(revokedAt),
     read: space === null ? null : chatChannels(sub, space),
     post: space === null ? null : chatChannels(pub, space),
+    ...(denied ? excluded(denied.excludeRead, denied.excludePost) : {}),
     dms,
   };
   if (space !== null) recordOperationSpace(space);
@@ -271,8 +287,8 @@ function credentialView(r: WhoamiCredentialResult): Report {
     ["issued", r.issuedAt ?? unknown],
     ["expires", r.expiresAt === null ? "never: it has no expiry" : r.expired ? { text: `${r.expiresAt} (expired)`, tone: "waiting" } : r.expiresAt],
     ...(r.revokedAt === null ? [] : [["revoked", { text: `${r.revokedAt} with auth revoke-credential; the broker refuses this key once the stack starts after that`, tone: "waiting" }] as const]),
-    ["read", grantText(r.read, "no channels")],
-    ["post", grantText(r.post, "no channels")],
+    ["read", grantText(r.read, "no channels", r.excludeRead)],
+    ["post", grantText(r.post, "no channels", r.excludePost)],
     ["dm history", r.dms === null ? unknown : DMS_TEXT[r.dms]],
   ];
   const hint: Cell = { text: "Read from the file's own claims: its signature is not checked and no broker is contacted. The broker enforces these permissions.", tone: "hint" };
@@ -293,8 +309,11 @@ function writePrepared(presentation: Presentation, space: string, root: string):
   writeResult(presentation, { command: "whoami", target: { space, root }, result }, (r) => whoamiView(r, root));
 }
 
-const grantText = (g: Grant | null, empty: string): Cell =>
-  g === null ? { text: "unknown", tone: "waiting" } : g === "all" ? "all" : g.length ? g.map((x) => (x === ">" ? "all" : x)).join(", ") : { text: empty, tone: "hint" };
+const grantText = (g: Grant | null, empty: string, exclude?: readonly string[]): Cell => {
+  if (g === null) return { text: "unknown", tone: "waiting" };
+  const text = g === "all" ? "all" : g.map((x) => (x === ">" ? "all" : x)).join(", ");
+  return text ? exceptText(text, exclude) : { text: empty, tone: "hint" };
+};
 
 const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   open: "none: the broker authenticates nothing",
@@ -315,7 +334,7 @@ function whoamiView(r: WhoamiResult, preparedRoot?: string): Report {
     rows.push(["principal", id.principal ?? { text: id.subject ? "not known on this machine" : "not signed in", tone: "waiting" }]);
     if (id.subject) rows.push(["login", `${id.subject}, cached expiry ${id.loginExpiresAt}`]);
   }
-  rows.push(["read", grantText(r.read, "no channels")], ["post", grantText(r.post, "no channels")], ["dm history", r.dms === null ? { text: "unknown", tone: "waiting" } : r.dms ? "yes" : "no"], ["capabilities", grantText(r.capabilities, "none")]);
+  rows.push(["read", grantText(r.read, "no channels", r.excludeRead)], ["post", grantText(r.post, "no channels", r.excludePost)], ["dm history", r.dms === null ? { text: "unknown", tone: "waiting" } : r.dms ? "yes" : "no"], ["capabilities", grantText(r.capabilities, "none")]);
   const hints: Cell[] = [];
   if (id.kind === "user" && !id.subject) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
   else if (id.grant === "not-granted") hints.push({ text: "the space's operator grants this identity with `cotal actor grant cli`", tone: "hint" });

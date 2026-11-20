@@ -23,6 +23,7 @@ import {
   unansweredRequest,
   resolveAuthProvider,
   personaDir,
+  parseChannelGrant,
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
@@ -403,7 +404,7 @@ type SelectedResult =
       /** The stopped process holding a loopback broker's listener, when `connection` is `broker-stopped`. */
       brokerPid?: number;
       staleRecord: boolean;
-      login: { idp: string; subject: string | null; expiresAt: string | null; actor: "granted" | "not-granted" | "not-checkable" | null; grant: { label: string | null; read: string[]; post: string[]; scope: string[] } | null } | null;
+      login: { idp: string; subject: string | null; expiresAt: string | null; actor: "granted" | "not-granted" | "not-checkable" | null; grant: { label: string | null; read: string[]; post: string[]; excludeRead?: string[]; excludePost?: string[]; scope: string[] } | null } | null;
       deliveryResponder: DeliveryResponderState | null;
       snapshot: { state: "read" | "unavailable" | "skipped"; reason: string | null };
       channels: { channel: string; messages: number }[] | null;
@@ -1454,6 +1455,17 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
+/** A user's ledger grant as status reports it: each list with its exclusions (SPEC §9), the
+ *  exclusion lists present only when nonempty. */
+function userGrant(grant: Exclude<NonNullable<UserAuthStatus["grant"]>, "not-granted">): NonNullable<NonNullable<Extract<SelectedResult, { resolved: true }>["login"]>["grant"]> {
+  const read = parseChannelGrant(grant.allowSubscribe, "allowSubscribe"), post = parseChannelGrant(grant.allowPublish, "allowPublish");
+  return {
+    label: grant.label ?? null, read: [...read.allow], post: [...post.allow],
+    ...(read.exclude.length ? { excludeRead: [...read.exclude] } : {}), ...(post.exclude.length ? { excludePost: [...post.exclude] } : {}),
+    scope: [...grant.scope],
+  };
+}
+
 async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
@@ -1568,7 +1580,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
           subject: st.login?.sub ?? null,
           expiresAt: st.login ? new Date(st.login.expiresAt * 1000).toISOString() : null,
           actor: !st.login ? null : st.grant === "not-granted" ? "not-granted" : st.grant ? "granted" : "not-checkable",
-          grant: st.login && st.grant && st.grant !== "not-granted" ? { label: st.grant.label ?? null, read: [...st.grant.allowSubscribe], post: [...st.grant.allowPublish], scope: [...st.grant.scope] } : null,
+          grant: st.login && st.grant && st.grant !== "not-granted" ? userGrant(st.grant) : null,
         }
       : null;
     const granted = Boolean(st?.login && st.grant && st.grant !== "not-granted");
@@ -1895,7 +1907,7 @@ function selectedSection(s: SelectedResult, folder: StatusResult["folder"], deli
       else if (l.actor === "granted" && l.grant)
         rows.push([
           "actor",
-          cell(`"${CLI_USER_ACTOR}" granted${l.grant.label ? ` (${l.grant.label})` : ""} - read [${l.grant.read.join(", ")}], post [${l.grant.post.join(", ")}]${l.grant.scope.length ? `, scope [${l.grant.scope.join(", ")}]` : ""}`, "ok"),
+          cell(`"${CLI_USER_ACTOR}" granted${l.grant.label ? ` (${l.grant.label})` : ""} - read [${l.grant.read.join(", ")}]${l.grant.excludeRead ? ` except [${l.grant.excludeRead.join(", ")}]` : ""}, post [${l.grant.post.join(", ")}]${l.grant.excludePost ? ` except [${l.grant.excludePost.join(", ")}]` : ""}${l.grant.scope.length ? `, scope [${l.grant.scope.join(", ")}]` : ""}`, "ok"),
         ]);
       else rows.push(["actor", cell("grant not checkable on this machine (no local ledger)", "hint")]);
     }

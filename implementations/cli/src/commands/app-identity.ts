@@ -15,12 +15,13 @@ import {
   mintCreds,
   mintLifecycleUid,
   mkSecretDir,
+  grantOverreachOf,
   newIdentity,
-  patternInAllow,
   processStartToken,
   provisionAgent,
-  resolveReadAcl,
+  resolveReadGrant,
   type AgentDef,
+  type ChannelGrant,
   type ConversationGrant,
   type ConversationPending,
   type ConversationSelection,
@@ -29,7 +30,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { activateTerminalSeat, defaultPersonaRef, homeCotalDir, issueTerminalSeat, resolveTargetOrThrow, retireTerminalSeat, type MeshTarget } from "@cotal-ai/workspace";
-import { withProvisioner } from "../lib/provisioner.js";
+import { brokerVersionAt, withProvisioner } from "../lib/provisioner.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { defaultPersonaFix } from "../lib/default-persona.js";
@@ -149,22 +150,35 @@ function missingPersonaNext(persona: string, t: MeshTarget): string {
 }
 
 /** The grant a conversation gets on an open or static mesh: the channels, role and capabilities of
- *  the persona a bare `cotal spawn` loads there, or the part of them a selection names. A selection
- *  only narrows, and an item the persona does not hold refuses the whole request. */
-function localGrant(def: AgentDef, selection?: ConversationSelection): { subscribe: string[]; grant: ConversationGrant } {
+ *  the persona a bare `cotal spawn` loads there, with its exclusions, or the part of them a selection
+ *  names. A selection only narrows, and an item the persona does not hold refuses the whole request. */
+export function localGrant(def: AgentDef, selection?: ConversationSelection): { subscribe: string[]; grant: ConversationGrant } {
   const subscribe = def.subscribe ?? [];
-  const allowSubscribe = resolveReadAcl(subscribe, def.allowSubscribe);
+  const excludeSubscribe = def.excludeSubscribe ?? [], excludePublish = def.excludePublish ?? [];
+  const allowSubscribe = resolveReadGrant(subscribe, def.allowSubscribe, excludeSubscribe);
   const allowPublish = def.allowPublish ?? [];
   const role = def.role ?? null;
   const scope = def.capabilities ?? [];
-  if (!selection) return { subscribe, grant: { scope, role, allowSubscribe, allowPublish, subscribe: [] } };
+  if (!selection) return { subscribe, grant: {
+    scope, role, allowSubscribe, allowPublish, subscribe: [],
+    ...(excludeSubscribe.length ? { excludeSubscribe } : {}), ...(excludePublish.length ? { excludePublish } : {}),
+  } };
   for (const capability of selection.capabilities.filter((c) => !c.startsWith("role:")))
     if (!scope.includes(capability)) throw new Error(`capability "${capability}" is not within what this mesh's default persona grants; nothing was opened`);
   if (selection.role !== null && selection.role !== role)
     throw new Error(`the role "${selection.role}" is not within what this mesh's default persona grants; nothing was opened`);
-  for (const { channel, access } of selection.channels)
-    if (!patternInAllow(allowSubscribe, channel) || (access === "read-post" && !patternInAllow(allowPublish, channel)))
-      throw new Error(`channel "${channel}" (${access}) is not within what this mesh's default persona grants; nothing was opened`);
+  // A selection names no exclusion, so each channel or pattern it names must lie inside the persona's
+  // grant in full, exclusions applied: one that would reach an excluded channel is refused, never
+  // opened without the exclusion (SPEC §9).
+  const read: ChannelGrant = { allow: allowSubscribe, exclude: excludeSubscribe }, post: ChannelGrant = { allow: allowPublish, exclude: excludePublish };
+  for (const { channel, access } of selection.channels) {
+    const parent = [read, ...(access === "read-post" ? [post] : [])].find((g) => grantOverreachOf({ allow: [channel], exclude: [] }, g).length);
+    if (!parent) continue;
+    const excluded = grantOverreachOf({ allow: [channel], exclude: [] }, { allow: parent.allow, exclude: [] }).length === 0;
+    throw new Error(excluded
+      ? `channel "${channel}" (${access}) reaches channels this mesh's default persona excludes (${parent.exclude.join(", ")}); nothing was opened`
+      : `channel "${channel}" (${access}) is not within what this mesh's default persona grants; nothing was opened`);
+  }
   return { subscribe: [], grant: {
     scope: [...selection.capabilities], role: selection.role, subscribe: [], endpoints: [],
     allowSubscribe: selection.channels.map((c) => c.channel),
@@ -223,6 +237,8 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
     COTAL_SPACE: t.space, COTAL_SERVERS: t.server, COTAL_NAME: name, COTAL_TLS: t.tlsRequired ? "1" : "0",
     COTAL_ID: identity.id, COTAL_LIFECYCLE_UID: lifecycleUid, COTAL_CAPABILITIES: grant.scope.join(","),
     COTAL_SUBSCRIBE: subscribe.join(","), COTAL_ALLOW_SUBSCRIBE: grant.allowSubscribe.join(","), COTAL_ALLOW_PUBLISH: allowPublish.join(","),
+    ...(grant.excludeSubscribe ? { COTAL_EXCLUDE_SUBSCRIBE: grant.excludeSubscribe.join(",") } : {}),
+    ...(grant.excludePublish ? { COTAL_EXCLUDE_PUBLISH: grant.excludePublish.join(",") } : {}),
     ...(grant.role ? { COTAL_ROLE: grant.role } : {}), COTAL_WORKSPACE_ROOT: homeCotalDir(), ...(events ? { COTAL_EVENTS: "1" } : {}),
     ...(t.policy?.events === "required" ? { COTAL_EVENTS_REQUIRED: "1" } : {}),
   };
@@ -238,12 +254,17 @@ async function provisionLocalLocked(t: MeshTarget, name: string, session: string
   const seat = { actor: identity.id, alias: name, lifecycleUid };
   let acceptedToken: string;
   try {
+    // An exclusion is signed only for a broker at the exclusion floor; the mint checks the version
+    // this reads (SPEC §9).
+    const brokerVersion = grant.excludeSubscribe || grant.excludePublish ? await brokerVersionAt({ space: t.space, servers: t.server, tls: t.tlsRequired, auth }) : undefined;
     const creds = await withProvisioner({ space: t.space, servers: t.server, tls: t.tlsRequired, auth }, "app-provisioner", async (prov) => {
       await activateTerminalSeat(seatTarget, seat);
       return issueTerminalSeat(seatTarget, seat, undefined, (issue) => {
         acceptedToken = issue.issued.acceptedToken;
         return provisionAgent(prov, auth, identity, {
           subscribe, allowSubscribe: grant.allowSubscribe, allowPublish, ...(grant.role ? { role: grant.role } : {}), capabilities: grant.scope,
+          ...(grant.excludeSubscribe ? { excludeSubscribe: grant.excludeSubscribe } : {}), ...(grant.excludePublish ? { excludePublish: grant.excludePublish } : {}),
+          ...(brokerVersion !== undefined ? { brokerVersion } : {}),
           lifecycleUid, expiresAt: issue.expiresAt, issued: issue.issued, issuance: issue.issuance,
         });
       });

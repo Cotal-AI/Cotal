@@ -1,15 +1,24 @@
 /** Credential joins diagnose missing read grants and mismatched lifecycles (#6009).
  * Runs the published command entry with credentials minted by `auth mint --provision`,
- * against a real authenticated broker and bound delivery responder. */
+ * against a real authenticated broker and bound delivery responder.
+ *
+ * It also covers a credential whose lists remove channels (SPEC §9) through the same entry: the
+ * `auth mint` exclusion flags and their refusals (no list flag, an exclusion that removes nothing, a
+ * read exclusion without --provision, a broker that does not answer), the deny rows the credential
+ * carries, `whoami --creds`, the join precheck read from the subscribe rows with the deny rows applied
+ * (the excluded channel refused, a sibling under the same wildcard joined), `send` refusing an excluded
+ * channel before the broker and storing a sibling post, `history --creds` refusing the excluded
+ * channel and reading the sibling through the delivery daemon, and an --identity remint that keeps the
+ * exclusions. Needs a nats-server at the exclusion floor (2.12.7 or 2.14.0) on PATH. */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  CotalEndpoint, createSpaceAuth, mintCreds, mintLifecycleUid,
+  CotalEndpoint, createSpaceAuth, credsClaims, mintCreds, mintLifecycleUid,
   newIdentity, seedChannelRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
@@ -30,8 +39,9 @@ process.env.COTAL_HOME = env.COTAL_HOME;
 const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 const children = new Set<ChildProcess>();
 const terminals = new Set<Pty>();
-function cli(...args: string[]) {
-  const proc = spawn(process.execPath, ["--import", tsxLoader, join(tree, "bin/cotal.ts"), ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+function cli(...args: string[]) { return cliIn(project, ...args); }
+function cliIn(cwd: string, ...args: string[]) {
+  const proc = spawn(process.execPath, ["--import", tsxLoader, join(tree, "bin/cotal.ts"), ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
   children.add(proc);
   let text = "";
   proc.stdout.on("data", (b: Buffer) => { text += b.toString(); });
@@ -226,6 +236,68 @@ try {
   writer.proc.write("/quit\r");
   await until(() => reader.code() !== undefined && writer.code() !== undefined);
   check("both interactive sessions quit successfully", reader.code() === 0 && writer.code() === 0);
+  // ── exclusions: a list may remove channels or patterns from what it allows (SPEC §9) ──────────
+  {
+    const refusal = async (label: string, code: number, expected: RegExp, ...args: string[]) => {
+      const out = join(dir, `${label}.creds`);
+      const run = cli("auth", "mint", label, "--space", space, "--no-persona", ...args, "--out", out);
+      check(`exclusions: ${label} refuses before anything is minted`, await run.exited === code && expected.test(run.output()) && !existsSync(out), run.output());
+    };
+    await refusal("no_list", 1, /--exclude-subscribe removes channels from --allow-subscribe, so it needs --allow-subscribe/, "--exclude-subscribe", "review.secret");
+    await refusal("removes_nothing", 1, /exclusion "general" overlaps no entry of \[review\.>\], so it removes nothing/, "--allow-subscribe", "review.>", "--exclude-subscribe", "general");
+    await refusal("whole_entry", 1, /"review\.code" is both allowed and excluded in full/, "--allow-publish", "review.code", "--exclude-publish", "review.>");
+    await refusal("no_row", 1, /a read exclusion \(review\.secret\) needs --provision/, "--allow-subscribe", "review.>", "--exclude-subscribe", "review.secret");
+    // A post exclusion needs no row, but its deny row is signed only for a broker whose version is read.
+    const offRoot = join(dir, "offline");
+    mkdirSync(offRoot);
+    saveSpaceAuth(authDir(offRoot), await createSpaceAuth("offline"));
+    recordMesh({ space: "offline", server: `nats://127.0.0.1:${await freePort()}`, root: offRoot, mode: "auth", ts: new Date().toISOString() });
+    const offOut = join(dir, "offline.creds");
+    const offline = cliIn(offRoot, "auth", "mint", "offline_post", "--space", "offline", "--no-persona", "--allow-publish", "review.>", "--exclude-publish", "review.secret", "--out", offOut);
+    check("exclusions: an offline mint with an exclusion refuses, naming the broker it could not read", await offline.exited === 2 &&
+      /TARGET_UNAVAILABLE/.test(offline.output()) && /did not answer, and a credential with an exclusion is signed only for a broker whose version meets the exclusion floor/.test(offline.output()) && !existsSync(offOut), offline.output());
+
+    const minted = cli("auth", "mint", "excluded", "--space", space, "--provision", "--role", "reviewer", "--allow-subscribe", "review.>", "--exclude-subscribe", "review.secret",
+      "--allow-publish", "review.>", "--exclude-publish", "review.secret", "--out", join(dir, "excluded.creds"));
+    check("exclusions: auth mint --provision with read and post exclusions succeeds", await minted.exited === 0, minted.output());
+    check("  its receipt names each list with its exclusions", /May read:\s+review\.> except review\.secret\n/.test(minted.output()) && /May post:\s+review\.> except review\.secret\n/.test(minted.output()), minted.output());
+    const file = join(dir, "excluded.creds"), uid = /^\s*Lifecycle:\s+(\S+)/m.exec(minted.output())?.[1];
+    assert.ok(uid, minted.output());
+    const rows = (path: string) => (credsClaims(readFileSync(path, "utf8")).nats ?? {}) as { pub?: { allow?: string[]; deny?: string[] }; sub?: { allow?: string[]; deny?: string[] } };
+    const nats = rows(file);
+    check("  the credential carries each exclusion as a deny row, and no direct history create for the excluded wildcard",
+      (nats.sub?.deny ?? []).some((r) => r.endsWith(".chat.*.*.review.secret")) && (nats.pub?.deny ?? []).some((r) => /\.chat\.[^.*]+\.[^.*]+\.review\.secret$/.test(r)) &&
+      !(nats.pub?.allow ?? []).some((r) => r.startsWith("$JS.API.CONSUMER.CREATE.") && r.endsWith(".chat.*.*.review.>")), JSON.stringify(nats));
+
+    const who = cli("whoami", "--creds", file);
+    check("exclusions: whoami --creds names the lists with their exclusions", await who.exited === 0 &&
+      /read:\s+review\.> except review\.secret\n/.test(who.output()) && /post:\s+review\.> except review\.secret\n/.test(who.output()), who.output());
+
+    const excludedJoin = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", "excluded", "--channel", "review.secret");
+    check("exclusions: the join precheck refuses the excluded channel, naming the exclusion", await excludedJoin.exited === 2 &&
+      /Code: +PERMISSION_DENIED/.test(excludedJoin.output()) && excludedJoin.output().includes("this credential's read grant excludes #review.secret") && !/Permissions Violation/.test(excludedJoin.output()), excludedJoin.output());
+    await joins("excluded-sibling", file, uid, "review.code");
+
+    const excludedSend = cli("send", "--space", space, "--creds", file, "-c", "review.secret", "EXCLUDED_POST");
+    check("exclusions: send refuses the excluded channel before the broker does", await excludedSend.exited === 2 &&
+      /Code: +PERMISSION_DENIED/.test(excludedSend.output()) && excludedSend.output().includes("#review.secret is excluded from this identity's post grant (#review.> except #review.secret); nothing was sent"), excludedSend.output());
+    const siblingSend = cli("send", "--space", space, "--creds", file, "-c", "review.code", "SIBLING_POST");
+    check("exclusions: send stores a post to a sibling under the excluded wildcard", await siblingSend.exited === 0 && /Message stored/.test(siblingSend.output()), siblingSend.output());
+
+    const excludedHistory = cli("history", "review.secret", "--space", space, "--creds", file);
+    check("exclusions: history refuses the excluded channel, naming the grant with its exclusion", await excludedHistory.exited === 2 &&
+      excludedHistory.output().includes("this credential may not read #review.secret in join-creds-grants: its history grant is #review.> except #review.secret") &&
+      excludedHistory.output().includes("read a channel its grant does not exclude"), excludedHistory.output());
+    const siblingHistory = cli("history", "review.code", "--space", space, "--creds", file);
+    check("exclusions: history reads the sibling through the delivery daemon", await siblingHistory.exited === 0 && siblingHistory.output().includes("SIBLING_POST"), siblingHistory.output());
+    const stored = cli("history", "review.secret", "--space", space);
+    check("  and the excluded post was never stored", await stored.exited === 0 && !stored.output().includes("EXCLUDED_POST"), stored.output());
+
+    const again = cli("auth", "mint", "excluded_again", "--space", space, "--identity", file, "--provision", "--out", join(dir, "excluded-again.creds"));
+    check("exclusions: an --identity remint keeps the exclusions", await again.exited === 0 &&
+      /May read:\s+review\.> except review\.secret \(carried from --identity\)/.test(again.output()) && /May post:\s+review\.> except review\.secret \(carried from --identity\)/.test(again.output()) &&
+      (rows(join(dir, "excluded-again.creds")).sub?.deny ?? []).some((r) => r.endsWith(".chat.*.*.review.secret")), again.output());
+  }
   emitSentinel({ passed, failed: 0 });
 } finally {
   for (const terminal of terminals) terminal.kill();

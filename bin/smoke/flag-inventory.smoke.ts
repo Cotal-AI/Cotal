@@ -53,7 +53,7 @@ for (const [input, expected] of [
   ["review,review", ["review", "review"]], ["review.>,ops.*", ["review.>", "ops.*"]],
 ] as const) assert.deepEqual(parseCommaList(input), expected, `comma-list flag ${JSON.stringify(input)}`);
 
-for (const [file, calls] of [["spawn", 6], ["mint", 2], ["persona", 1], ["persona-remote", 6], ["personas", 1]] as const) {
+for (const [file, calls] of [["spawn", 10], ["mint", 4], ["persona", 1], ["persona-remote", 8], ["personas", 1]] as const) {
   const source = readFileSync(new URL(`../../implementations/cli/src/commands/${file}.ts`, import.meta.url), "utf8");
   assert.match(source, /import\s*\{[^}]*\bparseCommaList\b[^}]*\}\s*from\s*["']@cotal-ai\/workspace["']/s, `${file} imports the shared list rule`);
   assert.equal([...source.matchAll(/\bparseCommaList\(/g)].length, calls, `${file} routes its list flags through the shared rule`);
@@ -169,7 +169,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string:C", "detach:boolean:d", "dry-run:boolean",
-      "enrollment-file:string", "events:boolean", "expect-lifecycle-uid:string", "expect-owner:string",
+      "enrollment-file:string", "events:boolean", "exclude-publish:string", "exclude-subscribe:string", "expect-lifecycle-uid:string", "expect-owner:string",
       "expires-at:string", "expires-in:string", "file:string:f", "foreground:boolean", "harness:string:H", "json:boolean:j", "live-only:boolean",
       "model:string:m", "name:string:n", "no-event-payloads:boolean", "no-events:boolean", "on:string", "opt:string", "plain:boolean",
       "prompt:string:p", "restart-window:string", "restarts:string", "resume:string", "role:string",
@@ -200,7 +200,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Local definitions, or an exact manager's catalog with `--on`; `--announce` posts after a remote save.
   persona: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "announce:string", "file:string:f", "from:string",
+      "allow-publish:string", "allow-subscribe:string", "announce:string", "exclude-publish:string", "exclude-subscribe:string", "file:string:f", "from:string",
       "harness:string:H", "json:boolean:j", "model:string:m", "on:string", "plain:boolean", "prompt:string:p",
       "role:string", "server:string", "space:string:s", "subscribe:string", "yes:boolean:y",
     ],
@@ -465,7 +465,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // written for either parses and reaches the replacement.
   mint: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
+      "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "exclude-publish:string", "exclude-subscribe:string", "expires-at:string",
       "expires-in:string", "force:boolean", "identity:string", "json:boolean:j", "no-expiry:boolean", "no-persona:boolean", "out:string",
       "plain:boolean", "profile:string", "provision:boolean", "replace:boolean", "role:string", "server:string", "signer:boolean", "space:string:s",
     ],

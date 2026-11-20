@@ -353,6 +353,20 @@ const declared = new Set(["general", "review"]);
   assert.ok(issues.some((i) => i.message.includes("wildcard")));
 }
 
+// A persona list that removes channels (SPEC §9) removes them from a wildcard, since an exclusion of
+// a concrete entry is refused whole. Under include it is refused as that wildcard, so a manifest
+// launch never starts it with the exclusion dropped; under reject the persona's lists, exclusions
+// included, are not used, and the manifest's own concrete lists are what it launches with.
+{
+  const excluding = persona({ allowSubscribe: ["team.>", "general"], excludeSubscribe: ["team.secret"], allowPublish: ["team.>"], excludePublish: ["team.secret"] });
+  const included = prepareAgent(agent({ persona: "/x/a.md", personaPermissions: "include" }), excluding, declared);
+  assert.ok(included.issues.some((i) => i.message === 'persona allowSubscribe "team.>" is a wildcard - not supported in v1 (declare concrete channels)'), "include refuses the excluded wildcard read list");
+  assert.ok(included.issues.some((i) => i.message === 'persona allowPublish "team.>" is a wildcard - not supported in v1 (declare concrete channels)'), "and the excluded wildcard post list");
+  const rejected = prepareAgent(agent({ persona: "/x/a.md", personaPermissions: "reject" }), excluding, declared);
+  assert.deepEqual(rejected.issues, [], "reject takes none of the persona's lists");
+  assert.deepEqual(rejected.prepared.policy, { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] }, "and launches with the manifest's concrete lists");
+}
+
 // a persona that lists endpoints is refused by name under either personaPermissions, `[]` included,
 // so a manifest launch never starts it without them
 for (const personaPermissions of ["include", "reject"] as const)

@@ -3,8 +3,8 @@ import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import {
   DEV_OWNER, accountRevocations, acquireLock, agentFilePath, assertValidRole, credsClaims, ensureDirNoSymlink, identityFromCreds,
   loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionAgentDurables,
-  resolveReadAcl, writeSecretFileAtomic, writeSecretFileCreateOnly,
-  type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
+  requireExclusionFloor, resolveReadGrant, writeSecretFileAtomic, writeSecretFileCreateOnly,
+  type FlagValues, type Identity, type ParsedArgs, type Profile, type ProvisionOpts, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, credentialMintFlags,
@@ -18,7 +18,8 @@ import {
 import { staticMintAuthority } from "../lib/credential-authority.js";
 import { recordCredentialExport } from "../lib/credential-exports.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { withProvisioner } from "../lib/provisioner.js";
+import { brokerVersionAt, withProvisioner } from "../lib/provisioner.js";
+import { exceptText } from "../lib/grant-exclusions.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
@@ -68,14 +69,21 @@ function heldGrants(standing: string, space: string, account: string): AgentGran
   return claims.name === "agent" && (claims.nats?.issuer_account ?? claims.iss) === account ? agentGrants(claims.nats ?? {}, space) : undefined;
 }
 
-const grantText = (grants: AgentGrants) => `read ${channelList(grants.read)}, post ${channelList(grants.post)} and ${grants.role ? `role ${grants.role}` : "no role"}`;
+/** Grants as a receipt shows them: each exclusion list (SPEC §9) only when it removes something, so a
+ *  credential without exclusions reports the fields it always did. */
+type ShownGrants = Omit<AgentGrants, "excludeRead" | "excludePost"> & { excludeRead?: string[]; excludePost?: string[] };
+const shownGrants = ({ read, post, role, excludeRead, excludePost }: AgentGrants): ShownGrants =>
+  ({ read, post, role, ...(excludeRead.length ? { excludeRead } : {}), ...(excludePost.length ? { excludePost } : {}) });
+
+const grantText = (grants: ShownGrants) => `read ${exceptText(channelList(grants.read), grants.excludeRead)}, post ${exceptText(channelList(grants.post), grants.excludePost)} and ${grants.role ? `role ${grants.role}` : "no role"}`;
 const sameChannels = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((channel) => b.includes(channel));
 
 /** A replacement holds only the grants its persona file, --identity or grant flags name, not the replaced
  *  credential's, so grants that differ from those are named, with the flags that name the replaced ones. */
-function replacedGrantsChanged(held: AgentGrants | undefined, grants: AgentGrants | null, space: string, name: string): OutputWarning[] {
-  if (!held || !grants || sameChannels(held.read, grants.read) && sameChannels(held.post, grants.post) && held.role === grants.role) return [];
-  return [{ code: "REPLACED_GRANTS_CHANGED", target: { space, name, grants: { read: grants.read, post: grants.post, role: grants.role }, replacedGrants: held }, message: `the credential this replaced held ${grantText(held)}, and this one holds ${grantText(grants)}: a replacement holds only the grants its persona file, --identity or its grant flags name, and \`${grantMintFlags(held).trim()}\` names the replaced ones` }];
+function replacedGrantsChanged(held: AgentGrants | undefined, grants: ShownGrants | null, space: string, name: string): OutputWarning[] {
+  if (!held || !grants || sameChannels(held.read, grants.read) && sameChannels(held.post, grants.post) && sameChannels(held.excludeRead, grants.excludeRead ?? []) && sameChannels(held.excludePost, grants.excludePost ?? []) && held.role === grants.role) return [];
+  const { read, post, role, excludeRead, excludePost } = grants;
+  return [{ code: "REPLACED_GRANTS_CHANGED", target: { space, name, grants: { read, post, role, ...(excludeRead ? { excludeRead } : {}), ...(excludePost ? { excludePost } : {}) }, replacedGrants: shownGrants(held) }, message: `the credential this replaced held ${grantText(held)}, and this one holds ${grantText(grants)}: a replacement holds only the grants its persona file, --identity or its grant flags name, and \`${grantMintFlags(held).trim()}\` names the replaced ones` }];
 }
 
 /** A replaced credential with no expiry claim is not revoked by its replacement, so any copy of it
@@ -186,6 +194,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       }
     }
     let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
+    let excludeSubscribe: string[] = [], excludePublish: string[] = [];
     if (profile === "agent") {
       const path = agentFilePath(root, name);
       // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
@@ -193,10 +202,13 @@ export async function mint(args: ParsedArgs): Promise<void> {
       let definition;
       try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
       catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
-      // A flag wins, then the grants of the --identity credential, then the persona.
-      const readFlag = parseCommaList(values["allow-subscribe"]);
-      allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
-      allowPublish = parseCommaList(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
+      // A flag wins, then the grants of the --identity credential, then the persona. Each list keeps
+      // the exclusions of its source: a list flag's are the matching exclusion flag's (SPEC §9).
+      const readFlag = parseCommaList(values["allow-subscribe"]), postFlag = parseCommaList(values["allow-publish"]);
+      excludeSubscribe = readFlag !== undefined ? parseCommaList(values["exclude-subscribe"]) ?? [] : carried ? carried.excludeRead : definition?.excludeSubscribe ?? [];
+      excludePublish = postFlag !== undefined ? parseCommaList(values["exclude-publish"]) ?? [] : carried ? carried.excludePost : definition?.excludePublish ?? [];
+      allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadGrant(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe, excludeSubscribe);
+      allowPublish = postFlag ?? carried?.post ?? definition?.allowPublish;
       role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }
@@ -206,9 +218,26 @@ export async function mint(args: ParsedArgs): Promise<void> {
     }
     identity ??= newIdentity();
     target = { ...target, identity: identity.id, ...(lifecycleUid === undefined ? {} : { lifecycleUid }) };
+    // History under an excluded wildcard is served by the delivery daemon from the lifecycle's read-ACL
+    // row, which only --provision writes, so a read exclusion without it is refused (SPEC §8).
+    if (excludeSubscribe.length && !values.provision)
+      throw new CommandFailure("refused", "USAGE_INVALID", `a read exclusion (${excludeSubscribe.join(", ")}) needs --provision: history under an excluded wildcard is read from the lifecycle's read-ACL row, which only --provision writes; nothing was minted`, { target, remedy: "add --provision, or mint without the read exclusion" });
+    // An exclusion is a deny row, which only a broker at the exclusion floor applies to every
+    // overlapping wildcard subscription, so the broker is read before anything is signed.
+    let brokerVersion: string | undefined;
+    if (excludeSubscribe.length + excludePublish.length) {
+      try { brokerVersion = await brokerVersionAt({ space, servers: resolvedTarget.server, ...(resolvedTarget.tlsRequired ? { tls: true } : {}), auth }); }
+      catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the broker at ${resolvedTarget.server} did not answer, and a credential with an exclusion is signed only for a broker whose version meets the exclusion floor; nothing was minted`, { target, remedy: "start the space's broker and mint again, or mint without exclusions" }); }
+      try { requireExclusionFloor(brokerVersion, `the broker at ${resolvedTarget.server}`); }
+      catch (error) { throw new CommandFailure("refused", "UNSUPPORTED", `${(error as Error).message}; nothing was minted`, { target }); }
+    }
     // With no lifetime flag the credential gets the default lifetime; only --no-expiry leaves it unbounded.
     const defaultLifetime = values["expires-in"] === undefined && values["expires-at"] === undefined && !values["no-expiry"];
-    const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values["expires-in"] !== undefined ? Number(values["expires-in"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]) };
+    const options = {
+      allowSubscribe, allowPublish, role, lifecycleUid,
+      ...(excludeSubscribe.length ? { excludeSubscribe } : {}), ...(excludePublish.length ? { excludePublish } : {}), ...(brokerVersion !== undefined ? { brokerVersion } : {}),
+      expiresInSeconds: values["expires-in"] !== undefined ? Number(values["expires-in"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]),
+    };
     const creds = await mintCreds(auth, identity, profile, options);
     const claims = credsClaims(creds);
     const checkProvisionedExpiry = () => {
@@ -277,7 +306,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       changed.push({ kind: "credential-export-record", path: out, acknowledged: true });
     }
     const fromIdentity = carried ? ([["read", values["allow-subscribe"]], ["post", values["allow-publish"]], ["role", values.role]] as const).filter(([, flag]) => flag === undefined).map(([grant]) => grant) : [];
-    const grants = profile === "agent" ? { read: allowSubscribe ?? [], post: allowPublish ?? [], role: role ?? null, fromIdentity } : null;
+    const grants = profile === "agent" ? { ...shownGrants({ read: allowSubscribe ?? [], post: allowPublish ?? [], role: role ?? null, excludeRead: excludeSubscribe, excludePost: excludePublish }), fromIdentity } : null;
     const result = { kind: "credential-minted", name, space, profile, identity: identity.id, principal: principalKey(DEV_OWNER, identity.id).key, lifecycleUid: lifecycleUid ?? null, output: out, provisioned: values.provision === true, identityReused: requestedIdentity !== undefined, grants, lifecycleReused: false, expiresAt: claims.exp ?? null, defaultLifetime, noExpiryRecord, replaced: replaced ?? null, secretOnStdout: false, changed };
     const warnings = [
       ...(result.identityReused && profile === "agent" ? [{ code: "NEW_OUT_OF_BAND_LIFECYCLE", target: { space, name }, message: "The native out-of-band mint reuses the nkey, not the old lifecycle UID. Old inbox/DM footprints were not claimed as reused." }] : []),
@@ -304,12 +333,12 @@ export async function mint(args: ParsedArgs): Promise<void> {
 const channelList = (channels: readonly string[]) => channels.length ? channels.join(", ") : "no channel";
 
 /** The receipt rows for an agent credential's grants, naming those carried from `--identity`. */
-function grantRows(grants: AgentGrants & { fromIdentity: readonly string[] }): [string, string][] {
+function grantRows(grants: ShownGrants & { fromIdentity: readonly string[] }): [string, string][] {
   const carried = (grant: string) => grants.fromIdentity.includes(grant) ? " (carried from --identity)" : "";
-  return [["May read", `${channelList(grants.read)}${carried("read")}`], ["May post", `${channelList(grants.post)}${carried("post")}`], ["Role", `${grants.role ?? "none"}${carried("role")}`]];
+  return [["May read", `${exceptText(channelList(grants.read), grants.excludeRead)}${carried("read")}`], ["May post", `${exceptText(channelList(grants.post), grants.excludePost)}${carried("post")}`], ["Role", `${grants.role ?? "none"}${carried("role")}`]];
 }
 
-async function provisionForMint(auth: SpaceAuth, identity: Identity, options: { allowSubscribe?: string[]; allowPublish?: string[]; role?: string; lifecycleUid: string; expiresInSeconds?: number; expiresAt?: number }, target: MeshTarget, onProvisioned: () => void): Promise<void> {
+async function provisionForMint(auth: SpaceAuth, identity: Identity, options: ProvisionOpts & { lifecycleUid: string }, target: MeshTarget, onProvisioned: () => void): Promise<void> {
   await withProvisioner({ space: target.space, servers: target.server, tls: target.tlsRequired, auth }, "mint-provisioner", async (provisioner) => {
     await provisionAgentDurables(provisioner, { owner: DEV_OWNER, actor: identity.id, lifecycleUid: options.lifecycleUid }, { ...options, subscribe: options.allowSubscribe });
     onProvisioned();

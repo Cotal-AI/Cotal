@@ -1,4 +1,4 @@
-import { CotalEndpoint, mintCreds, newIdentity, type SpaceAuth } from "@cotal-ai/core";
+import { CotalEndpoint, dialerFor, drainAndClose, mintCreds, newIdentity, standaloneConnectOpts, type SpaceAuth } from "@cotal-ai/core";
 
 /** Where a short-lived provisioner connects. `tls` is set only by a caller that already required
  *  TLS on this connection: an omitted requirement is never filled in here. */
@@ -35,4 +35,15 @@ export async function withProvisioner<T>(target: ProvisionerTarget, name: string
   } finally {
     await ep.stop().catch(() => {});
   }
+}
+
+/** The nats-server version the broker at `target` reports, read on one short-lived connection under a
+ *  fresh probe credential, for a signer whose credential carries an exclusion: its deny rows hold
+ *  only on a broker at the exclusion floor (SPEC §9), so the version is checked before anything is
+ *  signed. `undefined` when the broker reports none. A broker that does not answer throws. */
+export async function brokerVersionAt(target: ProvisionerTarget): Promise<string | undefined> {
+  const creds = await mintCreds(target.auth, newIdentity(), "probe");
+  const nc = await dialerFor(target.servers)({ servers: target.servers, ...standaloneConnectOpts({ creds, tls: target.tls === true }) });
+  try { return nc.info?.version; }
+  finally { await drainAndClose(nc); }
 }

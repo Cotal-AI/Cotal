@@ -2171,6 +2171,27 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
   assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
   assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
+
+  // An exclusion flag removes channels from its list flag (SPEC §9), so it needs that flag, must
+  // remove something, cannot be served by --live-only, and must leave every --subscribe channel readable.
+  const lists = { "allow-subscribe": "review.>", "exclude-subscribe": "review.secret" };
+  const alone = refusal({ "exclude-publish": "review.secret" });
+  assert.equal(alone?.code, "USAGE_INVALID", "an exclusion flag without its list flag is refused");
+  assert.match(alone?.message ?? "", /--exclude-publish removes channels from --allow-publish, so it needs --allow-publish/, "naming the list flag it needs");
+  const nothing = refusal({ "allow-subscribe": "review.>", "exclude-subscribe": "general" });
+  assert.equal(nothing?.code, "USAGE_INVALID", "an exclusion that removes nothing is refused");
+  assert.match(nothing?.message ?? "", /exclusion "general" overlaps no entry of \[review\.>\], so it removes nothing/, "with core's sentence");
+  assert.match(refusal({ "allow-publish": "review.code", "exclude-publish": "review.>" })?.message ?? "", /"review\.code" is both allowed and excluded in full/, "an exclusion that removes a whole entry is refused");
+  assert.match(refusal({ "allow-subscribe": "review.>", "exclude-subscribe": "#review.secret" })?.remedy ?? "", /pass the channel without its #/, "an exclusion is spelled as a channel");
+  const liveOnly = refusal({ ...lists, "live-only": true });
+  assert.equal(liveOnly?.code, "USAGE_INVALID", "--live-only with a read exclusion is refused");
+  assert.match(liveOnly?.message ?? "", /--live-only writes no read-ACL row, and a read exclusion needs one/, "because the exclusion's history needs the row");
+  assert.equal(refusal({ "allow-publish": "review.>", "exclude-publish": "review.secret", "live-only": true }), undefined, "--live-only with only a post exclusion is admitted");
+  const excludedJoin = refusal({ ...lists, subscribe: "review.secret" });
+  assert.equal(excludedJoin?.code, "USAGE_INVALID", "a --subscribe channel the read exclusion removes is refused");
+  assert.match(excludedJoin?.remedy ?? "", /outside --exclude-subscribe/, "and the remedy names the exclusion");
+  const parsed = validateSpawnArguments({ values: { ...lists, subscribe: "review.code", "allow-publish": "review.>,general", "exclude-publish": "review.secret" }, positionals: [], raw: [] } as never);
+  assert.deepEqual([parsed["exclude-subscribe"], parsed["exclude-publish"]], [["review.secret"], ["review.secret"]], "an admitted spawn returns both exclusion lists for the launch");
 }
 
 {
@@ -2179,14 +2200,24 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   const { managedLaunchView } = await import("../src/commands/spawn.js");
   const { managedLaunchAcl } = await import("@cotal-ai/workspace/launch");
   const { renderReport } = await import("@cotal-ai/workspace");
-  const acl = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
-  assert.deepEqual(managedLaunchAcl(acl), acl, "the manager's acl field is carried as it was sent");
+  const sent = { requested: { allowSubscribe: [">"], allowPublish: [">"] }, effective: { allowSubscribe: ["general"], allowPublish: [] } };
+  const none = { excludeSubscribe: [], excludePublish: [] };
+  const acl = { requested: { ...sent.requested, ...none }, effective: { ...sent.effective, ...none } };
+  assert.deepEqual(managedLaunchAcl(sent), acl, "the manager's acl field is carried as it was sent");
   assert.equal(managedLaunchAcl(undefined), null, "a launch without one carries null");
   assert.equal(managedLaunchAcl({ requested: acl.requested }), undefined, "one that cannot be read is told apart from none");
   const result = { kind: "managed-launch", name: "worker", id: "u_own.worker", lifecycleUid: "a".repeat(26), space: "demo", managerInstanceId: "b".repeat(26), harness: "probe", runtime: "pty", role: null, request: null, intent: null, readiness: "joined", requestedModel: null, detached: true, streamsTerminal: true } as const;
   const narrowed = renderReport(managedLaunchView({ ...result, acl }), "plain");
   assert.match(narrowed, /Granted:\s+read general [·-] post none; asked for read > [·-] post >\n/, "the receipt lists what was granted");
   assert.equal(narrowed.match(/Granted/g)?.length, 1, "on one line");
+  // A list that removes channels (SPEC §9) comes back as `{ allow, exclude }` and is shown with them.
+  const excluding = managedLaunchAcl({
+    requested: { allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: { allow: ["team.>", "general"], exclude: ["team.secret"] } },
+    effective: { allowSubscribe: { allow: ["team.>"], exclude: ["team.secret"] }, allowPublish: ["general"] },
+  });
+  assert.ok(excluding, "an acl whose lists carry exclusions is read");
+  assert.match(renderReport(managedLaunchView({ ...result, acl: excluding }), "plain"),
+    /Granted:\s+read team\.> except team\.secret [·-] post general; asked for read team\.> except team\.secret [·-] post team\.>, general except team\.secret\n/, "the receipt names each list's exclusions");
   assert.doesNotMatch(renderReport(managedLaunchView({ ...result, acl: null }), "plain"), /Granted/, "a launch granted what it asked for shows no such line");
 
   // A seat on a runtime that streams no terminal: the receipt says so where the runtime and the

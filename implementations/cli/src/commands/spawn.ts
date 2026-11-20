@@ -32,7 +32,10 @@ import {
   copyPersonaEndpoints,
   registry,
   resolveAuthProvider,
-  resolveReadAcl,
+  resolveReadGrant,
+  assertExclusions,
+  channelGrantField,
+  parseOptionalChannelGrant,
   runAgentBearer,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
   EP_UNDECLARED_ARG,
@@ -44,6 +47,8 @@ import {
   writeTransfer,
   peerLabel,
   type AgentDef,
+  type ChannelGrant,
+  type ChannelGrantField,
   type CompletionResult,
   type Connector,
   type CotalConfig,
@@ -132,10 +137,11 @@ import {
   seatExpiryAt,
   resolveControlTarget,
 } from "@cotal-ai/workspace";
-import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
+import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchGrants, type ManagedLaunchResult } from "@cotal-ai/workspace/launch";
 import { c, stderrLine } from "../ui.js";
 import { liveMeshNames } from "../lib/live-names.js";
-import { withProvisioner } from "../lib/provisioner.js";
+import { brokerVersionAt, withProvisioner } from "../lib/provisioner.js";
+import { exceptText } from "../lib/grant-exclusions.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { entryScript } from "../seed/paths.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -345,7 +351,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
     if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
     return { items: personaItems(argv), directive: "nofiles" };
   }
-  if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
+  if (flag && ["subscribe", "allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish"].includes(flag.name))
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
   if (flag && ["cwd", "file", "creds", "enrollment-file"].includes(flag.name)) return { items: [], directive: "default" };
   if (flag?.name === "runtime")
@@ -452,6 +458,8 @@ export const spawnFlags = [
   serverFlag,
   { ...credsFlag, description: "control-caller creds for an off-registry manager (with --detach or --on)" },
   ...launchFlags,
+  { name: "exclude-subscribe", type: "string", value: "<a,b>", description: "channels or patterns removed from --allow-subscribe; needs the durable backstop" },
+  { name: "exclude-publish", type: "string", value: "<a,b>", description: "channels or patterns removed from --allow-publish" },
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "application connector; an explicit flag wins over persona and saved defaults" },
   { name: "foreground", type: "boolean", description: "run the application in this terminal, as a spawn without --detach or --on does; terminal exit may end it" },
   { name: "restarts", type: "string", value: "<n>", description: "with --detach or --on: maximum manager-supervised restarts in the selected restart window" },
@@ -544,6 +552,8 @@ export function validateSpawnArguments(args: ParsedArgs) {
     subscribe: parseCommaList(values.subscribe),
     "allow-subscribe": parseCommaList(values["allow-subscribe"]),
     "allow-publish": parseCommaList(values["allow-publish"]),
+    "exclude-subscribe": parseCommaList(values["exclude-subscribe"]),
+    "exclude-publish": parseCommaList(values["exclude-publish"]),
   };
   for (const [flag, list] of Object.entries(channels)) {
     for (const channel of list ?? []) {
@@ -556,17 +566,32 @@ export function validateSpawnArguments(args: ParsedArgs) {
       }
     }
   }
+  // An exclusion flag and its list flag together replace the persona's list, here and at the
+  // manager, which takes them as one `{ allow, exclude }` field (SPEC §9).
+  for (const [allow, exclude] of [["allow-subscribe", "exclude-subscribe"], ["allow-publish", "exclude-publish"]] as const) {
+    if (channels[exclude] === undefined) continue;
+    if (channels[allow] === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--${exclude} removes channels from --${allow}, so it needs --${allow}`, { remedy: `name the list it removes channels from with --${allow}`, selfContained: true });
+    try { assertExclusions(channels[allow]!, channels[exclude]!, `--${exclude}`); }
+    catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message), { selfContained: true }); }
+  }
+  if (values["live-only"] && channels["exclude-subscribe"]?.length) throw liveOnlyExclusion();
   if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined) {
-    try { resolveReadAcl(channels.subscribe, channels["allow-subscribe"]); }
+    try { resolveReadGrant(channels.subscribe, channels["allow-subscribe"], channels["exclude-subscribe"]); }
     catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message), {
-        remedy: "include every --subscribe channel in --allow-subscribe", selfContained: true,
+        remedy: "include every --subscribe channel in --allow-subscribe, outside --exclude-subscribe", selfContained: true,
       });
     }
   }
   if (!internal && args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "spawn takes one persona; pass the kickoff request with --prompt/-p");
   if (!internal && values.config !== undefined && args.positionals.length) throw new CommandFailure("refused", "USAGE_INVALID", "choose one persona input, not both a positional name and --config");
   return channels;
+}
+
+/** `--live-only` writes no read-ACL row, and history under an excluded wildcard is served from that
+ *  row (SPEC §8), so the two are refused together before anything is provisioned. */
+function liveOnlyExclusion(): CommandFailure {
+  return new CommandFailure("refused", "USAGE_INVALID", "--live-only writes no read-ACL row, and a read exclusion needs one: history under an excluded wildcard is read from that row", { remedy: "drop --live-only, or launch without a read exclusion", selfContained: true });
 }
 
 /** Foreground `cotal spawn` resolves its `--agent` connector from the registry (spawn.ts below); on
@@ -626,6 +651,9 @@ async function refuseRuntimeHere(runtime: string, t: { space: string; root?: str
 }
 
 const channelList = (channels: readonly string[]): string => channels.length ? channels.join(", ") : "none";
+/** One side of a managed launch's acl: each list with the channels it removes (SPEC §9). */
+const grantedText = (g: ManagedLaunchGrants): string =>
+  `read ${exceptText(channelList(g.allowSubscribe), g.excludeSubscribe)} · post ${exceptText(channelList(g.allowPublish), g.excludePublish)}`;
 
 export interface ManagedLaunchObserver {
   /** A native joined receipt, not task completion. A composite command owns its one envelope. */
@@ -638,7 +666,7 @@ export function managedLaunchView(r: ManagedLaunchResult): Report {
   const noStream = r.streamsTerminal === false;
   return { sections: [
     { title: "Agent joined", blocks: [
-      { kind: "fields", rows: [["Agent", psSeatLabel({ name: r.name, id: r.id })], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", noStream ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `read ${channelList(r.acl.effective.allowSubscribe)} · post ${channelList(r.acl.effective.allowPublish)}; asked for read ${channelList(r.acl.requested.allowSubscribe)} · post ${channelList(r.acl.requested.allowPublish)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", noStream ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
+      { kind: "fields", rows: [["Agent", psSeatLabel({ name: r.name, id: r.id })], ["Identity", r.id], ["Lifecycle", r.lifecycleUid], ["Space", r.space], ["Manager receipt", r.managerInstanceId], ["Original request", r.intent?.requestId ?? r.request?.requestId ?? "not recorded"], ["Accepted goal", r.request?.goalId ?? "not reported"], ["Application", r.harness], ["Runtime", noStream ? `${r.runtime} · no terminal stream` : r.runtime], ["Role", r.role ?? "not recorded"], ...(r.acl ? [["Granted", `${grantedText(r.acl.effective)}; asked for ${grantedText(r.acl.requested)}`] as [string, string]] : []), ["Model request", r.requestedModel ?? "persona/manager precedence; not inspected"], ["View", noStream ? `not attached; the seat runs in the manager's ${r.runtime} session` : r.detached ? "not attached" : "attaching to the allocated incarnation"]] },
       { kind: "lines", lines: [{ text: "The manager confirmed presence readiness. This is not proof that the kickoff task completed.", tone: "hint" }] },
     ] },
     ...(noStream ? [{ title: "Next", blocks: [
@@ -773,6 +801,8 @@ export async function launchManagedPersona(
     subscribe: parseCommaList(values.subscribe),
     allowSubscribe: parseCommaList(values["allow-subscribe"]),
     allowPublish: parseCommaList(values["allow-publish"]),
+    excludeSubscribe: parseCommaList(values["exclude-subscribe"]),
+    excludePublish: parseCommaList(values["exclude-publish"]),
     // #373: send the bit only when the operator chose it. On an events-required space the
     // policy still forces the plane on (the manager refuses a non-admin caller on such a space
     // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
@@ -1581,9 +1611,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
   let subscribe = channels.subscribe ?? def.subscribe;
+  // A list flag replaces the persona's list together with its exclusions (SPEC §9).
+  let excludeSubscribe = channels["allow-subscribe"] !== undefined ? channels["exclude-subscribe"] ?? [] : def.excludeSubscribe ?? [];
+  let excludePublish = channels["allow-publish"] !== undefined ? channels["exclude-publish"] ?? [] : def.excludePublish ?? [];
+  if (values["live-only"] && excludeSubscribe.length) throw liveOnlyExclusion();
   let allowSubscribe: string[];
   try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
+    allowSubscribe = resolveReadGrant(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe, excludeSubscribe);
   } catch (e) {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
@@ -1604,7 +1638,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const launchOpts: LaunchOpts = {
     space, name, role, servers: server, configPath: path,
-    model, variant, launchOptions, subscribe, allowSubscribe, allowPublish,
+    model, variant, launchOptions, subscribe, allowSubscribe, allowPublish, excludeSubscribe, excludePublish,
     endpoints: copyPersonaEndpoints(def.endpoints) ?? [], prompt: values.prompt,
     resume: values.resume, events: launchEvents, eventPayloads, eventsRequired,
     mcpServers, mcpServersExclusive: shareTools !== undefined, envAllow,
@@ -1704,8 +1738,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     userCleanup = remote.cleanup;
     remoteUserAuth = true;
     if (remote.material.subscribe) subscribe = remote.material.subscribe;
-    if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
-    if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+    const granted = materialGrants(remote.material);
+    if (granted.read) { allowSubscribe = [...granted.read.allow]; excludeSubscribe = [...granted.read.exclude]; }
+    if (granted.post) { allowPublish = [...granted.post.allow]; excludePublish = [...granted.post.exclude]; }
     lifecycleUid = remote.material.lifecycleUid;
   } else if (remoteProvisioningUrl) {
     const selected = await provisionFreshForeground(requested, values.name === undefined, target.mode === "user", (candidate) =>
@@ -1721,8 +1756,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // it verbatim so the session's runtime set matches the credentials it was actually issued.
     // A local --subscribe that the mesh did not grant would be a lie told to the connector.
     if (remote.material.subscribe) subscribe = remote.material.subscribe;
-    if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
-    if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+    const granted = materialGrants(remote.material);
+    if (granted.read) { allowSubscribe = [...granted.read.allow]; excludeSubscribe = [...granted.read.exclude]; }
+    if (granted.post) { allowPublish = [...granted.post.allow]; excludePublish = [...granted.post.exclude]; }
     // Same authority rule for the incarnation uid: the mesh provisioned the durables and wrote the
     // ledger row keyed on THIS uid, and the auth callout mints the agent's dm/dlv/chathist grants
     // from the row. Launching with the locally minted uid instead leaves the agent asking for
@@ -1740,6 +1776,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         subscribe,
         allowSubscribe,
         allowPublish,
+        excludeSubscribe,
+        excludePublish,
         role,
         capabilities: def.capabilities,
         lifecycleUid,
@@ -1774,6 +1812,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // daemon the boot join itself reports live-only, ACL row or not. A failed provisioner stop
     // never reaches this catch, so it cannot retire a credential the provisioning already minted.
     try {
+      // An exclusion is signed only for a broker at the exclusion floor; `permissionsFor` checks the
+      // version this reads (SPEC §9).
+      const brokerVersion = excludeSubscribe.length + excludePublish.length ? await brokerVersionAt({ space, servers: server, ...(target.tlsRequired ? { tls: true } : {}), auth }) : undefined;
       const creds = await withProvisioner({ space, servers: server, auth }, "spawn-provisioner", async (prov) => {
         // The seat's lifecycle is activated first, so the issuance can name its gate as the source of
         // the evidence a helper's spawn is bounded by.
@@ -1787,6 +1828,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
             subscribe,
             allowSubscribe,
             allowPublish,
+            ...(excludeSubscribe.length ? { excludeSubscribe } : {}),
+            ...(excludePublish.length ? { excludePublish } : {}),
+            ...(brokerVersion !== undefined ? { brokerVersion } : {}),
             role,
             capabilities: def.capabilities,
             ...(endpointCapabilities.length ? { endpointCapabilities } : {}),
@@ -1840,6 +1884,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         subscribe,
         allowSubscribe,
         allowPublish,
+        excludeSubscribe,
+        excludePublish,
       });
     } catch (error) {
       if (error instanceof CommandFailure) throw error;
@@ -1956,8 +2002,14 @@ interface RemoteAgentMaterial {
   actorToken: string;
   sentinelCreds: string;
   subscribe?: string[];
-  allowSubscribe?: string[];
-  allowPublish?: string[];
+  /** A plain list, or `{ allow, exclude }` when the grant removes channels (SPEC §9). */
+  allowSubscribe?: ChannelGrantField;
+  allowPublish?: ChannelGrantField;
+}
+
+/** The read and post grants remote material names, each with its exclusions. */
+function materialGrants(m: RemoteAgentMaterial): { read?: ChannelGrant; post?: ChannelGrant } {
+  return { read: parseOptionalChannelGrant(m.allowSubscribe, "allowSubscribe"), post: parseOptionalChannelGrant(m.allowPublish, "allowPublish") };
 }
 
 /** Validate the provisioning response. Returns the material, or the refusal sentence. */
@@ -1970,17 +2022,29 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
   const str = (k: keyof RemoteAgentMaterial): string | undefined => (typeof o[k] === "string" && o[k] ? (o[k] as string) : undefined);
   for (const k of ["actor", "owner", "lifecycleUid", "actorToken", "sentinelCreds"] as const)
     if (!str(k)) return bad(`the mesh's agent-provisioning endpoint returned no ${k} - it cannot provision agents for this mesh`);
-  const list = (k: "subscribe" | "allowSubscribe" | "allowPublish"): string[] | undefined =>
+  const list = (k: "subscribe"): string[] | undefined =>
     Array.isArray(o[k]) && (o[k] as unknown[]).every((s) => typeof s === "string") ? (o[k] as string[]) : undefined;
   if (o.actor !== actor)
     return bad(`the mesh provisioned actor "${String(o.actor)}" for a request naming "${actor}" - refusing material that does not match what was asked for`);
+  // A read or post list is a plain array, or `{ allow, exclude }` when the grant removes channels
+  // (SPEC §9). Its exclusions are the mesh's grant as much as its list, so a shape this reader does
+  // not take is refused, never read as no list.
+  let grants: Pick<RemoteAgentMaterial, "allowSubscribe" | "allowPublish">;
+  try {
+    const { read, post } = materialGrants(o as RemoteAgentMaterial);
+    grants = {
+      ...(read ? { allowSubscribe: channelGrantField(read.allow, read.exclude) } : {}),
+      ...(post ? { allowPublish: channelGrantField(post.allow, post.exclude) } : {}),
+    };
+  } catch (e) {
+    return bad(`the mesh's agent-provisioning endpoint returned a grant this client cannot read: ${(e as Error).message}`);
+  }
   return {
     ok: true,
     material: {
       actor: o.actor!, owner: o.owner!, lifecycleUid: o.lifecycleUid!, actorToken: o.actorToken!, sentinelCreds: o.sentinelCreds!,
       ...(list("subscribe") ? { subscribe: list("subscribe") } : {}),
-      ...(list("allowSubscribe") ? { allowSubscribe: list("allowSubscribe") } : {}),
-      ...(list("allowPublish") ? { allowPublish: list("allowPublish") } : {}),
+      ...grants,
     },
   };
 }
@@ -2159,7 +2223,7 @@ async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { eventPayloads?: boolean; subscribe?: string[]; allowSubscribe: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
+  opts: { eventPayloads?: boolean; subscribe?: string[]; allowSubscribe: string[]; allowPublish?: string[]; excludeSubscribe: string[]; excludePublish: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; eventChannel?: string }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -2231,6 +2295,8 @@ async function provisionUserForeground(
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
       allowSubscribe: opts.allowSubscribe,
       allowPublish: publish,
+      ...(opts.excludeSubscribe.length ? { excludeSubscribe: opts.excludeSubscribe } : {}),
+      ...(opts.excludePublish.length ? { excludePublish: opts.excludePublish } : {}),
       ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       role: opts.role,
       parent: `${owner}.cli`,
@@ -2247,6 +2313,7 @@ async function provisionUserForeground(
       provisionAgentDurables(prov, { owner, actor: name, lifecycleUid: opts.lifecycleUid }, {
         subscribe: opts.subscribe,
         allowSubscribe: opts.allowSubscribe,
+        ...(opts.excludeSubscribe.length ? { excludeSubscribe: opts.excludeSubscribe } : {}),
         role: opts.role,
         ...(opts.liveOnly ? { durableMembership: false } : {}),
       }));

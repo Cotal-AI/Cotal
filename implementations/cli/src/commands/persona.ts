@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertExclusions, assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadGrant, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
@@ -18,6 +18,7 @@ import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { checkHarness } from "./config.js";
+import { exceptText } from "../lib/grant-exclusions.js";
 
 export const personaFlags = [
   spaceFlag, serverFlag, jsonFlag, plainFlag,
@@ -32,12 +33,14 @@ export const personaFlags = [
   { name: "harness", short: "H", type: "string", value: "<application>", description: "create: application pin" },
   { name: "allow-subscribe", type: "string", value: '<a,b|"">', description: "create: channel read ACL" },
   { name: "allow-publish", type: "string", value: '<a,b|"">', description: "create: channel post ACL" },
+  { name: "exclude-subscribe", type: "string", value: "<a,b>", description: "create: channels or patterns removed from --allow-subscribe" },
+  { name: "exclude-publish", type: "string", value: "<a,b>", description: "create: channels or patterns removed from --allow-publish" },
   { name: "announce", type: "string", value: "<channel>", description: "create --on: post one short announcement after a confirmed save" },
 ] as const satisfies readonly FlagSpec[];
 export type PersonaValues = FlagValues<typeof personaFlags>;
 type Values = PersonaValues;
 const usage = (message: string) => new CommandFailure("refused", "USAGE_INVALID", message);
-const createOnly = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
+const createOnly = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish", "announce"] as const;
 
 export function validatePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
@@ -73,8 +76,8 @@ export async function persona(args: ParsedArgs): Promise<void> {
         ["Role", result.definition.role ?? "not set"],
         ["Application", result.definition.agent ? `${result.definition.agent} · pinned` : "user default"],
         ["Model", result.definition.model ?? "application default"],
-        ["Read", (result.definition.allowSubscribe ?? result.definition.subscribe ?? []).join(", ") || "no channels"],
-        ["Post", (result.definition.allowPublish ?? []).join(", ") || "no channels"],
+        ["Read", exceptText((result.definition.allowSubscribe ?? result.definition.subscribe ?? []).join(", ") || "no channels", result.definition.excludeSubscribe)],
+        ["Post", exceptText((result.definition.allowPublish ?? []).join(", ") || "no channels", result.definition.excludePublish)],
         ["File", result.path],
       ] }] },
       { title: "Instructions", blocks: [{ kind: "lines", lines: result.definition.persona?.trim() ? result.definition.persona.split(/\r?\n/) : [{ text: "No instructions in this definition.", tone: "hint" }] }] },
@@ -137,7 +140,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   const sources = [values.file, values.prompt, values.from].filter(value => value !== undefined);
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
   if (values.file !== undefined) {
-    if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
+    if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"], values["exclude-subscribe"], values["exclude-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
     const bytes = readInput(values.file);
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
@@ -166,9 +169,20 @@ async function createSource(name: string, path: string, values: Values): Promise
     }
   });
   const subscribe = channels("--subscribe", values.subscribe), allowSubscribe = channels("--allow-subscribe", values["allow-subscribe"]);
-  try { resolveReadAcl(subscribe ?? [], allowSubscribe); }
-  catch (error) { throw usage(`${(error as Error).message}; every --subscribe channel must be within --allow-subscribe`); }
-  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
+  const allowPublish = channels("--allow-publish", values["allow-publish"]);
+  // An exclusion removes channels from the list flag beside it, so it needs that flag (SPEC §9).
+  const excluded = (flag: "subscribe" | "publish", allow: string[] | undefined) => {
+    const exclude = channels(`--exclude-${flag}`, values[`exclude-${flag}`]);
+    if (exclude === undefined) return undefined;
+    if (allow === undefined) throw usage(`--exclude-${flag} removes channels from --allow-${flag}, so it needs --allow-${flag}`);
+    try { assertExclusions(allow, exclude, `--exclude-${flag}`); }
+    catch (error) { throw usage(oneLine((error as Error).message)); }
+    return exclude.length ? exclude : undefined;
+  };
+  const excludeSubscribe = excluded("subscribe", allowSubscribe), excludePublish = excluded("publish", allowPublish);
+  try { resolveReadGrant(subscribe ?? [], allowSubscribe, excludeSubscribe); }
+  catch (error) { throw usage(`${(error as Error).message}; every --subscribe channel must be within --allow-subscribe, outside --exclude-subscribe`); }
+  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish, excludeSubscribe, excludePublish });
 }
 
 function list(catalog: PersonaCatalog, presentation: Presentation): void {

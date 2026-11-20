@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import {
-  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, agentFilePath, assertValidChannel, assertValidName, assertValidRole,
-  invokeCommand, isConcreteChannel, isPublishPermissionDenied, parseLeadingPromptFrontmatter, resolveService,
+  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, agentFilePath, assertExclusions, assertValidChannel, assertValidName, assertValidRole,
+  channelGrantField, invokeCommand, isConcreteChannel, oneLine, isPublishPermissionDenied, parseLeadingPromptFrontmatter, resolveService,
   type EpAttributedReply, type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -19,7 +19,7 @@ import { openTransient } from "../lib/transient.js";
 import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
 import type { PersonaValues } from "./persona.js";
 
-const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
+const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish", "announce"] as const;
 
 /** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
 function personaVerb(mode: string | undefined, name: string | undefined): string {
@@ -51,7 +51,23 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
       for (const channel of [...(parseCommaList(values.subscribe) ?? []), ...(parseCommaList(values["allow-subscribe"]) ?? []), ...(parseCommaList(values["allow-publish"]) ?? [])]) assertValidChannel(channel);
       if (values.announce !== undefined) { assertValidChannel(values.announce); if (!isConcreteChannel(values.announce)) throw new Error(); }
     } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use native channel ACLs and one concrete announcement channel without rewriting its name"); }
+    // An exclusion removes channels from the list flag beside it, and travels with it as one
+    // `{ allow, exclude }` field (SPEC §9).
+    for (const flag of ["subscribe", "publish"] as const) {
+      const exclude = parseCommaList(values[`exclude-${flag}`]);
+      if (exclude === undefined) continue;
+      const allow = parseCommaList(values[`allow-${flag}`]);
+      if (allow === undefined) throw new CommandFailure("refused", "USAGE_INVALID", `--exclude-${flag} removes channels from --allow-${flag}, so it needs --allow-${flag}`);
+      try { assertExclusions(allow, exclude, `--exclude-${flag}`); }
+      catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", oneLine((error as Error).message)); }
+    }
   }
+}
+
+/** A list flag with its exclusion flag, as the wire persona carries it (SPEC §9). */
+function grantList(allow: string | undefined, exclude: string | undefined) {
+  const list = parseCommaList(allow);
+  return list === undefined ? undefined : channelGrantField(list, parseCommaList(exclude) ?? []);
 }
 
 function definitionInput(values: PersonaValues, name: string): string {
@@ -141,7 +157,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
       const sameRoot = connection.root !== undefined && sender.connection.root !== undefined && canonicalRoot(sender.connection.root) === canonicalRoot(connection.root);
       if (sender.space !== connection.space || sender.connection.server !== connection.server || !sameRoot || sender.connection.mode !== connection.mode || connection.account !== undefined && sender.connection.auth?.account.pub !== connection.account) throw new CommandFailure("refused", "CONFLICT", "the announcement's resolved space, root or account differs from the selected manager target; no persona was saved", { target });
     }
-    const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: parseCommaList(values.subscribe), allowSubscribe: parseCommaList(values["allow-subscribe"]), allowPublish: parseCommaList(values["allow-publish"]) } : mode === "show" ? { name } : undefined;
+    const body = mode === "create" ? { name, persona: input, model: values.model, role: values.role, agent: values.harness, subscribe: parseCommaList(values.subscribe), allowSubscribe: grantList(values["allow-subscribe"], values["exclude-subscribe"]), allowPublish: grantList(values["allow-publish"], values["exclude-publish"]) } : mode === "show" ? { name } : undefined;
     if (!service.commands.has(command)) throw new CommandFailure("refused", "UNSUPPORTED", "the selected manager does not declare this native persona operation; no legacy or local path was substituted", { target });
     submitted = mode === "create";
     const response = await invokeCommand(connection.nc, connection.space, service, command, body, { deadlineMs: 10_000, id: requestId });

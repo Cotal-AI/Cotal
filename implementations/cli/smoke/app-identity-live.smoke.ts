@@ -330,6 +330,43 @@ try {
   check("  with its broker footprint and gate", await footprintGone(heldE) && (await gateLive(heldE.lifecycleUid)) === false);
   await run(["retire"], { dir: f.reply.retire.dir });
 
+  // ── a persona whose lists remove channels (SPEC §9) ─────────────────────────────────────────
+  // A selection names no exclusion, so one that would reach an excluded channel is refused, never
+  // opened without the exclusion; the unselected grant carries the persona's exclusions.
+  writeFileSync(join(root, ".cotal/agents/default.md"), PERSONA
+    .replace("allowSubscribe: [general, team.>]", 'allowSubscribe: { allow: [general, "team.>"], exclude: [team.secret, "team.*.private"] }')
+    .replace("allowPublish: [general]", 'allowPublish: { allow: [general, "team.>"], exclude: [team.secret] }'));
+  try {
+    const before = records(SPACE).length;
+    for (const [channel, access] of [["team.secret", "read"], ["team.>", "read"], ["team.a.>", "read"], ["team.a.private", "read"], ["team.secret", "read-post"]] as const) {
+      const refused = await select(conversationSelection({ channels: [{ channel, access }] }));
+      check(`a selection of ${channel} (${access}) that reaches an excluded channel is refused`, refused.code === 1 &&
+        refused.reply?.error === `channel "${channel}" (${access}) reaches channels this mesh's default persona excludes (team.secret, team.*.private); nothing was opened`, refused.out);
+    }
+    check("  and no refused selection opened anything", records(SPACE).length === before, records(SPACE));
+    const sibling = await select(conversationSelection({ channels: [{ channel: "team.a", access: "read-post" }, { channel: "team.b.x.>", access: "read" }] }));
+    check("a sibling under the excluded wildcard, and a pattern clear of every exclusion, are selected", sibling.code === 0 && isDeepStrictEqual(sibling.reply.grant,
+      { scope: [], role: null, subscribe: [], endpoints: [], allowSubscribe: ["team.a", "team.b.x.>"], allowPublish: ["team.a"] }) && sibling.reply.env.COTAL_EXCLUDE_SUBSCRIBE === undefined, sibling.reply?.grant);
+    await run(["retire"], { dir: sibling.reply.retire.dir });
+    const x = await run(["provision"], { space: SPACE, name: "claude_x", session: "session-x" });
+    const envX = x.reply?.env as Record<string, string>;
+    check("the unselected grant carries the persona's exclusions", x.code === 0 && isDeepStrictEqual(x.reply.grant, {
+      scope: ["spawn", "run"], role: "default", allowSubscribe: ["general", "team.>"], allowPublish: ["general", "team.>"], subscribe: [],
+      excludeSubscribe: ["team.secret", "team.*.private"], excludePublish: ["team.secret"],
+    }), x.reply?.grant);
+    check("  and so does its env", envX.COTAL_EXCLUDE_SUBSCRIBE === "team.secret,team.*.private" && envX.COTAL_EXCLUDE_PUBLISH === "team.secret", envX);
+    const nats = JSON.parse(Buffer.from(readFileSync(envX.COTAL_CREDS!, "utf8").split("\n").find((l) => l.startsWith("eyJ"))!.split(".")[1]!, "base64url").toString("utf8")).nats as { pub: { deny?: string[] }; sub: { deny?: string[] } };
+    check("  its credential carries them as deny rows", ["team.secret", "team.*.private"].every((x) => nats.sub.deny?.some((row) => row.endsWith(`.chat.*.*.${x}`))) &&
+      (nats.pub.deny ?? []).some((row) => row.endsWith(`.${envX.COTAL_ID}.team.secret`)), nats);
+    const epX = await connect(envX, broker.servers, SPACE);
+    await epX.multicast("SIBLING_POST", { channel: "team.a" });
+    check("  the broker stores its post to a sibling under the excluded wildcard", true);
+    const excludedPost = await epX.multicast("EXCLUDED_POST", { channel: "team.secret" }).then(() => "sent", (e: Error) => e.message);
+    check("  and refuses its post to the excluded channel", excludedPost !== "sent", excludedPost);
+    await epX.stop();
+    await run(["retire"], { dir: x.reply.retire.dir });
+  } finally { writeFileSync(join(root, ".cotal/agents/default.md"), PERSONA); }
+
   // ── a static mesh this account holds no signing authority for ───────────────────────────────
   recordMesh({ space: NOAUTH, server: broker.servers, root: noAuthRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
   const noAuth = await run(["provision"], { space: NOAUTH, name: "claude_app", session: "session-n" });

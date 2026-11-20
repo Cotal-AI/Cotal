@@ -1,5 +1,6 @@
-import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, channelInGrant, credsClaims, exclusionsOverlapping, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import {
+  agentGrants,
   brokerAddressForDisplay,
   CommandFailure,
   connectOrThrow,
@@ -211,34 +212,50 @@ const denial = (e: unknown): boolean => /permission|not authori[sz]ed|read acl|m
 /** How a raw credential reads chat history, from the grants it carries. One that holds the bare
  *  multi-filter consumer create, as the observer and admin profiles do, reads across channels and
  *  gets `undefined`. An agent's reads one channel at a time through its own
- *  `chathist_<owner>-<actor>-<uid>` consumer: that lifecycle UID, and the channels the create grant
- *  names. One that may create no chat consumer at all reads no channel: no UID, and no channels. Any
+ *  `chathist_<owner>-<actor>-<uid>` consumer: that lifecycle UID, and the channels its subscribe
+ *  rows grant less those its deny rows exclude (SPEC §9). Its history create rows are no measure of
+ *  that: an entry an exclusion overlaps has none, and its history is read through the delivery
+ *  daemon. One that may create no chat consumer at all reads no channel: no UID, and no channels. Any
  *  other shape, and a user bearer, gets `undefined`; a bearer's own lifecycle comes with the
  *  connection. */
-function credentialReader(conn: Connection): { lifecycleUid: string | undefined; channels: string[] } | undefined {
+function credentialReader(conn: Connection): { lifecycleUid: string | undefined; channels: string[]; exclude: string[] } | undefined {
   if (conn.creds === undefined || conn.bearer !== undefined) return undefined;
-  const allow = credsClaims(conn.creds).nats?.pub?.allow ?? [];
-  const create = `$JS.API.CONSUMER.CREATE.${chatStream(conn.space)}`;
+  const nats = credsClaims(conn.creds).nats ?? {};
+  const allow = nats.pub?.allow ?? [];
+  const stream = chatStream(conn.space), create = `$JS.API.CONSUMER.CREATE.${stream}`;
   if (allow.some((row) => subjectMatches(row, create))) return undefined;
-  const actor = idFromCreds(conn.creds), filter = `${spacePrefix(conn.space)}.chat.*.*.`;
+  const actor = idFromCreds(conn.creds);
   let lifecycleUid: string | undefined;
-  const channels: string[] = [];
-  for (const row of allow) {
-    if (!row.startsWith(`${create}.chathist_`)) continue;
-    const [name = "", ...tail] = row.slice(create.length + 1).split(".");
+  // The consumer's own rows name it: its create rows, and the info row every agent credential holds.
+  for (const prefix of [`${create}.`, `$JS.API.CONSUMER.INFO.${stream}.`]) for (const row of allow) {
+    if (lifecycleUid !== undefined || !row.startsWith(`${prefix}chathist_`)) continue;
+    const name = row.slice(prefix.length).split(".")[0]!;
     const uid = name.slice(name.lastIndexOf("-") + 1);
-    try { if (name !== chatHistDurable(DEV_OWNER, actor, uid)) continue; } catch { continue; }
-    lifecycleUid ??= uid;
-    const subject = tail.join(".");
-    if (subject.startsWith(filter)) channels.push(subject.slice(filter.length));
+    try { if (name === chatHistDurable(DEV_OWNER, actor, uid)) lifecycleUid = uid; } catch { continue; }
   }
-  if (lifecycleUid !== undefined) return { lifecycleUid, channels };
-  return allow.some((row) => row.startsWith(`${create}.`) || subjectMatches(row, `${create}.reader`)) ? undefined : { lifecycleUid, channels };
+  if (lifecycleUid !== undefined) {
+    const grants = agentGrants(nats, conn.space);
+    return { lifecycleUid, channels: grants.read, exclude: grants.excludeRead };
+  }
+  return allow.some((row) => row.startsWith(`${create}.`) || subjectMatches(row, `${create}.reader`)) ? undefined : { lifecycleUid, channels: [], exclude: [] };
 }
 
-/** The channels a credential's history grant names, as a refusal quotes them. */
-const grantedText = (channels: readonly string[]): string =>
-  channels.includes(">") ? "every channel" : channels.length ? channels.map((ch) => `#${ch}`).join(", ") : "no channel";
+/** The channels a credential's history grant names, as a refusal quotes them: its read grant, read
+ *  directly or through the delivery daemon. */
+const grantedText = (reader: { channels: readonly string[]; exclude: readonly string[] }): string => {
+  const { channels, exclude } = reader;
+  const text = channels.includes(">") ? "every channel" : channels.length ? channels.map((ch) => `#${ch}`).join(", ") : "no channel";
+  return exclude.length ? `${text} except ${exclude.map((ch) => `#${ch}`).join(", ")}` : text;
+};
+
+/** Is `channel`'s history read through the delivery daemon? It is when every entry of the read
+ *  grant that holds it has an exclusion under it, so the credential holds no direct create row for it. */
+const mediatedRead = (reader: { channels: readonly string[]; exclude: readonly string[] }, channel: string): boolean =>
+  reader.exclude.length > 0 && !reader.channels.some((a) => subjectMatches(a, channel) && exclusionsOverlapping(a, reader.exclude).length === 0);
+
+/** What makes a mediated read work, for a refusal of one. */
+const MEDIATED_REMEDY = "history under an excluded wildcard is read through the space's delivery daemon, from this credential's lifecycle read-ACL row: check that the daemon runs with `cotal status --components`, and that the credential was minted with --provision, which writes that row";
+
 /** A bare number that reads as a year, which `--since` still takes as a sequence. */
 const yearShaped = (input: string): boolean => /^(19|20)\d\d$/.test(input);
 
@@ -304,6 +321,9 @@ export async function history(args: ParsedArgs): Promise<void> {
     servers: conn.server,
     ...endpointAuth(conn),
     ...(conn.mode === "user" ? { lifecycleUid: conn.epCaller?.uid } : reader?.lifecycleUid ? { lifecycleUid: reader.lifecycleUid } : {}),
+    // With exclusions, the endpoint reads the history of an entry an exclusion overlaps through the
+    // delivery daemon (SPEC §8).
+    ...(reader?.exclude.length ? { allowSubscribe: reader.channels, excludeSubscribe: reader.exclude } : {}),
     channels: [],
     consume: false,
     registerPresence: false,
@@ -430,9 +450,13 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     let incomplete = false;
     for (const ch of channels) {
       // A credential whose own grant leaves the channel out is told what it does grant, unread.
-      if (reader && !reader.channels.some((granted) => subjectMatches(granted, ch))) {
-        if (req.channel !== undefined)
-          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${grantedText(reader.channels)}`, { target: req.target, remedy: `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` });
+      if (reader && !channelInGrant(reader.channels, reader.exclude, ch)) {
+        if (req.channel !== undefined) {
+          const excluded = channelInGrant(reader.channels, [], ch);
+          throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not read #${ch} in ${conn.space}: its history grant is ${grantedText(reader)}`, { target: req.target, remedy: excluded
+            ? `read a channel its grant does not exclude, or use a credential whose read grant does not exclude #${ch}`
+            : `read a channel it grants, or mint one that reads #${ch} with \`cotal auth mint <label> --space ${conn.space} --allow-subscribe ${ch} --out <file>\`` });
+        }
         denied.push(ch);
         continue;
       }
@@ -442,7 +466,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
         if (!page.complete) incomplete = true;
       } catch (e) {
         if (req.channel !== undefined) {
-          if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read #${ch} in ${conn.space}: ${(e as Error).message}`, { target: req.target });
+          if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read #${ch} in ${conn.space}: ${(e as Error).message}`, { target: req.target, ...(reader && mediatedRead(reader, ch) ? { remedy: MEDIATED_REMEDY } : {}) });
           throw e;
         }
         if (denial(e)) denied.push(ch);
@@ -450,7 +474,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       }
     }
     if (denied.length)
-      warnings.push({ code: "CHANNELS_DENIED", target: req.target, message: `this identity may not read ${denied.length === 1 ? "one channel" : `${denied.length} channels`} (${denied.map((ch) => `#${ch}`).join(", ")}), so their messages are not shown${reader ? `; its history grant is ${grantedText(reader.channels)}` : ""}` });
+      warnings.push({ code: "CHANNELS_DENIED", target: req.target, message: `this identity may not read ${denied.length === 1 ? "one channel" : `${denied.length} channels`} (${denied.map((ch) => `#${ch}`).join(", ")}), so their messages are not shown${reader ? `; its history grant is ${grantedText(reader)}` : ""}` });
     read.sort((a, b) => a.ts.localeCompare(b.ts));
     olderRetained = incomplete || read.length > req.limit;
     read = read.slice(-req.limit);

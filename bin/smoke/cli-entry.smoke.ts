@@ -35,7 +35,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
+import { loadAgentFile, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import { spaceSegment } from "@cotal-ai/workspace";
 import "@cotal-ai/cli";
 import "@cotal-ai/manager";
@@ -954,6 +954,25 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const outside = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "general", "--allow-subscribe", "ops", "--json"], persona, noSeed);
   check("persona create with --subscribe outside --allow-subscribe is USAGE_INVALID, naming both flags",
     outside.status === 1 && outside.stdout.includes('"code":"USAGE_INVALID"') && outside.stdout.includes("every --subscribe channel must be within --allow-subscribe") && !outside.stdout.includes("cotal-persona-"), shown(outside));
+  // A list may remove channels (SPEC §9): the exclusion flag needs its list flag and must remove
+  // something, a --subscribe channel it removes is refused, and a created persona keeps the object form.
+  for (const [label, words, said] of [
+    ["an exclusion without its list flag", ["--exclude-publish", "team.secret"], "--exclude-publish removes channels from --allow-publish, so it needs --allow-publish"],
+    ["an exclusion that removes nothing", ["--allow-subscribe", "team.>", "--exclude-subscribe", "general"], 'exclusion \\"general\\" overlaps no entry of [team.>], so it removes nothing'],
+    ["a --subscribe channel the exclusion removes", ["--subscribe", "team.secret", "--allow-subscribe", "team.>", "--exclude-subscribe", "team.secret"], "outside --exclude-subscribe"],
+  ] as const) {
+    const r = cotal(["persona", "create", "q", "--prompt", "body", ...(words[0] === "--subscribe" ? [] : ["--subscribe", ""]), ...words, "--json"], persona, noSeed);
+    check(`persona create refuses ${label} as USAGE_INVALID`, r.status === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && r.stdout.includes(said) && !r.stdout.includes("cotal-persona-"), shown(r));
+  }
+  let excludedFile = "";
+  const excluded = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "team.a", "--allow-subscribe", "team.>", "--exclude-subscribe", "team.secret",
+    "--allow-publish", "team.>,general", "--exclude-publish", "team.secret"], (home) => { persona(home); excludedFile = join(home, "..", ".cotal", "agents", "q.md"); }, noSeed);
+  const written = excluded.status === 0 ? readFileSync(excludedFile, "utf8") : "";
+  const loaded = excluded.status === 0 ? loadAgentFile(excludedFile) : undefined;
+  check("persona create writes each list with its exclusions in the { allow, exclude } form, and the file reads back with them",
+    (written.match(/^\s+exclude:/gm) ?? []).length === 2 &&
+      JSON.stringify([loaded?.allowSubscribe, loaded?.excludeSubscribe, loaded?.allowPublish, loaded?.excludePublish]) === JSON.stringify([["team.>"], ["team.secret"], ["team.>", "general"], ["team.secret"]]),
+    `${JSON.stringify(shown(excluded))}\n${written}`);
 }
 
 // ── team check names each located manifest problem, without quoting a persona file ───────────────

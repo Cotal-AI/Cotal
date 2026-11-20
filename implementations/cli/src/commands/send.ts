@@ -18,7 +18,8 @@ import {
   chatStream,
   dmStream,
   taskStream,
-  subjectMatches,
+  channelInGrant,
+  parseChannelGrant,
   AmbiguousPeerError,
   CotalEndpoint,
   mentionsIn,
@@ -26,6 +27,7 @@ import {
   type FlagValues,
   type PeerCandidate,
   type Presence,
+  type ChannelGrant,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -38,6 +40,7 @@ import { personaCatalog } from "../lib/persona-files.js";
 import { brokerStoreWrite, recordedStore, storeRefusedWrite, storeWriteRepair } from "../lib/broker-store-health.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { UnusableFile } from "../lib/unusable-file.js";
+import { exceptText } from "../lib/grant-exclusions.js";
 
 /**
  * One explicit --to, --channel or --role chooses the native delivery mode. The command
@@ -338,36 +341,56 @@ function useOperator(space: string): string {
 
 const publishRefusal = "the broker refused the message, so it was not stored";
 
-/** Explain the channel grant without inferring the cause of a refusal from the registry. */
-async function channelDenied(channel: string, target: { space: string }, connection: Connection, registered: readonly string[], credsFile?: string): Promise<CommandFailure> {
-  let post: string[] | undefined;
-  let profile: "agent" | "observer" | "admin" | undefined;
+/** What a sender may post to, where this machine can read it: a `--creds` file's own publish rows
+ *  with its deny rows (SPEC §9), or a signed-in user's ledger grant. `grant` is absent when it cannot. */
+interface PostGrant { grant?: ChannelGrant; profile?: "agent" | "observer" | "admin" }
+
+async function postGrant(connection: Connection, credsFile?: string): Promise<PostGrant> {
   if (credsFile !== undefined) {
     const claims = credsClaims(credsFile);
-    if (claims.name === "agent" || claims.name === "observer" || claims.name === "admin") {
-      profile = claims.name;
-      post = agentGrants(claims.nats ?? {}, target.space).post;
-    }
-  } else if (connection.mode === "user" && connection.root) {
-    try {
-      const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
-      post = status.grant === "not-granted" ? [] : status.grant?.allowPublish;
-    } catch { /* the grant stays unknown */ }
+    if (claims.name !== "agent" && claims.name !== "observer" && claims.name !== "admin") return {};
+    const grants = agentGrants(claims.nats ?? {}, connection.space);
+    return { profile: claims.name, grant: { allow: grants.post, exclude: grants.excludePost } };
   }
-  const list = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
-  let remedy = post === undefined
-    ? `this machine cannot read this identity's post grant${registered.length ? `; the channels registered in ${target.space} are ${list(registered)}` : ""}`
-    : post.length ? `post to a channel this identity may post to: ${list(post)}` : `this identity may post to no channel in ${target.space}`;
+  if (connection.mode !== "user" || !connection.root) return {};
+  try {
+    const status = await resolveAuthProvider().userStatus({ store: workspaceSecretStore(connection.root), dir: userAuthStateDir(connection.root, connection.space), space: connection.space, actor: CLI_USER_ACTOR });
+    if (status.grant === "not-granted") return { grant: { allow: [], exclude: [] } };
+    return status.grant ? { grant: parseChannelGrant(status.grant.allowPublish, "allowPublish") } : {};
+  } catch { return {}; /* the grant stays unknown */ }
+}
+
+const channelsText = (channels: readonly string[]) => channels.map((name) => `#${name}`).join(", ");
+/** A post grant as a refusal quotes it. */
+const postText = (grant: ChannelGrant) => exceptText(channelsText(grant.allow), grant.exclude.map((name) => `#${name}`));
+
+/** A post to a channel the sender's own grant excludes is refused here, before the broker's deny
+ *  row would refuse it, so the refusal names the exclusion (SPEC §9). */
+function excludedPost(channel: string, target: { space: string }, sender: PostGrant): CommandFailure | undefined {
+  const grant = sender.grant;
+  if (!grant || channelInGrant(grant.allow, grant.exclude, channel) || !channelInGrant(grant.allow, [], channel)) return undefined;
+  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} is excluded from this identity's post grant (${postText(grant)}); nothing was sent`, {
+    target: { ...target, post: grant.allow, excludePost: grant.exclude },
+    remedy: `post to a channel this grant does not exclude, or use an identity whose post grant does not exclude #${channel}`,
+  });
+}
+
+/** Explain the channel grant without inferring the cause of a refusal from the registry. */
+function channelDenied(channel: string, target: { space: string }, sender: PostGrant, registered: readonly string[], credsFile?: string): CommandFailure {
+  const { grant, profile } = sender;
+  let remedy = grant === undefined
+    ? `this machine cannot read this identity's post grant${registered.length ? `; the channels registered in ${target.space} are ${channelsText(registered)}` : ""}`
+    : grant.allow.length ? `post to a channel this identity may post to: ${postText(grant)}` : `this identity may post to no channel in ${target.space}`;
   if (credsFile !== undefined) {
     if (profile !== undefined) remedy += `. Credential profile: ${profile}`;
     remedy += `. ${useOperator(target.space)}, or use a credential that may post to #${channel}`;
-    if (post !== undefined && !post.some((pattern) => subjectMatches(pattern, channel))) {
+    if (grant !== undefined && !channelInGrant(grant.allow, grant.exclude, channel)) {
       const publish = `--allow-publish${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
       const mint = codeSpan(`cotal auth mint <label> --space ${shellWord(target.space)} ${publish} --no-persona --out <file>`);
       remedy += `: on the machine that signs this space's credentials, run ${mint} and pass the new file with --creds`;
     }
   }
-  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; ${publishRefusal}`, { target: { ...target, post: post ?? null }, remedy });
+  return new CommandFailure("refused", "PERMISSION_DENIED", `#${channel} does not exist in ${target.space} or this identity may not post to it; ${publishRefusal}`, { target: { ...target, post: grant?.allow ?? null, ...(grant?.exclude.length ? { excludePost: grant.exclude } : {}) }, remedy });
 }
 
 /** The warning for a post to a channel with no registry entry. Whether the channel already holds
@@ -433,7 +456,13 @@ export async function send(args: ParsedArgs): Promise<void> {
   const tooLarge = (bytes: number | null) => new CommandFailure("refused", "UNSUPPORTED", bytes === null
     ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
     : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
+  const credsFile = values.creds !== undefined ? connection.creds : undefined;
   try {
+    const sender = input.mode === "msg" ? await postGrant(connection, credsFile) : {};
+    if (input.mode === "msg") {
+      const excluded = excludedPost(input.target, target, sender);
+      if (excluded) throw excluded;
+    }
     // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
     // send on the task stream. Confirmed absence of that stream refuses before publication. An
     // unread check does not refuse, and a direct message is not refused because the chat stream is gone.
@@ -489,7 +518,7 @@ export async function send(args: ParsedArgs): Promise<void> {
     } catch (error) {
       if (payloadRefused(error)) throw tooLarge(bytes);
       if (isPublishPermissionDenied(error)) {
-        if (input.mode === "msg") throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
+        if (input.mode === "msg") throw channelDenied(input.target, target, sender, registered, credsFile);
         const destination = input.mode === "ask" ? `role ${input.target}` : input.target;
         const useAuthorized = `use a credential that may send to ${destination} in ${space}`;
         throw new CommandFailure("refused", "PERMISSION_DENIED", `${destination}: ${publishRefusal}`, {

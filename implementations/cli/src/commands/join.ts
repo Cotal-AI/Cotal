@@ -19,9 +19,11 @@ import {
   DEV_OWNER,
   dmStream,
   dmDurable,
-  chatStream,
-  chatHistDurable,
   chatSubject,
+  channelInGrant,
+  isConcreteChannel,
+  patternInGrant,
+  exclusionsOverlapping,
   importNativeSubjectPermissions,
   issuedPermitsPattern,
   issuedPermitsSubject,
@@ -32,7 +34,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { agentGrants, CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
@@ -83,6 +85,13 @@ function credentialInboxRemedy(space: string, channel: string): string {
   return `ask the space's owner to mint the credential with \`cotal auth mint <name> --provision ${read} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports. To keep the original grants, replace \`${read}\` with \`--identity <original-file>\``;
 }
 
+/** A static agent credential's read grant, from its `chat.*.*.<channel>` subscribe rows with its
+ *  subscribe deny rows applied (SPEC §9). */
+function credentialReadGrant(creds: string, space: string): { allow: string[]; exclude: string[] } {
+  const grants = agentGrants(credsClaims(creds).nats ?? {}, space);
+  return { allow: grants.read, exclude: grants.excludeRead };
+}
+
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
  * authenticates it first and enforces admission, provisioning and the current ACL. */
 function checkCredentialJoin(creds: string, space: string, uid: string, channel: string): void {
@@ -98,11 +107,20 @@ function checkCredentialJoin(creds: string, space: string, uid: string, channel:
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant inbox access for lifecycle ${uid} in ${space}`, {
       remedy: "pass --lifecycle-uid with the lifecycle UID that `cotal auth mint <name> --provision` reported for this credential; a different UID cannot bind its inbox",
     });
-  const history = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, actor, uid)}.${chatSubject(space, "*", "*", channel)}`;
-  if (!issuedPermitsPattern(permission, history))
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
-      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision --allow-subscribe ${channel}\`, then join with the lifecycle UID that mint reports; add --allow-publish ${channel} if you also need to post`,
+  // Read access is the subscribe rows less the deny rows. The history create row is no measure of it:
+  // the mint withholds that row from any entry an exclusion overlaps, whose history the delivery
+  // daemon serves instead (SPEC §8).
+  const { allow, exclude } = credentialReadGrant(creds, space);
+  const admits = isConcreteChannel(channel) ? channelInGrant : patternInGrant;
+  if (admits(allow, exclude, channel)) return;
+  const by = exclusionsOverlapping(channel, exclude);
+  if (by.length && admits(allow, [], channel))
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential's read grant excludes #${channel} in ${space} (excluded by ${by.join(", ")})`, {
+      remedy: "join a channel its read grant does not exclude, or ask the space's owner for a credential without that exclusion",
     });
+  throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
+    remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision --allow-subscribe ${channel}\`, then join with the lifecycle UID that mint reports; add --allow-publish ${channel} if you also need to post`,
+  });
 }
 
 /** Refresh a manual user-auth registration's policy before anything is dialed. A refresh that fails
@@ -333,10 +351,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     return fresh.bearer;
   } : undefined;
 
+  // A credential whose read grant has exclusions holds no direct history create row for an entry an
+  // exclusion overlaps, so the endpoint reads that history through the delivery daemon (SPEC §8).
+  const readGrant = auth.creds === undefined ? undefined : credentialReadGrant(auth.creds, space);
   const ep = new CotalEndpoint({
     space,
     servers: server,
     ...(userConnection ? { ...endpointAuth(userConnection), bearer } : auth),
+    ...(readGrant?.exclude.length ? { allowSubscribe: readGrant.allow, excludeSubscribe: readGrant.exclude } : {}),
     // Absent for a bare open/token join: the endpoint self-mints its per-session lifecycle at
     // construction. Set for auth joins: self-provisioned above, or --creds-paired (never invented).
     lifecycleUid,

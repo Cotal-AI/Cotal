@@ -58,6 +58,7 @@ let spawnPersona!: typeof import("../src/commands/spawn.js").spawnPersona;
 let enrollmentInput!: typeof import("../src/commands/spawn.js").enrollmentInput;
 let scrubEnrollmentEnv!: typeof import("../src/commands/spawn.js").scrubEnrollmentEnv;
 let checkEnrollmentBundle!: typeof import("../src/commands/spawn.js").checkEnrollmentBundle;
+let handoffEnrollmentBundle!: typeof import("../src/commands/spawn.js").handoffEnrollmentBundle;
 let runBearerPreflight!: typeof import("../src/commands/spawn.js").runBearerPreflight;
 let listPersonas!: typeof import("../src/lib/personas.js").listPersonas;
 let pruneStaleMeshes!: typeof import("../src/lib/meshes.js").pruneStaleMeshes;
@@ -77,7 +78,7 @@ try {
     setCurrent,
     setAdoptedCurrent,
   } = await import("@cotal-ai/workspace"));
-  ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
+  ({ checkEnrollmentBundle, enrollmentInput, handoffEnrollmentBundle, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
   ({ spaceCompletion } = await import("../src/lib/completion.js"));
   ({ pruneStaleMeshes } = await import("../src/lib/meshes.js"));
@@ -185,6 +186,32 @@ try {
   };
   assert.throws(() => checkEnrollmentBundle(enrollmentBundle, "reviewer"), /direct brokerAccess url does not match its stock server/);
   check("enrollment stock bundle refuses a direct brokerAccess url that conflicts with server", true);
+  // A list may remove channels (SPEC §9). The material keeps `{ allow, exclude }` through the check,
+  // and through a second check of what the first returned, and one it cannot read is refused rather
+  // than read as no list.
+  const readExcluded = { allow: ["review.>"], exclude: ["review.secret"] };
+  const { server: _server, tlsRequired: _tls, userAuth: _userAuth, ...plainBundle } = enrollmentBundle;
+  const grantedBundle = { ...plainBundle, subscribe: ["review.code"], allowSubscribe: readExcluded, allowPublish: ["review.>"] };
+  const checked = checkEnrollmentBundle(grantedBundle, "reviewer").bundle;
+  check("enrollment material keeps a read list's exclusions beside a plain post list",
+    JSON.stringify([checked.allowSubscribe, checked.allowPublish]) === JSON.stringify([readExcluded, ["review.>"]]), checked);
+  const rechecked = checkEnrollmentBundle(checked, "reviewer").bundle;
+  check("re-checking checked material keeps its exclusions", JSON.stringify(rechecked.allowSubscribe) === JSON.stringify(readExcluded), rechecked);
+  assert.throws(() => checkEnrollmentBundle({ ...grantedBundle, allowPublish: { allow: ["review.code"], exclude: ["review.>"] } }, "reviewer"),
+    /enrollment endpoint returned a grant this client cannot read: .*"review\.code" is both allowed and excluded in full/);
+  assert.throws(() => checkEnrollmentBundle({ ...grantedBundle, allowSubscribe: { allow: ["review.>"], exclude: [] } }, "reviewer"),
+    /enrollment endpoint returned a grant this client cannot read: .*needs at least one exclusion/);
+  assert.throws(() => checkEnrollmentBundle({ ...grantedBundle, allowSubscribe: "review.>" }, "reviewer"), /enrollment endpoint returned a grant this client cannot read/);
+  check("enrollment material with an unreadable or contradictory grant is refused", true);
+  const handoff = {
+    kind: "cotal-managed-handoff/v1", space: "teamA", owner: enrollmentBundle.owner, actor: "reviewer", lifecycleUid: enrollmentBundle.lifecycleUid,
+    server: SERVER, tlsRequired: false, authProvider: "cotal", idp: enrollmentBundle.idp, exchangeUrl: enrollmentBundle.authServiceUrl,
+    sentinelCreds: "sentinel-creds", actorToken: "actor-token", subscribe: ["review.code"],
+    allowSubscribe: readExcluded, allowPublish: { allow: ["review.>", "general"], exclude: ["review.secret"] },
+  } as const;
+  const handedOff = handoffEnrollmentBundle(handoff as never).bundle;
+  check("a managed handoff's lists reach the enrollment material with their exclusions",
+    JSON.stringify([handedOff.allowSubscribe, handedOff.allowPublish]) === JSON.stringify([readExcluded, handoff.allowPublish]), handedOff);
   // Hardening: the registry dir is 0700 — its filenames are space names, so it must not be
   // world-traversable even though the file contents are already 0600.
   check(
