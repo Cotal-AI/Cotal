@@ -204,14 +204,15 @@ export function aclEnv(opts: {
 }): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.subscribe) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
-  for (const [allowVar, excludeVar, allow, exclude] of [
-    ["COTAL_ALLOW_SUBSCRIBE", "COTAL_EXCLUDE_SUBSCRIBE", opts.allowSubscribe, opts.excludeSubscribe],
-    ["COTAL_ALLOW_PUBLISH", "COTAL_EXCLUDE_PUBLISH", opts.allowPublish, opts.excludePublish],
-  ] as const) {
-    if (exclude?.length && !allow) throw new Error(`launch: ${excludeVar} needs ${allowVar}, the list it removes channels from`);
-    if (allow) env[allowVar] = allow.join(",");
-    if (exclude?.length) env[excludeVar] = exclude.join(",");
-  }
+  // Each variable is written by its literal name, which the operator-env-keep census reads.
+  if (opts.excludeSubscribe?.length && !opts.allowSubscribe)
+    throw new Error("launch: COTAL_EXCLUDE_SUBSCRIBE needs COTAL_ALLOW_SUBSCRIBE, the list it removes channels from");
+  if (opts.excludePublish?.length && !opts.allowPublish)
+    throw new Error("launch: COTAL_EXCLUDE_PUBLISH needs COTAL_ALLOW_PUBLISH, the list it removes channels from");
+  if (opts.allowSubscribe) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
+  if (opts.excludeSubscribe?.length) env.COTAL_EXCLUDE_SUBSCRIBE = opts.excludeSubscribe.join(",");
+  if (opts.allowPublish) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
+  if (opts.excludePublish?.length) env.COTAL_EXCLUDE_PUBLISH = opts.excludePublish.join(",");
   // Control-plane capabilities (e.g. `spawn`) gate cotal_spawn/cotal_persona in the connector's tool
   // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
   // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.
