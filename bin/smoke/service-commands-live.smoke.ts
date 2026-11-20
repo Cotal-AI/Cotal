@@ -265,11 +265,32 @@ try {
       previous.recordedState === "stopped" && typeof previous.pid === "number" && brokerOnlyDown.status === 0 && stackRestart.status === 0
       && liveStatus.status === 0 && live?.savedService === false && typeof live.pid === "number" && live.pid !== previous.pid,
       { previous, down: out(brokerOnlyDown), up: out(stackRestart), status: out(liveStatus) });
+    if (typeof previous.instanceId === "string") {
+      const pinned = cotal(["manager", "status", "--instance", previous.instanceId, "--json"]);
+      const owned = JSON.parse(pinned.stdout).result;
+      check("a pin still reads the stopped owned manager rather than the running PID-only manager",
+        pinned.status === 0 && owned?.instanceId === previous.instanceId && owned?.recordedState === "stopped", out(pinned));
+    }
 
     // ---- The manager a plain cotal up starts: logs reads it, stop and install still refuse -------
     const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER, "--seat-cap", "3"]);
     upStackUp = plainUp.status === 0;
     check("a plain cotal up starts a stack with its manager", upStackUp, out(plainUp));
+    const unpinned = upCotal(["manager", "status", "--plain"]);
+    check("unpinned manager status reports the running PID-only manager",
+      unpinned.status === 0 && out(unpinned).includes("The manager is running") && /PID:\s+\d+/.test(out(unpinned)), out(unpinned));
+    const missingId = "11111111-1111-4111-8111-111111111111";
+    const missingInstanceMessage = "the full instance ID does not belong to this selected definition and space";
+    const pinned = upCotal(["manager", "status", "--instance", missingId, "--plain"]);
+    check("pinned manager status cannot select a PID-only manager",
+      pinned.status === 2 && out(pinned).includes("TARGET_NOT_FOUND") && out(pinned).includes(missingInstanceMessage) && !out(pinned).includes("The manager is running"), out(pinned));
+    for (const args of [["manager", "status"], ["service", "status", "manager"], ["manager", "logs"], ["service", "logs", "stack-manager"]]) {
+      const run = upCotal([...args, "--instance", missingId, "--json"]);
+      const report = JSON.parse(run.stdout);
+      check(`cotal ${args.join(" ")} refuses an unowned pin in JSON`,
+        run.status === 2 && report.outcome === "refused" && report.error?.code === "TARGET_NOT_FOUND"
+        && report.error.message === missingInstanceMessage && report.target?.instanceId === missingId, out(run));
+    }
     const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
     let upLogs = upCotal(["manager", "logs"]);
     for (let i = 0; i < 30 && !out(upLogs).includes("manager up"); i++) { await sleep(500); upLogs = upCotal(["manager", "logs"]); }
