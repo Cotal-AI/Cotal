@@ -173,7 +173,9 @@ would accept the key again; mint a fresh key without `--identity`.
 Without `--provision`, fixed-profile minting writes credentials only. `--provision` uses one native provisioner
 connection to pre-create that lifecycle's bind-only DM/delivery and role footprint. It performs
 the authenticated preflight against the same recorded broker and TLS requirement, without
-pruning a registration. An acknowledgement proves neither a joined agent nor task completion.
+pruning a registration. When that broker is not running, the refusal names it and the folder to
+restart it from, and offers a mint without `--provision`, which writes only the credential file.
+An acknowledgement proves neither a joined agent nor task completion.
 A partial or unknown result retains the allocated public identity and lifecycle for diagnosis
 and does not retry the mint.
 
