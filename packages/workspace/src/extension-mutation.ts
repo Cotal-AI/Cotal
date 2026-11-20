@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
+import { closeSync, existsSync, fstatSync, futimesSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
@@ -27,17 +27,44 @@ function globalUpdateChildPath(root: string): string {
   return join(canonicalGlobalRoot(root), ".cotal-update-child");
 }
 
-export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; onWait?: () => void; repairAmbiguous?: () => void } = {}): () => void {
-  const deadline = Date.now() + (opts.waitMs ?? 0);
+/** The owner record stays immutable. Renewing updaters touch its inode without changing custody. */
+export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; renew?: boolean; onWait?: () => void; repairAmbiguous?: () => void } = {}): () => void {
+  const waitMs = opts.waitMs ?? 0;
+  const deadline = Date.now() + waitMs;
   const canonicalRoot = canonicalGlobalRoot(root);
-  const held = acquireLock(join(canonicalRoot, ".cotal-update.lock"), {
-    label: "a global cotal-ai update",
-    waitMs: opts.waitMs ?? 0,
-    onWait: opts.onWait,
-    onTimeout: (owner) => new Error(
-      `another cotal-ai update is using npm global root ${canonicalRoot} (pid ${owner.pid}) - retry once it finishes`,
-    ),
-  });
+  const lock = join(canonicalRoot, ".cotal-update.lock");
+  let held: HeldLock;
+  let wait = waitMs;
+  let announced = false;
+  const retry = new Error();
+  for (;;) {
+    try {
+      held = acquireLock(lock, {
+        label: "a global cotal-ai update",
+        waitMs: wait,
+        onWait: () => { if (!announced) { announced = true; opts.onWait?.(); } },
+        onTimeout: owner => {
+          if (opts.renew && waitMs > 0) {
+            const current = inspectLock(lock);
+            if (current.state === "active" && current.owner.nonce === owner.nonce) {
+              const updated = lstatSync(lock, { throwIfNoEntry: false });
+              const confirmed = inspectLock(lock);
+              const now = Date.now();
+              if (confirmed.state === "active" && confirmed.owner.nonce === owner.nonce && updated?.isFile() && updated.mtimeMs > owner.ts && updated.mtimeMs <= now) {
+                wait = updated.mtimeMs + waitMs - now;
+                if (wait > 0) return retry;
+              }
+            }
+          }
+          return new Error(`another cotal-ai update is using npm global root ${canonicalRoot} (pid ${owner.pid}) - retry once it finishes`);
+        },
+      });
+      break;
+    } catch (error) {
+      if (error !== retry) throw error;
+    }
+  }
+  let stopRenewing: (() => void) | undefined;
   try {
     const path = globalUpdateChildPath(canonicalRoot);
     const marker = readMarker(path);
@@ -61,9 +88,20 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; 
       }
     }
     assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child", deadline);
-    return () => held.release();
+    if (opts.renew) {
+      const fd = openSync(lock, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      let timer: ReturnType<typeof setInterval> | undefined;
+      stopRenewing = () => { clearInterval(timer); stopRenewing = undefined; closeSync(fd); };
+      if (JSON.parse(readFileSync(fd, "utf8")).nonce !== held.nonce) throw new Error("global update reservation changed before renewal");
+      timer = setInterval(() => {
+        const now = new Date();
+        try { futimesSync(fd, now, now); }
+        catch { stopRenewing?.(); }
+      }, 1_000).unref();
+    }
+    return () => { try { stopRenewing?.(); } finally { held.release(); } };
   } catch (e) {
-    held.release();
+    try { stopRenewing?.(); } finally { held.release(); }
     throw e;
   }
 }

@@ -81,6 +81,8 @@ On Linux, use a glibc distribution to start the built-in PTY manager. The defaul
 uses that manager. Alpine and other musl distributions cannot start it.
 
 If you already have Node.js 22.10 or newer, install as your own user, without sudo.
+On older Node.js versions, the npm postinstall check stops the installation and reports the running and required versions.
+Install a supported Node.js and retry, or use the [shell installer](#use-the-shell-installer) on macOS or Linux.
 The npm global prefix must be writable by your user, and its executable directory must be on PATH.
 On macOS or Linux with distribution Node, the default prefix may be root-owned.
 Use the [shell installer](#use-the-shell-installer) above, or select a user-owned npm prefix before installing:

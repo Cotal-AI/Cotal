@@ -100,7 +100,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     let output = '';
     child.stdout.on('data', bytes => {
       output += bytes;
-      if (scenario === 'concurrent' && output.includes("Waiting up to 10 minutes for another updater to release npm's global root"))
+      if (scenario === 'concurrent' && output.includes("Waiting for another updater to release npm's global root"))
         writeFileSync(join(root, 'waiter-observed'), 'ready');
       const progress = { 'offline-metadata': 'release archives', 'offline-closure': 'Checking installed extension dependencies', 'offline-staging': 'beside the running version' }[scenario];
       if (armed && progress && output.includes(progress)) disconnected = true;
@@ -323,7 +323,7 @@ exec npm "$@"
     const updates = await Promise.all(Array.from({ length: scenario === 'concurrent' ? 2 : 1 }, () => run(process.execPath, [entry, 'update', '--self'], 660000)));
     const update = updates[0];
     if (abandoned) await abandoned;
-    const waitLine = "Waiting up to 10 minutes for another updater to release npm's global root";
+    const waitLine = "Waiting for another updater to release npm's global root";
     for (const result of updates) assert.doesNotMatch(result.output, /Reserving npm's global root/);
     if (scenario === 'concurrent') {
       for (const result of updates) assert.equal(result.code, 0, result.output);

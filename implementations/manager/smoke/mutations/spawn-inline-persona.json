@@ -103,7 +103,7 @@
     },
     {
       "name": "N10 accept a resume entry whose snapshot is another path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preservation.ts",
       "find": "    if (entry.launch.source.kind === \"inline\" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))\n",
       "replace": "    if (false)\n",
       "expectRed": "a resume entry whose inline snapshot is not its lifecycle's path is refused",
@@ -183,7 +183,7 @@
     },
     {
       "name": "N19 settle a stopped seat's snapshot when its removal failed",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preservation.ts",
       "find": "        const settled = a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid);\n",
       "replace": "        const settled = a.launch.source.kind !== \"inline\" || this.dropInlineSnapshot(a.name, a.lifecycleUid) || true;\n",
       "expectRed": "and reports that snapshot from its terminal",

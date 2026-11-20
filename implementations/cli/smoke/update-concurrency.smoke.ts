@@ -2,7 +2,7 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
@@ -62,8 +62,14 @@ const globalHelperRoot = process.env.COTAL_UPDATE_GLOBAL_LOCK_HELPER;
 if (globalHelperRoot) {
   const ready = process.env.COTAL_UPDATE_GLOBAL_LOCK_READY!;
   const releaseFile = process.env.COTAL_UPDATE_GLOBAL_LOCK_RELEASE!;
-  const release = claimGlobalNpmUpdateLock(globalHelperRoot);
+  const renew = process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "renew";
+  const release = claimGlobalNpmUpdateLock(globalHelperRoot, { renew });
   writeFileSync(ready, String(process.pid));
+  if (renew) {
+    await sleep(5_000);
+    release();
+    process.exit(0);
+  }
   await waitFor(() => existsSync(releaseFile) || process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1", "global update lock release");
   if (process.env.COTAL_UPDATE_GLOBAL_LOCK_TIMED === "1") await sleep(1_000);
   release();
@@ -97,6 +103,7 @@ if (globalHelperRoot) {
       /another cotal-ai update is using npm global root/,
       "a second update parent cannot enter the same npm global root",
     );
+    assert.throws(() => claimGlobalNpmUpdateLock(root, { waitMs: 100, renew: true }), /another cotal-ai update/);
     writeFileSync(releaseFile, "release");
     await waitForExit(holder);
     assert.equal(holder.exitCode, 0);
@@ -130,6 +137,33 @@ if (globalHelperRoot) {
     assert.equal(holder.exitCode, 0);
     updateRuntime.claimGlobalUpdate(root, () => { waits++; })();
     assert.equal(waits, 1, "an uncontended reservation reports no wait");
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// A renewing holder's reservation remains exclusive past the initial wait budget.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-global-renew-"));
+  const ready = join(root, "holder-ready");
+  const holder = spawn(process.execPath, [...process.execArgv, import.meta.filename], {
+    env: { ...process.env, COTAL_UPDATE_GLOBAL_LOCK_HELPER: root, COTAL_UPDATE_GLOBAL_LOCK_READY: ready,
+      COTAL_UPDATE_GLOBAL_LOCK_RELEASE: join(root, "release"), COTAL_UPDATE_GLOBAL_LOCK_TIMED: "renew" },
+    stdio: "ignore",
+  });
+  try {
+    await waitFor(() => existsSync(ready), "the renewing updater");
+    const lock = join(root, ".cotal-update.lock");
+    const before = statSync(lock).mtimeMs;
+    await waitFor(() => statSync(lock).mtimeMs > before, "the holder's reservation renewal");
+    const started = Date.now();
+    let waits = 0;
+    claimGlobalNpmUpdateLock(root, { waitMs: 2_000, renew: true, onWait: () => { waits++; } })();
+    assert.ok(Date.now() - started > 2_000, "the waiter outlasts its initial budget");
+    assert.equal(waits, 1, "renewal does not repeat the wait notice");
+    await waitForExit(holder);
+    assert.equal(holder.exitCode, 0);
   } finally {
     if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
     rmSync(root, { recursive: true, force: true });
