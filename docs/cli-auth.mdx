@@ -426,7 +426,9 @@ prove current broker authorization, daemon adoption, connected agents or task pr
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
 rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
 spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
-spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
+spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. This includes multiple open spaces
+registered at the same root. With or without `--fix`, stay in that folder and pass `--space` with
+one of the listed names. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
