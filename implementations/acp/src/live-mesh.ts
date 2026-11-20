@@ -20,7 +20,7 @@ import {
   type CotalMessage,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, instanceIdShaped, isConnectRefusal, resolveControlTarget, resolvePreference, resolveTargetOrThrow, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, control, controlPs, liveManagerIds, managerCandidate, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
+import { askManager, control, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
 import { SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
@@ -162,12 +162,19 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" }).catch((e) => Promise.reject(plain(e)));
       const ids = await liveManagerIds(t.space, t.server, t.auth);
       const here = hostname();
-      return Promise.all(ids.map(async (instanceId): Promise<ManagerChoice> => {
+      const choices = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
         // A per-instance call needs an instrument minted for that instance.
         const pinned = await resolveControlTarget(ctx, "control-caller-privileged", instanceId, { onRefusal: "throw" }).catch((e) => Promise.reject(plain(e)));
-        const host = await reportedManagerHost(client, pinned.space, pinned.server, pinned.auth, instanceId);
+        // A registration whose host is gone has nothing subscribed on its rail, as `cotal ps`
+        // reports it. It is not offered, and its host is not waited for. The probe answers only
+        // for a gone rail, so a live manager's host answer ends it.
+        const stop = new AbortController();
+        const reported = reportedManagerHost(client, pinned.space, pinned.server, pinned.auth, instanceId).finally(() => stop.abort());
+        if (await managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, stop.signal)) return undefined;
+        const host = await reported;
         return { instanceId, ...(host ? { host } : {}), local: host === here };
       }));
+      return choices.filter((m): m is ManagerChoice => m !== undefined);
     },
 
     async personas(instanceId) {
