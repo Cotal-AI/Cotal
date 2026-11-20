@@ -2,4 +2,4 @@
 "cotal-ai": patch
 ---
 
-The shell installer rejects an explicitly empty `--version` before changing any files.
+The shell installer rejects empty or whitespace-only `--version` values before changing any files.
