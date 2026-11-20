@@ -8,9 +8,10 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cachedPreferences, CommandFailure, exitCode, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
@@ -141,19 +142,20 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   let entries: PersonaEntry[];
   try { entries = readPersonas(root); }
   catch (error) { throw catalogReadRefusal(personaDir(root), error); }
-  if (!entries.length) {
-    console.log(
-      c.dim(`no personas in ${personaDir(root)}\n`) +
-        c.dim('create one:  `cotal personas new <name> --prompt "<who they are>"`'),
-    );
-    return;
-  }
-  // `--running` is an explicit live overlay: connect, snapshot who's present, and mark each persona.
-  // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort. The
-  // marks follow the mesh they were read from, as every other report that reads one begins.
+  // An explicit live overlay checks the mesh even when there are no local personas to mark.
   const overlay = running ? await presentNames(values) : undefined;
   const present = overlay?.names;
   if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", process.stdout)}\n`);
+  if (!entries.length) {
+    const spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
+    const serverFlag = values.server === undefined ? "" : ` --server ${shellWord(values.server)}`;
+    const example = `cotal personas new example${spaceFlag}${serverFlag} --prompt "Help with this project" --subscribe ""`;
+    console.log(
+      c.dim(`no personas in ${personaDir(root)}\n`) +
+        c.dim(`create one:  ${codeSpan(example)}`),
+    );
+    return;
+  }
   // A catalog travels with a cloned repo, so every value read from it is shown with its control
   // characters escaped, as `persona` and `persona show` show them.
   const pad = Math.max(...entries.map((e) => oneLine(e.name).length));

@@ -604,7 +604,8 @@ when its output is piped or redirected, so
 `personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
-That overlay heads the list with the mesh it read and marks each persona `running` or `not running`.
+That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
+It heads the list with the mesh it read and marks each persona `running` or `not running`.
 
 
 ### Personas on an exact manager [#personas-on-an-exact-manager]
