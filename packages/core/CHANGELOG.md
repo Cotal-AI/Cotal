@@ -1,5 +1,18 @@
 # @cotal-ai/core
 
+## 0.171.5
+
+### Patch Changes
+
+- 24daff4: Move the endpoint's anycast request rail out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- 3ea52d4: Move the endpoint's durable consumers out of `endpoint.ts` into their own internal component. The package's exports are unchanged.
+- 7b216e3: Drop the endpoint's private forwarders that only other internal components called; those components now reach the owning component directly. The package's exports are unchanged.
+- 11081d7: Move the endpoint's agent-side durable membership out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- 2f6ff7a: Move the endpoint's principal serve and `prompts` presence internals into an internal component. `servePrincipal`, `setPromptsPresence`, `nextPromptsSeq` and `callPrincipal` stay on the endpoint and behave as before. The package's exports are unchanged.
+- 3d6a37f: The launch watcher reclaims temporary files without spinning when the agent's `PATH` does not include `sleep` or `rm`.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- 8708701: A session on a websocket mesh now reconnects after its connection dies without a reset, such as during a laptop sleep, and `cotal_disconnect` no longer hangs while the mesh is unreachable. When the ping check finds such a connection stale, the client stops waiting for the unanswered closing handshake after 5 seconds and reconnects. A failed websocket dial now names the URL it dialed, whether the socket had opened, how long it had been trying or open, and any reason given, where it used to say only `ConnectionError`. A Claude Code disconnect waits at most 3 seconds for the event plane before it stops the connection, so `cotal_connect` can connect the conversation again. A failed `cotal_reconnect` now advises calling it again, where it used to name `/reconnect`, a command Claude Code does not have.
+
 ## 0.171.4
 
 ### Patch Changes

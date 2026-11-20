@@ -1,5 +1,25 @@
 # @cotal-ai/delivery
 
+## 0.171.5
+
+### Patch Changes
+
+- 13fbb58: Move the delivery daemon's credential source and root resolution (the store and key that hold its cred, the daemon root, the reload identity, the cred load and the pidfile record) out of `delivery.ts` into an internal `delivery-creds.ts`. The package surface is unchanged.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes

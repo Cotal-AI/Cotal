@@ -1,5 +1,35 @@
 # @cotal-ai/cli
 
+## 0.171.5
+
+### Patch Changes
+
+- bcb2f8e: Explain how to keep only the built-in `pty` runtime during guided setup.
+- 3b5ce0c: Repeating a loopback dashboard start refreshes the private single-use link even without a display or with `--no-open`, while existing browser sessions stay signed in.
+- 6291f81: `cotal manager status` now reports the running stack manager instead of a previously stopped manager service.
+- 88313a0: Wait a full hour before automatically installing a newly seen npm release, even if npm changes the latest version during another release's hold.
+- 8281e1d: Repair writable connector paths before self-update, identify missing or interrupted npm, and make interrupted connector seeds and updates safe to retry.
+- 2f532c1: Stop the shell installer before it changes anything if a directory occupies the launcher path, and explain how to choose another location.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- e3563bc: Self-update checks extension peers against the selected Cotal release so a missing archive from a newer release cannot block the update.
+- 9f948a3: Use the current CLI launcher in stopped-space restart hints and related space recovery commands.
+- c2b0250: Self-update names unreadable prepared space records, explains how to restore access, and reports that their continuity was not checked.
+- 8671af5: `cotal update --check` now reports when an interrupted connector seed needs `cotal ext seed --repair`.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes

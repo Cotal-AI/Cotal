@@ -1,5 +1,17 @@
 # @cotal-ai/connector-core
 
+## 0.171.5
+
+### Patch Changes
+
+- bcb2f8e: Explain how to keep only the built-in `pty` runtime during guided setup.
+- 07f89b7: Move the mesh agent's channel members (channel briefing, readable set, channel info, channel listing, join and leave) and `isLocalServer` out of `agent.ts` into an internal `agent-channels.ts`. `MeshAgent` keeps a forwarder for each public member. The package surface is unchanged.
+- 6ba51a8: Move the mesh agent's outgoing messaging (channel send and its receipt, role anycast with its status and cancel, DM with peer resolution, and the reply correlation behind them) with `closeChannelNames` and `presenceReadCondition` out of `agent.ts` into an internal `agent-messaging.ts`. `MeshAgent` keeps a forwarder for each public member. The package surface is unchanged.
+- dbc7fc8: Move the mesh agent's manager-facing commands (spawn, model inspection, manager endpoint listing, despawn, run, persona define/list/show, history purge) and `SPAWN_TIMEOUT_MS` out of `agent.ts` into an internal `agent-supervision.ts`. `MeshAgent` keeps a forwarder for each public command. The package surface is unchanged.
+- d0affc2: Move the mesh agent's run turns (native participation lease, turn relay and pull, turn surfacing, once-task claims and reports, and the yield) with their module helpers out of `agent.ts` into an internal `agent-turns.ts`. `MeshAgent` keeps the turn state suites reach into and a forwarder for each member called from outside the family. The package surface is unchanged.
+- 6f94063: A held `cotal_connect` no longer asks the host one extra time just after its hold ends. The pause that reaches the deadline is now the last one, so the hold ends with the open that follows it even when that pause's timer fires a little early.
+- 8708701: A session on a websocket mesh now reconnects after its connection dies without a reset, such as during a laptop sleep, and `cotal_disconnect` no longer hangs while the mesh is unreachable. When the ping check finds such a connection stale, the client stops waiting for the unanswered closing handshake after 5 seconds and reconnects. A failed websocket dial now names the URL it dialed, whether the socket had opened, how long it had been trying or open, and any reason given, where it used to say only `ConnectionError`. A Claude Code disconnect waits at most 3 seconds for the event plane before it stops the connection, so `cotal_connect` can connect the conversation again. A failed `cotal_reconnect` now advises calling it again, where it used to name `/reconnect`, a command Claude Code does not have.
+
 ## 0.171.4
 
 ### Patch Changes

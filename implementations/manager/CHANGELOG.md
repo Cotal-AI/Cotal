@@ -1,5 +1,31 @@
 # @cotal-ai/manager
 
+## 0.171.5
+
+### Patch Changes
+
+- cf8aa51: Move the manager's boot sequence (execution admission, connect, registration, instance lease and the frozen-gate heal) into its own component without changing the manager API.
+- 4471d1c: Route the broker transport's own dials through the manager's dial again, so a test that replaces the manager's dial intercepts them as it did before the transport moved into its own component.
+- 56b1500: Build each manager component's dependencies in a factory beside the component instead of inline in the manager, without changing what any dependency reads.
+- 87ae094: Move resuming a preserved manager, with its commit and finalize doors, into its own component without changing the manager API.
+- 59bee02: Credential renewal reads the delivery shard through its deps instead of importing the Manager class, so the manager module is no longer part of an import cycle.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/seat@0.171.5
+
 ## 0.171.4
 
 ### Patch Changes
