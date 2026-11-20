@@ -553,7 +553,8 @@ retry the launch. If you need to refresh the daemon's `PATH`, let any seats on t
 and run `cotal daemon setup --space <space>` on that computer.
 
 A recorded native machine daemon checks for updates daily with up to one hour of jitter.
-A newly seen release waits one hour before installation. Automatic installation uses
+A newly seen release waits one hour before installation. If the final npm check sees a different
+newer release, no update is installed and that release starts its own hold. Automatic installation uses
 `cotal update --self` and waits until every hosted Manager is empty, then holds its admission
 fence through the update. Running agents are not stopped to make room for an update.
 An explicit daemon home or a daemon not started by its recorded native service does not install
