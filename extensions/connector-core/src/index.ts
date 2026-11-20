@@ -3,6 +3,7 @@ export * from "./config.js";
 export { controlFromEnv, hasIdentity } from "./session-env.js";
 export * from "./agent.js";
 export { SPAWN_TIMEOUT_MS } from "./agent-supervision.js";
+export { isLocalServer } from "./agent-channels.js";
 export * from "./runtime.js";
 export * from "./launch.js";
 export * from "./agui.js";

@@ -98,7 +98,7 @@
     },
     {
       "name": "durable delivery health collapses back to the lease-only conjunct, certifying a killed daemon's residue (#445)",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": "    const held = (channel: string): \"active\" | \"degraded\" | \"unknown\" =>\n      !leaseReadable\n        ? \"unknown\"\n        : daemonMemberships !== undefined && leaseLive && daemonMemberships.some((m) => m.channel === channel || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel)))\n          ? \"active\"\n          : \"degraded\";",
       "replace": "    const held = (channel: string): \"active\" | \"degraded\" | \"unknown\" =>\n      leaseLive\n        ? \"active\"\n        : \"degraded\";",
       "expectRed": "daemon gone + lease residue still ready ⇒ deliveryHealth degraded, NEVER active (#445)",
