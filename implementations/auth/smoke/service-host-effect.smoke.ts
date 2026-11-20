@@ -21,9 +21,10 @@ import {
 import { grantActor } from "../src/ledger.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import {
-  S2A_INVOCATION_MS, openServiceHostEffect, openServiceHostOperations, serviceHostOperationId, serviceHostScopeKeys,
+  openServiceHostEffect, openServiceHostOperations, serviceHostScopeKeys,
   type ServiceHostEffectScope, type ServiceHostOperations, type ServiceHostOperationsOptions,
 } from "../src/service-host-ops.js";
+import { S2A_INVOCATION_MS, serviceHostOperationId } from "../src/service-host-kernel.js";
 import type { ServiceWriteScope } from "../src/service-write.js";
 import { bytesOf, checks, openFixture, within, type Fixture, type WriteCall } from "./_service-custody-fixture.js";
 
