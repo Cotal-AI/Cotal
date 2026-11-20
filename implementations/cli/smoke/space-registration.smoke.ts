@@ -29,6 +29,7 @@
  * journal is written.
  * A service saved for a space survives its forget, which names it, and the next space of that name,
  * in another folder, names it on its up, until the remove the forget named forgets it.
+ * A prepared Linux space starts with all components serving even without a machine ID.
  * A prepared space
  * is then started with `cotal up` in its root and stopped again, after an `up` naming a runtime with
  * no installed provider, ones naming a missing or invalid channels file, and one with an invalid
@@ -149,6 +150,38 @@ const projectRoot = (name: string) => {
   mkdirSync(join(dir, ".cotal"), { recursive: true });
   return dir;
 };
+
+if (process.platform === "linux") {
+  const root = projectRoot("no-machine-id");
+  const env = { ...runEnv, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "xdg") };
+  const sandbox = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const hook = join(root, "no-machine-id.cjs");
+  // Hide only the Linux machine ID from the CLI. Components and their health probes run for real.
+  writeFileSync(hook, `const fs = require("node:fs");
+const read = fs.readFileSync;
+fs.readFileSync = function (path, ...args) {
+  if (path === "/etc/machine-id") throw Object.assign(new Error("machine ID absent"), { code: "ENOENT" });
+  return read.call(this, path, ...args);
+};
+require("node:module").syncBuiltinESMExports();
+`);
+  const prepare = await run(["space", "create", "no-machine-id"], env, root);
+  if (prepare.status !== 0) throw new Error(`could not prepare the no-machine-id fixture: ${prepare.stderr}`);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  try {
+    const up = await run(["up", "--detach", "--server", server], { ...env, NODE_OPTIONS: `--require=${JSON.stringify(hook)}` }, root);
+    const health = up.status === 0 ? await run(["status", "--components"], env, root) : undefined;
+    check("prepared Linux up without a machine ID starts broker, delivery and manager without controller records",
+      health?.status === 0 && ["broker", "delivery", "manager"].every((role) => new RegExp(`^  ${role} +serving(?:\\s|$)`, "m").test(health.stdout)) &&
+        up.stdout.includes("Using the native launcher without stack recovery pins.") && !existsSync(stackJournalPath(root)),
+      { up: shown(up), health: health && shown(health) });
+  } finally {
+    const args = ["down", "--yes", "--with-agents"];
+    assertSmokeSandboxDown(sandbox, args, { cwd: root, env });
+    const down = await run(args, env, root);
+    if (down.status !== 0) throw new Error(`could not stop the no-machine-id fixture: ${down.stderr}`);
+  }
+}
 
 for (let i = 0; i < 50; i++) {
   const { isReachable } = await import("@cotal-ai/core");

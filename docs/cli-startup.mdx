@@ -8,7 +8,9 @@ audience: operators
 import { Callout } from 'fumadocs-ui/components/callout';
 
 `up` starts or refreshes a local broker and its control plane. Its default mode runs in the
-background. A prepared root uses the stack controller; existing legacy roots keep their launcher.
+background. A fresh prepared root uses the stack controller when Cotal can establish the host
+identity. If it cannot, `up` says so and uses the native launcher, as it does for an unprepared
+root. Existing stacks keep their launcher.
 
 
 ## up [#up]
@@ -398,14 +400,18 @@ task readiness. Before it starts a member, `up` removes each process record unde
 process is gone, or whose pid now runs another start than its identity pin records, as after a
 reboot. It names each one in a `STALE_PROCESS_RECORD` warning, as a complete `down` does, and never
 signals the process that holds a reused pid. A record that may front a live process still refuses
-`LIFECYCLE_BLOCKED`, exit 2, before anything starts. A prepared root never starts the legacy launcher: an option the controller stack has
-no route for, such as `--tls-cert` or a `tls://` `--server`, refuses `UNSUPPORTED`, exit 2, before anything starts, as it
-does on a root whose stack the controller already owns. `--rotate-sys` on a first start refuses the
+`LIFECYCLE_BLOCKED`, exit 2, before anything starts. A fresh prepared root refuses options the
+controller does not take, such as `--tls-cert` or a `tls://` `--server`, with `UNSUPPORTED`, exit 2,
+before choosing a launcher. An existing controller stack refuses them too. `--rotate-sys` on a first start refuses the
 same way, because a first start mints the space's `$SYS` creds. The refusal names each option, and
 names `cotal up -f <cotal.yaml>` when the manifest route takes them all. A root with no prepared
 record and no stack journal starts on the legacy launcher whatever `up` names, one whose space its
 `up` registered included, so `up` never writes a stack journal there. A prepared user-auth root that
 the legacy launcher started and that has no stack journal keeps that launcher for such an option.
+On a fresh prepared Linux root, a missing or unreadable `/etc/machine-id` or kernel boot ID prevents
+controller startup. The native launcher can still start the stack, but records no pins for stopping
+it after the project folder is lost. Stop it with `cotal down` from the project folder. The native
+launcher does not accept `--json` or `--plain` for `up`.
 `--json` returns one
 stack receipt and `--plain` returns a line-oriented report. Partial startup keeps confirmed members
 and reports them; unknown operations are retained and never retried automatically. A failure while
