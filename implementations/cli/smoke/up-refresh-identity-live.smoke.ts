@@ -23,13 +23,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type AddressInfo } from "node:net";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertScratchHeld, makeScratch } from "../../../bin/smoke/_scratch.js";
 import { clean, cotalPty } from "./_console-pty.js";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 scrubAmbientBrokerEnv();
 const scratch = makeScratch("cotal-up-refresh-identity-");
@@ -43,7 +44,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 12 + 13 + 5 + 15 + 2 + 15 + (process.platform === "linux" ? 9 + 12 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
+const EXPECTED_CHECKS = 29 + 12 + 13 + 5 + 15 + 2 + 15 + (process.platform === "linux" ? 9 + 13 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -658,12 +659,40 @@ async function wildcardBindRefusals(): Promise<void> {
         check("wildcard controller root prepares", created.status === 0, `${created.stdout}${created.stderr}`);
       }
       try {
-        const refused = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", `nats://127.0.0.1:${held}`]);
+        const options = prepared ? ["--foreground", "--open", "--no-manager", "--store-dir", "broker store"] : [];
+        const bin = join(fixture.home, "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", TSX_LOADER, CLI].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
+        fixture.env.PATH = `${bin}${delimiter}${fixture.env.PATH ?? ""}`;
+        const refused = cotal(fixture, ["up", ...options, "--host", "0.0.0.0", ...(prepared ? [`--server=nats://127.0.0.1:${held}`] : ["--server", `nats://127.0.0.1:${held}`])]);
         const output = `${refused.stdout}${refused.stderr}`;
-        check("a non-dial-IP listener refuses a wildcard bind with CONFLICT and keeps --host in the retry", refused.status === 2 && output.includes("CONFLICT") && output.includes(`0.0.0.0:${held}`) && output.includes("up --host 0.0.0.0 --server nats://127.0.0.1:<port>"), output);
+        const retry = /start this stack at another address with `(cotal up [^`]+)`/.exec(output)?.[1];
+        const retryPort = Number(/--server nats:\/\/127\.0\.0\.1:(\d+)$/.exec(retry ?? "")?.[1]);
+        check("a non-dial-IP listener refuses a wildcard bind with CONFLICT and keeps the original options in the retry",
+          refused.status === 2 && output.includes("CONFLICT") && output.includes(`0.0.0.0:${held}`) && (prepared
+            ? !!retry?.includes("--foreground --open --no-manager --store-dir 'broker store' --host 0.0.0.0") && retryPort > 0 && retryPort !== held
+            : output.includes("up --host 0.0.0.0 --server nats://127.0.0.1:<port>")), output);
         check("wildcard preflight writes no broker config or pidfile", !existsSync(join(fixture.root, ".cotal/auth/server.conf")) && !existsSync(join(fixture.root, ".cotal/nats.pid")));
-        const started = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", fixture.server, "--no-manager"]);
-        check("the unstarted stack immediately accepts a free port", started.status === 0, `${started.stdout}${started.stderr}`);
+        if (prepared) {
+          fixture.server = `nats://127.0.0.1:${retryPort}`;
+          const child = spawn("sh", ["-c", `exec ${retry}`], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+          const closed = once(child, "close");
+          let receipt = "";
+          for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { receipt += String(chunk); });
+          try {
+            const listening = `0.0.0.0:${retryPort}`;
+            for (let i = 0; i < 300 && child.exitCode === null && !receipt.includes(listening); i++) await sleep(100);
+            check("the printed retry starts in the foreground while the old port is still held", child.exitCode === null && receipt.includes("Controller stack started") && receipt.includes(listening), receipt);
+            const live = cotal(fixture, ["status", "--components", "--space", "wildcard-controller"]);
+            check("the retried stack is open and owns only a broker", live.status === 0 && /Access:\s+open\b/.test(live.stdout) && /stack-broker[^\n]+running/.test(live.stdout) && !/stack-(?:manager|delivery)/.test(live.stdout), `${live.stdout}${live.stderr}`);
+          } finally {
+            child.kill("SIGTERM");
+            await closed;
+          }
+        } else {
+          const started = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", fixture.server, "--no-manager"]);
+          check("the unstarted stack immediately accepts a free port", started.status === 0, `${started.stdout}${started.stderr}`);
+        }
         await stop(fixture);
         // A stopped controller keeps its wildcard bind. Its address-conflict remedy checks that
         // bind too, rather than recommending an up that cannot bind the recorded port.

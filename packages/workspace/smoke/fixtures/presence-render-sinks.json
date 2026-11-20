@@ -5612,7 +5612,7 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with \\`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`${displayCmd()} up\\` again`",
+      "anchor": "`${retry !== undefined ? `${retry}, or ` : \"\"}${stopHolder} and retry this start`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },

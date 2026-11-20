@@ -544,8 +544,9 @@ Only a fresh prepared root starts at the default address. A journal whose stack 
 member pins neither, as when its first `up` was refused because another broker answers at the
 address or another program holds it. The next `up` plans it as a first start, with that address or
 another `--server`, and `down` reports that nothing runs there. That refusal names the address and
-any space this machine registered there. Its next step for a first start is another `--server`, or
-stopping that space or program. For a stack that ran, it is stopping that space or program and
+any space this machine registered there. For a first `up`, it offers a retry from the original folder
+with the same options and a different port if one is available, or says how to free the original port.
+For a stack that ran, it is stopping that space or program and
 running bare `cotal up`, because the stack keeps its address. A stack whose broker does not listen on its recorded address,
 because a bind host recorded beside it names another address, or because no bind host was recorded
 and the address is not `127.0.0.1`, cannot be reached and pins no bind host. `up` there refuses
