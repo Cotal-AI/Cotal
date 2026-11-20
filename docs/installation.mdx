@@ -146,7 +146,7 @@ Use the original launcher's absolute path to manage its installation and daemon.
 Reinstalling over retained daemon records reconciles the owned service before reporting success.
 On Linux, if its old Node runtime was removed with the shell installation, the installer binds the unchanged service to the Node it selected for the same CLI entry.
 It does not adopt a service from another installation or overwrite an edited unit.
-If the destination launcher belongs to a different npm installation and a daemon service is recorded, the shell installer refuses before changing the launcher.
+If the destination launcher belongs to a different npm installation and a daemon service is recorded, both `--dry-run` and a normal shell install stop before making changes.
 Keep the npm installation and run `cotal update --self`, or stop your spaces and run `cotal daemon uninstall` from the installation that owns the service before switching.
 
 Open a new terminal, then run:

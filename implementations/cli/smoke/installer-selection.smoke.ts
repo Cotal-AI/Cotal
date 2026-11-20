@@ -132,16 +132,29 @@ try {
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
   const daemonDir = join(npmHome, "cotal", "daemon");
-  mkdirSync(daemonDir, { recursive: true });
-  writeFileSync(join(daemonDir, "service-unit.json"), "{}\n");
+  const receipt = join(daemonDir, "service-unit.json");
   // The defaults no longer collide. Explicitly point the installer at npm's bin to test refusal.
-  const cutover = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup", "--no-modify-path"], {
+  const runCutover = (...args: string[]) => spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup", "--no-modify-path", ...args], {
     env: { ...npmEnv, COTAL_HOME: dirname(daemonDir), COTAL_BIN_DIR: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000,
   });
-  assert.equal(cutover.status, 1, output(cutover));
-  assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
-  assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
-  assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage a second installation");
+  const noReceiptPreview = runCutover("--dry-run");
+  assert.equal(noReceiptPreview.status, 0, output(noReceiptPreview));
+  assert.match(output(noReceiptPreview), /Would write[\s\S]*~\/\.npm-global\/bin\/cotal/);
+  assert.equal(readlinkSync(npmLauncher), npmLink, "the preview keeps npm's launcher");
+  assert(!existsSync(join(npmHome, ".local/share/cotal")), "the preview does not stage an installation");
+
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(receipt, "{}\n");
+  for (const args of [[], ["--dry-run"]]) {
+    const cutover = runCutover(...args);
+    assert.equal(cutover.status, 1, output(cutover));
+    assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
+    assert.match(output(cutover), /Keep this installation and run .* update --self\./);
+    assert.doesNotMatch(output(cutover), /Would write/);
+    assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
+    assert.equal(readFileSync(receipt, "utf8"), "{}\n", "the refused switch keeps the daemon receipt");
+    assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage an installation");
+  }
 
   {
     const staging = join(npmHome, ".npm-global");
@@ -546,7 +559,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 167 : 146, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 181 : 160, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

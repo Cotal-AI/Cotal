@@ -3,4 +3,4 @@
 "@cotal-ai/cli": patch
 ---
 
-The shell installer now refuses a launcher path occupied by a directory during `--dry-run` and explains how to choose another location.
+The shell installer's dry run now reports the same launcher conflicts as a normal install. It stops if a directory occupies the launcher path, or if the launcher belongs to a different npm installation and a daemon service is recorded.
