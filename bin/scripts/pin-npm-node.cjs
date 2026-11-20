@@ -78,9 +78,17 @@ entry=$(resolve_entry "$0") || {
   exit 1
 }
 if [ "$recorded_support" = supported ]; then
+  node_bin="\${entry%/*}/npm-node-bin"
+  recorded_bin=${quote(dirname(node))}
+  case "$node_bin$recorded_bin" in
+    *:*)
+      printf '%s\\n' 'cotal: the npm installation or recorded Node directory contains a colon and cannot be added to PATH. Put a supported Node on PATH or reinstall into paths without colons.' >&2
+      exit 127
+      ;;
+  esac
   # Give children the chosen Node without shadowing their git, npm, or other tools.
   # Keep the runtime directory last so tools absent from PATH remain available there.
-  PATH="\${entry%/*}/npm-node-bin\${PATH:+:$PATH}":${quote(dirname(node))}
+  PATH="$node_bin\${PATH+:$PATH}:$recorded_bin"
   export PATH
 fi
 exec "$node" "$entry" "$@"

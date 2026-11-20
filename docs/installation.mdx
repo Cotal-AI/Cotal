@@ -120,6 +120,8 @@ The `bin/cotal` link in the npm prefix points to a shell launcher. It uses Node 
 meets the minimum version, or the recorded executable if it still meets the minimum.
 When it uses the recorded executable, child processes also find that Node without changing the
 precedence of other commands on PATH.
+The launcher refuses to use the recorded executable if the npm installation or the recorded Node
+directory contains a colon. Put a supported Node on PATH or reinstall into paths without colons.
 The launcher finds the JavaScript entry in the installed package, even when a package manager moves the installation after running the scripts.
 The package's JavaScript entry stays the same for daemon services and per-home connector state.
 If neither executable works, restore a supported Node to PATH and reinstall Cotal with npm.

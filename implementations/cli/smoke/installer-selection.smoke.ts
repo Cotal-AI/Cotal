@@ -84,7 +84,13 @@ try {
   mkdirSync(join(npmPackage, "dist"));
   mkdirSync(join(npmPackage, "scripts"));
   copyFileSync(join(binRoot, postinstall), join(npmPackage, postinstall));
-  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
+  writeFileSync(join(npmPackage, "dist/cotal.js"), `#!/usr/bin/env node
+if (process.argv[2] === "--cwd-tool") {
+  process.stdout.write(require("node:child_process").execFileSync("cotal-npm-smoke-tool"));
+} else {
+  console.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");
+}
+`, { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
@@ -131,6 +137,11 @@ try {
   const launched = spawnSync(npmLauncher, ["--entry"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
+  const cwdTool = join(npmHome, "cotal-npm-smoke-tool");
+  writeFileSync(cwdTool, "#!/bin/sh\nprintf 'tool from cwd\\n'\n", { mode: 0o755 });
+  const emptyPath = spawnSync(npmLauncher, ["--cwd-tool"], { cwd: npmHome, env: { ...npmEnv, PATH: "" }, encoding: "utf8", timeout: 10_000 });
+  assert.equal(emptyPath.status, 0, output(emptyPath));
+  assert.equal(emptyPath.stdout, "tool from cwd\n", "an explicitly empty PATH preserves current-directory tool lookup");
   const daemonDir = join(npmHome, "cotal", "daemon");
   mkdirSync(daemonDir, { recursive: true });
   writeFileSync(join(daemonDir, "service-unit.json"), "{}\n");
@@ -173,6 +184,18 @@ exec "$FIXTURE_NODE" -e 'console.log(require("node:fs").readlinkSync(process.arg
     assert.equal(unresolved.stderr, `cotal: cannot resolve the JavaScript entry from launcher ${movedLauncher}\n`);
     renameSync(`${movedBootstrap}.saved`, movedBootstrap);
     renameSync(moved, staging);
+
+    const colonPrefix = join(npmHome, "moved:prefix");
+    renameSync(staging, colonPrefix);
+    const colonLauncher = join(colonPrefix, "bin/cotal");
+    const colonRefusal = spawnSync(colonLauncher, ["--version"], { env: { ...npmEnv, PATH: readlinkBin, FIXTURE_NODE: process.execPath }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(colonRefusal.status, 127, output(colonRefusal));
+    assert.equal(colonRefusal.stdout, "");
+    assert.match(colonRefusal.stderr, /contains a colon and cannot be added to PATH/);
+    const colonWithNode = spawnSync(colonLauncher, ["--version"], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(colonWithNode.status, 0, output(colonWithNode));
+    assert.equal(colonWithNode.stdout.trim(), "cotal-ai 0.0.0");
+    renameSync(colonPrefix, staging);
   }
 
   const removeSection = installation.split("## Remove Cotal")[1]?.split("## ")[0];
