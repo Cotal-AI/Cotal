@@ -172,10 +172,14 @@ export class EndpointHistory {
    *  No observer authority, presence or delivery ACL mirror is required. Returns the newest page,
    *  oldest-first, including this caller's own sends. `complete` says no older valid row remains.
    *  Reads have a ten-second budget, shortened by `signal`. Concurrent connections sharing this
-   *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader. */
+   *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader.
+   *
+   *  `publisher` reads only what that one principal published on the channel, as
+   *  {@link channelHistory} reads it: the filter is its own subject, whose sender slots the broker's
+   *  publish permissions police. */
   async channelHistoryPage(
     channel: string,
-    opts?: { limit?: number; signal?: AbortSignal },
+    opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryPage> {
     assertValidChannel(channel);
     if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
@@ -188,7 +192,11 @@ export class EndpointHistory {
     signal.throwIfAborted();
     const stream = chatStream(this.space);
     const name = chatHistDurable(this.owner, this.actor, this.deps.requireLifecycleUid("channelHistoryPage"));
-    const subject = chatSubject(this.space, "*", "*", channel);
+    const from = opts?.publisher;
+    // A `*` in either slot would widen the read back to any sender, so both are concrete tokens.
+    const subject = from === undefined
+      ? chatSubject(this.space, "*", "*", channel)
+      : chatSubject(this.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
     const marker = randomUUID();
     let created: ConsumerInfo;
     for (;;) {

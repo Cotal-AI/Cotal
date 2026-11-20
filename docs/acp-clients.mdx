@@ -83,7 +83,7 @@ A new thread offers these options next to the model list. They apply when the fi
 | Reasoning | The model's variant, when the model has more than one. |
 | Persona | A persona from the manager's catalog. |
 | Channel | One channel the new agent joins. |
-| Machine | Which manager spawns the agent, when more than one is live. The default is the manager on this machine. |
+| Machine | Which manager spawns the agent, when more than one is live. The default is the manager on this machine. On a space where people sign in, the list holds your own managers, and with none of yours live the space's manager spawns the agent. |
 
 Only applications that publish an event plane are offered, because the thread is built from it.
 Hermes and OpenCode 2.x publish none (see [Connectors](connectors.mdx)).
@@ -102,6 +102,11 @@ A select that would hold 64 or more choices is not offered.
 When the space needs a sign-in, a client that can run a terminal offers **Sign in to Cotal**.
 It runs `cotal acp --auth`, which signs in to a space that authenticates users with `cotal login`.
 When this machine records no space at all, it runs `cotal setup` instead.
+
+On a space where people sign in, your own sign-in is enough: a grant that may spawn agents lets you
+start threads, type into your agents, stop their turns, read their event channels and despawn them.
+You need no `admin` scope, because a person controls every agent under their own owner (see
+[Delegation](identity-user-auth.mdx#delegation)).
 
 ## Limits [#limits]
 

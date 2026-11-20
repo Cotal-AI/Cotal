@@ -205,8 +205,9 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-par
  *  detached resume needs the answer before it carries the session. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn", "resolve-agent"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
-/** The commands that WRITE INTO a seat, granted ONLY into operator-authorized credentials
- *  (see the note above for why `input` is not in the spawn set; `interrupt` writes one key into the
+/** The commands that WRITE INTO a seat, granted into operator-authorized credentials and never to an
+ *  agent; a person's own manager view holds `input` and `interrupt` in owner mode through
+ *  {@link PERSON_SEAT_COMMANDS} (see the note above for why `input` is not in the spawn set; `interrupt` writes one key into the
  *  same terminal and rides with it, so it grants no agent new reach; `turn` is the same authority
  *  through a different door: a run's turn is a payload the seat is shown and works on, and the run
  *  driver submits it under its own operator instrument, so it rides the same placement). Both
@@ -218,6 +219,13 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  the feature is for. Measured: no profile carried a `turn` row at all until it joined this set,
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
 export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "interrupt", "turn"] as const);
+/** The commands a PERSON's own sign-in holds over every agent under their owner (SPEC 13.21): stop or
+ *  attach to one, type into it and interrupt it. A person controls their own agents whatever else
+ *  their grant says, so no scope token gates these. The rows ride owner mode pinned to the person's
+ *  own owner, and the auth callout mints them from the ledger row's kind, never from a scope token,
+ *  so a person cannot hand them to the agents they spawn. `turn` stays with the run driver's
+ *  operator instrument. */
+export const PERSON_SEAT_COMMANDS = Object.freeze(["despawn", "attach", "input", "interrupt"] as const);
 /** Untargeted manager endpoint additions for the `spawn` capability: persona writes, persona-catalog
  *  reads, per-agent inspection, and goal outcome reads. Each command's responder enforces its
  *  caller scope. */
@@ -321,6 +329,7 @@ const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS])
 const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
 const OPERATOR_SEAT_SNAP = Object.freeze([...OPERATOR_SEAT_COMMANDS]);
+const PERSON_SEAT_SNAP = Object.freeze([...PERSON_SEAT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
 const RUN_WRITE_SNAP = Object.freeze([...RUN_WRITE_COMMANDS]);
 const RUN_READ_SNAP = Object.freeze([...RUN_READ_COMMANDS]);
@@ -365,6 +374,15 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
   ];
 }
 
+/** A person's owner-mode control of the agents under their own owner ({@link PERSON_SEAT_COMMANDS}).
+ *  `tOwner` is the person's own owner, never a wildcard (§13.2). */
+export function personSeatCapabilities(owner: string): EpCapability[] {
+  return PERSON_SEAT_SNAP.map((command) => ({
+    endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+    target: { mode: "owner", tOwner: owner } as EpTarget,
+  }));
+}
+
 /** The `run` capability's addition (SPEC 14.3): the seven `run-*` commands PLUS the
  *  whole spawn set. The implication is deliberate and one-way: a program is free to `spawn`, so a
  *  caller that may start one must hold what the program's spawns need, and the manager checks
@@ -387,7 +405,7 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
- *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the
+ *  (tOwner `"*"`), BOTH modes of `input` (which no agent credential holds), and the
  *  `manager.admin` command family. The 1c admin-reach decision: operator
  *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
  *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the

@@ -25,7 +25,8 @@ import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { client, methods, PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk";
-import { cotalAgent, promptText, type HiddenSessions } from "../src/agent.js";
+import { assertValidOwnerToken } from "@cotal-ai/core";
+import { cotalAgent, defaultName, promptText, type HiddenSessions } from "../src/agent.js";
 import { SignInRequired, type AgentCatalog, type AguiEventLike, type Mesh, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -397,6 +398,7 @@ check("image content is refused", threw);
 conn.close();
 await tick(20);
 check("closing the client closes the space", mesh.closed);
+check("a thread's agent name is a valid user-mode actor token", (() => { try { return assertValidOwnerToken(defaultName()) !== ""; } catch { return false; } })());
 rmSync(dir, { recursive: true, force: true });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

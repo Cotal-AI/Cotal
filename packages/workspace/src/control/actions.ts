@@ -32,9 +32,10 @@ const OPS = {
   models: { profile: "control-caller-privileged", targeted: false },
   purge: { profile: "control-caller-admin", targeted: false },
   stop: { profile: "control-caller-admin", targeted: true },
-  // Types text into the seat's terminal and presses Enter: an operator-only seat write.
+  // Types text into the seat's terminal and presses Enter: a seat write, granted to operators and to
+  // a person's own sign-in for the agents under their owner.
   input: { profile: "control-caller-admin", targeted: true },
-  // Writes the connector's interrupt key into the seat: an operator-only seat write, like `input`.
+  // Writes the connector's interrupt key into the seat: a seat write, granted like `input`.
   interrupt: { profile: "control-caller-admin", targeted: true },
 } as const;
 export type ControlOp = keyof typeof OPS;

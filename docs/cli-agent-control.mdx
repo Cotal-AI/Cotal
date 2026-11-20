@@ -518,13 +518,15 @@ answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was se
 
 ### Input authority
 
-**This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
-anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
-not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
-needs the `admin` scope. The reason is that a write into a terminal is control of whatever is
-running in it, and on a user-auth mesh the
-own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
-could otherwise type into a sibling it never started. Seat locality is still resolved for you.
+**This one is narrower than `stop` or `attach`.** Those two are granted to anything holding
+`spawn`, so an agent can stop and attach to seats under its own owner. `input` is granted to
+operator credentials and, on a user-auth mesh, to your own sign-in for every agent under your owner,
+whatever your scope. No agent holds it. The reason is that a write into a terminal is control of
+whatever is running in it, and the own-owner rule covers every seat under an owner, not only the
+ones a caller launched: a `spawn`-scoped agent could otherwise type into a sibling it never started.
+Your right comes from your ledger row being a person's, so you cannot hand it to an agent you spawn.
+Typing into an agent under another owner needs the `admin` scope. Seat locality is still resolved
+for you.
 
 Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
 `herdr`) attach to a process they do not own, so they have no input stream for it and the command

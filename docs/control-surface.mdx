@@ -128,7 +128,7 @@ See the [attach session contract](control-lifecycle.mdx#attach-sessions).
 
 `input` writes text into a running seat's terminal in one request.
 It lets an operator send a command such as `/compact` without maintaining an attach stream.
-This is terminal control, so the command is limited to operator credentials and runtimes that own the input stream.
+This is terminal control, so the command is limited to operator credentials, a person's own sign-in for the agents under their owner, and runtimes that own the input stream.
 
 See the [input authority and outcome reference](control-lifecycle.mdx#seat-input) for the distinction between refusal before delivery and failure after delivery starts.
 
