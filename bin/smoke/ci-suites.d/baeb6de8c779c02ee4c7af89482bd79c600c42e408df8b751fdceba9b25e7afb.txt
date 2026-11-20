@@ -1,1 +1,3 @@
+# Channel exclusions without a broker: the pattern algebra against brute force, grant refusals,
+# the exclusion broker floor, agent mint rows and the static spawn bound.
 smoke:channel-exclusions

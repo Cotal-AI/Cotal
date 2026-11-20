@@ -1,0 +1,3 @@
+# Channel exclusions on a real broker and delivery daemon: live reads, posts, raw history creates,
+# joins, the mediated range read, durable delivery, and an older client refused at start.
+smoke:e2e:exclusions
