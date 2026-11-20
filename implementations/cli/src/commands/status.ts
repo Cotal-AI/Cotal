@@ -2946,7 +2946,7 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
       : store?.state === "full" ? `store full: ${store.used} bytes exceeds ${store.cap} bytes at ${store.path}` : undefined;
     if (target.mode !== "user") {
       const preflight = await preflightTarget(target);
-      if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false }).message] };
+      if (!preflight.ok) return { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target, pruned: false, ...(preflight.pid === undefined ? {} : { pid: preflight.pid }) }).message] };
       return { name: "broker", verdict: storeFailure ? "not-serving" : "serving", facts: [`registered ${address}`, "reachable", ...(storeFailure ? [storeFailure] : [])] };
     }
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
