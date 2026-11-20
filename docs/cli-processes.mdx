@@ -1345,6 +1345,8 @@ step instead of reporting a generic spaces failure. Signing in again cannot repa
 The sign-in cache check includes provider keys and session records, not only the file's JSON shape.
 
 `connect-check` asks the running daemon whether it could register with a space as its own service.
+If the selected daemon is stopped, the refusal gives a foreground startup command that keeps the
+chosen `--daemon-home`. Run that command, then retry the check.
 The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
 the space's registration on this machine and validates the daemon's sign-in through the provider's
 token exchange, then reads the space's public account identity from its auth service

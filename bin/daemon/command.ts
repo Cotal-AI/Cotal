@@ -261,12 +261,12 @@ async function connectCheckCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon connect-check needs --space <s>");
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await connectCheckViaDaemon({ paths, peerUid, peerPid, space });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, home);
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connect check: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ConnectCheckResult = reply.result;
