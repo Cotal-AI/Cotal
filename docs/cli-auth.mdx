@@ -344,8 +344,8 @@ account's discovered registry entries. See
 
 ```bash
 # an upsert of the WHOLE row: name all three ACL flags, or pass --full for the wide defaults below
-cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--role <r>] [--label <l>] [--json|--plain]
-cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>] [--json|--plain]
+cotal actor grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b [--exclude-publish a,b] [--role <r>] [--label <l>] [--json|--plain]
+cotal actor grant <actor> --sub <IdP subject> --full [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--exclude-publish a,b] [--role <r>] [--label <l>] [--json|--plain]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--json|--plain]
 cotal actor label <actor> (--sub <IdP subject> | --owner <u_…>) <label> [--json|--plain]
 cotal actor list [--sub <IdP subject>] [--json|--plain]
@@ -360,6 +360,8 @@ cotal actor list [--sub <IdP subject>] [--json|--plain]
 | `--scope <a,b>` | `spawn,run,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `run` = may start workflow runs; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it). Any other name is refused |
 | `--allow-subscribe <a,b>` | `>` (all channels) with `--full` | Channel read ACL; the user's envelope, their agents can never read beyond it |
 | `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
+| `--exclude-publish <a,b>` | none | Channels or patterns removed from the post ACL, such as `--allow-publish '>' --exclude-publish announce`. Their agents can never post there either ([exclusions](channels-and-permissions.mdx#exclusions)) |
+| `--exclude-subscribe <a,b>` | none | Refused: an interactive actor has no read registry row to serve history under an excluded wildcard, so name the channels it may read in `--allow-subscribe` instead |
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
 | `--label <l>` | none | Display label for `actor list` (never the IdP subject) |
 | `--parent <owner.actor>` | none | Audit link to the spawning principal. An operator grant is the authority, so the link does not narrow the row |
