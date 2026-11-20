@@ -506,4 +506,5 @@ export class MeshSpawn {
       return;
     }
     this.worktreeHolders.delete(worktree);
-  }}
+  }
+}
