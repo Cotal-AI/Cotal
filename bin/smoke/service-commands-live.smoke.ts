@@ -236,8 +236,8 @@ try {
     const showManager = () => cotal(["service", "show", "manager", "--space", SPACE, "--json"]);
     const stoppedManager = () => {
       const status = cotal(["manager", "status", "--space", SPACE, "--json"]);
-      const { instanceId, revision, recordedState } = JSON.parse(status.stdout).result ?? {};
-      return { status: status.status, instanceId, revision, recordedState };
+      const { instanceId, revision, recordedState, pid } = JSON.parse(status.stdout).result ?? {};
+      return { status: status.status, instanceId, revision, recordedState, pid };
     };
     const saved = showManager(), stoppedBefore = stoppedManager();
     const invalidHost = cotal(["manager", "start", "--space", SPACE, "--console-host", "127.0.0.1 junk", "--plain"]);
@@ -255,6 +255,16 @@ try {
     const stopRetry = cotal(["manager", "stop", "--space", SPACE, "--yes"]);
     managerUp = stopRetry.status !== 0;
     check("the manager started by the retry stops normally", !managerUp, out(stopRetry));
+
+    const previous = stoppedManager();
+    const brokerOnlyDown = cotal(["down", "--yes"]);
+    const stackRestart = cotal(["up", "--detach", "--open", "--space", SPACE, "--server", SERVER]);
+    const liveStatus = cotal(["manager", "status", "--json"]);
+    const live = JSON.parse(liveStatus.stdout).result?.recordedProcess;
+    check("manager status reports the running stack manager over a stopped saved manager",
+      previous.recordedState === "stopped" && typeof previous.pid === "number" && brokerOnlyDown.status === 0 && stackRestart.status === 0
+      && liveStatus.status === 0 && live?.savedService === false && typeof live.pid === "number" && live.pid !== previous.pid,
+      { previous, down: out(brokerOnlyDown), up: out(stackRestart), status: out(liveStatus) });
 
     // ---- The manager a plain cotal up starts: logs reads it, stop and install still refuse -------
     const plainUp = upCotal(["up", "--detach", "--open", "--space", UP_SPACE, "--server", UP_SERVER, "--seat-cap", "3"]);
