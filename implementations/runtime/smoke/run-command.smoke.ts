@@ -31,7 +31,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
-  activateRun, lastActivation,
+  activateRun, lastActivation, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
 import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
@@ -138,15 +138,16 @@ const rendered = (...cells: string[]) => lines().some((l) => {
  *  The ceilings are `start` flags, and the run grammar refuses them on any other verb. */
 const wf = (positionals: string[], values: Record<string, string | boolean | undefined> = {}) =>
   runWorkflow({ values: { server: servers, space: SPACE, local: true, ...(positionals[0] === "start" ? { "admit-read": "none", "admit-publish": "none" } : {}), ...values }, positionals, raw: [] });
-/** The same invocation with `--json`: the envelope it writes straight to stdout, parsed. The full
- *  journal and each listed run's revocation are in the JSON result, not the rendered tables. */
-const envelopeOf = async (positionals: string[], values: Record<string, string> = {}): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
+/** Capture the JSON envelope a command writes straight to stdout. */
+const readEnvelope = async (run: () => Promise<void>): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
   const chunks: string[] = [];
   const write = process.stdout.write;
   process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
-  try { await wf(positionals, { json: true, ...values }); } finally { process.stdout.write = write; }
+  try { await run(); } finally { process.stdout.write = write; }
   try { return JSON.parse(chunks.join("")); } catch { return undefined; }
 };
+const envelopeOf = (positionals: string[], values: Record<string, string> = {}) =>
+  readEnvelope(() => wf(positionals, { json: true, ...values }));
 type JournalRowJson = { step?: string; schema?: unknown; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
 type RunRowJson = { runId?: string; endpoint?: string; state?: string; programHash?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
 
@@ -890,9 +891,21 @@ let P = "";
   reset();
   await wf(["start"], { file: PURE, endpoint });
   const rid = startedId() ?? "";
-  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: { endpoint?: string; programHash?: string; status?: { state?: string } } } | undefined;
+  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: RunStatusView } | undefined;
   c("a dotted-endpoint run starts and completes through the command",
     rid !== "" && detail?.view?.endpoint === endpoint && detail.view.status?.state === "completed", detail);
+  reset();
+  await wf(["show", rid], { endpoint, server: undefined, plain: true, limit: "1" });
+  const next = lines().find((line) => line.startsWith("  cotal r show "))?.trim().split(/ {2,}/)[0];
+  // These fixture arguments are all single shell words. Parse the printed command without adding
+  // the routing flags `wf` normally supplies, then use the real local broker to read the journal.
+  const [, alias, ...args] = next?.split(" ") ?? [];
+  const run = findCommand(registry.all<Command>("command"), alias);
+  const copied = run && await readEnvelope(() => runWorkflow(parseCommandArgs(run, args))).catch((error: Error) => error);
+  const copiedView = copied && !(copied instanceof Error) ? (copied.result as { view?: RunStatusView } | undefined)?.view : undefined;
+  c("the journal's printed JSON command reads all rows from the same local endpoint without a manager",
+    copiedView?.runId === rid && copiedView.endpoint === endpoint
+      && copiedView.journal.length === detail?.view?.journal.length, { next, copied });
   const all = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
   const row = all?.items?.find((r) => r.runId === rid);
   c("batched ps reports the dotted endpoint name and the recorded program hash",
@@ -1015,7 +1028,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 123;
+const DECLARED = 124;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
