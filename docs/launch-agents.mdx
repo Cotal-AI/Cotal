@@ -20,6 +20,7 @@ cotal spawn
 ```
 
 A bare spawn runs the default persona in this terminal. `--foreground` explicitly keeps that path.
+On a user-auth space, the untouched seeded default asks for the signed-in member's read and post scope and starts with no active subscriptions. This applies to foreground and managed launches. Optional events stay off if the member cannot delegate them. Authored persona lists and explicit channel flags take precedence. Admin launches keep their existing behavior.
 A catalog with no default persona, such as a Cloud space's before anything prepared it, gets the
 shipped one written on that first spawn, and the launch says so. A persona you named or saved as a
 preference is still refused when it is missing. `--dry-run` writes nothing and says the launch would.

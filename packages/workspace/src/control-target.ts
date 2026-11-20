@@ -44,6 +44,7 @@ export interface ControlTarget {
   space: string;
   server: string;
   auth: ControlAuth;
+  userAuthority?: Awaited<ReturnType<typeof userViewAuthOrThrow>>["authority"];
   /** The resolved mesh's trust material, carried forward for a caller that re-mints against it.
    *  Absent for an open mesh and for raw off-registry creds. */
   spaceAuth?: SpaceAuth;
@@ -133,6 +134,7 @@ export async function resolveControlTarget(
           epCaller: { owner: manager.owner, actor: manager.actor, uid: manager.lifecycleUid },
           managerInstanceId: manager.managerInstanceId,
         } : { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+        ...(manager?.authority ? { userAuthority: manager.authority } : {}),
         ...(conn.root !== undefined ? { root: conn.root } : {}),
         ...(conn.mode !== undefined ? { mode: conn.mode } : {}),
         ...(conn.policy ? { policy: conn.policy } : {}),

@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
+import { eventChannel, patternInAllow } from "@cotal-ai/core";
+import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, CLI_USER_ACTOR, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
@@ -136,6 +137,9 @@ export class SeatStart {
     const persona = await this.spawnPersona(opts, spawner, authenticatedCaller);
     if ("error" in persona) return { ok: false, error: persona.error, ...(persona.code ? { code: persona.code } : {}) };
     const { ref, def, agent, inline } = persona;
+    const parent = spawner === undefined ? null : parsePrincipalKey(spawner);
+    const signedInDefault = this.userMode && ref === "default" && parent?.actor === CLI_USER_ACTOR && opts.callerAcl !== undefined && !opts.delegatedIntent;
+    const relativeDefault = signedInDefault && "seededDefault" in persona && persona.seededDefault;
     // An inline persona's file is its snapshot, written once the lifecycle uid is final; until then
     // a refusal names the persona instead of a path.
     let configPath = persona.configPath;
@@ -332,7 +336,7 @@ export class SeatStart {
       };
       let scoped: { allowSubscribe: string[]; allowPublish: string[] } | undefined;
       try {
-        scoped = !personaNamesChannels && opts.callerAcl && bound.kind !== "none" ? {
+        scoped = (relativeDefault || (!signedInDefault && !personaNamesChannels)) && opts.callerAcl && bound.kind !== "none" ? {
           allowSubscribe: heldChannels("allowSubscribe", opts.callerAcl.allowSubscribe),
           allowPublish: heldChannels("allowPublish", opts.callerAcl.allowPublish),
         } : undefined;
@@ -342,8 +346,8 @@ export class SeatStart {
       const base = opts.subscribe ?? def.subscribe;
       ownSubscribe = base;
       subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
-      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
-      allowPublish = opts.allowPublish ?? def.allowPublish ?? scoped?.allowPublish;
+      allowSubscribe = opts.allowSubscribe ?? (relativeDefault && opts.subscribe === undefined && !opts.join?.length ? scoped?.allowSubscribe : undefined) ?? def.allowSubscribe ?? scoped?.allowSubscribe ?? [];
+      allowPublish = opts.allowPublish ?? (relativeDefault ? scoped?.allowPublish : undefined) ?? def.allowPublish ?? scoped?.allowPublish;
       capabilities = def.capabilities;
       personaEndpoints = copyPersonaEndpoints(def.endpoints);
       // A user-auth mesh grants endpoint access through the service owner's records, which a spawn
@@ -368,7 +372,8 @@ export class SeatStart {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
     // Default events on where the connector supports them, unless the launch explicitly opts out.
-    const events = this.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel);
+    const wantsEvents = this.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel);
+    let events = wantsEvents;
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
@@ -538,6 +543,9 @@ export class SeatStart {
       // In user mode the name is the principal's actor. A fresh nkey in static/open mode
       // cannot collide with an earlier transcript. Use the connector's own startup proof.
       const eventOwner = opts.owner ?? (spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner);
+      events = wantsEvents && (this.eventsRequired || opts.events === true || !relativeDefault || !parent || !opts.callerAcl || !eventOwner ||
+        patternInAllow(opts.callerAcl.allowPublish, eventChannel(parent)) ||
+        patternInAllow(opts.callerAcl.allowPublish, connector.eventChannel!({ owner: eventOwner, actor: name })));
       if (events && this.userMode && !runtime.spawnDelegated && eventOwner?.startsWith("u_")) {
         try {
           await checkEventStartup({
@@ -574,6 +582,8 @@ export class SeatStart {
       }
       break;
     }
+    if (wantsEvents && !events)
+      opts = { ...opts, eventsNotice: "event plane not armed: the launching member cannot delegate it" };
     // The `chat_` prefix belongs to static chat sessions, whose aliases only `chat-session-open`
     // draws. Checked once the name is fixed by either branch above, so a persona name, a numbered
     // collision, a manifest name and a `--name` override all meet it, and before the reservation.

@@ -34,6 +34,7 @@ An agent with a read grant but no active subscription can still read retained hi
 
 `general` has no special status. A subscription to it must be explicit.
 The default persona seeded by `cotal setup` starts with `subscribe: []`, `allowSubscribe: [">"]`, and `allowPublish: [">"]`.
+When a signed-in non-admin member launches this untouched default, its launch uses the member's channel scope when the authority reports it. Editing the persona makes its own channel lists apply, including empty lists.
 It joins no channel at boot but may join, read, and post channels on demand.
 
 `cotal_send` without `channel` uses the first concrete channel in the agent's active subscriptions that its post ACL permits.

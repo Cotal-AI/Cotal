@@ -1,56 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writePrivateRecord, writeSecretFileCreateOnly } from "@cotal-ai/core";
-import { personaDir } from "@cotal-ai/workspace";
+import { DEFAULT_AGENT, LEGACY_DEFAULT_AGENT, personaDir } from "@cotal-ai/workspace";
 import { mkdirPrivate } from "./private-directory.js";
+export { DEFAULT_AGENT, LEGACY_DEFAULT_AGENT } from "@cotal-ai/workspace";
 
 /** The name the seeded default persona's agents launch under, as its template declares. */
 export const DEFAULT_AGENT_NAME = "default_agent";
-
-/** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
- *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
- *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
- *  `cotal setup` or local `cotal up` writes a fresh copy.
- *
- *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
- *  isn't firehosed every channel on the mesh at boot, while the read and post ACLs permit it to
- *  join, create, read, and post channels on demand. (`subscribe: [">"]` would auto-subscribe to
- *  every channel, the old behavior.) */
-export const DEFAULT_AGENT = `---
-name: default_agent
-role: default
-description: An agent on the mesh
-tags: []
-subscribe: []
-allowSubscribe: [">"]
-allowPublish: [">"]
-capabilities: [spawn, run]
----
-
-You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
-coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
-your peers and work with them. Edit this file to give yourself a name, role, and purpose.
-`;
-
-/** The byte-exact default template shipped before wildcard post permission. Keep this frozen: a
- *  future edit to the current template must not make an older untouched file ineligible for repair. */
-export const LEGACY_DEFAULT_AGENT = [
-  "---",
-  "name: default_agent",
-  "role: default",
-  "description: An agent on the mesh",
-  "tags: []",
-  "subscribe: []",
-  'allowSubscribe: [">"]',
-  "allowPublish: []",
-  "capabilities: [spawn]",
-  "---",
-  "",
-  "You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and",
-  "coordinate as peers rather than working in silos. Use the Cotal tools available to you to find",
-  "your peers and work with them. Edit this file to give yourself a name, role, and purpose.",
-  "",
-].join("\n");
 
 /** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
  *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the

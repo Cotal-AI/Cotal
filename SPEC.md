@@ -5817,6 +5817,11 @@ mints no task-queue row: the agent binds only its row's own role. Endpoint comma
 a user-auth grant: endpoint access there comes from the service owner's caller grants, which a spawn
 cannot write, so the manager refuses a persona that names `endpoints` (§13.7).
 
+The reference launchers can express the untouched seeded default's spawner-relative channels as
+ordinary explicit read and post lists from the signed-in member's actor grant. The default starts
+without subscriptions. This changes no enrollment field or authority check. Authored persona lists
+are not rewritten.
+
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`
 and `run-cancel`, §14.8, and `run-start-keyed` and `run-submission-status`, §14) MUST refuse a legacy-rail request
 with `permission-denied` carrying the detail kind
