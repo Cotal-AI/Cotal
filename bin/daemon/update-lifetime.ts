@@ -12,6 +12,7 @@ export interface UpdateDaemonLifetime {
 
 /** Authenticate only the local daemon lifetime, without status, Manager discovery or mesh auth. */
 export async function observeUpdateDaemon(paths?: DaemonPaths): Promise<UpdateDaemonLifetime | undefined> {
+  if (!hasUpdateDaemonLifetime(paths)) return undefined;
   if (!paths) {
     try { paths = daemonPaths(); }
     catch (error) {
@@ -35,14 +36,23 @@ export async function observeUpdateDaemon(paths?: DaemonPaths): Promise<UpdateDa
   return undefined;
 }
 
+/** A shared socket is not evidence that this home has a daemon. */
+export function hasUpdateDaemonLifetime(paths?: DaemonPaths): boolean {
+  const lock = protectedUpdateLock(paths);
+  if (!lock) return false;
+  const { record } = observeLifetimeRecord(lock);
+  if (record?.start && processBirth(record.pid) === record.start) return true;
+  assertUpdateDaemon(undefined, paths);
+  return false;
+}
+
 /** Recheck the authenticated lifetime, or kernel-proven absence, immediately before publication. */
 export function assertUpdateDaemon(expected: UpdateDaemonLifetime | undefined, paths?: DaemonPaths): void {
-  const lock = paths?.lock ?? join(homeCotalDir(), "daemon", "daemon.lock");
-  try {
-    const info = lstatSync(lock);
-    if (!info.isFile() || info.isSymbolicLink() || (process.platform !== "win32" && (info.uid !== process.geteuid!() || (info.mode & 0o077) !== 0))) throw new Error("machine daemon lifetime record is not protected; no update admission was granted");
+  const lock = protectedUpdateLock(paths);
+  if (!lock) {
+    if (expected) throw new Error("machine daemon lifetime changed before execution publication");
+    return;
   }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" && !expected) return; throw error; }
   const observation = observeLifetimeRecord(lock);
   if (expected) {
     if (!sameUpdateDaemon(expected, observation.record?.start ? { pid: observation.record.pid, start: observation.record.start } : undefined) || processBirth(expected.pid) !== expected.start) throw new Error("machine daemon lifetime changed before execution publication");
@@ -53,7 +63,16 @@ export function assertUpdateDaemon(expected: UpdateDaemonLifetime | undefined, p
   // that an empty or stale lifetime record has no current holder.
   const exclusion = excludeLifetime(lock);
   exclusion.release();
-  return undefined;
+}
+
+function protectedUpdateLock(paths?: DaemonPaths): string | undefined {
+  const lock = paths?.lock ?? join(homeCotalDir(), "daemon", "daemon.lock");
+  try {
+    const info = lstatSync(lock);
+    if (!info.isFile() || info.isSymbolicLink() || (process.platform !== "win32" && (info.uid !== process.geteuid!() || (info.mode & 0o077) !== 0))) throw new Error("machine daemon lifetime record is not protected; no update admission was granted");
+  }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  return lock;
 }
 
 export function sameUpdateDaemon(left: UpdateDaemonLifetime | undefined, right: UpdateDaemonLifetime | undefined): boolean {

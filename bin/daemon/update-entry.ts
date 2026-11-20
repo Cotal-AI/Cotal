@@ -23,7 +23,7 @@ import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainCo
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
-import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
+import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
 import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
@@ -104,7 +104,7 @@ async function collectConnectorSets(): Promise<void> {
         const version = (reply.data as { version?: unknown } | undefined)?.version;
         holders.push(typeof version === "string" ? version : undefined);
       }
-      try {
+      if (hasUpdateDaemonLifetime()) {
         const paths = daemonPaths();
         const reply = await queryDaemon({ paths });
         if (!reply.ok) return;
@@ -114,10 +114,6 @@ async function collectConnectorSets(): Promise<void> {
         // Their separate records must all have appeared in the authenticated inventory.
         if ((reply.result.managers ?? []).some(row => row.pid !== undefined && !managers.some(manager => manager.pid === row.pid && manager.instanceId === row.instanceId))) return;
         holders.push(reply.result.version);
-      } catch (error) {
-        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return;
-        if (error.code === "NO_RUNTIME_DIR" && existsSync(join(homeCotalDir(), "daemon", "daemon.lock"))) return;
-        assertDaemonReachable();
       }
       if (managers.some(manager => !manager.process || assertRecordIdentity(manager.process).kind !== "match")) return;
       pruneRetainedConnectorConfig(holders);
@@ -313,14 +309,16 @@ const composed: Command = { ...command, async run(args) {
     const entry = logicalExecutionEntry();
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
     let hostedInstances = new Set<string | undefined>();
-    try {
-      const daemon = await reconcileDaemonStatus(daemonPaths());
-      if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
-      reconcileDaemonObserved = standaloneReconcile;
-      hostedInstances = new Set((daemon.result.managers ?? []).map(manager => manager.instanceId));
-    } catch (error) {
-      if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
-      if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
+    if (args.values.self !== true || hasUpdateDaemonLifetime()) {
+      try {
+        const daemon = await reconcileDaemonStatus(daemonPaths());
+        if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
+        reconcileDaemonObserved = standaloneReconcile;
+        hostedInstances = new Set((daemon.result.managers ?? []).map(manager => manager.instanceId));
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
+        if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
+      }
     }
     const managers = localUpdateManagers(flags, entry).filter(manager => !hostedInstances.has(manager.instanceId));
     if (!managers.length) return;
@@ -477,6 +475,8 @@ const composed: Command = { ...command, async run(args) {
       console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");
       return "none";
     }
+    if (staged && args.values.self === true && !hasUpdateDaemonLifetime())
+      return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {
       const paths = daemonPaths();
