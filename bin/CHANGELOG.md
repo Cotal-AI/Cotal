@@ -1,5 +1,52 @@
 # cotal-ai
 
+## 0.171.4
+
+### Patch Changes
+
+- 06a66f2: Local MCP clients get direct connection instructions, `input --json` reports an unregistered space as a structured refusal, and removing an absent extension succeeds without changing the installation.
+- 635053e: Self-update no longer asks you to retry while it can wait for a previous install, and it tells you to free temporary disk space when npm runs out during dependency checks.
+- 0224885: Let an already-current `cotal update --self` succeed even when a running Manager from another installation has an unreadable launch entry.
+- d96fc46: When npm runs on an unsupported Node.js version, Cotal stops installation and explains how to upgrade Node.js or use the official installer.
+- 0622282: Keep desktop daemon status responsive while starting a Manager for an enabled account space.
+- cb8692a: Cotal update explains how to refresh the standalone pi extension without overwriting your copy.
+- a58d5bf: Wait for a self-update that is still renewing its npm reservation, then recheck the installed version instead of asking you to retry.
+- Updated dependencies [bd46d72]
+- Updated dependencies [06a66f2]
+- Updated dependencies [635053e]
+- Updated dependencies [0df8319]
+- Updated dependencies [0224885]
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [a4c17c8]
+- Updated dependencies [930d522]
+- Updated dependencies [4dd2f49]
+- Updated dependencies [1c6566a]
+- Updated dependencies [28853bf]
+- Updated dependencies [32f3687]
+- Updated dependencies [79cc63c]
+- Updated dependencies [d96fc46]
+- Updated dependencies [29564fe]
+- Updated dependencies [58eb0ee]
+- Updated dependencies [d44bae8]
+- Updated dependencies [cb8692a]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [4734631]
+- Updated dependencies [8e3024e]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/auth@0.171.4
+  - @cotal-ai/cli@0.171.4
+  - @cotal-ai/connector-core@0.171.4
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/manager@0.171.4
+  - @cotal-ai/runtime@0.171.4
+  - @cotal-ai/delivery@0.171.4
+  - @cotal-ai/registry@0.171.4
+  - @cotal-ai/seat@0.171.4
+
 ## 0.171.3
 
 ### Patch Changes

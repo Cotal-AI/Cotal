@@ -1,5 +1,32 @@
 # @cotal-ai/cli
 
+## 0.171.4
+
+### Patch Changes
+
+- 06a66f2: Local MCP clients get direct connection instructions, `input --json` reports an unregistered space as a structured refusal, and removing an absent extension succeeds without changing the installation.
+- 635053e: Self-update no longer asks you to retry while it can wait for a previous install, and it tells you to free temporary disk space when npm runs out during dependency checks.
+- 0df8319: Manual self-updates now report a refused HTTP or HTTPS proxy connection and fail without changing the installation or bypassing the proxy.
+- 0224885: Let an already-current `cotal update --self` succeed even when a running Manager from another installation has an unreadable launch entry.
+- 8c2d0c9: When you rename a stopped space's project folder, `cotal up` and `cotal status` show the commands to keep the new location when the old path is gone and the stack is confirmed stopped.
+- d96fc46: When npm runs on an unsupported Node.js version, Cotal stops installation and explains how to upgrade Node.js or use the official installer.
+- 29564fe: A prepared space record this account cannot read, such as one left owned by root, is no longer reported as a record that does not parse. A command about its space, such as `cotal up` or `cotal use`, refuses `PERMISSION_DENIED`, exit 2, instead of `SCHEMA_INVALID`, and keeps the record. The refusal, the `PREPARED_RECORD_SKIPPED` warning and `cotal status` say the file could not be read and name the step that gives it back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, instead of `cotal space forget`. A record that does not parse or is not a prepared space record still names the forget.
+- d44bae8: `cotal status` reports an answering manager outside a broker-only stack and points to `cotal who` for the live roster.
+- cb8692a: Cotal update explains how to refresh the standalone pi extension without overwriting your copy.
+- a58d5bf: Wait for a self-update that is still renewing its npm reservation, then recheck the installed version instead of asking you to retry.
+- 4734631: Let `cotal update --self` finish interrupted-update recovery when `cotal up` failed without starting any stack members and the stack is confirmed stopped.
+- 8e3024e: `cotal up` no longer refuses a controller stack after a reboot because of a stale delivery or manager record. Before it starts a member, `up` removes each process record under the root whose process is gone, or whose pid now runs another start than its identity pin records. It names each one in a `STALE_PROCESS_RECORD` warning, as a complete `cotal down` does, and never signals the process that holds a reused pid. Before, a record whose pid had been reused refused `up` as a legacy process. A record whose pid a process started by the same `up` took refused the delivery member with `LIFECYCLE_BLOCKED`. A record that may front a live process still refuses.
+- b393c16: Report the CLI version as partial JSON with exit code 4 when the extension manifest cannot be read.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+
 ## 0.171.3
 
 ### Patch Changes
