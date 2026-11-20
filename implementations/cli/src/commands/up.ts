@@ -46,6 +46,7 @@ import {
   IssuedStoreBeforeRetentionError,
   IssuedStoreRecreateRefusal,
   reconcileSpaceMemoryBuckets,
+  recreateMembershipStore,
   membershipStoreDefinition,
   LEGACY_MEMBERSHIP_MAX_BYTES,
   MEMBERSHIP_MAX_VALUE_SIZE,
@@ -1350,7 +1351,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // one is durably retired before a fresh spawn, ambiguity refuses, and a manager-committed
         // resume never replaces the listener its durable token is bound to.
         let adoptProof: ListenerProof | undefined;
-        let recoveredProof = journal.listenerProof;
+        const recoveredProof = journal.listenerProof;
         let recoveredState: PendingOrdinaryResume["journalState"] = journal.state;
         if (recoveredProof) {
           const status = localProcessOwnerStatus(recoveredProof.processOwner);
@@ -1370,7 +1371,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
               recoveredState = "resume-degraded";
             }
             replaceDeadOrdinaryResumeListener(lock, recoveredProof);
-            recoveredProof = undefined;
           }
         }
         const freshNonce = randomUUID().replaceAll("-", "");
@@ -4230,14 +4230,16 @@ async function serveReadyListener(l: {
   isStopping?: () => boolean;
 }): Promise<{ authService: boolean; controlPlane: Awaited<ReturnType<typeof ensureControlPlane>> | undefined }> {
   const { child, server, space, setup, transport } = l;
-  if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
-  else {
-    try {
+  try {
+    if (l.resumeAttempt) {
+      const ordinaryResume = pendingOrdinaryResumes.has(l.resumeAttempt);
+      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined);
+    } else {
       await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
-    } catch (e) {
-      await stopFailedListener(child);
-      throw e;
     }
+  } catch (e) {
+    await stopFailedListener(child);
+    throw e;
   }
   // Register the prepared trust before delivery starts. Auth follows delivery's liveness oracle,
   // then the manager: a crashed auth claim cannot be reclaimed while that oracle is absent.
@@ -5135,9 +5137,9 @@ function freePort(host: string, requestedPort = 0): Promise<number> {
   });
 }
 
-function membershipConversionRefusal(space: string): CommandFailure {
+function membershipConversionRefusal(space: string, remedy = "stop the stack with `cotal down --yes`, then run `cotal up --recreate-membership-store`"): CommandFailure {
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `space ${space} has a legacy File-backed membership store; it was not changed while its broker or membership services may be in use`, {
-    target: { space }, remedy: "stop the stack with `cotal down --yes`, then run `cotal up --recreate-membership-store`",
+    target: { space }, remedy,
   });
 }
 
@@ -5248,17 +5250,38 @@ async function recreateIssuedStoresBeforeSetup(server: string, space: string, au
 /** A resume or restore skips `postStart` because the preserved store already holds every canonical
  *  stream. A memory-backed bucket is the exception: the broker stop that preserved the store emptied
  *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
- *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them. */
-async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }): Promise<void> {
-  if (await fileMembershipStore(server, space, setup?.creds)) throw membershipConversionRefusal(space);
+ *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them.
+ *  Only an ordinary resume that just started this listener may opt into replacing a File feed. */
+async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }, ownedResume?: { convertMembership: boolean }): Promise<void> {
+  const legacy = await fileMembershipStore(server, space, setup?.creds);
+  if (legacy) {
+    if (!ownedResume?.convertMembership) throw membershipConversionRefusal(space, ownedResume && "retry this preserved resume with `cotal up --recreate-membership-store`");
+    const running = serviceInstances(space).filter((row) => row.record.value.definition !== STACK_DEFINITION.broker).some((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)));
+    if (running) throw membershipConversionRefusal(space, "stop the remaining membership services, then retry the preserved resume with `cotal up --recreate-membership-store`");
+    try {
+      const auth = setup && await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
+      if (setup && !auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}`);
+      await recreateMembershipStore({
+        servers: server, space, provisionerCreds: setup?.creds,
+        recreateCreds: auth ? await mintCreds(auth, newIdentity(), "membership-store-recreate") : undefined,
+      });
+    } catch (error) {
+      throw new CommandFailure("failed", "OPERATION_FAILED", `could not convert the preserved membership store: ${(error as Error).message}`, {
+        target: { space }, remedy: "fix the reported cause, then retry this preserved resume with `cotal up --recreate-membership-store`",
+      });
+    }
+    console.error(`Converted ${membershipStoreDefinition(space).bucket} from File to Memory; broker-sourced membership rebuilds on startup.`);
+  }
   const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
   try {
     requireBrokerFloor(nc);
     const kvm = new Kvm(nc);
     for (const [bucket, ttl, storage] of ttlBuckets(space))
       if (storage === StorageType.Memory) await kvm.create(bucket, { ttl, storage });
-    const membership = membershipStoreDefinition(space);
-    await kvm.create(membership.bucket, membership.createOptions);
+    if (!legacy) {
+      const membership = membershipStoreDefinition(space);
+      await kvm.create(membership.bucket, membership.createOptions);
+    }
   } finally {
     await drainAndClose(nc);
   }

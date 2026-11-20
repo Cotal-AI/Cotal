@@ -30,10 +30,9 @@
  *     while this probe holds the lock. Either one succeeding is the finding: the resumed render
  *     would not be serialized. The acquire is judged by re-reading the journal WHILE holding the
  *     lock, so a resume that merely finished mid-check is not mistaken for a gap.
- *  4. SUBJECT - a second cut, then a FOREGROUND resume. A broker stop empties the memory-backed
- *     presence bucket and a resume skips postStart, so each launch mode recreates it from its own
- *     call (#2335). Step 3 drives only the `--detach` one, whose omission degrades the resume there.
- *     The foreground resume must consume its journal and keep serving.
+ *  4. SUBJECT - a second cut with a legacy File-backed membership feed. A foreground resume
+ *     without conversion consent must stop the broker it started. The printed retry must convert
+ *     the feed, recreate presence (#2335), consume the journal and preserve channel history.
  *
  * Sandboxes COTAL_HOME under a scratch base with proven-clean `.cotal` ancestry; kills only its own
  * children. Needs `nats-server` on PATH.
@@ -41,9 +40,12 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { dialerFor, drainAndClose, isReachable, membershipStoreDefinition, mintCreds, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
+import { assertSmokeSandboxDown, awaitBrokerReady, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 
 const scratch = makeScratch("cotal-up-resume-lock-");
@@ -53,7 +55,7 @@ const configDir = join(home, "xdg");
 const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 process.env.COTAL_HOME = home;
 
-const { acquireMaintenanceLock, authDir, maintenancePaths, readMaintenanceJournal, releaseMaintenanceLock } =
+const { acquireMaintenanceLock, authDir, getSpaceAuth, maintenancePaths, readMaintenanceJournal, releaseMaintenanceLock, workspaceSecretStore } =
   await import("@cotal-ai/workspace");
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
@@ -255,16 +257,54 @@ try {
     releaseMaintenanceLock(held);
   }
 
-  console.log("\n4) SUBJECT: a FOREGROUND resume recreates the presence bucket too");
+  console.log("\n4) SUBJECT: a FOREGROUND resume can convert a preserved File-backed membership feed");
+  const send = run(["send", "-c", "railprobe", "legacy-retained"]);
+  await within(once(send, "exit"), 30_000);
+  ok("the channel has a message before the second cut", send.exitCode === 0, logOf(send));
   await cutPreserved(space);
-  // A bare `up` runs in the background, so the terminal-bound stack is asked for by name.
-  const foreground = run(["up", "--foreground", "--space", space, "--server", server]);
+  const config = join(scratch, `${SMOKE_BROKER_TOKEN}.conf`);
+  copyFileSync(confPath(), config);
+  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
+  if (!auth) throw new Error("fixture trust is missing");
+  const creds = await mintCreds(auth, newIdentity(), "provisioner");
+  const dial = () => dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
+  const bucket = membershipStoreDefinition(space).bucket;
+  const fixture = spawn("nats-server", ["-c", config], { cwd: root, env: sandboxEnv, stdio: "ignore" });
+  const releaseFixture = teardownOnSignal(fixture);
+  try {
+    await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
+    const nc = await dial();
+    try {
+      await new Kvm(nc).create(bucket, { history: 1, storage: StorageType.File, max_bytes: 64 * 1024 * 1024 });
+      ok("the preserved store has a File-backed feed", (await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`)).config.storage === StorageType.File);
+    } finally { await drainAndClose(nc); }
+  } finally { await killAndAwaitExit(fixture); releaseFixture(); }
+
+  const refused = run(["up", "--foreground"]);
+  await within(once(refused, "exit"), 60_000);
+  ok("resume without consent exits 2 and prints the preserved retry", refused.exitCode === 2 &&
+    logOf(refused).includes("retry this preserved resume with `cotal up --recreate-membership-store`"), logOf(refused).slice(-1200));
+  ok("the failed resume leaves its broker offline and the cut retryable",
+    !await isReachable(server) && !existsSync(join(root, ".cotal", "nats.pid")) && journalState() === "resume-degraded", journalState());
+
+  const foreground = run(["up", "--recreate-membership-store"]);
   // A foreground `up` never exits once it serves, so its resume is done when the journal is consumed.
   // A resume that skipped the bucket ends `resume-degraded` and exits instead.
   for (let i = 0; i < 1200 && foreground.exitCode === null && journalState() !== "none"; i++) await sleep(200);
   ok("the foreground resume consumed its journal and is still serving",
     journalState() === "none" && foreground.exitCode === null,
     { journal: journalState(), exit: foreground.exitCode, log: logOf(foreground).slice(-1500) });
+  ok("the foreground resume reports one conversion", (logOf(foreground).match(/Converted .* from File to Memory/g) ?? []).length === 1, logOf(foreground).slice(-1500));
+  const nc = await dial();
+  try {
+    ok("the resumed membership feed is Memory-backed", (await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`)).config.storage === StorageType.Memory);
+  } finally { await drainAndClose(nc); }
+  const history = run(["history", "railprobe", "--json"]);
+  await within(once(history, "exit"), 30_000);
+  ok("the retained message survives conversion", history.exitCode === 0 && logOf(history).includes("legacy-retained"), logOf(history));
+  const down = run(["down", "--yes"]);
+  await within(once(down, "exit"), 60_000);
+  ok("down stops the resumed stack", down.exitCode === 0 && !await isReachable(server), logOf(down));
 
   console.log(`\nUP RESUME RENDER LOCK SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
