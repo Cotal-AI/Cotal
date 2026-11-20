@@ -11,7 +11,7 @@
   "mutations": [
     {
       "name": "skip waitForExit once status is already exited",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preservation.ts",
       "find": "    if (!handle.waitForExit)\n      throw new Error(`runtime \"${handle.kind}\" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);\n    await withTimeout(\n",
       "replace": "    if (!handle.waitForExit)\n      throw new Error(`runtime \"${handle.kind}\" cannot prove child exit (AgentHandle.waitForExit is not implemented)`);\n    if (handle.status() === \"exited\") return;\n    await withTimeout(\n",
       "expectRed": "late observer still invokes waitForExit after the child already reports exited",
