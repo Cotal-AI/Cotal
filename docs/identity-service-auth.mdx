@@ -96,7 +96,8 @@ dashboard's per-click channel delete) and the one-object `transfer-writer` (belo
 the scope-free `session-caller` view (below) and the narrowing `manager-caller` view for humans
 or managed agents. That view binds the bearer to one live registered manager instance. It adds no
 capability, except that a `spawn` holder's view may read that manager's `status`, `models`,
-`resolve-cwd`, `list-dir` and `ps`, which a launch there needs, an `admin` holder's view carries the
+`resolve-cwd` and `list-dir`, which a launch there needs, and `ps`, which lists the caller's own
+agents, an `admin` holder's view carries the
 operator reads and `slots`, and a person's own view carries their agents'
 commands whatever the scope ([your own agents](identity-user-auth.mdx#delegation)). A manager using a delegated runtime refuses
 host cwd resolution before filesystem lookup because its seats execute outside that host.
