@@ -624,9 +624,11 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "models",
     group: "Agents",
-    summary: "list connector model catalogs and variants from the manager",
+    summary: "List connector model catalogs and variants from the manager. Authenticated meshes must be registered. Raw credential files are not accepted.",
     usage: "cotal models [--json|--plain] [-H|--harness <connector>] [--refresh] [--on <manager-instance>]",
     flags: modelsFlags,
+    // Keep parsing --creds so existing invocations still get the explicit refusal and remedy.
+    flagNames: modelsFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
     validate: validateModelsArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal models", note: "list the models each application offers" }, { command: "cotal models -H claude", note: "list one application's models" }, { command: "cotal models --refresh", note: "ask the applications to read their catalogs again" }],
