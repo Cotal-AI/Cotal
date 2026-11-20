@@ -64,7 +64,8 @@ The flag takes precedence.
 Hermes has no `cotal models` catalog.
 
 A managed profile does not read your `~/.hermes` configuration.
-The launch fails if neither source provides a model, even if you forward `HERMES_MODEL` through `spawn.env`.
+Foreground `cotal spawn` refuses a missing model before issuing credentials, even if you forward `HERMES_MODEL` through `spawn.env`.
+A foreground `--dry-run` with the Hermes connector installed reports the same model requirement without checking for `uv`.
 If both `uv` and the model are missing, foreground `cotal spawn` reports both in the same refusal.
 To use your existing model configuration, [adopt your own profile](#use-your-own-hermes-profile).
 

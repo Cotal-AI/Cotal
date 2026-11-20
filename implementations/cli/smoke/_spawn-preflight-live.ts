@@ -15,14 +15,16 @@ export async function checkSpawnPreflight(check: (name: string, condition: boole
   mkdirSync(root);
   mkdirSync(bins);
   const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-  Object.assign(env, { HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, TMPDIR: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", PATH: `${bins}:${env.PATH}` });
+  Object.assign(env, { HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: home, TMPDIR: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", PATH: `${bins}:${env.PATH}` });
   const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: xdg });
   const piCalls = join(home, "pi-calls");
   for (const name of ["claude", "pi", "codex", "opencode"])
     writeFileSync(join(bins, name), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${piCalls}'\nexit 0\n`, { mode: 0o700 });
   const badVersion = join(home, "bad-version");
+  const uvCalls = join(home, "uv-calls");
   writeFileSync(join(bins, "uv"), `#!${process.execPath}
 const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(uvCalls)}, "");
 if (process.argv.includes("python")) {
   console.log(fs.existsSync(${JSON.stringify(badVersion)}) ? "9.0.0" : "0.20.1");
   process.exit(0);
@@ -67,15 +69,22 @@ setInterval(() => {}, 60_000);
       ["pi", ["--resume=--help"], /cannot resume/], ["pi", ["--resume=-v"], /cannot resume/], ["pi", ["--prompt=-bad"], /initial prompt cannot start/],
       ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "high"], /model variants/],
     ];
+    if (process.platform !== "win32") invalid.push(["hermes", [], /no model was resolved.*--model.*model:.*COTAL_HERMES_ADOPT_HOME/]);
     for (const [harness, flags, diagnostic] of invalid) {
       for (const preview of [true, false]) {
         const result = cli("spawn", "-H", harness, ...flags, ...(preview ? ["--dry-run", "--json"] : []));
-        check(`${harness} ${flags.join(" ")} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
+        check(`${harness} ${flags.join(" ") || "without a model"} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
           result.status === 1 && diagnostic.test(result.out) && (preview ? /"code":\s*"USAGE_INVALID"/.test(result.stdout) : /^✗ /m.test(result.stderr))
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
     check("invalid pi resumes never reach its argv", !existsSync(piCalls));
+    if (process.platform !== "win32") {
+      const hermesPreview = cli("spawn", "-H", "hermes", "--model", "test-model", "--dry-run");
+      check("a valid Hermes preview checks arguments without invoking uv, issuing credentials or creating launch artifacts",
+        hermesPreview.status === 0 && /Model:\s+test-model/.test(hermesPreview.out) && /Connector arguments:\s+checked/.test(hermesPreview.out)
+        && !existsSync(uvCalls) && creds() === initialCreds && JSON.stringify(artifacts()) === JSON.stringify(before), hermesPreview.out);
+    }
     const preview = cli("spawn", "-H", "pi", "--resume", "session-valid", "--dry-run");
     check("valid direct preview checks connector arguments without creating launch artifacts or session state", preview.status === 0
       && /Connector arguments:\s+checked/.test(preview.out)

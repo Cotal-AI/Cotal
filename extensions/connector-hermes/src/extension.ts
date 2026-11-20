@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { ADOPT_HOME_ENV, requireManagedModel } from "./profile-input.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -56,6 +57,7 @@ export const hermesConnector: Connector = {
     // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
     if (process.platform === "win32")
       throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
+    const adoptHome = process.env[ADOPT_HOME_ENV]?.trim();
     // Resume forks: the launcher copies the named session out of the operator's Hermes profile into
     // the seat's own before the seat joins the mesh, and refuses there, by name, a session it cannot
     // find (see plugin/cotal/resume.py). The adopted profile already holds the session, so it is
@@ -63,7 +65,7 @@ export const hermesConnector: Connector = {
     if (opts.resume !== undefined) {
       if (!HERMES_SESSION_ID.test(opts.resume))
         throw new Error(`cannot resume Hermes session ${JSON.stringify(opts.resume)}: not a Hermes session id`);
-      if (process.env.COTAL_HERMES_ADOPT_HOME?.trim())
+      if (adoptHome)
         throw new Error("the Hermes connector cannot resume into COTAL_HERMES_ADOPT_HOME: that profile already holds the session, so continue it there with Hermes' own /resume");
     }
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
@@ -75,6 +77,7 @@ export const hermesConnector: Connector = {
     // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
     if (opts.launchOptions && Object.keys(opts.launchOptions).length)
       throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
+    if (!adoptHome) requireManagedModel(opts.model);
     // Hermes supports the named provider keys below. Other ambient authority stays outside the child
     // unless the operator deliberately declares it in spawn.env.
     const env: Record<string, string> = {
@@ -89,7 +92,6 @@ export const hermesConnector: Connector = {
     // operator knobs. launchEnv resets every other COTAL_* name precisely because those ARE
     // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
     // seat cannot opt in to its own profile.
-    const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
     // The fork's provenance is the seat's own record of it, which the launcher writes into the seat's
     // profile when it forks. The launcher refuses a profile that is not where this names it.

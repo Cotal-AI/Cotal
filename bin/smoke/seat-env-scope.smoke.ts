@@ -148,7 +148,8 @@ console.log("✓ A2: a real grandchild of a real seat process inherited none of 
 for (const name of CONNECTORS) {
   assert.ok(registry.has("connector", name), `connector "${name}" is registered`);
   const connector = registry.resolve<Connector>("connector", name);
-  const spec = connector.buildLaunch(opts);
+  const launch = name === "hermes" ? { ...opts, model: "test-model" } : opts;
+  const spec = connector.buildLaunch(launch);
   const env = spec.env ?? {};
 
   // A1 - no production connector puts connection material in the seat environment.
@@ -221,7 +222,7 @@ for (const name of CONNECTORS) {
   // environment, so nothing in it was inherited and no name is excused. Telling inherited from
   // assigned by comparing values let a per-spawn write pass whenever the runner carried the same
   // value. Inheriting the keep list is env-isolate's cell.
-  const bare = withoutOperatorEnv(() => connector.buildLaunch(opts));
+  const bare = withoutOperatorEnv(() => connector.buildLaunch(launch));
   const emitted = Object.keys(bare.env ?? {}).filter((k) => k.startsWith("COTAL_"));
   const bareMaterial = bare.env?.[LAUNCH_MATERIAL_ENV];
   if (bareMaterial) discardLaunchMaterial(bareMaterial);

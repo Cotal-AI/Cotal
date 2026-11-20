@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
+import { ADOPT_HOME_ENV, LaunchRefused, requireManagedModel } from "./profile-input.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
@@ -91,11 +92,6 @@ function log(msg: string): void {
   process.stderr.write(`[cotal-hermes] ${msg}\n`);
 }
 
-/** A launch this connector refuses on what it was given. The message is the whole diagnosis, so
- *  it is printed without a stack: a stack names lines in a bundle and points the operator at
- *  this code, when what they need to change is their own invocation. */
-export class LaunchRefused extends Error {}
-
 /** A double-quoted YAML basic-string literal (escaped). */
 const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
@@ -108,18 +104,7 @@ export function setupProfile(
   home: string,
   opts: { model: string | undefined; persona?: string; config: AgentConfig },
 ): void {
-  // A managed profile is a temporary directory and reads nothing from ~/.hermes, so the model the
-  // operator configured there is not a model this gateway has. With none resolved here, hermes
-  // would pick a default of its own over a provider this profile may hold no key for, and that is
-  // the one degradation the launch cannot see: the seat still joins the mesh and still accepts a
-  // turn, and the first sign is a provider refusal mid-turn whose advice points at the operator's
-  // credentials. Refuse before anything is written, so a refused launch leaves no directory a
-  // later spawn could take for a working profile.
-  if (!opts.model)
-    throw new LaunchRefused(
-      "a managed Hermes profile does not read ~/.hermes, and no model was resolved for it — " +
-        `set one with --model or the agent file's model:, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
-    );
+  requireManagedModel(opts.model);
   mkdirSync(home, { recursive: true });
   const pluginDst = join(home, "plugins", "cotal");
   rmSync(pluginDst, { recursive: true, force: true });
@@ -159,11 +144,6 @@ function parseLine(raw: string): [number, number] | null {
 }
 
 const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] || a[1] - b[1];
-
-/** Opt-in: run the gateway in the operator's OWN Hermes profile instead of a disposable one.
- *  Set to the absolute path of the profile directory (`$HOME/.hermes`, or any HERMES_HOME). Unset
- *  means the managed default, which is what a spawned seat should almost always use. */
-export const ADOPT_HOME_ENV = "COTAL_HERMES_ADOPT_HOME";
 
 /** Resolve the adopt-home opt-in, or undefined for the managed default. A relative value is
  *  refused: it would resolve against whatever directory the launcher runs in, and a `~` no shell

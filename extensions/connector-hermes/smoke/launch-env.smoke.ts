@@ -18,7 +18,8 @@ import { discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type L
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { ADOPT_HOME_ENV, LaunchRefused } from "../src/profile-input.js";
 import { briefing } from "@cotal-ai/connector-core";
 
 /**
@@ -51,7 +52,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 179;
+const EXPECTED_CELLS = 181;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -81,7 +82,7 @@ const PER_SESSION = [
   "COTAL_CREDS", "COTAL_SERVERS", "COTAL_CONTROL_KEY",
   "COTAL_OWNER", "COTAL_ACTOR", "COTAL_SENTINEL_CREDS", "COTAL_BEARER_CMD",
   "COTAL_HERMES_UV_BIN",
-  "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_MODEL", "COTAL_VARIANT",
+  "COTAL_LIFECYCLE_UID", "COTAL_ID", "COTAL_ROLE", "COTAL_VARIANT",
   "COTAL_AGENT_FILE", "COTAL_LINK", "COTAL_SUBSCRIBE", "COTAL_ALLOW_SUBSCRIBE",
   "COTAL_ALLOW_PUBLISH", "COTAL_CAPABILITIES", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT",
   "COTAL_CHANNEL", "COTAL_CODEX_HOME", "COTAL_OPENCODE_PROMPT", "COTAL_TOKEN", "COTAL_BACKFILL_FLOOR",
@@ -96,6 +97,7 @@ process.env.SOME_UNRELATED_SECRET = "smoke-unrelated";
 process.env.COTAL_CONTROL_SOCKET = "parent-control.sock";
 process.env.COTAL_LAUNCH_MATERIAL = "parent-material.json";
 process.env.COTAL_HERMES_SEAT_HOME = "parent-profile";
+process.env.COTAL_MODEL = "parent-model";
 const owned: string[] = [];
 process.once("exit", () => discardLaunchArtifacts(owned));
 function buildLaunch(opts: LaunchOpts) {
@@ -103,9 +105,11 @@ function buildLaunch(opts: LaunchOpts) {
   owned.push(...spec.artifacts ?? []);
   return spec;
 }
+const managedLaunch = { space: "smoke", model: "vendor/some-model" };
+delete process.env[ADOPT_HOME_ENV];
 
 // ── Default allow-list (no operator extras declared) ─────────────────────────────────────────────
-const spec = buildLaunch({ space: "smoke", name: "hermes-1" });
+const spec = buildLaunch({ ...managedLaunch, name: "hermes-1" });
 const env = spec.env!;
 assert.notEqual(env.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "the child receives its own socket");
 assert.notEqual(env.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "the child receives its own carrier");
@@ -128,17 +132,18 @@ for (const k of PER_SESSION)
 
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
+assert.equal(env.COTAL_MODEL, managedLaunch.model, "the resolved model replaces the parent model");
 assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launch");
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
 
 // A floor request DOES forward, distinct from the per-session ambient reset asserted above.
-const withFloor = buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
+const withFloor = buildLaunch({ ...managedLaunch, name: "hermes-1", backfillFloor: 42 }).env ?? {};
 assert.equal(withFloor.COTAL_BACKFILL_FLOOR, "42", "a requested backfill floor is forwarded");
 
 // ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
-const confined = buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
+const confined = buildLaunch({ ...managedLaunch, name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
 
 assert.notEqual(confined.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "containment does not reuse the parent carrier");
 assert.equal(confined.NOUS_API_KEY, "smoke-NOUS_API_KEY", "a declared name is forwarded under containment");
@@ -151,13 +156,13 @@ for (const k of HOST_MARKERS)
   assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
 
 // Opt-in: a persona / operator that names a host marker gets it. The default path never does.
-const opted = buildLaunch({ space: "smoke", name: "hermes-4", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
+const opted = buildLaunch({ ...managedLaunch, name: "hermes-4", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
 assert.equal(opted.CLAUDE_CODE_CHILD_SESSION, "smoke-CLAUDE_CODE_CHILD_SESSION", "a host marker named on spawn.env is the explicit opt-in");
 assert.ok(!("CLAUDECODE" in opted), "an unnamed host marker stays withheld even when a sibling is opted in");
 
 // An empty array is a POLICY (the OS allow-list alone), not "unset". If this were read as unset the
 // child would inherit everything, which is the one way the opt-in could silently fail open.
-const bare = buildLaunch({ space: "smoke", name: "hermes-3", envAllow: [] }).env ?? {};
+const bare = buildLaunch({ ...managedLaunch, name: "hermes-3", envAllow: [] }).env ?? {};
 assert.notEqual(bare.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "an empty allow-list does not reuse the parent socket");
 assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not drop connector-declared provider keys");
 assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
@@ -170,7 +175,7 @@ assert.throws(
 );
 
 const bootResolved = buildLaunch({
-  space: "smoke",
+  ...managedLaunch,
   name: "hermes-boot-resolved",
   resolvedBinaries: { uv: "/manager/boot/uv" },
 }).env ?? {};
@@ -370,12 +375,16 @@ rmSync(mgdSet, { recursive: true, force: true });
 
 // The opt-in has to survive the launch env or the launcher never sees it: every other COTAL_* name
 // is deliberately reset per session, and this one would be stripped with them.
-process.env.COTAL_HERMES_ADOPT_HOME = "/srv/op/.hermes";
+process.env[ADOPT_HOME_ENV] = "   ";
+assert.throws(() => buildLaunch({ space: "smoke", name: "hermes-plain", validateOnly: true }), LaunchRefused, "a blank opt-in still requires a model in preview");
+process.env[ADOPT_HOME_ENV] = opAdopt;
+assert.doesNotThrow(() => buildLaunch({ space: "smoke", name: "hermes-adopt", validateOnly: true }), "an adopted profile does not require a model in preview");
 const adoptEnv = buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
-assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/srv/op/.hermes", "the adopt-home opt-in reaches the launcher");
-delete process.env.COTAL_HERMES_ADOPT_HOME;
-const plainEnv = buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
-assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
+assert.equal(adoptEnv[ADOPT_HOME_ENV], opAdopt, "the adopt-home opt-in reaches the launcher");
+assert.ok(!("COTAL_MODEL" in adoptEnv), "an adopted profile without a resolved model does not inherit the parent pin");
+delete process.env[ADOPT_HOME_ENV];
+const plainEnv = buildLaunch({ ...managedLaunch, name: "hermes-plain" }).env ?? {};
+assert.ok(!(ADOPT_HOME_ENV in plainEnv), "without the opt-in the child gets the managed default");
 
 rmSync(opAdopt, { recursive: true, force: true });
 rmSync(opBare, { recursive: true, force: true });
