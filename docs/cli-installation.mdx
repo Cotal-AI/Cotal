@@ -320,6 +320,10 @@ When `update --self` finds no newer release and verifies the installed package c
 it reports that no connector reconciliation ran and skips the running Manager continuity check.
 An unreadable Manager from another installation does not block this result.
 
+If update cannot read a prepared space record, it names the file and reports that continuity was
+not checked for that record. It keeps the record and tells you how to restore read access. This
+does not replace the custody checks for running Managers.
+
 If an older updater refuses an answering hosted Manager as `starting`, install the fixed release
 with npm directly in the same installation prefix. For an installer-managed Unix installation,
 run `npm install -g --prefix "$HOME/.local/share/cotal" cotal-ai@<version>` using its Node runtime.

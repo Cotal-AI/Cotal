@@ -14,6 +14,12 @@ import {
   claimUpdateClosureAccess,
   updateClosureOwner,
   homeCotalDir,
+  isMeshRegistryError,
+  preparedRecordSkipped,
+  preparedRecordSpace,
+  preparedSpacesDir,
+  readPreparedSpaces,
+  recordOperationWarning,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -576,6 +582,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       return code;
     }
     if (rt.isCurrent?.()) {
+      reportUncheckedPreparedRecords(rt, target);
       rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
       reportVersion(current, latest.version, rt, false);
@@ -608,6 +615,22 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   });
 }
 
+function reportUncheckedPreparedRecords(rt: UpdateRuntime, target: Record<string, unknown>): void {
+  if (["server", "creds", "on"].some(key => typeof target[key] === "string")) return;
+  // The installed child may carry a daemon admission receipt and never resolve the project.
+  // Report read failures separately from the Manager custody verdict and package reconciliation.
+  try {
+    for (const error of readPreparedSpaces().unusable) {
+      if (error.refusal !== "PERMISSION_DENIED") continue;
+      if (typeof target.space === "string" && target.space !== preparedRecordSpace(error.file)) continue;
+      recordOperationWarning(preparedRecordSkipped(error));
+      rt.out(c.dim(`  ${error.file}: leaving its records and processes untouched, continuity not checked`));
+    }
+  } catch (error) {
+    rt.err(`Could not check prepared space records: ${message(error)}; continuity not checked`);
+  }
+}
+
 async function reconcileCurrent(
   current: string,
   rt: UpdateRuntime,
@@ -635,6 +658,8 @@ async function reconcileCurrent(
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
     return finish(false, true);
   }
+
+  reportUncheckedPreparedRecords(rt, target);
 
   try { await rt.preflightReplacement?.(); }
   catch (error) {
@@ -948,6 +973,15 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       offline = (await pruneStaleMeshes(server)).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
+      // An unreadable prepared record is not evidence about Manager custody. The updater can
+      // leave it alone only if it was not asked for a broker or instance and has no potentially
+      // running registration or supervisor to check for the affected target.
+      if (isMeshRegistryError(e) && e.refusal === "PERMISSION_DENIED" && dirname(e.file) === preparedSpacesDir()) {
+        const name = preparedRecordSpace(e.file);
+        if (name !== undefined && server === undefined && on === undefined &&
+            !registry.entries.some(entry => space === undefined ? !offline?.includes(entry.space) : entry.space === space) &&
+            !supervisorMayServe(name, options.installedEntry)) return "none";
+      }
       if (!isWorkspaceTargetError(e)) throw e;
       // Sudo can inspect another account's project without owning its controller records.
       // The install-wide census already preserves its Manager. Do not borrow that account's

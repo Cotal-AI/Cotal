@@ -2,10 +2,10 @@
 import "./update-isolation.js";
 import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
@@ -29,6 +29,7 @@ await new Promise<void>((resolve, reject) => {
 });
 const address = listener.address();
 assert.ok(address && typeof address !== "string");
+let registry: ChildProcess | undefined;
 const target: MeshTarget = {
   root,
   server: `nats://127.0.0.1:${address.port}`,
@@ -126,10 +127,36 @@ try {
   // Use the public CLI to prepare and select a space that never starts, then delete
   // its project. Neither ordinary reconciliation nor repeated self-update needs it.
   const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
+  // Keep self-update on the built version even when a new release reaches npm.
+  const { version } = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../../bin/package.json"), "utf8"));
+  registry = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { createServer } from "node:http";
+    const version = process.argv[1];
+    const packument = JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } });
+    const server = createServer((request, reply) => request.url === "/cotal-ai"
+      ? reply.writeHead(200, { "content-type": "application/json" }).end(packument)
+      : reply.writeHead(404).end());
+    server.listen(0, "127.0.0.1", () => process.send(server.address()));
+    process.on("disconnect", () => server.close());
+  `, version], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  const registryAddress = await new Promise<AddressInfo>((done, reject) => {
+    registry!.once("message", address => done(address as AddressInfo));
+    registry!.once("error", reject);
+    registry!.once("exit", code => reject(new Error(`smoke registry exited ${code}`)));
+  });
+  const registryUrl = `http://127.0.0.1:${registryAddress.port}`;
+  const tools = join(other, "tools");
+  mkdirSync(tools, { mode: 0o700 });
+  if (process.platform === "win32") {
+    writeFileSync(join(tools, "npm.cmd"), `@echo off\r\nset "PATH=%SMOKE_NPM_PATH%"\r\nif "%~1 %~2"=="view cotal-ai@latest" (npm %* --registry ${registryUrl} --noproxy 127.0.0.1) else (npm %*)\r\n`);
+  } else {
+    writeFileSync(join(tools, "npm"), `#!/bin/sh\nexport PATH="$SMOKE_NPM_PATH"\nif [ "$1 $2" = "view cotal-ai@latest" ]; then\n  set -- "$@" --registry ${registryUrl} --noproxy 127.0.0.1\nfi\nexec npm "$@"\n`, { mode: 0o700 });
+  }
+  const registryEnv = { PATH: `${tools}${process.platform === "win32" ? ";" : ":"}${ambient.PATH}`, SMOKE_NPM_PATH: ambient.PATH };
   const home = join(other, "home");
   mkdirSync(home, { mode: 0o700 });
   const cli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: other, env: { ...ambient, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    cwd: other, env: { ...ambient, ...registryEnv, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   const deleted = join(other, "project"), space = `deleted-${randomUUID()}`;
@@ -137,6 +164,22 @@ try {
   assert.equal(cli("space", "create", space, "--root", deleted).status, 0, "the CLI prepares the project");
   assert.equal(cli("use", space).status, 0, "the CLI selects the prepared project");
   const prepared = findPreparedSpace(space);
+  if (process.getuid && process.getuid() !== 0) {
+    const record = join(process.env.COTAL_HOME!, "prepared", `space.${Buffer.from(space).toString("hex")}.json`);
+    const before = readFileSync(record, "utf8");
+    chmodSync(record, 0o000);
+    try {
+      assert.throws(() => readFileSync(record), { code: "EACCES" });
+      const update = cli("update", "--self");
+      const output = update.stdout + update.stderr;
+      assert.equal(update.status, 0, output);
+      assert.match(update.stdout, /leaving its records and processes untouched, continuity not checked/);
+      assert.match(update.stderr, /could not be read \(EACCES/);
+      assert.ok(output.includes(record) && !output.includes("cotal space forget"), output);
+      assert.equal(statSync(record).mode & 0o777, 0o000, "self-update leaves the record's mode unchanged");
+    } finally { chmodSync(record, 0o600); }
+    assert.equal(readFileSync(record, "utf8"), before, "self-update leaves the prepared record unchanged");
+  }
   rmSync(deleted, { recursive: true });
   for (const args of [["update"], ["update", "--self"], ["update", "--self"]]) {
     const run = cli(...args);
@@ -154,7 +197,7 @@ try {
   clearCurrent();
   const privateHome = join(root, "private-home");
   mkdirSync(privateHome, { mode: 0o700 });
-  const env = { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+  const env = { ...ambient, ...registryEnv, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
   for (const mode of ["open", "static"] as const) {
     const project = join(root, `refused-${mode}`);
     mkdirSync(join(project, ".cotal"), { recursive: true, mode: 0o700 });
@@ -333,6 +376,7 @@ try {
   }
   console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {
+  registry?.kill();
   if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (prior === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = prior;
