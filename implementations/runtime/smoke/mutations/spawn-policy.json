@@ -37,7 +37,7 @@
     },
     {
       "name": "spawnArgs drops supervise",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),",
       "replace": "    ...(false ? { supervise: readSupervise(req.supervise, req.persona) } : {}),",
       "expectRed": "spawnArgs carries restarts and windowMs",

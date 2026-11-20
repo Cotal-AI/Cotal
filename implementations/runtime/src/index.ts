@@ -17,12 +17,12 @@ export {
   waitConsumerConfig,
   rearmOutstandingPauses,
   outstandingPauseTokens,
-  spawnArgs,
   canonicalCwd,
   type MeshHandlerBinding,
   type SettleWatcher,
 } from "./mesh-handler.js";
 export { CheckpointAnswerMissing, readSupervise } from "./mesh-handler-shared.js";
+export { spawnArgs } from "./mesh-spawn.js";
 export {
   resolveCheckpoint,
   locateOpenCheckpoint,

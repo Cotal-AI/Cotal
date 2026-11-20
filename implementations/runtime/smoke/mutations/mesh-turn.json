@@ -99,7 +99,7 @@
     },
     {
       "name": "spawn never registers the roster entry turn addresses",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "      this.roster.set(parseAgentHandle(handle.agent).name, {\n        handle,\n        uid: parseAgentHandle(handle.agent).uid,\n        goalId: ref.goalId,\n        ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),\n        ...(permits !== undefined ? { permits } : {}),\n        ...(typeof ext.spawnedAt === \"number\" ? { spawnedAt: ext.spawnedAt } : {}),\n        ...(typeof ext.host === \"string\" ? { host: ext.host } : {}),\n      });",
       "replace": "      void address;",
       "expectRed": "the run completes through the real relay accept and the real terminal",
