@@ -185,10 +185,11 @@ the whole id, because both surfaces take nothing else.
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
-route. This view grants no registry scan or class queue. It adds four reads for an actor that
-holds `spawn`. The view may call `status`, `models` and `resolve-cwd` on that instance, the reads a
-launch needs, subject to the execution-mode limit above. It may also call `ps` there to list the
-caller's own agents. A `run`-only or no-scope agent view may not, and `slots` stays with `admin`. A
+route. This view grants no registry scan or class queue. It adds five reads for an actor that
+holds `spawn`. The view may call `status`, `models`, `resolve-cwd` and `list-dir` on that instance,
+the reads a launch needs, subject to the execution-mode limit above. It may also call `ps` there to
+list the caller's own agents. An `admin` actor's view carries the operator reads there, `slots`
+included. A `run`-only or no-scope agent view gets none of them. A
 person's own view, minted from their sign-in, calls `inspect` and `ps` there whatever its scope,
 with owner-mode `despawn`, `attach`, `input` and `interrupt`
 ([your own agents](identity-user-auth.mdx#delegation)). A user
