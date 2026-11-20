@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1103,
+    "total": 1101,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 881
+    "non-render/control": 879
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -4049,7 +4049,7 @@
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
-      "anchor": " text: \"unknown\", tone: \"waiting\" } : g === \"all\" ? \"all\"",
+      "anchor": " text: \"unknown\", tone: \"waiting\" };\n  const text = g ===",
       "class": "non-render/control"
     },
     {
@@ -4527,7 +4527,7 @@
     {
       "path": "packages/workspace/src/chat/static-session.ts",
       "kind": "derived-output",
-      "anchor": "askPinned(control, mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: [...(options.allowSubscribe ?? [])], allowPublish, label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId, \"admit a chat session\")",
+      "anchor": "askPinned(control, mesh, \"chatSessionOpen\", {\n      subscribe, allowSubscribe: channelGrantField(options.allowSubscribe ?? [], excludeSubscribe), allowPublish: channelGrantField(allowPublish, excludePublish), label: options.label, ttl: STATIC_CHAT_TTL_SEC, sealTo: recipient.publicKey,\n    }, options.instanceId, \"admit a chat session\")",
       "class": "non-render/control",
       "rationale": "Static chat control path: asks the pinned manager to open the chat session; no presence is rendered."
     },
@@ -5314,20 +5314,6 @@
       "anchor": "    if (peer.status === \"offline\") warnings.push({ code: ",
       "class": "non-render/control",
       "rationale": "Comparison that chooses whether the send result carries the RECIPIENT_OFFLINE warning; the token itself is not rendered."
-    },
-    {
-      "path": "implementations/cli/src/commands/send.ts",
-      "kind": "derived-output",
-      "anchor": "`post to a channel this identity may post to: ${list(post)}`",
-      "class": "non-render/control",
-      "rationale": "Send refusal remedy: lists the channels this identity may post to; ACL data, not presence."
-    },
-    {
-      "path": "implementations/cli/src/commands/send.ts",
-      "kind": "derived-output",
-      "anchor": "list(post)",
-      "class": "non-render/control",
-      "rationale": "Send refusal remedy: formats the identity's post ACL; not presence."
     },
     {
       "path": "implementations/cli/src/commands/send.ts",
