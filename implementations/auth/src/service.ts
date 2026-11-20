@@ -5,7 +5,6 @@ import { handleInteractiveLifecycleRetirement, handleManagedLifecycleRetirement,
 export { dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx } from "./service-manager-routes.js";
 import { send, RequestBodyError, sendRequestError, refuseCapability, refuseExchange, REFUSAL_STATUS, readJsonBody } from "./service-http.js";
 import { registryStores } from "./lifecycle-registry.js";
-import { drainAndClose } from "@cotal-ai/core";
 import { makeToolResultConsentRecorder } from "./tool-result-consent.js";
 /**
  * The AUTH SERVICE daemon — the one server-side process a user-auth space runs alongside its broker
@@ -71,13 +70,13 @@ import { createHash } from "node:crypto";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { VOID_SCHEMA, CotalEndpoint, isDerivedOwner, dialerFor, deprovisionAgent, fenceLifecycleAcl, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, openRecordsBucket, parseEndpointGate, parseServiceSpec, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, replayRunJournal, recordSpecKey, RECORD_KINDS, remoteManagerServePrincipal, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, holdIssuerSession, parseActorLedgerSource, type IssuedSourceRef, type IssuerSession, contractArtifactCanonicalBytes, DEV_OWNER, mintLifecycleUid, principalKey, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpErrorCode, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
+import { VOID_SCHEMA, CotalEndpoint, isDerivedOwner, deprovisionAgent, fenceLifecycleAcl, singleDocumentClosure, dlvDurable, dlvStream, dmDurable, dmStream, isChannelFamily, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, mintCreds, newIdentity, parseEndpointGate, parseServiceSpec, readRunAdmission, readSvcRecordLeader, recordSpecKey, RECORD_KINDS, remoteManagerServePrincipal, retirementFrontierStreams, serveIssuanceGateKv, STANDING_RENEWABLE_TTL_SEC, holdIssuerSession, parseActorLedgerSource, type IssuedSourceRef, type IssuerSession, contractArtifactCanonicalBytes, DEV_OWNER, mintLifecycleUid, principalKey, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpErrorCode, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, parseServiceAuthorityEnvelope, SERVICE_AUTHORITY_MAX_BYTES, parseServiceRegistrationWitness, serviceWitnessDigest, type ServiceAuthorityRequest, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { createAuthInstanceIdentity, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
+import { type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthNativeConnection, type AuthServiceClosed } from "./owned-connections.js";
 import { calloutAuthority, managerGateReads } from "./callout-authority.js";
 import { ConnectLimiter } from "./connect-limit.js";
@@ -85,12 +84,9 @@ import { verifyIdpToken, verifyToolResultHumanProof, type IdpBridge } from "./id
 import { validateUserToken } from "./token.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { bootstrapServiceCallerPayload, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
-import { handleRemoteRunCancel, parseRemoteRunCancelRequest, admitRemoteRun, handleRemoteRunSubmission, authorizeRemoteRunAttempt, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
-import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
-import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
-import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
+import { observedRunRequest, type ObservedRunRequest } from "./manager-authority.js";
 import { parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
-import { remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
+import { type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
@@ -113,7 +109,7 @@ import { makeRetirementCleaners } from "./retirement-cleaner.js";
 import { makeDrainRepairers } from "./drain-repair.js";
 import { serializedFor } from "./serialized.js";
 import { RunCancelObservations, type RunCancelLimits } from "./run-cancel-observation.js";
-import { jitteredBackoffMs, readCancellationAdmission, type RunDelegation } from "@cotal-ai/core";
+import { jitteredBackoffMs, type RunDelegation } from "@cotal-ai/core";
 import { joinOrStartRetirement, openAuthAdminListener, type RetirementFlights } from "./auth-admin.js";
 import { registerSelfAuthorizedInstance } from "./service-registration.js";
 import { openAuthRegistry } from "./registry-host.js";
@@ -140,6 +136,7 @@ import type { AuthAuthorityPlane } from "./service-plane-types.js";
 import { managerIssuanceAuthority } from "./service-manager-issuance.js";
 export { authorizeRemoteManagerRetirement } from "./service-manager-issuance.js";
 import { managedAgentAuthority } from "./service-managed-agents.js";
+import { managerRunAuthority } from "./service-manager-runs.js";
 
 
 /** JWKS max-age seconds — the cache contract's knob. Exported so a rotation tool can compute the
@@ -1092,260 +1089,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     },
     ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection }),
     ...managedAgentAuthority({ server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection }),
-    scanManagerGoalIndex: async (holder) => {
-      refuseIfFenced();
-      const { owner } = holder;
-      const authorized = await authorizeRemoteManagerGoalIndexScan({
-        ...holder, proofSecret: dataAccount.signingSeed, space,
-        observeManagerGate: observeLegacyManagerGate,
-      });
-      return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
-    },
-    authorizeManagerAdmin: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      return authorizeRemoteManagerAdmin({
-        managerOwner: holder.owner,
-        ...(holder.holder === "platform" ? { managerAssignment: holder.assignment } : { managerScope: holder.scope }),
-        proofSecret: dataAccount.signingSeed,
-        space,
-        dir: opts.dir,
-        request,
-        observeManagerGate: observeLegacyManagerGate,
-      });
-    },
-    authorizeManagerParticipation: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      if (holder.holder === "platform") throw new EpEnvelopeError("permission-denied", "manager participation authorization requires a human owner holder");
-      return authorizeRemoteManagerParticipation({
-        managerOwner: holder.owner, managerScope: holder.scope, proofSecret: dataAccount.signingSeed,
-        space, request, dir: opts.dir, observeManagerGate: observeLegacyManagerGate,
-        readLifecycle: (owner, actor) => readLifecycleHeadForOperation(barrierReg, owner, actor),
-      });
-    },
-    submitManagerRun: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      const { owner } = holder;
-      requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'keyed run submission needs scope "supervise"');
-      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, session => handleRemoteRunSubmission({
-        request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
-        observeManagerGate: observeLegacyManagerGate, issued: session.store, sourceIsLive: composedSourceIsLive(session),
-        takeObserved: takeObservedRunRequest,
-        delegationOf: ledgerDelegation,
-        registeredCommand: async (instanceId, registrationRevision, command) => {
-          const registered = remoteManagerSurface(await registeredManagerCluster(owner, instanceId, { registrationRevision }))[command];
-          if (!registered) throw new EpEnvelopeError("failed-precondition", "registered manager has no keyed contract");
-          return registered;
-        },
-        withStore: async (runId, submission, work) => {
-          const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({
-            creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId, submission }, expiresInSeconds: 60 }), tls: false,
-          }), maxReconnectAttempts: 0 });
-          onConnection?.(nc, `cotal:keyed-admitter:${space}`);
-          try { return await work(await new Kvm(nc).open(admissionBucket(space)), await jetstreamManager(nc)); }
-          finally { await drainAndClose(nc); }
-        },
-      }));
-    },
-    admitManagerRun: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      const { owner } = holder;
-      requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run admission needs scope "supervise"; spawn/admin do not imply it');
-      const parsed = parseRemoteRunAdmissionRequest(request);
-      await observeLegacyManagerGate(parsed.instanceId);
-      const runId = parsed.run.runId;
-      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
-        const admitterNc = await dialerFor(server)({
-          servers: server,
-          ...standaloneConnectOpts({
-            creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId }, expiresInSeconds: 60 }),
-            tls: false,
-          }),
-          maxReconnectAttempts: 0,
-        });
-        onConnection?.(admitterNc, `cotal:run-admitter:${space}`);
-        try {
-          return await admitRemoteRun({
-            request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
-            observeManagerGate: observeLegacyManagerGate,
-            issued: session.store,
-            sourceIsLive: composedSourceIsLive(session),
-            takeObserved: takeObservedRunRequest,
-            delegationOf: ledgerDelegation,
-            admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
-          });
-        } finally {
-          await drainAndClose(admitterNc);
-        }
-      });
-    },
-    cancelManagerRun: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      const req = parseRemoteRunCancelRequest(request);
-      requireManagerAuthorityHolder(holder, req.instanceId, 'manager run cancellation needs scope "supervise"');
-      return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, session => handleRemoteRunCancel({
-        request: req, owner: holder.owner, space, endpoint: "manager", accountPublicKey: dataAccount.pub,
-        proofSecret: dataAccount.signingSeed, observeManagerGate: observeLegacyManagerGate,
-        observations: cancelObservations, flush: () => remoteIssuer.nc.flush(), assertServing: refuseIfFenced,
-        issued: session.store, sourceIsLive: composedSourceIsLive(session),
-        interactiveScope: async (caller, sources) => {
-          if (sources.length !== 1 || sources[0]!.space !== space) return undefined;
-          const source = parseActorLedgerSource(sources[0]!);
-          if (!source || source.owner !== caller.owner || source.actor !== caller.actor || source.lifecycleUid !== caller.uid) return undefined;
-          const row = findActorUnified(opts.dir, caller.owner, caller.actor);
-          return row?.kind === "interactive" && row.lifecycleUid === caller.uid ? [...row.scope] : undefined;
-        },
-        registeredCommand: async (instanceId, registrationRevision, command) => {
-          const registered = remoteManagerSurface(await registeredManagerCluster(holder.owner, instanceId, { registrationRevision }))[command];
-          if (!registered) throw new EpEnvelopeError("failed-precondition", "registered manager has no run-cancel contract");
-          return registered;
-        },
-        readAdmission: runId => readCancellationAdmission(recordsJsm, space, "manager", runId),
-        readRevocation: runId => readRunRevocation(recordsJsm, space, "manager", runId),
-        withStore: async (runId, work) => {
-          const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({
-            creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId }, expiresInSeconds: 60 }), tls: false,
-          }), maxReconnectAttempts: 0 });
-          onConnection?.(nc, `cotal:run-cancel:${space}`);
-          try { return await work(await new Kvm(nc).open(admissionBucket(space))); }
-          finally { await drainAndClose(nc); }
-        },
-      }));
-    },
-    revokeManagerRun: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      const req = parseRemoteRunRevokeRequest(request);
-      await observeLegacyManagerGate(req.instanceId);
-      const admitterNc = await dialerFor(server)({
-        servers: server,
-        ...standaloneConnectOpts({
-          creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId: req.revoke.runId }, expiresInSeconds: 60 }),
-          tls: false,
-        }),
-        maxReconnectAttempts: 0,
-      });
-      onConnection?.(admitterNc, `cotal:run-revoker:${space}`);
-      try {
-        return await revokeRemoteRun({
-          ...holder, request: req, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
-          observeManagerGate: observeLegacyManagerGate,
-          readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
-          readRevocation: (runId) => readRunRevocation(recordsJsm, space, "manager", runId),
-          admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
-        });
-      } finally {
-        await drainAndClose(admitterNc);
-      }
-    },
-    issueManagerRunAttempt: async ({ request, ...holder }) => {
-      refuseIfFenced();
-      const { owner } = holder;
-      requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run attempt needs scope "supervise"; spawn/admin do not imply it');
-      const req = parseRemoteRunAttemptRequest(request);
-      await observeLegacyManagerGate(req.instanceId);
-      const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
-      const authorize = (session?: IssuerSession) => authorizeRemoteRunAttempt({
-        ...(session ? { issued: session.store, sourceIsLive: composedSourceIsLive(session) } : {}),
-        isLiveManagedActor: (owner, actor, lifecycleUid) => {
-          const row = findActorUnified(opts.dir, owner, actor);
-          return row?.kind === "managed-agent" && row.lifecycleUid === lifecycleUid;
-        },
-        takeObserved: takeObservedRunRequest,
-        registeredCommand: async (instanceId, registrationRevision, command) => {
-          const registered = remoteManagerSurface(await registeredManagerCluster(owner, instanceId, { registrationRevision }))[command];
-          if (registered === undefined) throw new EpEnvelopeError("failed-precondition", `the registered manager cluster declares no ${command}`);
-          return registered;
-        },
-        request,
-        owner,
-        space,
-        accountPublicKey: dataAccount.pub,
-        proofSecret: dataAccount.signingSeed,
-        endpoint: "manager",
-        observeManagerGate: observeLegacyManagerGate,
-        readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
-        readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
-        // Replayed under a read operator minted for that one run, the rows the manager's own read rides.
-        readJournal: async (runId) => {
-          const takeoverId = newTakeoverId();
-          const readerNc = await dialerFor(server)({
-            servers: server,
-            ...standaloneConnectOpts({
-              creds: await mintCreds(issuerAuth(), newIdentity(), "run-operator", { runOperator: { endpoint: "manager", takeoverId, runId }, expiresInSeconds: 60 }),
-              tls: false,
-            }),
-            maxReconnectAttempts: 0,
-          });
-          onConnection?.(readerNc, `cotal:run-attempt-reader:${space}`);
-          try {
-            return await replayRunJournal(jetstream(readerNc), await jetstreamManager(readerNc), space, runId, takeoverId);
-          } finally {
-            await drainAndClose(readerNc);
-          }
-        },
-        checkpointWaiting: async (token) => (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value.state === "waiting",
-        checkpointSettled: async (token) => {
-          const status = (await readCheckpointStatus(recordsKv, { endpoint: "manager", token }))?.value;
-          return status?.state === "resumed" && status.settledAnswerId !== undefined;
-        },
-      });
-      // A served resume or answer resolves its caller's issuance, which needs one issuer window.
-      const grant = req.attempt?.served !== undefined || req.operator?.served !== undefined
-        ? await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => authorize(session))
-        : await authorize();
-      if (grant.kind === "attempt") {
-        const caller = runDriverCaller(grant.driver.runDriver.runId, owner);
-        const driver = await mintPublicUserJwt(issuerAuth(), grant.driver.id, "run-driver", {
-          principal: { owner, actor: caller.actor },
-          lifecycleUid: req.managerLifecycleUid,
-          runDriver: grant.driver.runDriver,
-          expiresInSeconds: standingTtl,
-        });
-        const mediator = await mintPublicUserJwt(issuerAuth(), grant.mediator.id, "run-mediator", {
-          principal: { owner, actor: caller.actor },
-          lifecycleUid: req.managerLifecycleUid,
-          runMediator: grant.mediator.runMediator,
-          expiresInSeconds: standingTtl,
-        });
-        return {
-          v: 1 as const,
-          kind: "manager-run-attempt" as const,
-          space,
-          owner,
-          actor: req.actor,
-          instanceId: req.instanceId,
-          managerLifecycleUid: req.managerLifecycleUid,
-          requestId: req.requestId,
-          registrationProof: req.registrationProof,
-          accountPublicKey: req.accountPublicKey,
-          processEpoch: req.processEpoch,
-          identities: req.identities,
-          attempt: req.attempt,
-          credentials: { driver, mediator },
-        };
-      }
-      const operator = await mintPublicUserJwt(issuerAuth(), grant.operator.id, "run-operator", {
-        principal: { owner, actor: req.actor },
-        lifecycleUid: req.managerLifecycleUid,
-        runOperator: grant.operator.runOperator,
-        expiresInSeconds: 60,
-      });
-      return {
-        v: 1 as const,
-        kind: "manager-run-attempt" as const,
-        space,
-        owner,
-        actor: req.actor,
-        instanceId: req.instanceId,
-        managerLifecycleUid: req.managerLifecycleUid,
-        requestId: req.requestId,
-        registrationProof: req.registrationProof,
-        accountPublicKey: req.accountPublicKey,
-        processEpoch: req.processEpoch,
-        identities: req.identities,
-        operator: req.operator,
-        credentials: { operator },
-      };
-    },
+    ...managerRunAuthority({ server, space, dataAccount, cancelObservations, standingTtl, remoteIssuer, recordsScanner, barrierReg, recordsJsm, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, composedSourceIsLive, ledgerDelegation, takeObservedRunRequest, opts, onConnection }),
     observeManagerInstance: async (instanceId) => {
       refuseIfFenced();
       const gate = await observeManagerGate(instanceId);

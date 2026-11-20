@@ -54,7 +54,7 @@
   "implementations/auth/src/endpoint-deregister.ts": 2,
   "implementations/auth/src/handle-verification.ts": 1,
   "implementations/auth/src/service-manager-issuance.ts": 1,
-  "implementations/auth/src/service.ts": 5,
+  "implementations/auth/src/service-manager-runs.ts": 5,
   "implementations/auth/src/space-quiescence.ts": 1,
   "implementations/cli/smoke/app-identity-live.smoke.ts": 1,
   "implementations/cli/smoke/backup-event-payload.ts": 1,
