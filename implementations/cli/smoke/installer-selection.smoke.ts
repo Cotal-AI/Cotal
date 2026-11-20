@@ -224,6 +224,18 @@ try {
   assert(!output(latestCrashed).includes("without --version"), "latest failure does not recommend the same installation again");
   assert(!output(latestCrashed).includes("✓ Cotal") && !output(latestCrashed).includes("get your machine ready"), "latest failure prints no success or setup instructions");
 
+  const obstructed = fixture("launcher-directory");
+  const occupiedLauncher = join(obstructed.newBin, "cotal");
+  mkdirSync(occupiedLauncher);
+  writeFileSync(join(occupiedLauncher, "sentinel"), "keep-me\n");
+  const blocked = spawnSync("/bin/sh", [driver, library], { env: { ...obstructed.env, PATH: toolPath }, encoding: "utf8" });
+  assert.equal(blocked.status, 1, output(blocked));
+  assert.deepEqual(readdirSync(occupiedLauncher), ["sentinel"], "refusal does not leave a hidden launcher inside the directory");
+  assert.equal(readFileSync(join(occupiedLauncher, "sentinel"), "utf8"), "keep-me\n");
+  assert(!existsSync(join(obstructed.home, ".local/share/cotal")), "refusal leaves the install root absent");
+  assert(output(blocked).includes(`${quote(occupiedLauncher)} is a directory.`), "refusal names the obstructing path");
+  assert.match(output(blocked), /Move the directory aside or set COTAL_BIN_DIR/);
+
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
   assert.equal(direct.status, 0, output(direct));
@@ -411,7 +423,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 108 : 87, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 114 : 93, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });
