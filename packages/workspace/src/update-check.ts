@@ -4,7 +4,8 @@ import { recoveryDisposition } from "./update-recovery.js";
 import { spawn } from "node:child_process";
 import { acquireLock, acquireLockAsync } from "@cotal-ai/core";
 import { cmdSpawnSpec } from "./win-cmd.js";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, parse } from "node:path";
 import { homeCotalDir } from "./cotal-home.js";
 import { readFileSync } from "node:fs";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
@@ -57,7 +58,7 @@ export async function checkForUpdate(): Promise<UpdateCheck | undefined> {
     if (cached && now - (cached.checkedAt ?? 0) < UPDATE_DAY_MS && !cached.error || cached && now - cached.attemptedAt < UPDATE_HOUR_MS) return cached;
     const result = await new Promise<{ version?: string; error?: string }>(resolve => {
       const command = cmdSpawnSpec("npm", ["view", "cotal-ai@latest", "version", "--json", "--fetch-retries=0", "--fetch-timeout=3000", "--update-notifier=false"]);
-      const child = spawn(command.file, command.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: command.windowsVerbatimArguments });
+      const child = spawn(command.file, command.args, { cwd: parse(homedir()).root, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: command.windowsVerbatimArguments });
       let stdout = "";
       const timeout = setTimeout(() => child.kill(), 4000);
       child.stdout.on("data", chunk => { stdout += chunk; if (stdout.length > 8192) child.kill(); });

@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { emitSentinel } from './sentinel.mjs';
 
@@ -15,7 +15,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   const stagingNetwork = ['staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'].includes(scenario);
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
-  assert(stagingNetwork || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'reconcile-killed', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers'].includes(scenario));
+  assert(stagingNetwork || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'reconcile-killed', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -324,6 +324,42 @@ exec npm "$@"
       writeFileSync(join(extensions, 'extensions.json'), JSON.stringify({ extensions: [{ pkg: extension, version: previous, spec: `${extension}@${previous}`, provides: [], commands: [] }] }));
     }
     const originalPath = env.PATH;
+    if (scenario === 'corepack') {
+      const project = join(root, 'package.json'), tools = join(root, 'tools');
+      const manifest = JSON.stringify({ name: 'local-project', private: true, packageManager: 'pnpm@11.0.0' });
+      writeFileSync(project, manifest);
+      mkdirSync(tools);
+      writeFileSync(join(tools, 'npm'), `#!/bin/sh
+set -eu
+if [ "\${NPM_SMOKE_REFUSAL:-}" = 1 ]; then
+  printf '%s\n' 'npm requires an authenticated registry session' 'second diagnostic line' >&2
+  exit 1
+fi
+dir=$PWD
+while :; do
+  if [ -f "$dir/package.json" ] && grep -q '"packageManager":"pnpm@' "$dir/package.json"; then
+    printf '%s\n' "This project is configured to use pnpm because $dir/package.json has a packageManager field" >&2
+    exit 1
+  fi
+  [ "$dir" != / ] || break
+  dir=$(dirname "$dir")
+done
+export PATH="$NPM_SMOKE_REAL_PATH"
+exec npm "$@"
+`, { mode: 0o700 });
+      env.NPM_SMOKE_REAL_PATH = originalPath;
+      env.PATH = `${tools}${delimiter}${originalPath}`;
+      const blocked = await run('npm', ['view', 'cotal-ai@latest', 'version', '--json'], 60000);
+      assert.equal(blocked.code, 1, blocked.output);
+      assert.match(blocked.output, /This project is configured to use pnpm/);
+      env.NPM_SMOKE_REFUSAL = '1';
+      const refused = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      delete env.NPM_SMOKE_REFUSAL;
+      assert.equal(refused.code, 1, refused.output);
+      assert.match(refused.output, /cotal-ai version check failed: npm requires an authenticated registry session/);
+      assert.doesNotMatch(refused.output, /second diagnostic line|registry cannot be reached/);
+      assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
+    }
     if (closureNoSpace) {
       const tools = join(root, 'tools');
       mkdirSync(tools, { mode: 0o700 });
@@ -547,6 +583,11 @@ exec npm "$@"
       assert.equal(update.code, 0, update.output);
       assert.match(update.output, /The registry cannot be reached; nothing was changed\./);
       assert.doesNotMatch(update.output, /npm error|update preflight failed|still reaching|staged pre-install check refused/);
+    } else if (scenario === 'corepack') {
+      assert.equal(update.code, 0, update.output);
+      assert.equal(selected, target);
+      assert.match(update.output, /installed globally and reconciled/);
+      assert.equal(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).packageManager, 'pnpm@11.0.0');
     } else if (scenario === 'concurrent') {
       assert.equal(selected, target);
     } else if (extensionPeers) {
@@ -598,7 +639,7 @@ exec npm "$@"
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (!['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed', 'staging-killed', 'concurrent', 'extension-peers'].includes(scenario)) {
+    if (!['arrives', 'reset', 'cache', 'archive-interrupted', 'orphan', 'pending', 'reconcile-killed', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario)) {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -653,7 +694,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
