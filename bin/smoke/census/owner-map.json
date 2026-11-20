@@ -8,6 +8,8 @@
   "agent-file:description": "current:personas",
   "agent-file:endpoints": "current:personas",
   "agent-file:eventPayloads": "current:personas",
+  "agent-file:excludePublish": "current:personas",
+  "agent-file:excludeSubscribe": "current:personas",
   "agent-file:kind": "current:personas",
   "agent-file:launchOptions": "current:personas",
   "agent-file:meta": "current:personas",
