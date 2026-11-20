@@ -67,7 +67,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, spaceSegment } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -1818,6 +1818,25 @@ if (process.platform === "linux") {
     strayList.status === 0 && Boolean(strayList.env?.warnings?.some((w: { code: string; target: { file: string; space: unknown }; message: string }) =>
       w.code === "PREPARED_RECORD_SKIPPED" && w.target.file === stray && w.target.space === null && w.message.endsWith("so it is skipped; remove it"))), shown(strayList));
   rmSync(stray);
+  // A valid record this account may not read, as one left owned by root, is not called damaged: its
+  // step gives the file back and keeps it, and the refusal is a denial.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    recordPreparedSpace({ space: "pf", root: projectRoot("prepared-denied"), ts: new Date().toISOString() });
+    chmodSync(damaged, 0o000);
+    const giveBack = `make it readable by this account again, for example with \`sudo chown "$(id -un)" ${shellPath(damaged)}\` and \`chmod 600 ${shellPath(damaged)}\`; the record is kept`;
+    const list = await json(["space"], folder);
+    const skipped = list.env?.warnings?.find((w: { code: string }) => w.code === "PREPARED_RECORD_SKIPPED");
+    check("space beside an unreadable prepared record warns that it could not be read, naming the step that gives it back",
+      list.status === 0 && skipped?.target?.file === damaged && skipped.message.startsWith(`${damaged} could not be read (EACCES`) && skipped.message.endsWith(`so it is skipped; ${giveBack}`) && !skipped.message.includes("does not parse"), shown(list));
+    const own = await json(["use", "pf"], folder);
+    check("use pf with its own record unreadable refuses PERMISSION_DENIED, exit 2, naming that file and the step that gives it back, not its forget",
+      refused(own, 2, "PERMISSION_DENIED") && own.env?.target?.file === damaged && own.env.error?.message === `${damaged} cannot be read by this account` && own.env.error?.remedy === giveBack, shown(own));
+    check("...and the record is kept", existsSync(damaged));
+    chmodSync(damaged, 0o600);
+    const readable = await json(["space", "show", "pf"], folder);
+    check("once it is readable again, space show pf reads it", readable.status === 0 && readable.env?.outcome === "ok", shown(readable));
+    removePreparedSpace("pf");
+  }
   removePreparedSpace("pready");
 
   // A damaged registration record refuses every command that reads the registry, so its own forget
