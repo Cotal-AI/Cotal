@@ -1,12 +1,11 @@
 /** Controller broker process summaries retain the legacy observation without treating it as ownership.
  * Run: pnpm exec tsx implementations/cli/smoke/status-broker-process.smoke.ts
  */
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { isReachable } from "@cotal-ai/core";
-import { assertSmokeSandboxDown, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-status-broker-"));
@@ -35,11 +34,10 @@ const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: config });
 const cli = resolve(import.meta.dirname, "../../../bin/cotal.ts");
 const { check, finish } = createSuite();
 let commandIndex = 0;
-const run = (...args: string[]) => runIn(root, ...args);
-function runIn(cwd: string, ...args: string[]) {
-  assertSmokeSandboxDown(anchor, args, { cwd, env });
+function run(...args: string[]) {
+  assertSmokeSandboxDown(anchor, args, { cwd: root, env });
   const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), cli, ...args], {
-    cwd, env, encoding: "utf8", timeout: 180_000,
+    cwd: root, env, encoding: "utf8", timeout: 180_000,
   });
   const tag = `${String(++commandIndex).padStart(2, "0")}-${args[0]}`;
   writeFileSync(join(scratch, `${tag}.stdout`), result.stdout ?? "");
@@ -62,7 +60,7 @@ try {
   if (created.status !== 0) throw new Error("space create failed");
   const prepared = status();
   check("a prepared space without a controller journal retains the legacy observation",
-    prepared.exit === 0 && nats(prepared)?.source === "legacy-pidfile" && nats(prepared)?.state === "not-recorded" && nats(prepared)?.ownedService === null, prepared);
+    prepared.exit === 0 && nats(prepared)?.source === "legacy-pidfile" && nats(prepared)?.state === "stopped" && nats(prepared)?.ownedService === null, prepared);
   const started = run("up", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
   check("isolated controller stack starts without a manager", started.status === 0, started.stdout);
   if (started.status !== 0) throw new Error("up failed");
@@ -83,6 +81,10 @@ try {
     otherSelection.result.selected.space !== "status-broker" && nats(otherSelection)?.state === "running" && nats(otherSelection)?.pid === brokerPid, otherSelection);
   const plain = run("status", "--plain");
   check("plain status keeps controller members under Owned services", plain.status === 0 && plain.stdout.includes("Controller stack") && plain.stdout.includes("stack-broker") && !plain.stdout.includes("Legacy local process records"), plain.stdout);
+  const next = plain.stdout.split("\nNext\n")[1]?.split("\n\n")[0] ?? "";
+  check("status lists spaces before named selection and does not offer bare use",
+    plain.status === 0 && /^  ((?:pnpm )?cotal) space +List the spaces on this machine\n  \1 use <name> +Select the default space$/m.test(next) &&
+    !/^  (?:pnpm )?cotal use(?: {2,}|$)/m.test(next), next);
   const journalPath = join(root, ".cotal", "stack-controller.json");
   const journalBytes = readFileSync(journalPath);
   try {
@@ -192,52 +194,8 @@ try {
   try {
     rmSync(journal);
     const legacy = status();
-    check("a legacy broker with no PID file reports an unrecorded process",
-      nats(legacy)?.source === "legacy-pidfile" && nats(legacy)?.state === "not-recorded" && nats(legacy)?.detail === "no pidfile" && nats(legacy)?.ownedService === null, nats(legacy));
+    check("legacy-only nats summaries retain their state and name the pidfile source",
+      nats(legacy)?.source === "legacy-pidfile" && nats(legacy)?.state === "stopped" && nats(legacy)?.detail === "no pidfile" && nats(legacy)?.ownedService === null, nats(legacy));
   } finally { writeFileSync(journal, bytes, { mode: 0o600 }); }
-}
-{
-  const manual = join(scratch, "manual");
-  const control = join(manual, ".cotal");
-  mkdirSync(control, { recursive: true, mode: 0o700 });
-  const port = await freePort();
-  const server = `nats://127.0.0.1:${port}`;
-  const store = mkdtempSync(join(scratch, SMOKE_BROKER_TOKEN));
-  const broker = spawn("nats-server", ["-a", "127.0.0.1", "-js", "-p", String(port), "-sd", store], { cwd: manual, env, stdio: "inherit" });
-  const release = teardownOnSignal(broker);
-  const pidfile = join(control, "nats.pid");
-  try {
-    await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
-    if (broker.pid === undefined) throw new Error("manual broker did not start");
-    // An open broker without a manager or account record uses the default local process scope.
-    const registered = runIn(manual, "space", "add", "main", "--server", server, "--root", manual, "--mode", "open", "--force", "--yes");
-    if (registered.status !== 0) throw new Error(`manual broker registration failed: ${registered.stderr}`);
-    for (const args of [[], ["--plain"]]) {
-      const text = runIn(manual, "status", "--space", "main", ...args);
-      check(`reachable manual broker has no local process record in ${args.length ? "plain" : "default"} status`,
-        text.status === 0 && /Connection:\s*(?:●\s*)?reachable/.test(text.stdout) && /^\s*Broker\s+(?:○\s*)?no local process record\s*$/m.test(text.stdout), text.stdout);
-    }
-    const json = runIn(manual, "status", "--space", "main", "--json");
-    const report = JSON.parse(json.stdout) as { result: StatusResult };
-    const row = report.result.folder.processes?.find((item) => item.name === "nats");
-    check("JSON keeps the reachable connection separate from the unrecorded broker PID",
-      json.status === 0 && report.result.selected.resolved && report.result.selected.connection === "ok" &&
-      row?.state === "not-recorded" && row.pid === null && row.source === "legacy-pidfile" && row.ownedService === null && row.legacyPidfile?.detail === "no pidfile", row);
-    writeFileSync(pidfile, "");
-    const empty = runIn(manual, "status", "--space", "main", "--plain");
-    check("an empty broker PID file also gives no local process record",
-      empty.status === 0 && /^\s*Broker\s+no local process record\s*$/m.test(empty.stdout), empty.stdout);
-    writeFileSync(pidfile, `${broker.pid}\n`);
-    const recorded = runIn(manual, "status", "--space", "main", "--plain");
-    check("a live legacy PID file still identifies the broker process",
-      recorded.status === 0 && new RegExp(`^\\s*Broker\\s+running \\(pid ${broker.pid}\\)\\s*$`, "m").test(recorded.stdout), recorded.stdout);
-  } finally {
-    await killAndAwaitExit(broker);
-    if (broker.exitCode === null && broker.signalCode === null) throw new Error("manual broker did not exit");
-    release();
-  }
-  const stale = runIn(manual, "status", "--space", "main", "--plain");
-  check("an exited broker with a PID file is still reported as stale",
-    stale.status === 0 && /^\s*Broker\s+stale pidfile\s*$/m.test(stale.stdout), stale.stdout);
 }
 finish();

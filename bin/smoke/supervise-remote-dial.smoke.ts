@@ -28,8 +28,8 @@
  *      lists each one by name with its host and gives the command again with `--on` for each, by
  *      name where the name picks it; `ps --on <name>` is answered and `who --all` shows the name.
  *      With no manager answering, `ps` lists presence.
- *      On a terminal a bare `spawn` asks where the agent runs, this terminal first, and a launch
- *      pinned to a manager whose presence reports this host asks no folder.
+ *      On a terminal a bare `spawn` lists the `--on` alternatives and runs here without asking.
+ *      A launch pinned to a manager whose presence reports this host asks no folder.
  *      `stop` and `attach` naming an agent that one manager runs act there and ask nothing; a name
  *      no answering manager runs is asked about among the managers that did not answer only, and
  *      `--json` refuses with the command again on each of them instead of asking.
@@ -524,9 +524,9 @@ try {
     child.on("close", (code) => resolveRun({ code, out, err }));
   });
   // A command run on a terminal, with `keys` typed once `until` shows, or with nothing typed.
-  const inTerminal = async (args: string[], until: RegExp | undefined, keys: string | undefined, extra: Record<string, string> = {}) => {
+  const inTerminal = async (args: string[], until: RegExp | undefined, keys: string | undefined, extra: NodeJS.ProcessEnv = {}, cwd = callerRoot) => {
     const env = Object.fromEntries(Object.entries({ ...childHomeEnv(callerHome), TERM: "xterm-256color", ...extra }).filter((entry): entry is [string, string] => entry[1] !== undefined));
-    const pty = cotalPty(args, { cwd: callerRoot, env });
+    const pty = cotalPty(args, { cwd, env });
     let raw = "", code: number | undefined;
     pty.onData((data) => { raw += data; });
     pty.onExit((e) => { code = e.exitCode; });
@@ -589,13 +589,23 @@ try {
     /\d+ of your managers are live\. Which one should run this\?/.test(picked.out) && picked.out.includes("most recent"), picked.out.slice(-1200));
   ok("J: Enter runs it on the most recently started manager, and a receipt names that manager",
     new RegExp(`Manager chosen[\\s\\S]*Instance:\\s+${twoIds[1]}`).test(picked.out), picked);
-  // A bare spawn on a terminal asks where the agent runs, with this terminal first and the default,
-  // and Ctrl-C does nothing. A launch pinned to a manager whose presence reports this host asks no
-  // folder; it is refused for the persona its catalog lacks, so nothing is launched.
-  const place = await inTerminal(["spawn", "--space", space], /Where should the agent run/, "\x03");
-  ok("J: on a terminal, a bare spawn asks where the agent runs, with this terminal first and the managers after it",
-    /\d+ of your managers are live\. Where should the agent run\?/.test(place.out) && /This terminal[\s\S]*j-one/.test(place.out), place.out.slice(-1200));
-  ok("J: cancelling that question does nothing and exits 0", place.code === 0 && place.out.includes("nothing was done - no place was chosen"), place);
+  // The host can provision a foreground seat locally. Give its default persona a short-lived
+  // connector so the terminal exits without input and without a real harness dependency.
+  recordMesh({ space, server: trustServer, root: hostRoot, mode: "user", userAuth: { provider: trustUserAuth.provider, idp: trustUserAuth.idp, endpoints: trustUserAuth.endpoints }, policy: { events: "required" }, origin: "manual", ts: new Date().toISOString() });
+  const nativeExt = join(trustHome, "xdg", "cotal", "extensions");
+  const nativePkg = join(nativeExt, "node_modules", "@fixture", "terminal-connector");
+  mkdirSync(nativePkg, { recursive: true });
+  writeFileSync(join(nativePkg, "package.json"), JSON.stringify({ name: "@fixture/terminal-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+  writeFileSync(join(nativePkg, "index.js"), 'import { eventChannel, registry } from "@cotal-ai/core";\nregistry.register({ kind: "connector", name: "terminal-probe", requires: ["node"], eventChannel, buildLaunch: () => ({ command: process.execPath, args: ["-e", "console.log(\'LOCAL_TERMINAL_CHILD\')"], env: {} }) });\n');
+  writeFileSync(join(nativeExt, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@fixture/terminal-connector", version: "1.0.0", spec: ".", provides: [{ kind: "connector", name: "terminal-probe" }], commands: [], connectors: [{ name: "terminal-probe", requires: ["node"] }] }] }));
+  mkdirSync(join(hostRoot, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(hostRoot, ".cotal", "agents", "default.md"), "---\nname: terminal_probe\nagent: terminal-probe\n---\n");
+  const place = await inTerminal(["spawn", "--space", space], undefined, undefined, childHomeEnv(trustHome), hostRoot);
+  const hint = place.out.split(/\r?\n/).find((line) => line.startsWith("Running in this terminal. To run it on one of your Managers: "));
+  ok("J: on a terminal, a bare spawn lists the Manager selectors without asking where to run",
+    hint?.includes("--on j-one") === true && [`${hostname()}/pty`, twoIds[1]].some((selector) => hint.includes(`--on ${selector}`)) && !/Where should the agent run|Which one should run this/.test(place.out), place.out);
+  ok("J: a bare spawn runs the local child without input and exits 0", place.code === 0 && place.out.includes("LOCAL_TERMINAL_CHILD"), place);
+  // A pinned launch on this host asks no folder. Its manager has no default persona.
   const local = await inTerminal(["spawn", "-d", "--space", space, "--on", "j-one"], /Request refused|Which folder/, undefined);
   ok("J: a launch pinned to a manager whose presence reports this host asks no folder",
     local.code === 2 && /Managed launch/.test(local.out) && !/Which folder/.test(local.out), local.out.slice(-900));

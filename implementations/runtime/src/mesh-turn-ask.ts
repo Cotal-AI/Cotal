@@ -17,8 +17,8 @@ import { delay } from "./delay.js";
 import { servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import {
   CheckpointAnswerMissing, TURN_ACCEPT_DEADLINE_MS, WAIT_POLL_MS, parseAgentHandle, seatDownReading,
-  type MeshHandlerBinding, type RunMeshServices, type SeatAddress,
-} from "./mesh-handler.js";
+} from "./mesh-handler-shared.js";
+import type { MeshHandlerBinding, RunMeshServices, SeatAddress } from "./mesh-handler.js";
 import type { DeathWatch } from "./mesh-seat-watch.js";
 import { askAttemptToken } from "./pause-tokens.js";
 import { PauseOverdue } from "./run-pause-host.js";

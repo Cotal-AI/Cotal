@@ -1,5 +1,111 @@
 # @cotal-ai/auth
 
+## 0.171.5
+
+### Patch Changes
+
+- 3e30fce: Move the service host's caller policy (caller grants, caller revocation and the policy reads) out of `service-host-ops.ts` into an internal `service-host-caller.ts`. The package surface is unchanged.
+- 77d17ea: Move the service host's decisions (the shared proposal closes, decide and revoke) out of `service-host-ops.ts` into an internal `service-host-decisions.ts`. The package surface is unchanged.
+- ae52379: Move the service host's S2-A record kernel (record keys and ids, keyed reads and writes, capacity release, operation settlement and debt, and the result arms) out of `service-host-ops.ts` into an internal `service-host-kernel.ts`. The package surface is unchanged.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/lang@0.171.5
+
+## 0.171.4
+
+### Patch Changes
+
+- bd46d72: Move the auth service's process and context host (`runAuthService`, `startAuthService` and its handle, the lane and multi-tenant host runners, and `startAuthContext`) out of `service.ts` into an internal `service-host.ts`. The package surface is unchanged.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [82e9e79]
+- Updated dependencies [8a918ce]
+- Updated dependencies [5cbdcfe]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/lang@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- 01f280f: Fix CLI smoke coverage for signed-out login guidance, private stack cleanup, and broker-only startup.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/lang@0.171.3
+
+## 0.171.2
+
+### Patch Changes
+
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+  - @cotal-ai/lang@0.171.2
+
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/lang@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/lang@0.171.0
+
 ## 0.170.0
 
 ### Minor Changes

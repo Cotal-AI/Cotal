@@ -91,6 +91,29 @@ for (const failed of [false, true]) {
   assert.deepEqual(c.retained(), []);
 }
 
+if (process.platform === "linux" || process.platform === "darwin") {
+  const c = cell("live-valid-snapshot");
+  const local = join(c.env.XDG_CONFIG_HOME, "cotal/.update-snapshot-live");
+  mkdirSync(local, { mode: 0o700 });
+  c.save({ ...c.record, phase: "replacing", snapshot: local, owner: { pid: process.pid, start: processStartToken(process.pid)!, nonce: "live-owner" } });
+  const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+  const version = (word = "--version") => spawnSync(process.execPath, [entry, word], { env: c.env, encoding: "utf8", timeout: 30000 });
+  const live = version("version");
+  assert.equal(live.status, 0, live.stderr);
+  assert.equal(live.stdout.match(/An update is in progress in pid \d+\. Wait for it to finish\./g)?.length, 1);
+  assert.doesNotMatch(live.stdout + live.stderr, /needs repair|interrupted update|update --self/);
+  for (const flag of ["--version", "-V"]) {
+    const result = version(flag);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, live.stdout);
+    assert.equal(result.stderr, live.stderr);
+  }
+  c.save({ ...c.record, phase: "replacing", snapshot: local });
+  const stopped = version();
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /restore the interrupted update/);
+}
+
 for (const malformed of [false, true]) {
   const c = cell(malformed ? "malformed-owner" : "missing-owner");
   const { owner: _owner, ...unowned } = c.record;
@@ -140,9 +163,11 @@ for (const shape of ["absent", "missing", "file", "symlink", "reused-owner"] as 
   mkdirSync(join(local, "seed"), { recursive: true, mode: 0o700 });
   writeFileSync(join(local, "seed", "restored"), "original seed bytes");
   c.save({ ...c.record, snapshot: local });
-  const result = c.run();
+  const result = c.run({}, ["update", "--self", "--space", "test-space"]);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Restored cotal-ai@0.13.1/);
+  assert.match(result.output, /continued through restored entry: .*"update","--self","--space","test-space"/);
+  assert.doesNotMatch(result.output, /no newer latest tag/);
   assert.equal(readFileSync(join(c.env.XDG_CONFIG_HOME, "cotal/seed/restored"), "utf8"), "original seed bytes");
   assert.equal(existsSync(local), false);
   assert.deepEqual(c.retained(), []);

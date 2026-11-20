@@ -44,7 +44,7 @@
     },
     {
       "name": "C6 the cap is set far below any real body, which is the opposite failure to the one this change fixes: it refuses the dashboard's own deletes and would read as a working cap to anyone who only tested oversized bodies",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-request.ts",
       "find": "const MAX_BODY_BYTES = 8 * 1024;",
       "replace": "const MAX_BODY_BYTES = 1024;",
       "expectRed": "2.4 a body just UNDER the cap is processed normally, extra fields and all",
@@ -115,7 +115,7 @@
     },
     {
       "name": "C15 the send route is left out of the body routes, so the zero-byte guard refuses an ordinary post as a body the route does not take",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-request.ts",
       "find": "const BODY_ROUTES = new Set([\"/api/channel/delete\", \"/api/send\"]);",
       "replace": "const BODY_ROUTES = new Set([\"/api/channel/delete\"]);",
       "expectRed": "10.1 a post just under the cap is read and sent, so the send route is one of the routes that take a body",
@@ -123,7 +123,7 @@
     },
     {
       "name": "C16 the send route swallows the size refusal into a body it could not parse, so an oversized post is answered as a malformed one and the size is never mentioned",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    (e: unknown) => {\n      if (e instanceof PayloadTooLarge) throw e;\n      return undefined;\n",
       "replace": "    (e: unknown) => {\n      return undefined;\n",
       "expectRed": "10.3 a post with NO declared length is refused on the read loop as a size, never as a body it read and disliked",

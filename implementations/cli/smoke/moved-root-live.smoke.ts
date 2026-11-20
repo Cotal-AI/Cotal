@@ -2,7 +2,7 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, renameSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -94,7 +94,8 @@ for (const open of [false, true]) {
   mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
   let running = false;
   try {
-    const up = cli(project, "up", ...(open ? ["--open"] : []), "--server", `nats://127.0.0.1:${await freePort()}`);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const up = cli(project, "up", ...(open ? ["--open"] : []), "--server", server);
     running = up.status === 0;
     check(`native stack starts, open=${open}`, running);
     if (!running) throw new Error("native stack failed to start");
@@ -106,9 +107,16 @@ for (const open of [false, true]) {
       if (command[0] !== "status") check("cross-home mutation refuses", result.status === 2);
     }
     renameSync(project, renamed);
+    if (!open) {
+      const retry = cli(renamed, "up", "--foreground", "--space", "nativeauth", "--server", server);
+      check("explicit up refuses a duplicate static stack and tells the operator to move the project back before stopping",
+        retry.status === 2 && retry.stderr.includes("CONFLICT") && retry.stderr.includes(`move this folder back to ${project}`)
+          && retry.stderr.includes("cotal down --yes") && !retry.stderr.includes("use it from here with --space"));
+    }
     for (const command of [["down", "--yes"], ["up"], ["status", "--plain"]]) {
       const result = cli(renamed, ...command);
       check(`renamed native records name move-back remedy for ${command[0]}, open=${open}`, `${result.stdout}${result.stderr}`.includes(project) && /move.*back/.test(`${result.stdout}${result.stderr}`));
+      check(`renamed running stack does not offer adoption for ${command[0]}, open=${open}`, !/space forget|--adopt/.test(`${result.stdout}${result.stderr}`));
     }
     const status = json(home, "status", "--space", open ? "nativeopen" : "nativeauth");
     const show = json(home, "space", "show", open ? "nativeopen" : "nativeauth");
@@ -130,16 +138,38 @@ for (const open of [false, true]) {
   }
 }
 {
-  const space = "movedstopped", project = join(home, space), renamed = `${project} renamed`;
+  const space = "movedstopped", project = join(home, space), renamed = `${project} renamed`, copy = `${project} copy`;
   mkdirSync(project, { mode: 0o700 });
   check("prepare a project to move after shutdown", cli(project, "space", "create", space).status === 0);
-  const up = cli(project, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`);
-  if (up.status !== 0) throw new Error("private stack did not start");
-  const anchor = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
-  const args = ["down", "--space", space, "--yes"];
-  assertSmokeSandboxDown(anchor, args, { cwd: project, env });
-  if (cli(project, ...args).status !== 0) throw new Error("private stack did not stop");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const stop = (cwd: string) => {
+    const anchor = recordSmokeSandbox({ root: cwd, cotalHome, xdgConfigHome: config });
+    const args = ["down", "--space", space, "--yes"];
+    assertSmokeSandboxDown(anchor, args, { cwd, env });
+    if (cli(cwd, ...args).status !== 0) throw new Error("private stack did not stop");
+  };
+  if (cli(project, "up", "--no-manager", "--server", server).status !== 0) throw new Error("private stack did not start");
+  try {
+    check("store a post before stopping and moving the project", cli(project, "send", "-c", "move.history", "retained after project rename").status === 0);
+  } finally {
+    stop(project);
+  }
+  cpSync(project, copy, { recursive: true });
+  const copiedUp = cli(copy, "up", "--plain");
+  const copiedOutput = `${copiedUp.stdout}${copiedUp.stderr}`;
+  check("a stopped stack's copy points to the original without adoption commands",
+    copiedUp.status === 2 && copiedOutput.includes(`use the stack from ${project}`) && !/space forget|--adopt/.test(copiedOutput));
   renameSync(project, renamed);
+  const journal = join(renamed, ".cotal", "stack-controller.json"), before = readFileSync(journal);
+  const movedUp = cli(renamed, "up", "--plain"), movedStatus = cli(renamed, "status", "--plain");
+  check("up still refuses and does not rewrite the moved journal",
+    movedUp.status === 2 && `${movedUp.stdout}${movedUp.stderr}`.includes("CONFLICT") && readFileSync(journal).equals(before));
+  for (const [command, result] of [["up", movedUp], ["status", movedStatus]] as const) {
+    const output = `${result.stdout}${result.stderr}`;
+    check(`${command} gives both recovery options and quotes the renamed path`,
+      result.status === (command === "up" ? 2 : 0) && output.includes(`move this folder back to ${project}`) &&
+      output.includes(`\`cotal space forget ${space}\`, then run \`cotal space create ${space} --adopt --root '${renamed}'\``));
+  }
   const selected = cli(renamed, "use", space, "--plain");
   const show = cli(renamed, "space", "show", space, "--plain");
   check("space show recognizes the stopped stack from its matching moved journal",
@@ -150,5 +180,12 @@ for (const open of [false, true]) {
   check("following the printed adopt prepares the space in the renamed folder",
     cli(renamed, "space", "create", space, "--adopt", "--root", renamed, "--plain").status === 0 &&
       cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
+  try {
+    check("the adopted stack starts at the renamed root", cli(renamed, "up", "--no-manager").status === 0);
+    const history = cli(renamed, "history", "move.history");
+    check("history survives the printed recovery commands", history.status === 0 && history.stdout.includes("retained after project rename"));
+  } finally {
+    stop(renamed);
+  }
 }
 finish();

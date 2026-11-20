@@ -13,32 +13,36 @@ const repo = fileURLToPath(new URL('../../', import.meta.url));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const originalEnv = { ...process.env }, originalCwd = process.cwd();
 const terminal = process.argv.includes('--terminal-output');
-for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto']) {
+for (const scenario of terminal ? ['terminal'] : process.argv.includes('--release-hold') ? ['release-hold'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto', 'release-hold']) {
  const root = mkdtempSync(join(tmpdir(), 'autoupd-repair-'));
  const home = join(root, 'home'), prefix = join(root, 'prefix');
  for (const dir of [home, prefix, join(root, 'config/cotal'), join(root, '.cotal'), join(root, 'payload/package/dist')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
  const notarget = scenario.startsWith('notarget');
  const closure = scenario === 'closure-auto';
+ const releaseHold = scenario === 'release-hold';
+ const first = '99.0.0', second = '99.0.1', hour = 3_600_000;
  const archives = {};
- for (const version of ['99.0.0', previous]) {
+ for (const version of [first, previous, ...(releaseHold ? [second] : [])]) {
   writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
+  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal || releaseHold ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
   writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\n' + code + '\n', { mode: 0o755 });
   assert.equal(spawnSync('tar', ['-czf', join(root, version + '.tgz'), '-C', join(root, 'payload'), 'package']).status, 0);
   archives[version] = readFileSync(join(root, version + '.tgz'));
  }
- let origin, missing = false, arriving = notarget, armed = false;
+ let origin, missing = false, arriving = notarget, armed = false, latest = first;
+ const fetchedArchives = [];
  const server = createServer((req, res) => {
   if (closure && decodeURIComponent(req.url ?? '').includes('@cotal-ai/')) return res.writeHead(404).end(JSON.stringify({ error: 'Not found' }));
   if (req.url?.endsWith('.tgz')) {
    const version = req.url.slice(1, -4);
+   fetchedArchives.push(version);
    if (scenario === 'preflight' && version === '99.0.0') return res.writeHead(503).end();
    if (armed && arriving && version === previous) missing = true;
    return res.end(archives[version]);
   }
   const versions = Object.fromEntries(Object.entries(archives).map(([version, bytes]) => [version, { name: 'cotal-ai', version, ...(terminal ? { deprecated: 'terminal warning fixture' } : {}), bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: 'sha512-' + createHash('sha512').update(bytes).digest('base64') } }]));
   if (missing) delete versions['99.0.0'];
-  res.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: '99.0.0' }, versions }));
+  res.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest }, versions }));
  });
  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
  origin = 'http://127.0.0.1:' + server.address().port;
@@ -71,7 +75,7 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
    assert.match(after, /installed globally and reconciled/);
    assert.doesNotMatch(after, /"(?:added|removed|changed|audited|funding|error)"\s*:/, 'npm JSON stays captured');
    assert.equal(installedVersion(), '99.0.0');
-  } else if (notarget || closure) {
+  } else if (notarget || closure || releaseHold) {
    const initial = await run('npm', ['install', '-g', `cotal-ai@${previous}`]);
    assert.equal(initial.code, 0, initial.output);
    const installedPath = join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
@@ -79,7 +83,7 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
    // A marker absent from the archive detects an unnecessary rollback reinstall.
    writeFileSync(join(prefix, 'lib/node_modules/cotal-ai/preserve'), 'unchanged');
    armed = true;
-   if (scenario === 'notarget-auto' || closure) {
+   if (scenario === 'notarget-auto' || closure || releaseHold) {
     if (closure) {
      const dir = join(root, 'config/cotal/extensions');
      mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -88,18 +92,44 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
     Object.assign(process.env, env);
     process.chdir(root);
     const attempt = join(home, 'update-attempt.json');
-    writeFileSync(attempt, JSON.stringify({ version: '99.0.0', failures: 1, result: 'due', next: 0 }));
-    writeFileSync(join(home, 'update-check.json'), JSON.stringify({ v: 1, latest: '99.0.0', attemptedAt: Date.now(), checkedAt: Date.now(), firstSeenAt: Date.now() - 3601000 }));
+    const cache = join(home, 'update-check.json');
+    writeFileSync(attempt, JSON.stringify({ version: first, failures: 1, result: 'due', next: 0 }));
+    if (!releaseHold) writeFileSync(cache, JSON.stringify({ v: 1, latest: first, attemptedAt: Date.now(), checkedAt: Date.now(), firstSeenAt: Date.now() - hour - 1000 }));
     const { automaticUpdates } = await import('../dist/daemon/auto-update.js');
     updater = automaticUpdates({ version: previous, eligible: () => true, prepare: async () => {}, abort: async () => {}, report: () => {} });
-    async function settled(expected) {
+    async function settled(expected, version = first) {
      const deadline = Date.now() + 90000;
      while (Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 100));
       const state = JSON.parse(readFileSync(attempt, 'utf8'));
-      if (!updater.updating() && state.result.includes(expected)) return state;
+      if (!updater.updating() && (releaseHold ? state.version === version : true) && state.result.includes(expected)) return state;
      }
      throw new Error(`scheduler did not settle: ${readFileSync(attempt, 'utf8')}`);
+    }
+    if (releaseHold) {
+     assert.equal((await updater.check()).latest, first);
+     const checked = JSON.parse(readFileSync(cache, 'utf8'));
+     // Age the first observation so its hold expires on the second scheduler tick.
+     writeFileSync(cache, JSON.stringify({ ...checked, firstSeenAt: Date.now() - hour + 45_000 }));
+     await settled('waiting for release hold');
+     const beforeSwitch = fetchedArchives.length;
+     latest = second;
+     const held = await settled('waiting for release hold', second);
+     const observed = JSON.parse(readFileSync(cache, 'utf8'));
+     assert.equal(fetchedArchives.length, beforeSwitch, 'the changed tag does not fetch an archive');
+     assert.equal(installedVersion(), previous);
+     assert.equal(readFileSync(installedPath, 'utf8'), before);
+     assert.equal(held.failures, 0, 'the previous target does not spend the new target’s failure budget');
+     assert.equal(held.next, observed.firstSeenAt + hour);
+     assert.deepEqual([updater.status().latest, updater.status().lastResult, updater.status().nextAttempt], [second, 'waiting for release hold', new Date(held.next).toISOString()]);
+     console.log('RELEASE HELD:', JSON.stringify(updater.status()));
+     writeFileSync(cache, JSON.stringify({ ...observed, firstSeenAt: Date.now() - hour }));
+     writeFileSync(attempt, JSON.stringify({ ...held, next: 0 }));
+     await settled(`updated to ${second}`, second);
+     assert.equal(installedVersion(), second, 'the same tag installs when its own hold ends');
+     assert.equal(updater.status().latest, second);
+     console.log('RELEASE INSTALLED:', JSON.stringify(updater.status()));
+     continue;
     }
     const started = Date.now();
     const deferred = await settled(closure ? 'waiting for registry or extension closure availability' : 'not available yet');
@@ -110,8 +140,8 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
      console.log('CLOSURE AFTER:', JSON.stringify(deferred));
      const log = readFileSync(join(home, 'update-attempt.log'), 'utf8');
      console.log('CLOSURE LOG:', log.trim());
-     assert.match(log, /release is not ready: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
-     assert.match(log, /no global install was attempted/);
+     assert.match(log, /update preflight failed: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
+     assert.match(log, /No global install was attempted\./);
      assert.ok(deferred.next >= started + 3600000 && deferred.next <= Date.now() + 3600000, 'closure retry is one hour later');
      assert.equal(existsSync(join(home, 'update-recovery.json')), false, 'preflight creates no recovery record');
      assert.equal(updater.status().automatic, true);
@@ -119,8 +149,8 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
      assert.equal(readFileSync(join(prefix, 'lib/node_modules/cotal-ai/preserve'), 'utf8'), 'unchanged');
      const manual = await command();
      assert.equal(manual.code, 1, manual.output);
-     assert.match(manual.output, /release is not ready: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
-     assert.match(manual.output, /no global install was attempted/);
+     assert.match(manual.output, /update preflight failed: installed extension dependency closure is unavailable:[\s\S]*npm error code E404/);
+     assert.match(manual.output, /No global install was attempted\./);
      continue;
     }
     assert.match(deferred.result, /release is still arriving.*next update check/);

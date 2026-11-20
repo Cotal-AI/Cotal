@@ -301,8 +301,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 // --- version --json is one envelope; an unreadable extensions manifest makes its list partial -----
-// The binary's overlay refuses a corrupt manifest before version runs; a composition root without
-// extensions reaches version's own read.
+// Exercise the version handler here. The built entry suite separately covers overlay dispatch.
 {
   const { runCli } = await import("../src/command.js");
   const { extensionsManifestPath } = await import("@cotal-ai/workspace");
@@ -713,7 +712,8 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(spawnCmd?.flags?.length, "spawn declares flags");
   const out = await completionOut(["spawn", "--"]);
   assert.ok(out.includes("--space"), "flag completion lists --space");
-  assert.ok(out.includes("--config"), "flag completion lists --config");
+  assert.match(out, /^--file(?:\t|$)/mu, "flag completion lists the public persona file option");
+  assert.doesNotMatch(out, /^--config(?:\t|$)/mu, "flag completion omits the reserved internal spawn option");
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
 }
 
@@ -1349,7 +1349,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
     "@cotal-ai/optional": {},
   };
-  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "date-summary", "date-detail", "date-metadata", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
+  for (const scenario of ["ready", "ready-array", "empty-array", "multiple-array", "null-array", "nested-array", "array-wrong-version", "array-missing-integrity", "root-404", "transitive-404", "metadata-404", "target-missing", "date-summary", "date-detail", "date-metadata", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured", "connection-refused", "unsafe-code"] as const) {
     const downloaded: string[] = [], caches = new Set<string>();
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
@@ -1374,6 +1374,7 @@ async function completionOut(positionals: string[]): Promise<string> {
           if (scenario === "unstructured") return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
+        if (name === "@cotal-ai/cli" && ["connection-refused", "unsafe-code"].includes(scenario)) return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "connection-refused" ? "ECONNREFUSED" : "E401\nsecret-token", summary: "https://user:secret@registry.example/?token=secret" } }), stderr: "npm error secret-token" };
         if (scenario === "date-metadata") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET", summary: `No matching version found for ${spec} with a date before 1/1/2020.` } }) };
         if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
@@ -1409,10 +1410,23 @@ async function completionOut(positionals: string[]): Promise<string> {
       else if (scenario.startsWith("date-")) {
         assert.match(error, /min-release-age.*before.*Adjust that date filter/);
         assert.doesNotMatch(error, /still reaching the registry|again in a few minutes/);
-      } else assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
+      } else {
+        assert.ok(error.includes("update preflight failed") && error.includes("Correct the reported failure"), error);
+        assert.doesNotMatch(error, /still reaching|in a few minutes/);
+        if (scenario === "connection-refused") assert.match(error, /ECONNREFUSED: registry connection refused.*@cotal-ai:registry.*\.npmrc/);
+        if (scenario === "integrity") assert.match(error, /npm EINTEGRITY/);
+        if (scenario === "unauthorized") assert.match(error, /npm E401/);
+        assert.doesNotMatch(error, /secret-token|user:secret|token=secret/);
+      }
       assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
     }
   }
+}
+
+// Real npm can read the root package while a scoped registry refuses every connection.
+{
+  const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "closed-scope"], { encoding: "utf8", timeout: 90_000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 }
 
 // A listed release that becomes downloadable during the wait installs through the normal path.
@@ -1435,6 +1449,36 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!fixture.events.some(event => event.includes("Keeping cotal-ai@0.13.1")));
 }
 
+// Connectivity loss before replacement is an unchanged result, never release propagation.
+for (const code of ["ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "ESOCKETTIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EACCES", "E401", "EINTEGRITY", "ENOENT"]) {
+  for (const phase of ["metadata", "archive", "closure", "staging", "preflight"]) {
+    const offline = !["EACCES", "E401", "EINTEGRITY", "ENOENT"].includes(code) && phase !== "preflight";
+    const failed = { status: 1, stdout: JSON.stringify({ error: { code } }), stderr: `npm error code ${code}\nnpm error private registry details` };
+    const fixture = updateRuntime({
+      npm: args => args[0] === "install" && phase === "closure" ? failed : { status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" },
+      releaseNpm: args => {
+        if (phase === "metadata" || phase === "archive" && args[0] === "cache") return failed;
+        const spec = args[0] === "view" ? args[1] : args[2], at = spec.lastIndexOf("@");
+        return { status: 0, stdout: JSON.stringify({ name: spec.slice(0, at), version: spec.slice(at + 1), dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+      },
+    });
+    if (phase === "closure") fixture.rt.extensions = () => [{ pkg: "@cotal-ai/web", version: "0.13.1", spec: "@cotal-ai/web@0.13.1", commands: [] }];
+    if (phase === "staging" || phase === "preflight") fixture.rt.prepareExecution = async () => {
+      if (phase === "staging") throw new Error(`target staging failed: ${failed.stderr}`);
+      return { entry: "/target/cotal.js", journal: "/target/journal", async preflight() { throw new Error(failed.stderr); }, publish() {}, restore() {}, verify() {}, discard() { fixture.events.push("discard"); } };
+    };
+    assert.equal(await executeUpdate(true, fixture.rt), offline ? 0 : 1, `${phase}: ${code}`);
+    assert.ok(!fixture.events.some(event => /^(global:|reconcile|refresh-connectors)/.test(event)), "no installed replacement or reconcile begins");
+    const output = fixture.events.filter(event => /^(out:|err:)/.test(event)).join("\n");
+    if (offline) {
+      assert.match(output, /The registry cannot be reached; nothing was changed\./);
+      assert.doesNotMatch(output, /npm error|update preflight failed|still reaching|staged pre-install check refused/);
+    } else assert.doesNotMatch(output, /The registry cannot be reached/);
+    if (phase === "staging" || phase === "preflight") assert.ok(fixture.events.some(event => event.startsWith("release-global:")), "failed preparation releases global reservation");
+    if (phase === "preflight") assert.ok(fixture.events.includes("discard"), "a prepared target failing its checks is still discarded and refused");
+  }
+}
+
 // A staged rollback already retains the complete previous graph and needs no registry copy.
 {
   const fixture = updateRuntime({
@@ -1455,6 +1499,45 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(fixture.events.some(event => event.includes("Switching to cotal-ai@0.13.2")));
   assert.ok(fixture.events.some(event => event.includes("✓ cotal-ai@0.13.2 in use and reconciled")));
   assert.ok(!fixture.events.some(event => event.includes("installed globally") || event.includes("into npm's global installation")));
+}
+
+// A snapshot refusal must discard the verified but unpublished generation on every attempt.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-snapshot-refusal-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  mkdirSync(join(xdg, "cotal", "seed"), { recursive: true, mode: 0o700 });
+  const blocked = join(xdg, "cotal", "extensions");
+  writeFileSync(blocked, "not a directory");
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const stage = join(xdg, `unpublished-${attempt}`);
+      const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+      let discarded = 0, published = 0, released = 0;
+      fixture.rt.prepareExecution = async () => {
+        mkdirSync(stage, { mode: 0o700 });
+        return {
+          entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+          async preflight() {}, verify() {}, restore() {},
+          publish() { published++; },
+          discard() { discarded++; rmSync(stage, { recursive: true }); },
+        };
+      };
+      fixture.rt.prepareReplacement = async () => async () => { released++; };
+      assert.equal(await executeUpdate(true, fixture.rt), 1);
+      assert.equal(discarded, 1);
+      assert.equal(existsSync(stage), false, "unpublished generation is removed after snapshot refusal");
+      assert.equal(published, 0);
+      assert.equal(released, 1);
+      assert.ok(fixture.events.some(event => event.includes("update snapshot refused:")));
+      assert.equal(readUpdateRecovery(), undefined);
+      assert.equal(readFileSync(blocked, "utf8"), "not a directory");
+    }
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
 }
 
 // Staged verification loads the live extension config, so rollback restores its snapshot first.
@@ -1539,6 +1622,21 @@ for (const [code, summary, deferred] of [
   assert.equal(await executeUpdate(true, fixture.rt), deferred ? 0 : 1, `${code}: ${summary}`);
   assert.equal(fixture.events.some(event => event.includes("release is still arriving")), deferred);
   assert.equal(fixture.events.some(event => event === "global:reconcile"), !deferred, "only a real install failure enters repair");
+}
+
+// A waiting updater rechecks the selected release, releases its reservation before re-entry,
+// preserves the user's selection and consent, and never rolls back another updater's result.
+for (const installed of ["0.13.2", "0.13.3"]) {
+  const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  fixture.rt.globalVersion = () => installed;
+  fixture.rt.spawn = (_file, args) => {
+    assert.ok(fixture.events.includes("release-global:/global/node_modules"));
+    assert.deepEqual(args, ["/global/node_modules/cotal-ai/dist/cotal.js", "update", "--self", "--space", "chosen", "--server", "nats://example:4222", "--creds", "/tmp/selected.creds", "--on", "chosen-manager", "--stop-agents"]);
+    return { status: 7, stdout: "", stderr: "recheck refused" };
+  };
+  assert.equal(await executeUpdate(true, fixture.rt, { space: "chosen", server: "nats://example:4222", creds: "/tmp/selected.creds", on: "chosen-manager", "stop-agents": true }), 7);
+  assert.ok(fixture.events.includes(`verify:/global/node_modules:${installed}`));
+  assert.ok(!fixture.events.some(event => event.startsWith("global:install:") || event === "reconcile"));
 }
 
 // --- --self: exact checked artifact, alternate global root, verified child, status propagation ----

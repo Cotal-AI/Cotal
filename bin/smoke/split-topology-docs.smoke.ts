@@ -102,13 +102,17 @@ check(
     control.includes("A space can run more than one manager") &&
     control.includes("cotal supervise"),
 );
+// The branch can record manager omission before returning the delivery outcome.
+const brokerOnlyBranch = /^  if \(o\.noManager\) \{[\s\S]*?^  \}$/m.exec(deliveryProc);
 check(
   "claim 2: the broker-only refusal and the flag's wiring are pinned",
   /`cotal up --no-manager` will not keep or stop one/.test(up.replace(/\\`/g, "`")) &&
     /args\.values\["no-manager"\] === true && args\.values\.runtime !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts"/.test(up) &&
     /args\.values\["no-manager"\] === true && args\.values\["max-sessions"\] !== undefined\)\s*throw new CommandFailure\("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts"/.test(up) &&
     up.includes("broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager") &&
-    /if \(o\.noManager\) return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/.test(deliveryProc) &&
+    brokerOnlyBranch !== null &&
+    /^    return \{\s*running: false\b[^}]*responderBound: delivery\.responderBound[^}]*\}/m.test(brokerOnlyBranch[0]) &&
+    deliveryProc.search(/\bensureManager\s*\(/) > brokerOnlyBranch.index + brokerOnlyBranch[0].length &&
     !cli.includes("There is no broker-only mode") &&
     !operationGuideText.includes("There is no broker-only `up`") &&
     !operationGuideText.includes("Broker-only `up` remains a product request"),
@@ -129,9 +133,10 @@ check(
   "claim 2: detach summary is pidfile-live, ensureManager returns a started manager once it is up; supervise prints manager up after start",
   upReport.includes('if (status.manager) components.push("manager");') &&
     upReport.includes("return `✓ running in the background: ${components.join(\", \")} - ") &&
-    renderDetachedSummary(detachedStatus).endsWith("stop with: `cotal down`") &&
-    renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith("stop with: `cotal down --preserve-state`") &&
-    renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith("stop with: `cotal up` to start its manager, then `cotal down --preserve-state`") &&
+    ["cotal", "pnpm cotal"].some((launcher) =>
+      renderDetachedSummary(detachedStatus).endsWith(`stop with: \`${launcher} down\``) &&
+      renderDetachedSummary({ ...detachedStatus, machineHome: true }).endsWith(`stop with: \`${launcher} down --preserve-state\``) &&
+      renderDetachedSummary({ ...detachedStatus, machineHome: true, manager: false }).endsWith(`stop with: \`${launcher} up\` to start its manager, then \`${launcher} down --preserve-state\``)) &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
     /const pid = startManagerDetached\(o(?:, [^\n]+)?\);\s*await awaitManagerUp\(space, identityRecord\(pid\)(?:, logStart)?\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&

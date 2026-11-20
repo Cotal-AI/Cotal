@@ -7,6 +7,8 @@ import { CommandFailure, isCommandFailure, protectedLocalEntry, resolveOnPath } 
  *  (e.g. to our own @cotal-ai/nats-server-*) is a one-line change here. */
 const BUNDLED_PKG_PREFIX = "@eplightning/nats-server";
 
+export const NATS_DEFAULT_MAX_PAYLOAD = 1048576;
+
 const FLOOR = `${BROKER_FLOOR.major}.${BROKER_FLOOR.minor}`;
 
 /** The nats-server a broker start runs: its path, where it was found, and the version it reports.

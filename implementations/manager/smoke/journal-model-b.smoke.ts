@@ -29,7 +29,7 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
 const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts");
-const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8");
+const src = readFileSync(SRC, "utf8") + "\n" + readFileSync(join(dirname(SRC), "turn-relay.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "goal-writer.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "command-dispatch.ts"), "utf8") + "\n" + readFileSync(join(dirname(SRC), "spawn-goal.ts"), "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
 const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
@@ -42,7 +42,7 @@ console.log("\n── the span this suite reads, asserted rather than assumed �
 // Every cell below is a count over this text. A file that moved, or an anchor that was renamed,
 // would make the counts trivially zero and several claims vacuously true.
 c("manager.ts is readable and is the file carrying the serve wiring",
-  src.length > 10_000 && count("private async reconcileGoalIndex") === 1 && count("serveSpawnGoal") > 0,
+  src.length > 10_000 && count("async reconcileGoalIndex") === 1 && count("serveSpawnGoal") > 0,
   { bytes: src.length });
 
 console.log("\n── WRONG-TODAY (1/2): both action commands are served by the Model-B goal path ──");
@@ -57,10 +57,12 @@ c("WRONG-TODAY: `launch` is wired through the SAME serveSpawnGoal chokepoint",
   count("launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(") === 1);
 // The count is the point: it pins TWO and only two. A third action command wired the same way
 // later would be a third thing the flip has to move, and a per-name cell would not notice it.
+// The command table reaches the chokepoint through one dependency arrow, which is wiring, not a command.
+const spawnGoalSites = count("this.serveSpawnGoal(") - count("serveSpawnGoal: (...args) => this.serveSpawnGoal(...args),");
 c("WRONG-TODAY: EXACTLY two commands route through it — a third would be a third thing to move",
-  count("this.serveSpawnGoal(") === 2, { sites: count("this.serveSpawnGoal(") });
+  spawnGoalSites === 2, { sites: spawnGoalSites });
 c("WRONG-TODAY: the chokepoint itself still exists",
-  count("private async serveSpawnGoal(") === 1);
+  count("\n  async serveSpawnGoal(") === 1);
 pending("both commands accept through the journal rail (submission → decision fact → goal bind) and serveSpawnGoal is DELETED");
 
 console.log("\n── WRONG-TODAY (2/2): the reconcile index is written and filtered by the Model-B accept path ──");
@@ -89,7 +91,7 @@ for (const [name, writer] of [
 }
 c("WRONG-TODAY: spawn accepts the once task through acceptOnceTurn",
   methodBody("serveSpawnGoal").includes("await this.acceptOnceTurn({ spawnRef: ref, fingerprint, command: ctx.subject.command, executor, acceptedAt, ...task })")
-    && count("this.acceptOnceTurn(") === 1);
+    && count("this.acceptOnceTurn(") - count("acceptOnceTurn: (...args) => this.acceptOnceTurn(...args),") === 1);
 c("WRONG-TODAY: only spawn, turn, and once-task acceptance write goalidx",
   count("await recordGoalIndex(") === 3, { sites: count("await recordGoalIndex(") });
 // The sweep's skip reads two in-memory maps now (the turn relay keeps its own twin); both are the
@@ -108,7 +110,7 @@ console.log("\n── THE MECHANISM THAT MUST LIVE — read this before deleting
 // `"provisioner"` appeared exactly once in `manager.ts`; it appears six times, all legitimate, and
 // the cell failed on a claim that was simply false rather than on the property it names. Slicing
 // the method body ties the credential to THIS sweep, which is what the assertion was always about.
-const sweepStart = src.indexOf("private async reconcileGoalIndex");
+const sweepStart = src.indexOf("async reconcileGoalIndex");
 const sweepBody = sweepStart < 0 ? "" : src.slice(sweepStart, src.indexOf("\n  private ", sweepStart + 1));
 c("the sweep body was located and is non-trivial (so the cell below reads something)",
   sweepBody.length > 500, { bytes: sweepBody.length });

@@ -1,5 +1,36 @@
 # @cotal-ai/web
 
+## 0.171.5
+
+### Patch Changes
+
+- 3b5ce0c: Repeating a loopback dashboard start refreshes the private single-use link even without a display or with `--no-open`, while existing browser sessions stay signed in.
+
+## 0.171.4
+
+No changes in this release.
+
+## 0.171.3
+
+No changes in this release.
+
+## 0.171.2
+
+### Patch Changes
+
+- e9739e3: Move the dashboard's operator posting (the posting decision, the operator credential, the poster and `POST /api/send`) out of `web.ts` into its own module. No behaviour change.
+- f79bf2d: Move the dashboard's read paths (client assets, activity aggregation, the session feed and agent events) out of `web.ts` into their own module. No behaviour change.
+
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+### Patch Changes
+
+- d775125: Move the web dashboard's request input and operator text handling (caller errors, body caps, operator quoting and escaping, and channel, history, agent-id and tap parsing) out of `web.ts` into `web-request.ts`. `web.ts` re-exports the public names, so imports and behaviour are unchanged.
+
 ## 0.170.0
 
 No changes in this release.

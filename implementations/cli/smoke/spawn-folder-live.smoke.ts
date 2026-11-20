@@ -33,6 +33,7 @@ import { PassThrough, Writable } from "node:stream";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, repoRoot, wait } from "./_console-pty.js";
 import type { FolderCheck } from "../src/lib/manager-choice.js";
+import { checkSpawnPreflight } from "./_spawn-preflight-live.js";
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -63,10 +64,11 @@ process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = configDir;
 process.chdir(root);
 const { askManager } = await import("@cotal-ai/workspace/control");
-const { resolveControlTarget } = await import("@cotal-ai/workspace");
+const { resolveControlTarget, findMesh, findPreparedSpace } = await import("@cotal-ai/workspace");
 const { cliControl } = await import("../src/lib/control.js");
 const { askManagerFolder, managerSelection } = await import("../src/lib/manager-choice.js");
 const { launchServedHere } = await import("../src/commands/spawn.js");
+const { serviceDefinitionStore } = await import("../src/lib/service-definitions.js");
 
 const { check, finish } = createSuite();
 const cli = (...args: string[]) => {
@@ -167,6 +169,102 @@ try {
     !launchServedHere(here, "krudqi08ilzx2viqeh8sv34ygs1surr", undefined) && !launchServedHere(here, undefined, [on, "krudqi08ilzx2viqeh8sv34ygs1surr"])
     && !launchServedHere(here, undefined, undefined) && !launchServedHere({ space: SPACE }, on, undefined));
 
+  // ── G. spawn/space/service argument and pre-send validation (#7617, #7613, #7607, #7566, #7562) ──
+  {
+    // #7617: cotal spawn -d --json emits JSON refusal envelopes on pre-send validation refusals
+    const badDotRaw = cli("spawn", "default", "-d", "--json", "--name=bad.dot");
+    const badDotEnv = JSON.parse(badDotRaw.stdout || "null") as { outcome?: string; error?: { code?: string; message?: string } } | null;
+    check("#7617: spawn -d --json --name=bad.dot writes a USAGE_INVALID JSON envelope on stdout and nothing on stderr",
+      badDotRaw.status === 1 && badDotRaw.stderr === "" && badDotEnv?.outcome === "refused"
+      && badDotEnv.error?.code === "USAGE_INVALID" && (badDotEnv.error.message ?? "").includes('unsafe name "bad.dot"'),
+      { status: badDotRaw.status, stdout: badDotRaw.stdout, stderr: badDotRaw.stderr });
+
+    const plainName = cli("spawn", "default", "-d", "--plain", "--name=bad.dot");
+    check("#7617: plain pre-send refusals include the typed code without color or an ad hoc error mark",
+      plainName.status === 1 && plainName.stdout === "" && plainName.stderr.includes("USAGE_INVALID")
+      && !plainName.stderr.includes("\x1b") && !plainName.stderr.includes("✗"),
+      { status: plainName.status, stdout: plainName.stdout, stderr: plainName.stderr });
+
+    // #7613: overlength (>128) and leading-hyphen names are refused before manager launch.
+    for (const len of [129, 260]) {
+      const over = cli("spawn", "default", "-d", "--json", `--name=${"a".repeat(len)}`);
+      const overEnv = JSON.parse(over.stdout || "null") as { outcome?: string; error?: { code?: string; message?: string } } | null;
+      check(`#7613: ${len}-char agent name is refused locally with USAGE_INVALID before manager launch`,
+        over.status === 1 && !over.stderr.includes("Managed launch") && overEnv?.outcome === "refused"
+        && overEnv.error?.code === "USAGE_INVALID" && (overEnv.error.message ?? "").includes("exceeds the 128-character limit"),
+        { status: over.status, stdout: over.stdout, stderr: over.stderr });
+    }
+    const dashName = cli("spawn", "default", "-d", "--json", "--name=-dash1");
+    const dashEnv = JSON.parse(dashName.stdout || "null") as { outcome?: string; error?: { code?: string; message?: string } } | null;
+    check("#7613: leading-hyphen agent name is refused locally with USAGE_INVALID before manager launch",
+      dashName.status === 1 && !dashName.stderr.includes("Managed launch") && dashEnv?.outcome === "refused"
+      && dashEnv.error?.code === "USAGE_INVALID" && (dashEnv.error.message ?? "").includes('cannot start with "-"'),
+      { status: dashName.status, stdout: dashName.stdout, stderr: dashName.stderr });
+
+    // #7607: foreground spawn --cwd checks missing/file paths before Direct application or provisioning
+    const fgMissing = cli("spawn", "default", "--foreground", "--cwd", join(root, "missing-dir-7607"));
+    check("#7607: foreground spawn --cwd on missing directory exits 2 with TARGET_UNAVAILABLE before Direct application or cred provisioning",
+      fgMissing.status === 2 && !fgMissing.stderr.includes("Direct application") && !fgMissing.stderr.includes("wrote creds")
+      && fgMissing.stderr.includes("TARGET_UNAVAILABLE") && fgMissing.stderr.includes("does not exist"),
+      { status: fgMissing.status, stderr: fgMissing.stderr });
+
+    const fgFile = cli("spawn", "default", "--foreground", "--cwd", file);
+    check("#7607: foreground spawn --cwd on regular file exits 2 with TARGET_UNAVAILABLE before Direct application or cred provisioning",
+      fgFile.status === 2 && !fgFile.stderr.includes("Direct application") && !fgFile.stderr.includes("wrote creds")
+      && fgFile.stderr.includes("TARGET_UNAVAILABLE") && fgFile.stderr.includes("is not a directory"),
+      { status: fgFile.status, stderr: fgFile.stderr });
+
+    // #7566: invalid channel syntax on --subscribe, --allow-subscribe, --allow-publish refused in argument validation
+    for (const [flag, badChan] of [["--subscribe", "bad chan"], ["--allow-subscribe", "#general"], ["--allow-publish", "foo/bar"]] as const) {
+      const dry = cli("spawn", flag, badChan, "--dry-run");
+      check(`#7566: spawn ${flag} ${JSON.stringify(badChan)} --dry-run refuses with exit 1 instead of printing preview`,
+        dry.status === 1 && !dry.stdout.includes("launch preview") && dry.stderr.includes(`${flag}: invalid channel`),
+        { status: dry.status, stdout: dry.stdout, stderr: dry.stderr.slice(0, 300) });
+      const detached = cli("spawn", "default", "-d", "--json", flag, badChan);
+      const envelope = JSON.parse(detached.stdout || "null");
+      check(`#7566: detached spawn refuses ${flag} before dispatch`,
+        detached.status === 1 && detached.stderr === "" && envelope?.outcome === "refused" && envelope.target === null
+        && envelope.error?.code === "USAGE_INVALID", { status: detached.status, stdout: detached.stdout, stderr: detached.stderr });
+    }
+    const mismatchedAcl = cli("spawn", "--subscribe", "secret", "--allow-subscribe", "general", "--dry-run");
+    check("#7566: spawn --subscribe outside --allow-subscribe refuses with exit 1 in argument validation",
+      mismatchedAcl.status === 1 && mismatchedAcl.stderr.includes('subscribe "secret" is not within allowSubscribe'),
+      { status: mismatchedAcl.status, stderr: mismatchedAcl.stderr.slice(0, 300) });
+
+    for (const overrides of [
+      ["--subscribe", "review.*,general", "--allow-subscribe", "review.>,general", "--allow-publish", "general"],
+      ["--subscribe", "", "--allow-subscribe", "", "--allow-publish", ""],
+    ]) {
+      const valid = cli("spawn", "--dry-run", "--json", ...overrides);
+      check("#7566: valid wildcard ACLs and explicit empty channel overrides remain previewable",
+        valid.status === 0 && valid.stderr === "" && JSON.parse(valid.stdout).result.allocated === false,
+        { status: valid.status, stdout: valid.stdout, stderr: valid.stderr });
+    }
+
+    // #7562: empty or whitespace --root / --cwd refused with USAGE_INVALID exit 1
+    for (const blank of ["", "   "]) {
+      const createRes = cli("space", "create", "empty7562", "--root", blank);
+      check(`#7562: space create --root ${JSON.stringify(blank)} refuses with exit 1 without preparing space`,
+        createRes.status === 1 && createRes.stderr.includes("--root cannot be empty") && findPreparedSpace("empty7562") === undefined,
+        { status: createRes.status, stderr: createRes.stderr.slice(0, 200) });
+
+      const addRes = cli("space", "add", "emptyadd7562", "--server", SERVER, "--root", blank, "--force");
+      check(`#7562: space add --root ${JSON.stringify(blank)} refuses with exit 1 without registering a space`,
+        addRes.status === 1 && addRes.stderr.includes("--root cannot be empty") && findMesh("emptyadd7562") === undefined,
+        { status: addRes.status, stderr: addRes.stderr.slice(0, 200) });
+
+      const svcRes = cli("service", "add", "emptysvc7562", "--exec", "echo hi", "--cwd", blank, "--space", SPACE);
+      check(`#7562: service add --cwd ${JSON.stringify(blank)} refuses with exit 1 without saving definition`,
+        svcRes.status === 1 && svcRes.stderr.includes("--cwd cannot be empty") && serviceDefinitionStore(SPACE).read("emptysvc7562") === undefined,
+        { status: svcRes.status, stderr: svcRes.stderr.slice(0, 200) });
+
+      const spawnRes = cli("spawn", "--cwd", blank, "--space", SPACE, "--dry-run");
+      check(`#7562: spawn --cwd ${JSON.stringify(blank)} --dry-run refuses with exit 1`,
+        spawnRes.status === 1 && spawnRes.stderr.includes("--cwd cannot be empty") && !spawnRes.stdout.includes("launch preview"),
+        { status: spawnRes.status, stdout: spawnRes.stdout, stderr: spawnRes.stderr.slice(0, 200) });
+    }
+  }
+
   // ── E. the question's loop over the real check ──
   const typed = async (steps: [RegExp, string][]) => {
     const input = new PassThrough();
@@ -210,6 +308,7 @@ try {
   check("a launch on a stopped mesh is refused TARGET_UNAVAILABLE with no question asked",
     stopped.code === 2 && stopped.out.includes("TARGET_UNAVAILABLE") && !/should the agent work in/.test(stopped.out), stopped);
 
+  await checkSpawnPreflight(check);
   console.log("\nSPAWN FOLDER LIVE SMOKE done");
   finish();
 } finally {

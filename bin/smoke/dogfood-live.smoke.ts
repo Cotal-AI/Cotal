@@ -192,11 +192,26 @@ try {
     env.PATH = savedPath;
     const absentResult = JSON.parse(absent.stdout);
     ok("missing opener leaves a successful running dashboard with a warning", absent.status === 0 && absentResult.outcome === "ok" && absentResult.warnings.some((warning: { message: string }) => /No browser was opened/.test(warning.message)) && alive(webPid), out(absent));
+    let previousUrl = (JSON.parse(readFileSync(sessionPath, "utf8")) as Bootstrap).launchUrl;
     env.DISPLAY = "";
     const headless = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
     env.DISPLAY = ":smoke";
     const headlessResult = JSON.parse(headless.stdout);
     ok("no graphical session leaves a successful dashboard with a warning and no opener", headless.status === 0 && headlessResult.outcome === "ok" && headlessResult.warnings.length > 0 && !existsSync(openedPath), out(headless));
+    for (const [mode, start] of [["headless", () => headless], ["--no-open", () => cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--json"])]] as const) {
+      const result = start();
+      const { launchUrl: freshUrl } = JSON.parse(readFileSync(sessionPath, "utf8")) as { launchUrl: string };
+      const fresh = await fetch(freshUrl, { redirect: "manual", headers: { connection: "close" }, signal: AbortSignal.timeout(15_000) });
+      const replay = await fetch(freshUrl, { redirect: "manual", headers: { connection: "close" }, signal: AbortSignal.timeout(15_000) });
+      const freshToken = new URL(freshUrl).searchParams.get("k")!;
+      ok(`${mode} repeat refreshes the single-use link in the same owner-private record without opening a browser`,
+        result.status === 0 && JSON.parse(result.stdout).result.pid === webPid && freshUrl !== previousUrl
+        && fresh.status === 302 && fresh.headers.has("set-cookie") && replay.status === 401
+        && !existsSync(openedPath) && (statSync(sessionPath).mode & 0o077) === 0
+        && !out(result).includes(freshToken) && !serviceLog("web").lines.some((line) => line.includes(freshToken)),
+        { freshStatus: fresh.status, replayStatus: replay.status });
+      previousUrl = freshUrl;
+    }
     const originalSessionBytes = readFileSync(sessionPath, "utf8");
     const corruptedSession = JSON.parse(originalSessionBytes);
     corruptedSession.launchRequestId = "mismatched";

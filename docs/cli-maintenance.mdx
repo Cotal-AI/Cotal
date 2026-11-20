@@ -51,8 +51,11 @@ those integrations. If the package closure needs repair, the usual continuity gu
 `cotal update --self` also checks it before replacing the global package. A missing receipt
 leaves an unrecorded service alone. A valid receipt for another installation does not block
 this check. A malformed receipt, missing source, or ownership mismatch refuses before those
-package and connector changes. These receipt checks do not need `XDG_RUNTIME_DIR`. A valid
-receipt can proceed without it. A dangling receipt symlink still refuses.
+package and connector changes. A dangling receipt symlink still refuses. On Linux, if
+`XDG_RUNTIME_DIR` is unset, both update modes check `/run/user/<effective uid>` before each native
+user-service call. They use it only if it is a real directory owned by that user with mode 0700.
+Update never creates or repairs that directory. The user manager still has to answer for a
+recorded systemd service.
 
 Read the receipt and source paths named by the refusal. If the receipt is stale, remove only
 that receipt to forget it, then run `cotal daemon install`. For an owned installation, run
@@ -327,8 +330,9 @@ options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
 service show manager` reads it. A start that names another `--runtime` or other option for a
 stopped manager saves it again with that option, and says so. With `--dry-run` it makes the same
-checks and saves nothing. A running one refuses `LIFECYCLE_BLOCKED` and names `cotal manager stop`
-first.
+checks and saves nothing. A `--console-host` with whitespace or control characters is refused
+before changing the saved definition or stopped instance. A running one refuses
+`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
@@ -348,6 +352,8 @@ The manager these verbs act on is the space's one manager service: `manager` whe
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
 stack's manager, and `cotal manager start` reports it running and starts no second one.
+Without `--instance`, `cotal manager status` reports a running stack manager even if an older
+saved `manager` service is stopped. `--instance` still selects the named saved service instance.
 `cotal manager restart` does not restart a stack's manager by itself: it refuses `LIFECYCLE_BLOCKED`
 and names `cotal manager stop --yes`, then `cotal up`, which starts the manager again and reuses the
 running broker. When the stack's manager is stopped, `cotal manager start` refuses the same way and

@@ -55,7 +55,7 @@
     {
       "cell": "F",
       "name": "Manager.start restores the unconditional local trust read under remote authority",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "    if (this.remoteAuthority) {\n      if ((await localTrustOfSpace(this.secrets, this.space)).present)\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");\n      this.auth = undefined;\n    } else {\n      this.auth = recorded?.mode === \"open\" ? undefined : await getSpaceAuth(this.secrets, this.space);\n    }",
       "replace": "    this.auth = await getSpaceAuth(this.secrets, this.space);\n    if (this.remoteAuthority && this.auth)\n      throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -82,7 +82,7 @@
     {
       "cell": "G",
       "name": "Manager.start drops the same-space conflict refusal under remote authority",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/boot.ts",
       "find": "      if ((await localTrustOfSpace(this.secrets, this.space)).present)\n        throw new Error(\"remote manager-service authority cannot be combined with local space signing trust - choose one authority path, never a fallback\");",
       "replace": "      await localTrustOfSpace(this.secrets, this.space);",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",

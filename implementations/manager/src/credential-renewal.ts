@@ -8,7 +8,7 @@ import { isUnansweredDeliveryAdmin, untilDeliveryAdminAnswers } from "./endpoint
 import { STATIC_RECONCILE_RETRY_DELAYS_MS } from "./managed-static-lifecycle.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
-import { Manager } from "./manager.js";
+import type { Manager } from "./manager.js";
 
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
  * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
@@ -114,6 +114,7 @@ export interface CredentialRenewalDeps {
   setSupervisorCredentialPushPending: (value: Manager["supervisorCredentialPushPending"]) => void;
   userMode: () => Manager["userMode"];
   workspaceRoot: () => Manager["workspaceRoot"];
+  deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
   dialRemoteStanding: (...args: Parameters<Manager["dialRemoteStanding"]>) => ReturnType<Manager["dialRemoteStanding"]>;
   dialServeConnection: (...args: Parameters<Manager["dialServeConnection"]>) => ReturnType<Manager["dialServeConnection"]>;
@@ -124,6 +125,70 @@ export interface CredentialRenewalDeps {
   renewManagedStaticCred: (...args: Parameters<Manager["renewManagedStaticCred"]>) => ReturnType<Manager["renewManagedStaticCred"]>;
   withEndpointServeExecutor: <T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>) => Promise<T>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
+}
+
+/** Builds the {@link CredentialRenewalDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
+  return {
+    agents: () => m["agents"],
+    auth: () => m["auth"],
+    credentialPushRetry: () => m["credentialPushRetry"],
+    setCredentialPushRetry: (value) => { m["credentialPushRetry"] = value; },
+    credentialPushes: () => m["credentialPushes"],
+    daemonRenewalEligible: () => m["daemonRenewalEligible"],
+    setDaemonRenewalEligible: (value) => { m["daemonRenewalEligible"] = value; },
+    daemonRenewalOwner: () => m["daemonRenewalOwner"],
+    setDaemonRenewalOwner: (value) => { m["daemonRenewalOwner"] = value; },
+    endpointServeRenewalTimer: () => m["endpointServeRenewalTimer"],
+    setEndpointServeRenewalTimer: (value) => { m["endpointServeRenewalTimer"] = value; },
+    ep: () => m["ep"],
+    finishRemoteBundleAdoption: () => m["finishRemoteBundleAdoption"],
+    setFinishRemoteBundleAdoption: (value) => { m["finishRemoteBundleAdoption"] = value; },
+    goalWriter: () => m["goalWriter"],
+    goalWriterCreds: () => m["goalWriterCreds"],
+    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
+    leaseStopping: () => m["leaseStopping"],
+    managerInstanceId: () => m["managerInstanceId"],
+    pendingCredentialPushes: () => m["pendingCredentialPushes"],
+    remoteAuthority: () => m["remoteAuthority"],
+    remoteBundleAdoption: () => m["remoteBundleAdoption"],
+    setRemoteBundleAdoption: (value) => { m["remoteBundleAdoption"] = value; },
+    remoteBundleRenewal: () => m["remoteBundleRenewal"],
+    setRemoteBundleRenewal: (value) => { m["remoteBundleRenewal"] = value; },
+    remoteExecutorCreds: () => m["remoteExecutorCreds"],
+    setRemoteExecutorCreds: (value) => { m["remoteExecutorCreds"] = value; },
+    remoteRenewalDebt: () => m["remoteRenewalDebt"],
+    setRemoteRenewalDebt: (value) => { m["remoteRenewalDebt"] = value; },
+    remoteSupervisorCreds: () => m["remoteSupervisorCreds"],
+    setRemoteSupervisorCreds: (value) => { m["remoteSupervisorCreds"] = value; },
+    runHosting: () => m["runHosting"],
+    secretStoreIdentity: () => m["secretStoreIdentity"],
+    setSecretStoreIdentity: (value) => { m["secretStoreIdentity"] = value; },
+    secrets: () => m["secrets"],
+    serviceServe: () => m["serviceServe"],
+    sessionLedgerConn: () => m["sessionLedgerConn"],
+    sessionLedgerCreds: () => m["sessionLedgerCreds"],
+    setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
+    space: () => m["space"],
+    supervisorCredentialPush: () => m["supervisorCredentialPush"],
+    setSupervisorCredentialPush: (value) => { m["supervisorCredentialPush"] = value; },
+    supervisorCredentialPushPending: () => m["supervisorCredentialPushPending"],
+    setSupervisorCredentialPushPending: (value) => { m["supervisorCredentialPushPending"] = value; },
+    userMode: () => m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
+    beginLifecycle: (...args) => m["beginLifecycle"](...args),
+    dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
+    dialServeConnection: (...args) => m["dialServeConnection"](...args),
+    discardServeCandidate: (...args) => m["discardServeCandidate"](...args),
+    mintAndStageGoalWriter: (...args) => m["mintAndStageGoalWriter"](...args),
+    mintAndStageSessionLedger: (...args) => m["mintAndStageSessionLedger"](...args),
+    probeStaticCredential: (...args) => m["probeStaticCredential"](...args),
+    renewManagedStaticCred: (...args) => m["renewManagedStaticCred"](...args),
+    withEndpointServeExecutor: (fn) => m["withEndpointServeExecutor"](fn),
+    renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
+  };
 }
 
 /** Renewal of the manager's own standing credentials: the delivery daemon's reload, the remote
@@ -244,7 +309,7 @@ export class CredentialRenewal {
     // principal. A reply asserting the claim while some other process holds the shard fails here,
     // which is the case a bare store identity could not see. An unreadable row is an unknown and
     // refuses too: this test may never be satisfied by failing to run.
-    const holder = await this.ep.deliveryLeaseHolder(Manager.DELIVERY_SHARD);
+    const holder = await this.ep.deliveryLeaseHolder(this.deps.deliveryShard());
     if (holder === undefined)
       throw new Error(
         "this manager could not read the delivery lease row, so it cannot verify that the answering " +
@@ -286,7 +351,7 @@ export class CredentialRenewal {
   async absentByLeaseRow(unanswered: boolean): Promise<"absent"> {
     let entry: { info: DeliveryLeaseInfo } | undefined;
     try {
-      entry = await this.ep.readDeliveryLeaseEntry(Manager.DELIVERY_SHARD);
+      entry = await this.ep.readDeliveryLeaseEntry(this.deps.deliveryShard());
     } catch (e) {
       throw new Error(
         `could not read the delivery lease row to settle whether the delivery daemon is absent ` +

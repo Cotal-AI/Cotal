@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import {
-  createSpaceAuth, deriveReplySubject, dialerFor, isReachable, parseEpSubject,
+  createSpaceAuth, deriveReplySubject, dialerFor, EpEnvelopeError, isReachable, parseEpSubject,
   serverConfig, spacePrefix, standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "@cotal-ai/auth";
@@ -102,6 +102,11 @@ try {
   const follow = (budget: number): NonNullable<Parameters<typeof invokeUserManager>[4]>["follow"] =>
     async (_submit, prepare) => { await prepare(new AbortController().signal, Date.now() + budget); throw new Error("describe must refuse"); };
 
+  const mismatchedToken = await bearer("mismatched");
+  await assert.rejects(invokeUserManager(config("other"), async () => mismatchedToken, "ps", undefined),
+    (error: unknown) => error instanceof EpEnvelopeError && error.code === "failed-precondition" && error.outcome === "not-executed");
+  check("caller binding mismatch is typed and never dials", !admissions.has("mismatched"));
+
   for (const actor of ["ordinary", "followed"]) {
     const token = await bearer(actor);
     const started = Date.now();
@@ -114,7 +119,8 @@ try {
   const shortToken = await bearer("short");
   const shortStart = Date.now();
   await assert.rejects(invokeUserManager(config("short"), async () => shortToken, "ps", undefined,
-    { deadlineMs: 10_000, follow: follow(500) }), /timeout/i);
+    { deadlineMs: 10_000, follow: follow(500) }),
+    (error: unknown) => error instanceof EpEnvelopeError && error.code === "unavailable" && error.outcome === "not-executed");
   check("follow's shorter remaining budget bounds the dial", Date.now() - shortStart < 2000);
   await Promise.all([...pending]);
   check("a timed-out dial never publishes a manager request", !requests.has("short"));
@@ -148,5 +154,5 @@ try {
   disarm();
   rmSync(home, { recursive: true });
 }
-assert.equal(passed, 7, "all native deadline cases ran");
+assert.equal(passed, 8, "all native preflight cases ran");
 emitSentinel({ passed, failed: 0 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,13 +12,15 @@ import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionD
 // need a umask of 0002 set it themselves.
 process.umask(0o022);
 const repo = join(import.meta.dirname, "../..");
+const { engines, scripts } = JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8"));
+const postinstallScript = scripts.postinstall.replace(/^node /, "");
 const scratch = mkdtempSync(join(tmpdir(), "execution-generation-"));
 const root = join(scratch, "prefix/lib/node_modules/cotal-ai"), source = join(scratch, "source/cotal-ai");
 let checks = 0;
 const check = (label: string, run: () => void): void => { run(); checks++; console.log(`✓ ${label}`); };
 const packageAt = (directory: string, version: string, message: string): void => {
   mkdirSync(join(directory, "dist"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "cotal-ai", version, type: "module", bin: { cotal: "./dist/cotal.js" } }));
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "cotal-ai", version, type: "module", bin: { cotal: "./dist/cotal.js" }, engines }));
   cpSync(join(repo, "bin/dist/cotal.js"), join(directory, "dist/cotal.js"));
   chmodSync(join(directory, "dist/cotal.js"), 0o644);
   writeFileSync(join(directory, "dist/cotal-program.js"), `console.log(${JSON.stringify(message)});`);
@@ -45,7 +47,7 @@ try {
       assert.equal(handoffs, 1);
     }
   });
-  check("bootstrap avoids post-Node-12 syntax and named built-in exports", () => {
+  check("bootstrap and npm postinstall avoid post-Node-12 syntax and named built-in exports", () => {
     const postNode12FsExports = new Set(["cp", "cpSync", "glob", "globSync", "openAsBlob", "opendir", "opendirSync", "rm", "rmSync", "statfs", "statfsSync"]);
     const disallowedOperators = new Set<ts.SyntaxKind>([
       ts.SyntaxKind.QuestionQuestionToken,
@@ -53,8 +55,10 @@ try {
       ts.SyntaxKind.AmpersandAmpersandEqualsToken,
       ts.SyntaxKind.QuestionQuestionEqualsToken,
     ]);
-    for (const file of [join(repo, "bin/cotal.ts"), join(repo, "bin/dist/cotal.js")]) {
+    const postinstall = join(repo, "bin", postinstallScript);
+    for (const file of [join(repo, "bin/cotal.ts"), join(repo, "bin/dist/cotal.js"), postinstall]) {
       const tree = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+      if (file === postinstall) assert.equal(ts.isExternalModule(tree), false, `${file} must not use ES module syntax`);
       const visit = (node: ts.Node): void => {
         assert.equal(ts.isOptionalChain(node), false, `${file} contains optional chaining: ${node.getText(tree)}`);
         assert.equal(ts.isAwaitExpression(node), false, `${file} contains await: ${node.getText(tree)}`);
@@ -106,6 +110,14 @@ try {
         encoding: "utf8",
         timeout: 15_000,
       });
+    const postinstall = join(repo, "bin", postinstallScript);
+    const refusedInstall = probe(postinstall, [], { TEST_FAKE_NODE_VERSION: "12.22.9" });
+    assert.equal(refusedInstall.status, 1, refusedInstall.stderr);
+    assert.equal(refusedInstall.stdout, "");
+    assert.equal(refusedInstall.stderr.trim().split("\n").length, 1);
+    assert.ok(refusedInstall.stderr.includes(`requires Node.js ${engines.node.slice(2).trim()} or later, but npm is using v12.22.9`), refusedInstall.stderr);
+    assert.match(refusedInstall.stderr, /npm install -g cotal-ai/);
+    assert.match(refusedInstall.stderr, /curl -fsSL https:\/\/get\.cotal\.ai \| sh -s -- --no-setup/);
     const control = probe(join(root, "dist/cotal.js"), ["--version"], { TEST_TRACE_V8_FLAGS: "1" });
     assert.equal(control.status, 0, control.stderr);
     assert.match(control.stderr, /V8_FLAG:--no-maglev/);
@@ -238,6 +250,35 @@ try {
     symlinkSync(root, route);
     assert.equal(selectExecutionProgram(root).root, root, "recreated route has a different incarnation even when its target is the same");
     rmSync(route); writeExecutionDescriptor(root, descriptor);
+  });
+  check("npm reinstall with a pinned Node launcher runs the replacement instead of the retained generation", () => {
+    const entry = join(scratch, "prefix/bin/cotal"), manifest = join(root, "package.json");
+    const direct = "../lib/node_modules/cotal-ai/dist/cotal.js", wrapper = "../lib/node_modules/cotal-ai/dist/cotal-npm";
+    const postinstall = join(root, postinstallScript);
+    mkdirSync(join(scratch, "prefix/bin")); mkdirSync(join(root, "scripts"));
+    chmodSync(join(root, "dist/cotal.js"), 0o755);
+    cpSync(join(repo, "bin", postinstallScript), postinstall);
+    symlinkSync(direct, entry);
+    const launch = () => spawnSync(entry, ["--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    writeExecutionDescriptor(root, { ...descriptor, launch: executionLaunchBinding(root, entry) });
+    assert.equal(launch().stdout.trim(), "retained generation selected");
+
+    const script = spawnSync(process.execPath, [postinstall], { encoding: "utf8", timeout: 10_000 });
+    assert.equal(script.status, 0, script.stderr);
+    assert.equal(readlinkSync(entry), wrapper);
+    assert.equal(launch().stdout.trim(), "retained generation selected", "the wrapper alone does not retire an unchanged package");
+
+    // Keep the same manifest bytes and bootstrap hash. Only the installed package's incarnation changes.
+    cpSync(manifest, `${manifest}.new`); renameSync(`${manifest}.new`, manifest);
+    const result = launch();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "initial generation");
+
+    rmSync(entry); symlinkSync(join(source, "dist/cotal-npm"), entry);
+    writeFileSync(join(source, "dist/cotal-npm"), "foreign launcher");
+    assert.throws(() => selectExecutionProgram(root), /execution launch route does not resolve to this bootstrap/);
+    rmSync(entry); rmSync(join(source, "dist/cotal-npm"));
+    writeExecutionDescriptor(root, descriptor);
   });
   check("a bootstrap bound to a different artifact runs the installed tree without writing", () => {
     const stale = { ...descriptor, binding: { ...descriptor.binding, bootstrapSha256: "0".repeat(64) } };

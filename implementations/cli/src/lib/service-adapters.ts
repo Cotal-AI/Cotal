@@ -26,9 +26,9 @@ export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
  *  how an option reads in a refusal of its value, such as the flag a preset gives it. A stop and its
  *  preview read only the declaration and pass `checkOptions` false, because a launch input such as
  *  a credential the stack's own stop removed is not something a stop needs (#7111). */
-export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string): ResolvedServiceAdapter {
+export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string, registeredOnly = false): ResolvedServiceAdapter {
   const registered = registry.all<LocalProcess>("local-process").find((component) => component.name === name);
-  const owners = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
+  const owners = !registeredOnly && installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
   if (owners.length > 1) throw new CommandFailure("refused", "CONFLICT", "several installed packages claim this service adapter; no provider was chosen");
   const owner = owners[0];
   const cached = owner ? verifiedExtensionServiceProcesses(owner).find((component) => component.name === name) : registered;

@@ -25,8 +25,10 @@ import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from ".
 import { bindNativeServiceName } from "../src/native-service-name.js";
 import { parsePlaneClaimRow, PLANE_CLAIM_KEY, type PlaneLivenessOracle } from "../src/plane-claim.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
-import { serviceHostOperationId, type ServiceHostEffect } from "../src/service-host-ops.js";
-import { openAuthAuthorityPlane, serviceHostEngineOf, startAuthService, type AuthAuthorityPlane, type AuthServiceHandle, type OpenAuthAuthorityPlaneOptions } from "../src/service.js";
+import { type ServiceHostEffect } from "../src/service-host-ops.js";
+import { serviceHostOperationId } from "../src/service-host-kernel.js";
+import { openAuthAuthorityPlane, serviceHostEngineOf, type AuthAuthorityPlane, type OpenAuthAuthorityPlaneOptions } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks, within } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";

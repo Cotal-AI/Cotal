@@ -106,7 +106,7 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -181,7 +181,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
   if (cancelOnly && !/^(C1 |C2 |C15 |C6c |C10 )/.test(title)) return;
   if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
-  if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
+  if ((process.argv.includes("--setup-session-only") || process.argv.includes("--static-setup-only")) && !title.startsWith("H2")) return;
   if (process.argv.includes("--credential-expiry-only") && !/^C(1|2|7|10|15|18) /.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
@@ -202,6 +202,26 @@ async function ask(socket: string, req: Frame, ms = 40_000): Promise<Frame> {
       sock.once("error", (e) => { clearTimeout(t); reject(e); });
     });
   } finally { sock.destroy(); }
+}
+function pollStartupStatus(socket: string) {
+  let stopped = false;
+  let replies = 0, slowestMs = 0;
+  let failure: unknown;
+  const poll = (async () => {
+    while (!stopped) {
+      const started = performance.now();
+      const reply = await ask(socket, { op: "status" }, 1000);
+      assert.equal(reply.ok, true);
+      slowestMs = Math.max(slowestMs, performance.now() - started);
+      replies++;
+      await sleep(100);
+    }
+  })().catch(error => { failure = error; });
+  return async () => {
+    stopped = true;
+    await poll;
+    check("desktop Manager startup keeps new status connections responsive", failure === undefined && replies > 1 && slowestMs < 1000, { replies, slowestMs, failure: String(failure ?? "") });
+  };
 }
 const resultOf = (f: Frame) => (f.result ?? {}) as Record<string, any>;
 const errorOf = (f: Frame) => (f.error ?? {}) as Record<string, unknown>;
@@ -1765,7 +1785,7 @@ try {
       }
     });
 
-    await cell("H2 shipped setup recovers rejected cached sessions without relogin on outages", async () => {
+    await cell("H2 shipped setup checks local spaces and recovers rejected cached sessions", async () => {
       seedUnitReceipt();
       await d.close();
       const sessionSpace = spaces[4]!;
@@ -1796,6 +1816,61 @@ try {
       const otherIdp = `http://127.0.0.1:${(otherProvider.address() as AddressInfo).port}/api/auth`;
       recoverOnApproval = true;
       try {
+        const localSpace = "local-static";
+        const localRecord = meshFile(localSpace);
+        const legacyRecord = join(dirname(localRecord), `${localSpace}.json`);
+        const localState = join(home, "daemon", spaceSegment(localSpace));
+        const refusal = join(localState, "manager-refusal.json");
+        const localGuidance = (text: unknown) => /cotal up/.test(String(text)) && !/cotal daemon (setup|register)|cotal manager start/.test(String(text));
+        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", ts: new Date().toISOString() });
+        try {
+          const setup = await cli("setup", "--space", localSpace);
+          check("H2 static setup refuses at the connection check without writing per-space state", setup.code === 2
+            && setup.doc.error?.code === "UNSUPPORTED" && setup.doc.error?.cause?.code === "NOT_USER_AUTH"
+            && localGuidance(setup.doc.error?.remedy) && !/turning on the space|starting the agent host/.test(setup.err)
+            && !existsSync(localState), setup);
+          const service = await cli("service-status", "--space", localSpace);
+          check("H2 static service-status recommends the local stack rather than registration", service.code === 2
+            && service.doc.error?.code === "UNSUPPORTED" && localGuidance(service.doc.error?.remedy), service.doc);
+          const registration = await cli("register", "--space", localSpace);
+          check("H2 static register preserves NOT_USER_AUTH and gives local guidance", registration.code === 2
+            && registration.doc.error?.cause?.code === "NOT_USER_AUTH" && localGuidance(registration.doc.error?.remedy), registration.doc);
+
+          await killAndAwaitExit(child, "SIGTERM");
+          child = await start();
+          const restarted = await cli("status", "--space", localSpace);
+          check("H2 restarting the daemon does not reveal a static setup refusal", restarted.code === 0 && !existsSync(localState), restarted.doc);
+
+          // Earlier versions persisted this refusal. Disconnect still has to clear it.
+          const seedRefusal = () => {
+            mkdirSync(localState, { recursive: true, mode: 0o700 });
+            writeFileSync(refusal, JSON.stringify({ space: localSpace, state: "refused", restarts: 0,
+              reason: "hosted Managers require a registered user-auth participant space",
+              next: "use `cotal manager start` from the folder that hosts the space" }), { mode: 0o600 });
+          };
+          renameSync(localRecord, legacyRecord);
+          seedRefusal();
+          const legacyStatus = await cli("service-status", "--space", localSpace);
+          const disconnected = await cli("service-disconnect", "--space", localSpace);
+          check("H2 legacy static registrations keep local guidance and disconnect clears the old refusal", legacyStatus.code === 2
+            && legacyStatus.doc.error?.code === "UNSUPPORTED" && localGuidance(legacyStatus.doc.error?.remedy)
+            && disconnected.code === 0 && localGuidance(disconnected.doc.result?.manager?.next) && !existsSync(refusal),
+          { status: legacyStatus.doc, disconnect: disconnected.doc });
+
+          seedRefusal();
+          writeFileSync(localRecord, "{", { mode: 0o600 });
+          const damaged = await cli("service-status", "--space", localSpace);
+          const overall = await cli("status");
+          const cleared = await cli("service-disconnect", "--space", localSpace);
+          check("H2 a damaged registration neither breaks daemon-wide status nor blocks cleanup", damaged.code === 2
+            && damaged.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && overall.code === 0
+            && cleared.code === 0 && !existsSync(refusal) && !/cotal daemon setup/.test(String(cleared.doc.result?.manager?.next)),
+          { status: damaged.doc, disconnect: cleared.doc });
+        } finally {
+          rmSync(localRecord, { force: true });
+          rmSync(legacyRecord, { force: true });
+        }
+        if (process.argv.includes("--static-setup-only")) return;
         deleteIdpSession(home, idpUrl);
         const mismatchBefore = deviceCodeRequests, postsBefore = posts(sessionSpace);
         for (const serviceOnly of [true, false]) {
@@ -2595,7 +2670,6 @@ process.stdin.once('data', () => {
             check("I6 intent authentication refusal preserves desired set and asks for sign-in", !refused.ok && JSON.stringify(refused).includes("Sign in again") && !accountDesired, refused);
             return;
           }
-          accountDesired = true;
           const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
           const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
             let value: Record<string, any> = {};
@@ -2603,10 +2677,14 @@ process.stdin.once('data', () => {
             check(label, predicate(value), value); return value;
           };
           const hostedShape = process.argv.includes("--account-hosted");
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
-          if (!hostedShape) await approve(host, ON, fixture.owner);
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
-          await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          const stopStatusPoll = retiredAppRuntime ? pollStartupStatus(paths.socket) : undefined;
+          try {
+            accountDesired = true;
+            await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
+            if (!hostedShape) await approve(host, ON, fixture.owner);
+            await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
+            await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          } finally { await stopStatusPoll?.(); }
           if (process.argv.includes("--account-custody-repro")) {
             const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
             const session = loadIdpSession(home, idpUrl)!;
@@ -2887,9 +2965,10 @@ process.stdin.once('data', () => {
           assert.match(refused.lastRefusal, /no longer registered/);
           console.log("HOSTED_REFUSAL before setup", JSON.stringify(refused));
         }
+        const stopStatusPoll = retiredAppRuntime && !explicitHome ? pollStartupStatus(paths.socket) : undefined;
         const setup = explicitHome
           ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
-          : await cli("setup", "--space", ON, "--idp", idpUrl);
+          : await cli("setup", "--space", ON, "--idp", idpUrl).finally(() => stopStatusPoll?.());
         console.log("  H1 setup", JSON.stringify(setup));
         if (pathRecovery) {
           check("P1 initial setup refuses without applications", setup.code === 2 && setup.doc.error?.cause?.code === "NO_AVAILABLE_CONNECTOR", setup);

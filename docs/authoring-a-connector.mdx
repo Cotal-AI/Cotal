@@ -37,6 +37,10 @@ This scaffold registers the connector but refuses every launch until you impleme
 For a complete implementation, read the [OpenCode connector](../extensions/connector-opencode/src/extension.ts).
 
 In `buildLaunch(opts)`, return a `LaunchSpec` containing the child command, arguments, and extra environment variables.
+Set `supportsLaunchValidation: true` if `buildLaunch` can validate arguments without writing files or changing session state.
+When `opts.validateOnly` is true, run the same argument checks but create no launch files or session state.
+Return `{ command: "", args: [] }` after validation. The CLI uses this mode before provisioning
+and when previewing a direct launch. The returned spec is not executed.
 The resulting process must connect to the broker with the supplied identity and expose the mesh integration inside the agent application.
 Starting an ordinary application process alone does not join it to the mesh.
 
@@ -110,7 +114,8 @@ A refusal before any process starts permits immediate removal.
 On POSIX systems, managed runtimes and direct foreground launches use `reclaimWithChild`.
 It starts a watcher and replaces the shell with the child process.
 The watcher removes the files after the child exits, even if the launcher was killed.
-It retries failed removal every five seconds.
+It looks up `sleep` and `rm` on the system's default utility path and leaves the child's `PATH` unchanged.
+It retries failed removal every five seconds, but exits if it cannot run a utility or sleep fails.
 
 The in-process PTY runtime reports exit to the manager.
 For runtimes without streamed exit events, including tmux, cmux, Orca, and Herdr, the manager also polls for exit proof.

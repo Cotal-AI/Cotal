@@ -1,16 +1,17 @@
 /** Updates skip retained legacy configurations without claiming continuity and prove stopped controllers cold. */
+import "./update-isolation.js";
 import nodeAssert from "node:assert/strict";
-import { countedAssert } from "@cotal-ai/smoke-kit";
-import { spawnSync } from "node:child_process";
+import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { authDir, clearCurrent, findPreparedSpace, readCurrent, recordPreparedSpace, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, findPreparedSpace, meshFile, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
 
@@ -28,6 +29,7 @@ await new Promise<void>((resolve, reject) => {
 });
 const address = listener.address();
 assert.ok(address && typeof address !== "string");
+let registry: ChildProcess | undefined;
 const target: MeshTarget = {
   root,
   server: `nats://127.0.0.1:${address.port}`,
@@ -70,10 +72,11 @@ try {
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named completed-down controller has no running custody");
     setCurrent(target.space);
     assert.equal(await readManagerContinuity({}), "none", "an in-folder selected completed-down controller has no running custody");
-    await assert.rejects(readManagerContinuity({ space: target.space, server: target.server }), "an explicit server never takes the stopped-controller shortcut");
+    await assert.rejects(readManagerContinuity({ space: target.space, server: `tls://127.0.0.1:${address.port}` }), "a different broker URL cannot borrow the stopped-controller proof");
     await assert.rejects(readManagerContinuity({ space: target.space, creds: join(root, "missing.creds") }), "explicit credentials never take the shortcut");
     await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(address.port, "127.0.0.1", resolve); });
     await assert.rejects(readManagerContinuity({ space: target.space }), "a listener at the stopped controller address blocks update");
+    await assert.rejects(readManagerContinuity({ space: target.space, server: target.server }), "a matching flag still requires the recorded endpoint to be unreachable");
     await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
     snapshot = writeStackJournal(root, snapshot, { ...journal, operation: { ...journal.operation, phase: "applying" } });
     await assert.rejects(readManagerContinuity({ space: target.space }), "an unfinished down cannot claim cold-update eligibility");
@@ -93,6 +96,8 @@ try {
     writeStackJournal(root, snapshot, journal);
     process.chdir(cwd);
     assert.equal(await readManagerContinuity({ space: target.space }), "none", "a named stopped controller is eligible from another folder");
+    assert.equal(await readManagerContinuity({ space: target.space, server: target.server }), "none", "the recorded broker URL is eligible from another folder");
+    assert.equal(await readManagerContinuity({ space: target.space, server: `${target.server}/` }), "none", "harmless URL spelling still selects the recorded broker");
   } finally { process.chdir(cwd); }
   // Native sudo regression: the controller journal belongs to a different account, and
   // its member records are not in the updater's home. Run this cell on the root test machine.
@@ -122,10 +127,36 @@ try {
   // Use the public CLI to prepare and select a space that never starts, then delete
   // its project. Neither ordinary reconciliation nor repeated self-update needs it.
   const bin = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
+  // Keep self-update on the built version even when a new release reaches npm.
+  const { version } = JSON.parse(readFileSync(resolve(import.meta.dirname, "../../../bin/package.json"), "utf8"));
+  registry = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { createServer } from "node:http";
+    const version = process.argv[1];
+    const packument = JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } });
+    const server = createServer((request, reply) => request.url === "/cotal-ai"
+      ? reply.writeHead(200, { "content-type": "application/json" }).end(packument)
+      : reply.writeHead(404).end());
+    server.listen(0, "127.0.0.1", () => process.send(server.address()));
+    process.on("disconnect", () => server.close());
+  `, version], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+  const registryAddress = await new Promise<AddressInfo>((done, reject) => {
+    registry!.once("message", address => done(address as AddressInfo));
+    registry!.once("error", reject);
+    registry!.once("exit", code => reject(new Error(`smoke registry exited ${code}`)));
+  });
+  const registryUrl = `http://127.0.0.1:${registryAddress.port}`;
+  const tools = join(other, "tools");
+  mkdirSync(tools, { mode: 0o700 });
+  if (process.platform === "win32") {
+    writeFileSync(join(tools, "npm.cmd"), `@echo off\r\nset "PATH=%SMOKE_NPM_PATH%"\r\nif "%~1 %~2"=="view cotal-ai@latest" (npm %* --registry ${registryUrl} --noproxy 127.0.0.1) else (npm %*)\r\n`);
+  } else {
+    writeFileSync(join(tools, "npm"), `#!/bin/sh\nexport PATH="$SMOKE_NPM_PATH"\nif [ "$1 $2" = "view cotal-ai@latest" ]; then\n  set -- "$@" --registry ${registryUrl} --noproxy 127.0.0.1\nfi\nexec npm "$@"\n`, { mode: 0o700 });
+  }
+  const registryEnv = { PATH: `${tools}${process.platform === "win32" ? ";" : ":"}${ambient.PATH}`, SMOKE_NPM_PATH: ambient.PATH };
   const home = join(other, "home");
   mkdirSync(home, { mode: 0o700 });
   const cli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: other, env: { ...ambient, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    cwd: other, env: { ...ambient, ...registryEnv, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   const deleted = join(other, "project"), space = `deleted-${randomUUID()}`;
@@ -133,6 +164,22 @@ try {
   assert.equal(cli("space", "create", space, "--root", deleted).status, 0, "the CLI prepares the project");
   assert.equal(cli("use", space).status, 0, "the CLI selects the prepared project");
   const prepared = findPreparedSpace(space);
+  if (process.getuid && process.getuid() !== 0) {
+    const record = join(process.env.COTAL_HOME!, "prepared", `space.${Buffer.from(space).toString("hex")}.json`);
+    const before = readFileSync(record, "utf8");
+    chmodSync(record, 0o000);
+    try {
+      assert.throws(() => readFileSync(record), { code: "EACCES" });
+      const update = cli("update", "--self");
+      const output = update.stdout + update.stderr;
+      assert.equal(update.status, 0, output);
+      assert.match(update.stdout, /leaving its records and processes untouched, continuity not checked/);
+      assert.match(update.stderr, /could not be read \(EACCES/);
+      assert.ok(output.includes(record) && !output.includes("cotal space forget"), output);
+      assert.equal(statSync(record).mode & 0o777, 0o000, "self-update leaves the record's mode unchanged");
+    } finally { chmodSync(record, 0o600); }
+    assert.equal(readFileSync(record, "utf8"), before, "self-update leaves the prepared record unchanged");
+  }
   rmSync(deleted, { recursive: true });
   for (const args of [["update"], ["update", "--self"], ["update", "--self"]]) {
     const run = cli(...args);
@@ -150,6 +197,7 @@ try {
   clearCurrent();
   const privateHome = join(root, "private-home");
   mkdirSync(privateHome, { mode: 0o700 });
+  const env = { ...ambient, ...registryEnv, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
   for (const mode of ["open", "static"] as const) {
     const project = join(root, `refused-${mode}`);
     mkdirSync(join(project, ".cotal"), { recursive: true, mode: 0o700 });
@@ -174,8 +222,7 @@ try {
     assert.doesNotMatch(output, /no manager running/, `${mode}: does not assert absence of custody`);
     for (const args of [["update"], ["update", "--self"]]) {
       const result = spawnSync(process.execPath, [resolve(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], {
-        cwd: project, encoding: "utf8", timeout: 120_000,
-        env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
+        cwd: project, encoding: "utf8", timeout: 120_000, env,
       });
       assert.equal(result.status, 0, `${mode}: ${args.join(" ")} completes\n${result.stdout}\n${result.stderr}`);
       assert.ok(result.stdout.includes(project), `${mode}: command names the skipped folder`);
@@ -188,11 +235,12 @@ try {
   // Run the public startup and stop commands so this covers actual stopped-project records.
   const stoppedProject = join(root, "stopped-project");
   const stoppedSpace = `explicit-${randomUUID()}`;
-  mkdirSync(join(stoppedProject, ".cotal"), { recursive: true, mode: 0o700 });
-  const stoppedCli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: stoppedProject, encoding: "utf8", timeout: 120_000,
-    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" },
-  });
+  const stoppedSandbox = recordSmokeSandbox({ root: stoppedProject, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const stoppedCli = (...args: string[]) => {
+    const options = { cwd: stoppedProject, encoding: "utf8" as const, timeout: 120_000, env };
+    assertSmokeSandboxDown(stoppedSandbox, args, options);
+    return spawnSync(process.execPath, [bin, ...args], options);
+  };
   let started = false;
   try {
     const up = stoppedCli("up", "--detach", "--server", target.server, "--space", stoppedSpace);
@@ -227,12 +275,17 @@ try {
   const originalProject = controllerProject;
   const controllerSpace = `controller-${randomUUID()}`;
   const temp = join(root, "readonly-temp");
-  mkdirSync(controllerProject, { mode: 0o700 });
+  mkdirSync(originalProject, { mode: 0o700 });
+  const controllerSandbox = recordSmokeSandbox({ root: originalProject, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   mkdirSync(temp, { mode: 0o500 });
-  const controllerCli = (args: string[], temporary?: string) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: controllerProject, encoding: "utf8", timeout: 180_000,
-    env: { ...ambient, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
-  });
+  const controllerCli = (args: string[], temporary?: string, seed = false) => {
+    const options = {
+      cwd: controllerProject, encoding: "utf8" as const, timeout: 180_000,
+      env: { ...env, ...(seed ? { COTAL_SKIP_CONNECTOR_SEED: "0" } : {}), ...(temporary ? { TMPDIR: temporary, TMP: temporary, TEMP: temporary } : {}) },
+    };
+    assertSmokeSandboxDown(controllerSandbox, args, options);
+    return spawnSync(process.execPath, [bin, ...args], options);
+  };
   const expectSuccess = (args: string[], temporary?: string) => {
     const result = controllerCli(args, temporary);
     assert.equal(result.status, 0, `${args.join(" ")} succeeds${temporary ? ` with TMPDIR=${temporary}` : ""}\n${result.stdout}\n${result.stderr}`);
@@ -248,7 +301,46 @@ try {
     started = false;
     expectSuccess(["use", "--clear"]);
     const journalPath = join(".cotal", "stack-controller.json");
-    const journalBefore = readFileSync(join(controllerProject, journalPath));
+    let journalBefore = readFileSync(join(controllerProject, journalPath));
+    // Older releases could leave another stopped space registered at this address. Current up
+    // guards against creating the duplicate, so record the historical entry after stopping.
+    const sharingSpace = `sharing-${randomUUID()}`;
+    recordMesh({ space: sharingSpace, root: join(root, "renamed-away"), server: target.server, mode: "open", origin: "up", ts: new Date().toISOString() });
+    try {
+      const registration = readFileSync(meshFile(sharingSpace));
+      const result = expectSuccess(["update", "--self", "--space", controllerSpace]);
+      assert.match(result.stdout, /stopped; no manager running/);
+      assert.deepEqual(readFileSync(meshFile(sharingSpace)), registration, "update preserves the other registration");
+      assert.deepEqual(readFileSync(join(controllerProject, journalPath)), journalBefore, "update preserves the stopped controller journal");
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(address.port, "127.0.0.1", resolve); });
+      try {
+        const cwd = process.cwd();
+        try {
+          process.chdir(controllerProject);
+          await assert.rejects(readManagerContinuity({ space: controllerSpace }), /another registration names this stack's exact broker address/);
+        } finally { process.chdir(cwd); }
+      } finally {
+        await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
+      }
+    } finally { removeMesh(sharingSpace); }
+    // Recreate the on-disk recovery state after an updater with no usable snapshot exits.
+    writeUpdateRecovery({ previous: "0.171.0", target: "0.171.2", installed: "0.171.2", phase: "replacing", reason: "interrupted update",
+      owner: { pid: 2147483647, start: "dead-start", nonce: "old-owner" } });
+    const blocked = controllerCli(["up"], undefined, true);
+    started = blocked.status === 0;
+    assert.equal(blocked.status, 5, blocked.stdout + blocked.stderr);
+    assert.match(blocked.stdout + blocked.stderr, /started no member.*an interrupted update needs restoration/);
+    const failedJournal = readFileSync(join(controllerProject, journalPath));
+    const recovered = expectSuccess(["update", "--self"]);
+    assert.match(recovered.stdout, /Retained unusable interrupted-update records/);
+    assert.match(recovered.stdout, /stopped; no manager running/);
+    assert.deepEqual(readFileSync(join(controllerProject, journalPath)), failedJournal, "recovery does not start the controller or rewrite its journal");
+    const restarted = controllerCli(["up"], undefined, true);
+    started = restarted.status === 0;
+    assert.equal(restarted.status, 0, restarted.stdout + restarted.stderr);
+    expectSuccess(["down", "--yes"]);
+    started = false;
+    journalBefore = readFileSync(join(controllerProject, journalPath));
     for (const kind of ["copy", "move", "forgotten"] as const) {
       if (kind === "copy") {
         controllerProject = join(root, "controller-copy");
@@ -284,6 +376,7 @@ try {
   }
   console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {
+  registry?.kill();
   if (listener.listening) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (prior === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = prior;

@@ -9,6 +9,7 @@ import { schemaErrorLocation, type ServiceDefinitionInput } from "./service-defi
 import { CommandFailure } from "./output.js";
 import { launcherInstallRoot } from "./cotal-home.js";
 import { protectedCredentialReference, protectedLocalEntry } from "./protected-records.js";
+import type { SeatCap } from "./seat-cap.js";
 
 /** Workstation ABI only. A declaration grants no native endpoint or OS process authority. */
 export interface ServiceAdapterDeclaration {
@@ -47,6 +48,8 @@ export interface ServiceAdapterContext {
    *  while that root holds a maintenance journal. The adapter compares them through
    *  `admittedControllerRestore`; they grant nothing by themselves and are never saved. */
   readonly stack?: ControllerStackView;
+  /** This start's explicit manager cap. The manager records it only once it starts serving. */
+  readonly managerSeatCap?: SeatCap;
 }
 
 /** A resume attempt's per-launch inputs. `resumeCommit` names a protected handoff file by path and

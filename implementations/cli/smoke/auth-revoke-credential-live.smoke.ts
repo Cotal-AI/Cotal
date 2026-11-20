@@ -89,7 +89,7 @@ try {
   const sent = cli(root, "send", "-c", "general", "kept through the revocation", "--json");
   check("a message is stored on general", sent.status === 0, shown(sent));
   const leaked = join(creds, "leaked.creds"), kept = join(creds, "kept.creds");
-  const mintLeaked = cli(root, "auth", "mint", "leaked", "--no-expiry", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "rev", "--out", leaked, "--json");
+  const mintLeaked = cli(root, "auth", "mint", "leaked", "--no-expiry", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "rev", "--out", leaked, "--json");
   const mintKept = cli(root, "auth", "mint", "kept", "--no-expiry", "--out", kept, "--json");
   const key = String(mintLeaked.env?.result?.identity ?? "");
   check("auth mint writes two credentials", mintLeaked.status === 0 && mintKept.status === 0 && /^U[A-Z2-7]{55}$/.test(key), { leaked: shown(mintLeaked), kept: shown(mintKept) });
@@ -136,7 +136,7 @@ try {
     const listed = exported.find((row) => row.path === leaked);
     check("doctor auth lists the revoked file, and its repair is a mint with a new key and the file's grants, since --identity refuses that key",
       listed?.state === "revoked" && listed.repair?.includes("auth mint --identity refuses that key; mint a new key with the grants this file holds:") === true
-        && listed.repair.includes("auth mint leaked --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>")
+        && listed.repair.includes("auth mint leaked --provision --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>")
         && exported.find((row) => row.path === kept)?.state === "unbounded", { exported, doctor: shown(doctor) });
     const heading = cli(root, "doctor", "auth");
     check("  and its heading says there are no findings and that one exported file needs attention",
@@ -199,6 +199,12 @@ try {
       refused.env?.error?.remedy === "a revoked key is not signed again; mint a new key with the grants it held: `cotal auth mint <label> --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>`", refused.env?.error);
     const sendRevoked = cli(root, "send", "-c", "general", "after the revocation", "--json", "--creds", leaked, "--space", space, "--server", server);
     check("send with the revoked file names the revocation too", sendRevoked.status === 2 && sendRevoked.env?.error?.message === refused.env?.error?.message, shown(sendRevoked));
+    const joined = cli(root, "join", "--space", space, "--name", "leaked", "--creds", leaked, "--lifecycle-uid", String(mintLeaked.env?.result?.lifecycleUid));
+    check("join with the revoked file names its space and revocation and gives a provisioned replacement",
+      joined.status === 2 && /Code: +PERMISSION_DENIED/.test(joined.stderr) && joined.stderr.includes(`Space:   ${space}`) &&
+      joined.stderr.includes(refused.env?.error?.message ?? "missing one-shot diagnosis") &&
+      joined.stderr.includes(`cotal auth mint <label> --space ${space} --provision --allow-subscribe general --allow-publish general --role rev --no-persona --out <new file>`) &&
+      joined.stderr.includes("join with the lifecycle UID that mint reports"), shown(joined));
     const whoRevoked = cli(root, "whoami", "--creds", leaked, "--json");
     const whoKept = cli(root, "whoami", "--creds", kept, "--json");
     check("whoami --creds reports when the file's key was revoked, and null for a key that was not",
@@ -216,7 +222,9 @@ try {
     // A --creds agent file holds its own post grant, so a refused post names it.
     const unposted = cli(root, "send", "-c", "general", "no post grant", "--json", "--creds", join(creds, "fresh.creds"), "--space", space, "--server", server);
     check("a post the fresh file may not make names its post grant, read from the file",
-      unposted.status === 2 && unposted.env?.error?.code === "PERMISSION_DENIED" && unposted.env.error.remedy === `this identity may post to no channel in ${space}`, shown(unposted));
+      unposted.status === 2 && unposted.env?.outcome === "refused" && unposted.env.error?.code === "PERMISSION_DENIED"
+        && unposted.env.error.message.includes("it was not stored")
+        && unposted.env.error.remedy?.startsWith(`this identity may post to no channel in ${space}.`) === true, shown(unposted));
   }
 } finally {
   if (anchors.has(root)) cli(root, "down", "--yes", "--json");

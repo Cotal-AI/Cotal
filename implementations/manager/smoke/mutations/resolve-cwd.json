@@ -34,7 +34,7 @@
     },
     {
       "name": "M3 drop the answered cwd before spawning the real seat",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/start-doors.ts",
       "find": "        cwd: args.cwd as string | undefined,",
       "replace": "        cwd: undefined,",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -52,7 +52,7 @@
     },
     {
       "name": "M3 the ps row reads provider from the launch request instead of the presence card",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/status-and-models.ts",
       "find": "      const providerMeta = seen?.card.meta?.provider;",
       "replace": "      const providerMeta = a.launch.model;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -61,7 +61,7 @@
     },
     {
       "name": "M4 an absent provider is fabricated as an empty string",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/status-and-models.ts",
       "find": "        ...(provider ? { provider } : {}),",
       "replace": "        provider: provider ?? \"\",",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",

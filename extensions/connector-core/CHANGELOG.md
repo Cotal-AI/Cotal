@@ -1,5 +1,59 @@
 # @cotal-ai/connector-core
 
+## 0.171.5
+
+### Patch Changes
+
+- bcb2f8e: Explain how to keep only the built-in `pty` runtime during guided setup.
+- 07f89b7: Move the mesh agent's channel members (channel briefing, readable set, channel info, channel listing, join and leave) and `isLocalServer` out of `agent.ts` into an internal `agent-channels.ts`. `MeshAgent` keeps a forwarder for each public member. The package surface is unchanged.
+- 6ba51a8: Move the mesh agent's outgoing messaging (channel send and its receipt, role anycast with its status and cancel, DM with peer resolution, and the reply correlation behind them) with `closeChannelNames` and `presenceReadCondition` out of `agent.ts` into an internal `agent-messaging.ts`. `MeshAgent` keeps a forwarder for each public member. The package surface is unchanged.
+- dbc7fc8: Move the mesh agent's manager-facing commands (spawn, model inspection, manager endpoint listing, despawn, run, persona define/list/show, history purge) and `SPAWN_TIMEOUT_MS` out of `agent.ts` into an internal `agent-supervision.ts`. `MeshAgent` keeps a forwarder for each public command. The package surface is unchanged.
+- d0affc2: Move the mesh agent's run turns (native participation lease, turn relay and pull, turn surfacing, once-task claims and reports, and the yield) with their module helpers out of `agent.ts` into an internal `agent-turns.ts`. `MeshAgent` keeps the turn state suites reach into and a forwarder for each member called from outside the family. The package surface is unchanged.
+- 6f94063: A held `cotal_connect` no longer asks the host one extra time just after its hold ends. The pause that reaches the deadline is now the last one, so the hold ends with the open that follows it even when that pause's timer fires a little early.
+- 8708701: A session on a websocket mesh now reconnects after its connection dies without a reset, such as during a laptop sleep, and `cotal_disconnect` no longer hangs while the mesh is unreachable. When the ping check finds such a connection stale, the client stops waiting for the unanswered closing handshake after 5 seconds and reconnects. A failed websocket dial now names the URL it dialed, whether the socket had opened, how long it had been trying or open, and any reason given, where it used to say only `ConnectionError`. A Claude Code disconnect waits at most 3 seconds for the event plane before it stops the connection, so `cotal_connect` can connect the conversation again. A failed `cotal_reconnect` now advises calling it again, where it used to name `/reconnect`, a command Claude Code does not have.
+
+## 0.171.4
+
+### Patch Changes
+
+- 06a66f2: Local MCP clients get direct connection instructions, `input --json` reports an unregistered space as a structured refusal, and removing an absent extension succeeds without changing the installation.
+
+## 0.171.3
+
+### Patch Changes
+
+- 0c4b5c0: Fix `cotal mcp` shutdown so closing a stdio client retires its local identity without waiting for another CLI process or expired shutdown timers.
+- 03af687: The uninstall instructions now show where Cotal keeps settings and connectors and when it is safe to remove them.
+- 14ee1ad: A Claude Code seat whose connector started more than two seconds after the session no longer publishes nothing on the event plane for its whole session. The `SessionStart` hook at launch now keeps dialing the connector's control socket for up to 30 seconds, the time Claude gives an MCP server to connect, instead of giving up at two seconds and losing the only event that says where the transcript starts. A clear or a compaction keeps the two-second budget, and later hooks still fail open at once.
+
+## 0.171.2
+
+### Patch Changes
+
+- da8cb2b: Claude Code and Pi seats return to `idle` after their user interrupts a turn, and the run ends as an interrupt on the event plane. Claude Code fires no hook on an interrupt, so the connector now watches the open turn's transcript for the interrupt record Claude Code writes. That record sets presence to `idle`, clears any approval or input condition, and closes the run with `RUN_FINISHED` carrying an `interrupt` outcome. A Pi turn without a Cotal batch now publishes `idle` when it ends after an abort or an error. An aborted Pi turn, including one stopped during a tool call, ends with an `interrupt` outcome instead of `RUN_ERROR`.
+- 549b02c: An empty `cotal_wait` on a connection that cannot hear from the broker no longer returns the plain "No new messages" reply. It opens with the connection warning `cotal_inbox` gives and says only the local buffer was read. A connected wait keeps the plain reply.
+
+## 0.171.1
+
+### Patch Changes
+
+- 0eed499: When an update replaces the connector's docs files under a running session, `cotal_docs` still refuses to serve another release's docs, and the refusal now names the release the session loaded and says to restart the session to read the docs of the installed version.
+- a9ac959: A message that waits in a connector's queue past its acknowledgement wait is no longer shown as a broker redelivery with an unknown prior handoff. The connector records the first copy it received and the first copy it handed to its host. A message it never handed over carries no redelivery label. One it handed over without an acknowledgement says that an earlier handoff in this session was not confirmed. A first copy that was already a redelivery, as after a restart, still labels the prior model handoff unknown.
+- 1a98542: User-mode manager calls now report a refused bearer exchange as permission denied and confirm that the request did not run.
+
+## 0.171.0
+
+### Minor Changes
+
+- edd19cc: An agent owner's interactive session can now list an OpenCode 2.x agent's own commands and skills and run one, such as `/review`, which waits for the agent's next idle turn and can be cancelled until it starts, and the broker refuses every other caller.
+  
+  `@cotal-ai/core` advances the `agent` endpoint's cluster to revision 2 with four commands. `commands` lists `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once. `command-cancel` cancels a queued command by id, and `command-state` reads whether it is `queued`, `taken` or `started`, was `cancelled`, was `refused` with `not-found`, `failed-precondition` or `unavailable`, or ended `unknown`. The four declare the `owner` authority word only, so an interactive ledger row gets their caller rows, and no grant row can name them. `@cotal-ai/connector-core` adds `openAgentEndpoint`, the one owner of the agent serve, which replaces `openPromptDesk` and serves the prompt desk beside a command lane. Every `MeshAgent` with a user-auth credential opens it, with the connector's `commands` dispatcher or none. A command starts only while no turn runs. At most 8 are queued, with no time bound, stopping the agent refuses every queued one, and the agent remembers the last 32 to end. A connector takes each queued command with `dispatchNextCommand()` when `MeshAgent` emits `command`. An open or static mesh serves nothing yet. `@cotal-ai/connector-opencode` lists `GET /api/command` by name and `GET /api/skill` by id and runs a command through `/command` and a skill through `/prompt`. A first-turn command carries the persona's `system` field as a first message does, though OpenCode 2.2.5 passes it to the model for neither, and right after a command turn, waiting messages go first.
+
+### Patch Changes
+
+- 7e9479a: Clarify how to identify the broker executable, answer or resume a workflow, preview a team without its applications, and interpret the dashboard credential in `doctor auth`.
+- 3b8a019: Internal refactor: the inbox item types, limits and helpers now live in their own module. Inbox behaviour is unchanged.
+
 ## 0.170.0
 
 ### Patch Changes

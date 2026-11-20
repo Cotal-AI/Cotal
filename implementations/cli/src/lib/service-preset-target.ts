@@ -7,7 +7,7 @@ import { resolveServiceAdapter } from "./service-adapters.js";
 import { findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
-import { addedDefinitionStep, STACK_DEFINITION } from "./stack-journal.js";
+import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
 
 /** A preset name a service command resolved to the definition it acts on. `saved` says what this
@@ -104,7 +104,8 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
 }
 
 /** Resolve a preset name given to a service action to the one definition of this space it means.
- *  A saved definition of that exact name always wins and is returned as itself. Otherwise a start
+ *  A saved definition of that exact name usually wins. An unpinned manager status prefers a live
+ *  stack manager to a saved manager that is not running. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
  *  existing, stopped one with other options saves it again. With no saved `stack-manager`, stop and
  *  restart identify the manager `up` recorded by PID so their refusal names its stack stop. A log
@@ -116,9 +117,15 @@ export function resolvePresetService(space: string, root: string, requested: str
   const preset = findServicePreset(requested);
   const options = mode === "start" && preset ? namedOptions(requested, values) : [];
   if (exact) {
+    const launch = exact.record.value.launch;
+    if (mode === "status" && values.instance === undefined && preset?.name === "manager" && launch.type === "adapter" && launch.adapter === preset.adapter && !running(space, requested)) {
+      const stack = presetDefinitions(space, root, preset).find((row) => row.name === STACK_DEFINITION.manager);
+      if (stack && running(space, stack.name)) return { requested, name: stack.name, preset: preset.name, saved: null };
+      const recorded = recordedPresetProcess(space, root, preset);
+      if (recorded) return { requested, name: requested, preset: preset.name, saved: null, recorded };
+    }
     // A definition that is not this preset's takes no preset options on its start line.
     if (!options.length) return undefined;
-    const launch = exact.record.value.launch;
     if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}`, remedyIsCommand: true });
     return redefine(space, root, preset!, exact, requested, options, values);
   }
@@ -168,6 +175,11 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);
+  // The manager adapter also checks this before launching. Reject an invalid override before
+  // replacing the saved definition or retiring its stopped instance.
+  const consoleHost = merged["console-host"];
+  if (launch.adapter === STACK_ADAPTER.manager && changed.includes("console-host") && typeof consoleHost === "string" && /[\u0000- \u007f]/u.test(consoleHost))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; nothing was changed", { target: { space, name: row.name }, selfContained: true });
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   let retired: string[] = [];

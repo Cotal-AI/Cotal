@@ -35,6 +35,8 @@ try {
     // Registry unavailability returns success without replacement, after real destination preflight.
     const repaired = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
     check.equal(repaired.status, 0, repaired.stderr);
+    check.equal(repaired.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+    check.equal(existsSync(join(cotal, "update-recovery.json")), false, "offline update leaves an absent recovery file absent");
     check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
     for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
     const release = claimGlobalNpmUpdateLock(join(prefix, "lib/node_modules"));
@@ -49,6 +51,26 @@ const chmod = fs.chmodSync;
 fs.chmodSync = (path, mode) => { if (path === ${JSON.stringify(installed)}) throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); return chmod(path, mode); };
 syncBuiltinESMExports();\n`);
   const nodeOptions = env.NODE_OPTIONS;
+  const connectorRoot = join(config, "cotal"), seed = join(connectorRoot, "seed");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  chmodSync(seed, 0o500);
+  chmodSync(connectorRoot, 0o500);
+  const repairedConfig = run({ npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" });
+  check.equal(repairedConfig.status, 0, repairedConfig.stderr);
+  check.equal(lstatSync(seed).mode & 0o777, 0o700);
+  check.equal(lstatSync(connectorRoot).mode & 0o777, 0o700);
+  const readOnlyConnector = join(root, "read-only-connector.mjs");
+  writeFileSync(readOnlyConnector, readFileSync(readOnly, "utf8").replace(JSON.stringify(installed), JSON.stringify(seed)));
+  chmodSync(seed, 0o500);
+  try {
+    const denied = run({ NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(readOnlyConnector).href}` });
+    check.equal(denied.status, 2, denied.stderr);
+    check.ok(denied.stderr.includes(seed), denied.stderr);
+    check.match(denied.stderr, /No CLI update was staged/);
+    check.match(denied.stderr, /run `cotal update --self` again/);
+    check.doesNotMatch(denied.stdout, /Checking .*release archives/);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  } finally { chmodSync(seed, 0o700); }
   // Represent root ownership on runners that cannot chown to root. Keep the real write-access check.
   const rootOwned = join(root, "root-owned.mjs");
   writeFileSync(rootOwned, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';

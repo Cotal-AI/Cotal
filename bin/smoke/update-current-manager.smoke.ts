@@ -2,7 +2,7 @@ import "../../implementations/cli/smoke/update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -23,6 +23,14 @@ if (process.platform !== "linux") {
   const entry = realpathSync.native(join(installed, "dist/cotal.js"));
   mkdirSync(join(root, "prefix/bin"));
   symlinkSync(entry, join(root, "prefix/bin/cotal"));
+  const version = JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version as string;
+  const seedCurrent = (config: string) => {
+    const seed = join(config, "cotal/seed");
+    mkdirSync(seed, { recursive: true, mode: 0o700 });
+    for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
+  };
   const installerOnly = process.argv.includes("--installer-restart");
   try {
     for (const checkout of installerOnly ? [] : [false, true]) {
@@ -51,11 +59,10 @@ console.log('LEGACY_READS=' + legacyReads);
 `;
       const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: home, env, encoding: "utf8", timeout: 30_000 });
       assert.equal(result.status, 0, result.stdout + result.stderr);
-      assert.match(result.stdout, new RegExp(`LEGACY_READS=${checkout ? 1 : 0}`), "installed no-op uses retained reads, while a source checkout keeps the in-place report");
-      if (checkout) assert.match(result.stdout, /later update will require stopping/i);
-      else assert.doesNotMatch(result.stdout, /later update will require stopping/i);
+      assert.match(result.stdout, /LEGACY_READS=0/, "a current package closure does not read Manager custody");
+      assert.doesNotMatch(result.stdout, /later update will require stopping/i);
     }
-    if (!installerOnly) console.log("current Manager report: installed retention and checkout isolation pass");
+    if (!installerOnly) console.log("current package closure: installed CLI and checkout skip Manager custody");
 
     // Exercise the public installed entry against a real standalone stack and local daemon.
     const payload = spawnSync(process.execPath, [join(repo, "bin/scripts/copy-seeded-connectors.mjs")], { cwd: repo, encoding: "utf8" });
@@ -112,22 +119,52 @@ console.log('LEGACY_READS=' + legacyReads);
       assert.deepEqual(JSON.parse(final.stdout).result.managers.map((manager: { instanceId: string }) => manager.instanceId), initialManagers.map((manager: { instanceId: string }) => manager.instanceId), "reconciliation does not restart the standalone Manager");
       assert.equal(daemon.exitCode, null, "reconciliation leaves the foreground daemon running");
       console.log("standalone update: succeeds with and without a reachable daemon, without restarting the Manager");
+
+      const otherPrefix = join(root, "other"), other = join(otherPrefix, "lib/node_modules/cotal-ai");
+      cpSync(join(installed, "dist"), join(other, "dist"), { recursive: true });
+      cpSync(join(installed, "package.json"), join(other, "package.json"));
+      symlinkSync(join(repo, "bin/node_modules"), join(other, "node_modules"));
+      mkdirSync(join(otherPrefix, "bin"));
+      symlinkSync(join(other, "dist/cotal.js"), join(otherPrefix, "bin/cotal"));
+      const otherHome = join(root, "other-home"), config = join(otherHome, "config");
+      // The other installation previously removed its built-ins and needs no reconciliation.
+      seedCurrent(config);
+      const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
+      await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
+      try {
+        // Keep the live Manager's launch entry unavailable, as during a concurrent npm replacement.
+        renameSync(entry, `${entry}.reinstall`);
+        try {
+          const child = spawn(process.execPath, [join(other, "dist/cotal.js"), "update", "--self"], {
+            cwd: otherHome, stdio: ["ignore", "pipe", "pipe"], timeout: 30_000,
+            env: { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"), XDG_CONFIG_HOME: config,
+              XDG_RUNTIME_DIR: join(otherHome, "runtime"), TMPDIR: otherHome,
+              npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
+          });
+          let output = "";
+          child.stdout.on("data", data => { output += String(data); });
+          child.stderr.on("data", data => { output += String(data); });
+          const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+          assert.equal(code, 0, output);
+          assert.match(output, /installed package closure is current\. No connector reconciliation was run\./);
+        } finally { renameSync(`${entry}.reinstall`, entry); }
+      } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
+      const unchanged = cli("ps", "--json");
+      assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
+      assert.deepEqual(JSON.parse(unchanged.stdout).result.managers.map((manager: { instanceId: string }) => manager.instanceId), initialManagers.map((manager: { instanceId: string }) => manager.instanceId), "the current self-update leaves the other installation's Manager running");
+      console.log("current self-update: ignores the other installation's live Manager with an unresolved entry");
     } finally {
       const down = cli("down", "--yes");
       if (daemon?.exitCode === null) { daemon.kill("SIGTERM"); await daemonExit; }
       assert.equal(down.status, 0, down.stdout + down.stderr);
     }
 
-    const version = JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version as string;
     const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
     await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
     try {
-      const native = join(root, "native"), config = join(home, "installer-config"), seed = join(config, "cotal/seed");
-      mkdirSync(seed, { recursive: true, mode: 0o700 });
+      const native = join(root, "native"), config = join(home, "installer-config");
       // This home previously removed its built-ins. Reconciliation should keep them removed.
-      for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
-      writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
-      writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
+      seedCurrent(config);
       const unit = "cotal-daemon.service", unitPath = join(config, "systemd/user", unit);
       const unitSource = `[Service]\nExecStart="${process.execPath}" "${entry}" daemon serve\nRestart=always\n`;
       mkdirSync(native, { mode: 0o700 });

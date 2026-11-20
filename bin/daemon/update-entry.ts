@@ -6,13 +6,13 @@ import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
 import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
-import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
+import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, recordUpdateActivation, writeUpdateRecovery, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
-import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
+import { daemonPaths, daemonUserServiceEnv, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, linuxMissingProgram, planUninstall, preflightInstalledDaemon, reconcileMissingShellRuntime, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { isDaemonStatusInterrupted, waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -23,7 +23,9 @@ import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainCo
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
-import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
+import { hasUpdateDaemonLifetime, observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
+import { daemonServiceRequirement, foreignDaemonUpdateReport } from "./guidance.js";
+import { observeExecutionVersion, selectExecutionProgram } from "../cotal.js";
 
 /** A reconcile child of a parent that said it waits after the child and prints the line. A parent
  *  from before that marker never waits there, so its child keeps the line. */
@@ -46,7 +48,7 @@ async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Prom
       }
       const installation = installedDaemonIdentity(paths);
       if (!installation.same) {
-        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update did not start or stop it.`);
+        if (!quiet) console.log(foreignDaemonUpdateReport(installation.installedEntry));
         started = true;
         return false;
       }
@@ -102,7 +104,7 @@ async function collectConnectorSets(): Promise<void> {
         const version = (reply.data as { version?: unknown } | undefined)?.version;
         holders.push(typeof version === "string" ? version : undefined);
       }
-      try {
+      if (hasUpdateDaemonLifetime()) {
         const paths = daemonPaths();
         const reply = await queryDaemon({ paths });
         if (!reply.ok) return;
@@ -112,10 +114,6 @@ async function collectConnectorSets(): Promise<void> {
         // Their separate records must all have appeared in the authenticated inventory.
         if ((reply.result.managers ?? []).some(row => row.pid !== undefined && !managers.some(manager => manager.pid === row.pid && manager.instanceId === row.instanceId))) return;
         holders.push(reply.result.version);
-      } catch (error) {
-        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return;
-        if (error.code === "NO_RUNTIME_DIR" && existsSync(join(homeCotalDir(), "daemon", "daemon.lock"))) return;
-        assertDaemonReachable();
       }
       if (managers.some(manager => !manager.process || assertRecordIdentity(manager.process).kind !== "match")) return;
       pruneRetainedConnectorConfig(holders);
@@ -138,6 +136,7 @@ const composed: Command = { ...command, async run(args) {
   let reconcileDaemonObserved = false;
   let recoveryFence = false;
   let repairService: DaemonPaths | undefined;
+  let repairServiceStopped = false;
   let interruptedChildRoot: string | undefined;
   let legacyRepair = false;
   let admission: UpdateAdmission | undefined;
@@ -148,6 +147,8 @@ const composed: Command = { ...command, async run(args) {
     const release = claimUpdateClosureAccess(); release();
     admission = recoveryAdmission.admission;
   }
+  const systemdActivationDeferred = () => process.platform === "linux" && admission?.disposition === "deferred" &&
+    admission.reason.startsWith("the systemd user manager did not answer `systemctl --user show-environment`");
   const deferActivation = (reason: string, occupied: number | null = null) => {
     admission = { disposition: "deferred", occupied, hostedSpaces: admission?.hostedSpaces ?? [], reason: reason.slice(0, 2000) };
   };
@@ -177,7 +178,7 @@ const composed: Command = { ...command, async run(args) {
     admission = { disposition: "restart-empty", occupied: 0, hostedSpaces: plan.hostedSpaces };
   };
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
-  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
+  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution();
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()), { retainGraph: true });
   /** Target admission covers the daemon and the Managers it hosts. Every other local Manager keeps
@@ -200,7 +201,15 @@ const composed: Command = { ...command, async run(args) {
     }
   };
   try {
-  if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
+  if (args.values.self === true && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_AUTO_UPDATE && !process.env.COTAL_UPDATE_PARENT && (process.platform === "darwin" || process.platform === "linux")) {
+    let paths: DaemonPaths | undefined;
+    try { paths = daemonPaths(); }
+    catch (error) {
+      if (process.platform !== "linux" || !(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error;
+      if (linuxMissingProgram({ state: join(homeCotalDir(), "daemon") })) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the recorded daemon program is missing and this session cannot reach the user service", { remedy: "run `cotal daemon install` from a logged-in session using the working Cotal installation" });
+    }
+    if (paths && await repairMissingInstalledProgram(paths)) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
+  }
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
     if (prefix && existsSync(join(prefix, "lib/node_modules/.cotal-update-child"))) {
@@ -226,19 +235,26 @@ const composed: Command = { ...command, async run(args) {
     }
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
-    claimGlobalUpdate: (root: string) => claimGlobalNpmUpdateLock(root, legacyRepair && root === interruptedChildRoot ? { waitMs: 10 * 60_000, repairAmbiguous: () => {
+    claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait, ...(legacyRepair && root === interruptedChildRoot ? { repairAmbiguous: () => {
+      const ancestors = new Set<number>();
+      const unavailable = () => new CommandFailure("refused", "LIFECYCLE_BLOCKED", "The interrupted update cannot be recovered until the systemd user manager answers on the user bus. Run `cotal update --self` again when it is available.", {
+        native: { outcome: "not-executed" },
+      });
+      let native: string;
+      try {
+        native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { env: daemonUserServiceEnv(), encoding: "utf8", timeout: 6000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+      } catch { throw unavailable(); }
+      const manager = /^u ([1-9]\d*)$/.exec(native);
+      if (!manager) throw unavailable();
+      const managerPid = Number(manager[1]);
+      const managerStart = processBirth(managerPid);
+      if (!managerStart) throw unavailable();
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
-        submitSystemdUnitControl("stop", plan.unit);
+        submitSystemdUnitControl("stop", plan.unit, daemonUserServiceEnv());
+        repairServiceStopped = true;
       }
-      const ancestors = new Set<number>();
-      const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000 }).trim();
-      const manager = /^u ([1-9]\d*)$/.exec(native);
-      if (!manager) throw new Error("the native user manager PID could not be authenticated for repair");
-      const managerPid = Number(manager[1]);
-      const managerStart = processBirth(managerPid);
-      if (!managerStart) throw new Error("the native user manager lifetime is unreadable");
       for (let pid = process.pid; pid > 1 && !ancestors.has(pid);) {
         ancestors.add(pid);
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -264,11 +280,21 @@ const composed: Command = { ...command, async run(args) {
         }
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
-    } } : { waitMs: 10 * 60_000 }),
+    } } : {}) }),
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
+      globalVersion: () => observeExecutionVersion(executionInstallRoot()),
+      verifyUpdatedEntry: (root: string, version: string) => {
+        const installed = executionInstallRoot();
+        const selected = selectExecutionProgram(installed);
+        const selectedVersion = updateRuntime.globalVersion!(dirname(selected.root));
+        if (selectedVersion !== version) throw new Error("the selected execution changed before the update recheck");
+        const packageVersion = updateRuntime.globalVersion!(root);
+        if (!packageVersion) throw new Error("the installed global package is missing");
+        return verifyGlobalEntry(root, packageVersion);
+      },
       prepareExecution: async (version: string, root: string) => {
         const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = receipt.admission; hostedSpaces = [...receipt.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; });
         replacementVersion = version;
@@ -285,14 +311,16 @@ const composed: Command = { ...command, async run(args) {
     const entry = logicalExecutionEntry();
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
     let hostedInstances = new Set<string | undefined>();
-    try {
-      const daemon = await reconcileDaemonStatus(daemonPaths());
-      if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
-      reconcileDaemonObserved = standaloneReconcile;
-      hostedInstances = new Set((daemon.result.managers ?? []).map(manager => manager.instanceId));
-    } catch (error) {
-      if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
-      if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
+    if (args.values.self !== true || hasUpdateDaemonLifetime()) {
+      try {
+        const daemon = await reconcileDaemonStatus(daemonPaths());
+        if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
+        reconcileDaemonObserved = standaloneReconcile;
+        hostedInstances = new Set((daemon.result.managers ?? []).map(manager => manager.instanceId));
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
+        if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
+      }
     }
     const managers = localUpdateManagers(flags, entry).filter(manager => !hostedInstances.has(manager.instanceId));
     if (!managers.length) return;
@@ -314,15 +342,24 @@ const composed: Command = { ...command, async run(args) {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {
+    const systemdAdvice = () => {
+      const requirement = daemonServiceRequirement();
+      return requirement && `${requirement.message} ${requirement.remedy}`;
+    };
     try {
       const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`machine daemon update schedule is unreadable: ${reply.error.message}`);
       if (!reply.result.update) throw new Error("machine daemon returned no update schedule; run `cotal daemon status` to inspect it");
       if (reply.result.update.automatic && typeof reply.result.update.nextAttempt === "string") return undefined;
-      return "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it. If no daemon service is installed, run `cotal daemon install`.";
+      const inactive = "The daemon is not scheduling automatic installation. Run `cotal daemon status` to inspect it.";
+      const unsupported = systemdAdvice();
+      return `${inactive} ${unsupported ?? "If no daemon service is installed, run `cotal daemon install`."}`;
     } catch (error) {
+      if (error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER") {
+        return `Could not check the automatic update schedule: ${error.message}.`;
+      }
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
-        return "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
+        return systemdAdvice() ?? "No daemon service is running the automatic update schedule. Run `cotal daemon install`, then inspect `cotal daemon status`.";
       }
       throw error;
     }
@@ -370,7 +407,19 @@ const composed: Command = { ...command, async run(args) {
       }
     };
   }, waitForInstalledGeneration: async (version: string) => {
-    if (admission?.disposition === "deferred") return;
+    if (admission?.disposition === "deferred") {
+      // The reconcile child must finish successfully. The publishing parent owns the final outcome.
+      if (!systemdActivationDeferred() || !targetReceipt?.daemon) return;
+      const pid = targetReceipt.daemon.pid;
+      let current: Awaited<ReturnType<typeof queryDaemon>> | undefined;
+      try { current = await queryDaemon({ paths: daemonPaths(), timeoutMs: 5_000 }); }
+      catch { /* Activation is already deferred. Do not claim that an unreadable PID still answers. */ }
+      if (current?.ok && current.result.version === version && current.result.state === "ready") return;
+      const daemon = current?.ok && current.result.pid === pid
+        ? `machine daemon PID ${pid} still runs Cotal ${current.result.version}`
+        : `could not confirm activation of the machine daemon (previous PID ${pid})`;
+      return `machine daemon activation deferred: cotal-ai@${version} was installed and reconciled, but ${daemon}. The systemd user manager did not answer. Run \`cotal update\` from a session where \`systemctl --user show-environment\` answers.`;
+    }
     if (process.platform === "linux" && process.env.COTAL_AUTO_UPDATE === "1") {
       const paths = daemonPaths();
       if (existsSync(unitReceiptFile(paths)) && installedDaemonIdentity(paths).same) {
@@ -440,6 +489,8 @@ const composed: Command = { ...command, async run(args) {
       console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");
       return "none";
     }
+    if (staged && args.values.self === true && !hasUpdateDaemonLifetime())
+      return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {
       const paths = daemonPaths();
@@ -472,8 +523,8 @@ const composed: Command = { ...command, async run(args) {
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
-      const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
-      if (!currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
+      const status = reply.data as { agentCount?: number; custody?: string };
+      if (status.custody === "legacy" && status.agentCount !== 0) {
         const instanceId = manager.instanceId;
         const inventory = await withIdpSessionDir(homeCotalDir(), async () => {
           const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
@@ -500,10 +551,6 @@ const composed: Command = { ...command, async run(args) {
             if (!empty.ok || (empty.data as { agentCount?: number })?.agentCount !== 0) throw new Error("hosted Manager still has running agents; update deferred");
           });
         } });
-      }
-      if (currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
-        const names = status.stopImpact?.agents.map(agent => agent.name);
-        console.log(`hosted Manager ${manager.instanceId}: a later update will require stopping its agents${names?.length ? ` (${names.join(", ")})` : ""}`);
       }
       console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} answered; ${status.agentCount ?? "unknown"} seat(s)`);
     }
@@ -554,14 +601,23 @@ const composed: Command = { ...command, async run(args) {
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
-  await collectConnectorSets();
+  if (!currentPackages) await collectConnectorSets();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
+    if (systemdActivationDeferred()) {
+      console.log(`machine daemon: ${admission.reason}. Activation was not attempted.`);
+      return;
+    }
     console.log(`machine daemon activation deferred: ${admission.reason}; software update finished; run \`cotal daemon status\` to inspect what still needs a restart`);
     return;
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
+  // Current packages need no Manager census or restart. Keep the guarded start of a stopped native service.
+  if (currentPackages) {
+    const state = join(homeCotalDir(), "daemon");
+    if (daemonObserved || !existsSync(unitReceiptFile({ state })) || await observeUpdateDaemon()) return;
+  }
   // This process keeps the release it loaded. The daemon must run the selected or installed release.
   const expectedVersion = replacementVersion ?? installedCliVersion();
   // A version-changing update already waited for the installed generation before it returned.
@@ -574,7 +630,6 @@ const composed: Command = { ...command, async run(args) {
     }
     return;
   }
-  if (currentPackages) return;
   const paths = daemonPaths();
   const current = standaloneReconcile ? await reconcileDaemonStatus(paths, true) : await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
@@ -583,9 +638,10 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   if (process.env.COTAL_INSTALL_RECONCILE === "1") reconcileMissingShellRuntime(paths);
+  if (process.platform === "linux" && linuxMissingProgram(paths)) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon program is missing", { remedy: "run `cotal daemon install` from a working Cotal installation to repair the recorded service" });
   const installation = installedDaemonIdentity(paths);
   if (!installation.same) {
-    console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
+    console.log(`${foreignDaemonUpdateReport(installation.installedEntry)} The daemon is running Cotal ${current.result.version}.`);
     return;
   }
   if (current.result.version !== expectedVersion) {
@@ -614,7 +670,7 @@ const composed: Command = { ...command, async run(args) {
   } finally {
     closeWindowsGeneration();
     if (repairService) {
-      await startEnabledInstalled(repairService, undefined);
+      if (repairServiceStopped) await startEnabledInstalled(repairService, undefined);
       try { await managerViaDaemon({ paths: repairService }, { op: "managers-abort-restart" }); }
       catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NOT_RUNNING") throw error; }
     }

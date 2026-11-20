@@ -1,17 +1,20 @@
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
 import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
-import { claimUpdateClosureAccess } from "./update-closure.js";
+import { claimUpdateClosureAccess, liveUpdateClosureOwner } from "./update-closure.js";
+import { readUpdateRecovery } from "./updates.js";
 import { readMeshRegistry } from "./mesh-registry.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
 import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
 import { probeLiveness } from "./liveness.js";
+import { protectedResolvedDirectory } from "./protected-records.js";
+import { CommandFailure } from "./output.js";
 
 interface ConnectorHolder {
   v: 1;
@@ -87,7 +90,8 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
   // Older process records do not pin a connector version. Keep every set while any
   // recorded holder may still use one, rather than infer its prefix from file age.
   try {
-    if (previousConfig(id) !== join(id.path, "cotal")) return;
+    if (updateSnapshot(id)) return;
+    if (previousConfig(id) !== currentConfig({ ...id })) return;
     // Controller services have a separate protected custody store. Without a
     // complete controller observation, none of their possible prefixes is idle.
     if (!holders && existsSync(join(homeCotalDir(), "services"))) return;
@@ -115,10 +119,15 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
     }
     const sets = dirname(id.path);
     ownedAncestors(sets);
+    // The reconcile child can borrow the update lock before final execution verification.
+    // Keep the set that contains the parent's rollback snapshot until the journal is cleared.
+    const snapshot = readUpdateRecovery()?.snapshot;
+    const rollbackConfig = snapshot && /^\.update-snapshot-/.test(basename(snapshot)) ? dirname(resolve(snapshot)) : undefined;
+    const rollbackSet = rollbackConfig && /^cotal(?:-[a-f0-9]{16})?$/.test(basename(rollbackConfig)) ? dirname(rollbackConfig) : undefined;
     for (const name of readdirSync(sets)) {
       if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
       const path = join(sets, name);
-      if (path === id.path || keep.has(name)) continue;
+      if (path === id.path || keep.has(name) || resolve(path) === rollbackSet) continue;
       try { ownedAncestors(path); if (setHasHolders(path)) continue; rmSync(path, { recursive: true, force: true }); }
       catch { console.error(`connector set cleanup: could not remove ${name}; the update remains selected`); }
     }
@@ -135,7 +144,7 @@ export function pruneRetainedConnectorConfig(holders: readonly (string | undefin
   } catch { /* Cleanup must never fail a successful update. */ }
 }
 
-interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string }
+interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string; readonly snapshot?: string }
 function retentionEntryKey(logicalEntry: string): string {
   // pnpm dlx unpacks into `<cache>/pnpm/dlx/<pkg-hash>/<instance-id>/node_modules/...` and replaces
   // `<instance-id>` whenever its dlx cache refreshes. Keying across that transient segment keeps
@@ -162,18 +171,20 @@ function ownedDirectory(path: string): void {
 }
 function ownedAncestors(path: string): void {
   const config = resolve(globalConfigDir());
+  protectedResolvedDirectory(config, "the connector config folder");
   for (let parent = path; parent !== config; parent = dirname(parent)) {
     if (parent === dirname(parent)) throw new Error("connector retention escaped its config directory");
     ownedDirectory(parent);
   }
 }
-function previousConfig(id: { entry: string; path: string }): string | undefined {
+function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
   const sets = dirname(id.path);
   const bytes = readLocalRecordSource(join(sets, "current.json"), 8192, true);
   if (!bytes) return;
   ownedAncestors(sets);
   const record = JSON.parse(bytes.toString("utf8")) as Selection;
-  if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || record.root !== join(sets, record.version, "cotal")) throw new Error("invalid previous connector retention selection");
+  if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || dirname(record.root) !== join(sets, record.version) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("invalid previous connector retention selection");
+  prepare?.(record.root);
   ownedAncestors(record.root);
   for (const name of ["seed", "extensions"]) {
     const path = join(record.root, name), stat = lstatSync(path, { throwIfNoEntry: false });
@@ -182,28 +193,105 @@ function previousConfig(id: { entry: string; path: string }): string | undefined
   return record.root;
 }
 
-function currentConfig(id: { entry: string; version: string; path: string }): string | undefined {
+function updateSnapshot(id: { entry: string; version: string; path: string }): string | undefined {
+  // Extension validation temporarily selects its private stage through XDG_CONFIG_HOME.
+  if (basename(dirname(globalConfigDir())) === "config" && basename(dirname(dirname(globalConfigDir()))).startsWith(".extensions.stage-")) return;
+  if (process.env.COTAL_UPDATE_PARENT !== String(process.ppid)) return;
+  const record = readUpdateRecovery();
+  if (!record || record.phase !== "replacing" || record.target !== id.version || record.owner?.pid !== process.ppid || !liveUpdateClosureOwner(record) || !record.snapshot) return;
+  const snapshot = record.snapshot, source = dirname(snapshot);
+  const sets = dirname(id.path);
+  const retained = dirname(dirname(source));
+  if (!basename(snapshot).startsWith(".update-snapshot-") ||
+      (source !== globalConfigDir() && (retained !== sets || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(source))))) throw new Error("update connector snapshot does not belong to this installation");
+  if (source !== globalConfigDir()) ownedAncestors(source);
+  ownedDirectory(snapshot);
+  return snapshot;
+}
+
+function currentConfig(id: { entry: string; version: string; path: string }, prepare?: (path: string) => void): string | undefined {
   if (existsSync(id.path)) ownedAncestors(id.path);
   const bytes = readLocalRecordSource(join(id.path, "selection.json"), 8192, true);
   if (!bytes) {
-    const previous = previousConfig(id);
-    return previous === join(id.path, "cotal") ? previous : undefined;
+    const snapshot = updateSnapshot(id);
+    const previous = previousConfig(id, snapshot ? undefined : prepare);
+    return previous && dirname(previous) === id.path && !snapshot ? previous : undefined;
   }
   ownedAncestors(id.path);
   const record = JSON.parse(bytes.toString("utf8")) as Selection;
-  if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || record.root !== join(id.path, "cotal")) throw new Error("connector retention selection differs from this installation");
+  if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || dirname(record.root) !== id.path || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("connector retention selection differs from this installation");
+  const snapshot = updateSnapshot(id);
+  if (!snapshot || record.snapshot === snapshot) prepare?.(record.root);
   ownedDirectory(record.root);
   for (const name of ["seed", "extensions"]) {
     const path = join(record.root, name);
     if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error(`retained connector state is not a real directory: ${path}`);
   }
-  return record.root;
+  return snapshot && record.snapshot !== snapshot ? undefined : record.root;
 }
 
-/** Read selected or predecessor state, legacy state when present, or the fresh installation's future root. */
+/** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */
 export function connectorConfigDir(): string {
   const id = identity();
-  return id ? currentConfig(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+  return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+}
+
+/** Restore write access before staging, without touching another installation or following managed links. */
+export function prepareConnectorConfigForUpdate(): void {
+  const config = resolve(globalConfigDir());
+  const what = "the Cotal connector configuration";
+  const refuse = (path: string, reason: string): never => {
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} at ${path} ${reason}. No CLI update was staged.`, {
+      target: { path }, native: { outcome: "not-executed" },
+      remedy: "Make the named directory a real directory owned and writable by your account, then run `cotal update --self` again.",
+    });
+  };
+  const writable = (path: string, mode: number): void => {
+    try { accessSync(path, mode); }
+    catch { refuse(path, "cannot be accessed for updates by this account"); }
+  };
+  let ancestor = dirname(config);
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+  protectedResolvedDirectory(ancestor, what);
+
+  const repair = (path: string): boolean => {
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    if (!stat) return false;
+    if (!stat.isDirectory() || stat.uid !== process.getuid?.()) refuse(path, "is not a real directory owned by this account");
+    const mode = (stat.mode & 0o7755) | 0o200;
+    try { if (mode !== (stat.mode & 0o7777)) chmodSync(path, mode); }
+    catch { refuse(path, "could not be made writable by this account"); }
+    writable(path, constants.R_OK | constants.W_OK | constants.X_OK);
+    return true;
+  };
+  if (!repair(config)) { writable(ancestor, constants.W_OK | constants.X_OK); return; }
+  protectedResolvedDirectory(config, what);
+  const repairPath = (path: string): void => {
+    if (path === config) return;
+    const child = relative(config, path);
+    if (child === ".." || child.startsWith(`..${sep}`)) throw new Error("connector selection escaped its config directory");
+    let dir = config;
+    for (const name of child.split(sep)) {
+      dir = join(dir, name);
+      if (!repair(dir)) return;
+      if (dir !== path) ownedDirectory(dir);
+    }
+  };
+  const id = identity();
+  if (id) repairPath(id.path);
+  const current = id && currentConfig(id, repairPath);
+  // A bound downgrade inherits its snapshot into a new root, never the existing generation.
+  if (id && !current && updateSnapshot(id)) return;
+  const selected = current ?? (id && previousConfig(id, repairPath)) ?? config;
+  const walk = (path: string): void => {
+    if (!repair(path)) return;
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(path, entry.name));
+    }
+  };
+  for (const name of ["seed", "extensions"]) walk(join(selected, name));
+  // Retention removes an unfinished same-version copy before it copies the selected source.
+  if (id && !current && existsSync(id.path)) walk(id.path);
 }
 
 /** Implicit recovery may mutate current or canonical state, never a predecessor exposed only for reads. */
@@ -224,7 +312,11 @@ export function retainConnectorConfig(): string {
   if (!id) throw new Error("retained connector reconciliation requires an installed POSIX execution");
   const selected = currentConfig(id);
   if (selected !== undefined) return selected;
-  const current = previousConfig(id) ?? globalConfigDir();
+  const snapshot = updateSnapshot(id);
+  const current = snapshot ?? previousConfig(id) ?? globalConfigDir();
+  let ancestor = current;
+  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+  protectedResolvedDirectory(ancestor, "the connector config folder");
   const releaseClosure = claimUpdateClosureAccess();
   let releaseWriter = () => {};
   let releaseSeed = () => {};
@@ -242,8 +334,8 @@ export function retainConnectorConfig(): string {
     assertExtensionPrefixIdle(current);
     const published = currentConfig(id);
     if (published !== undefined) return published;
-    if ((previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
-    if (current !== globalConfigDir()) {
+    if ((updateSnapshot(id) ?? previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
+    if (!snapshot && current !== globalConfigDir()) {
       const sourcePath = dirname(current);
       const sourceSelection = join(sourcePath, "selection.json");
       if (!readLocalRecordSource(sourceSelection, 8192, true)) {
@@ -255,16 +347,18 @@ export function retainConnectorConfig(): string {
     }
     mkdirSync(id.path, { recursive: true, mode: 0o700 });
     ownedAncestors(id.path);
-    const root = join(id.path, "cotal");
-    // Neither selection names this set. Its unpublished copy can be rebuilt, but
-    // even an interrupted publication must keep any live or unproven seat holder.
-    if (readdirSync(id.path).length) {
+    const root = join(id.path, snapshot && existsSync(join(id.path, "cotal")) ? `cotal-${randomBytes(8).toString("hex")}` : "cotal");
+    // Without a snapshot, neither selection names this set. Its unpublished copy
+    // can be rebuilt, but any live or unproven seat holder must remain protected.
+    // A snapshot replaces a possibly published set, so keep its existing roots.
+    if (!snapshot && readdirSync(id.path).length) {
       if (setHasHolders(id.path, true)) throw new Error(`unfinished retained connector state has seat holders: ${root}`);
       const stat = lstatSync(root, { throwIfNoEntry: false });
       if (stat) ownedDirectory(root);
       rmSync(id.path, { recursive: true });
       mkdirSync(id.path, { mode: 0o700 });
     }
+    if (existsSync(root)) throw new Error(`unfinished retained connector state requires inspection: ${root}`);
     const staging = mkdtempSync(join(id.path, ".preparing-"));
     try {
       for (const name of ["seed", "extensions"]) {
@@ -276,10 +370,10 @@ export function retainConnectorConfig(): string {
       }
       renameSync(staging, root);
     } finally { if (existsSync(staging)) rmSync(staging, { recursive: true }); }
-    if (realpathSync(root) !== root) throw new Error("retained connector state resolved through a link");
-    mkdirSync(join(id.path, "holders"), { mode: 0o700 });
-    writeFileSync(join(id.path, "holders-v1.json"), '{"v":1}\n', { flag: "wx", mode: 0o600 });
-    const record: Selection = { v: 1, entry: id.entry, version: id.version, root };
+    if (realpathSync(root) !== join(realpathSync(id.path), basename(root))) throw new Error("retained connector state resolved through a link");
+    mkdirSync(join(id.path, "holders"), { mode: 0o700, recursive: true });
+    if (!existsSync(join(id.path, "holders-v1.json"))) writeFileSync(join(id.path, "holders-v1.json"), '{"v":1}\n', { flag: "wx", mode: 0o600 });
+    const record: Selection = { v: 1, entry: id.entry, version: id.version, root, ...(snapshot ? { snapshot } : {}) };
     const next = join(dirname(id.path), `.current-${randomBytes(8).toString("hex")}`);
     writeFileSync(next, JSON.stringify(record), { flag: "wx", mode: 0o600 });
     renameSync(next, join(dirname(id.path), "current.json"));

@@ -1,5 +1,64 @@
 # @cotal-ai/core
 
+## 0.171.5
+
+### Patch Changes
+
+- 24daff4: Move the endpoint's anycast request rail out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- 3ea52d4: Move the endpoint's durable consumers out of `endpoint.ts` into their own internal component. The package's exports are unchanged.
+- 7b216e3: Drop the endpoint's private forwarders that only other internal components called; those components now reach the owning component directly. The package's exports are unchanged.
+- 11081d7: Move the endpoint's agent-side durable membership out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- 2f6ff7a: Move the endpoint's principal serve and `prompts` presence internals into an internal component. `servePrincipal`, `setPromptsPresence`, `nextPromptsSeq` and `callPrincipal` stay on the endpoint and behave as before. The package's exports are unchanged.
+- 3d6a37f: The launch watcher reclaims temporary files without spinning when the agent's `PATH` does not include `sleep` or `rm`.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- 8708701: A session on a websocket mesh now reconnects after its connection dies without a reset, such as during a laptop sleep, and `cotal_disconnect` no longer hangs while the mesh is unreachable. When the ping check finds such a connection stale, the client stops waiting for the unanswered closing handshake after 5 seconds and reconnects. A failed websocket dial now names the URL it dialed, whether the socket had opened, how long it had been trying or open, and any reason given, where it used to say only `ConnectionError`. A Claude Code disconnect waits at most 3 seconds for the event plane before it stops the connection, so `cotal_connect` can connect the conversation again. A failed `cotal_reconnect` now advises calling it again, where it used to name `/reconnect`, a command Claude Code does not have.
+
+## 0.171.4
+
+### Patch Changes
+
+- 38a233e: Move the endpoint's connection bind and teardown out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- 7f6cda9: Move the endpoint's rebuild and retry pacing out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+
+## 0.171.3
+
+### Patch Changes
+
+- d4b3949: Move the endpoint's bearer and credential renewal out of `endpoint.ts` into its own internal component. The package's exports are unchanged.
+- eb7fd6a: Validate spawn agent names, channel flags, foreground working directories, structured detached pre-send refusals, and empty `--cwd` and `--root` flags before provisioning or writing records.
+
+## 0.171.2
+
+### Patch Changes
+
+- 08ac896: Move the endpoint's dialing, auth options, bearer lifetimes and reachability probes out of `endpoint.ts` into their own module. The package's exports are unchanged.
+- 87b8626: Move the endpoint's message authentication against the delivery subject and its history-row checks out of `endpoint.ts` into their own module. The package's exports are unchanged.
+- d388cfe: Move the endpoint's options, its public types and errors, and the history page fitter out of `endpoint.ts` into their own module. The package's exports are unchanged.
+- 576ce19: Show usable next steps for manager status and credential minting, and retire durable memberships when leaving a channel that switched to live delivery.
+- 7a433a6: Wait for a simultaneous self-update of the same npm installation and recheck its installed CLI before replacing packages again.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+### Minor Changes
+
+- edd19cc: An agent owner's interactive session can now list an OpenCode 2.x agent's own commands and skills and run one, such as `/review`, which waits for the agent's next idle turn and can be cancelled until it starts, and the broker refuses every other caller.
+  
+  `@cotal-ai/core` advances the `agent` endpoint's cluster to revision 2 with four commands. `commands` lists `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once. `command-cancel` cancels a queued command by id, and `command-state` reads whether it is `queued`, `taken` or `started`, was `cancelled`, was `refused` with `not-found`, `failed-precondition` or `unavailable`, or ended `unknown`. The four declare the `owner` authority word only, so an interactive ledger row gets their caller rows, and no grant row can name them. `@cotal-ai/connector-core` adds `openAgentEndpoint`, the one owner of the agent serve, which replaces `openPromptDesk` and serves the prompt desk beside a command lane. Every `MeshAgent` with a user-auth credential opens it, with the connector's `commands` dispatcher or none. A command starts only while no turn runs. At most 8 are queued, with no time bound, stopping the agent refuses every queued one, and the agent remembers the last 32 to end. A connector takes each queued command with `dispatchNextCommand()` when `MeshAgent` emits `command`. An open or static mesh serves nothing yet. `@cotal-ai/connector-opencode` lists `GET /api/command` by name and `GET /api/skill` by id and runs a command through `/command` and a skill through `/prompt`. A first-turn command carries the persona's `system` field as a first message does, though OpenCode 2.2.5 passes it to the model for neither, and right after a command turn, waiting messages go first.
+
+### Patch Changes
+
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+- 725bd24: Move the endpoint's boot durable self-join and its reconcile into an internal module without changing the endpoint API.
+- bbea1c9: Move the endpoint's stream creation and durable provisioning into an internal module without changing the endpoint API.
+- 3a01e61: Internal refactor: the per-profile permission builders now live in their own module. Credential permissions are unchanged.
+- 67a59e9: Restarting a local stack no longer leaves unused manager goal-index consumers, and channel replay windows are saved without surrounding whitespace.
+- f2f8058: Hosted workflow starts include syntax diagnostics in JSON refusals, and simulations reject invalid handoff destinations, nonnumeric clock starts, and duplicate script keys.
+
 ## 0.170.0
 
 ### Minor Changes

@@ -6,6 +6,7 @@ import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } f
 import { recordOperationWarning, type OutputWarning } from "./output.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
+import { shellPath } from "./local-record-source.js";
 
 /**
  * A local space `cotal space create` prepared and no `cotal up` has started: its name and root.
@@ -84,12 +85,13 @@ const removeStep = (file: string): string => {
 };
 
 /** The warning a prepared record that cannot be read is skipped with, naming its file and the step
- *  that removes it. */
+ *  that clears it. */
 export function preparedRecordSkipped(e: MeshRegistryError): OutputWarning {
+  const step = e.remedy ?? removeStep(e.file);
   return {
     code: "PREPARED_RECORD_SKIPPED",
     target: { file: e.file, space: preparedRecordSpace(e.file) ?? null },
-    message: `${e.message.slice(0, -` - ${removeStep(e.file)}`.length)}, so it is skipped; ${removeStep(e.file)}`,
+    message: `${e.message.slice(0, -` - ${step}`.length)}, so it is skipped; ${step}`,
   };
 }
 
@@ -102,12 +104,23 @@ function warnSkipped(e: MeshRegistryError): void {
 const unusableRecord = (file: string, problem: string, cause?: unknown): MeshRegistryError =>
   new MeshRegistryError(file, `${file} ${problem} - ${removeStep(file)}`, { cause, summary: `${file} is not a usable prepared space record`, remedy: removeStep(file) });
 
+/** A record this account may not read, as one left owned by root, says nothing about its content,
+ *  so its step gives the file back and keeps it, where a damaged record's step removes it. */
+const deniedRecord = (file: string, cause: unknown): MeshRegistryError => {
+  const remedy = process.platform === "win32"
+    ? "give this account read access to it again; the record is kept"
+    : `make it readable by this account again, for example with \`sudo chown "$(id -un)" ${shellPath(file)}\` and \`chmod 600 ${shellPath(file)}\`; the record is kept`;
+  return new MeshRegistryError(file, `${file} could not be read (${(cause as Error).message}) - ${remedy}`, { cause, summary: `${file} cannot be read by this account`, remedy, refusal: "PERMISSION_DENIED" });
+};
+
 function readPreparedFile(file: string): PreparedSpace | undefined {
   let doc: Partial<PreparedSpace>;
   try {
     doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace>;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "EACCES" || code === "EPERM") throw deniedRecord(file, e);
     throw unusableRecord(file, `does not parse as a prepared space record (${(e as Error).message})`, e);
   }
   if (typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || preparedRecordSpace(file) !== doc.space)

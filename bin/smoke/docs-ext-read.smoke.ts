@@ -89,6 +89,15 @@ let specBody = "";
 }
 
 {
+  const installation = run(["docs", "installation", "--plain"]);
+  const removal = installation.stdout.split("\n## Remove Cotal\n")[1]?.split("\n## ")[0] ?? "";
+  check("the bundled uninstall guide names the retained connector store and when to leave it in place",
+    installation.status === 0 && removal.includes("`$XDG_CONFIG_HOME/cotal`") && removal.includes("`~/.config/cotal`") &&
+    removal.includes("connector seed store") && removal.includes("only if no other Cotal installation or running Cotal process uses it"),
+    removal || shown(installation));
+}
+
+{
   const plain = run(["docs", "cli-processes.mdx#daemon", "--plain"]);
   const piped = run(["docs", "cli-installation"]);
   const json = run(["docs", "cli-installation", "--json"]);
@@ -213,8 +222,11 @@ for (const [args, why] of [
     const r = run(args);
     check(`${args.join(" ")} is refused as text with no envelope, exit 1`, r.status === 1 && r.stdout === "" && /--json or --plain|taken by the listing only/.test(r.stderr), shown(r));
   }
-  const missing = run(["ext", "remove", "not-installed"]);
-  check("a mode without structured output keeps its exit: removing a missing package exits 1", missing.status === 1 && /no installed extension "not-installed"/.test(missing.stderr), shown(missing));
+  for (const operand of ["not/a/package", "@acme/fake-runtime@1.2.3", "connector:claude"]) {
+    const invalid = run(["ext", "remove", operand]);
+    check(`text-only removal rejects an invalid package name (${operand}), exit 1`,
+      invalid.status === 1 && invalid.stdout === "" && /invalid extension package name/.test(invalid.stderr), shown(invalid));
+  }
   for (const args of [["ext", "--json", "--plain"], ["ext", "list", "--plain", "--json"]]) {
     const r = run(args);
     check(`${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

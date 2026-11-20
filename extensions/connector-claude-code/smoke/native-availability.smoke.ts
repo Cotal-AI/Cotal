@@ -24,13 +24,28 @@ try {
     symlinkSync(process.execPath, join(bin, "node"));
     symlinkSync(join(dirname(process.execPath), "npm"), join(bin, "npm"));
     const marker = join(home, "probe-called");
+    const claudeManifest = join(home, ".cotal", "claude-plugin", "cotal", ".claude-plugin", "plugin.json");
     writeFileSync(join(bin, "claude"), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'called');\n${kind === "broken" ? "process.exit(1);" : "process.on('SIGTERM', () => {}); setTimeout(() => process.exit(1), 15000);"}\n`);
-    writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
+    writeFileSync(join(bin, "codex"), `#!${process.execPath}
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const home = process.env.COTAL_HOME;
+const installed = join(home, "codex-installed-version");
+const args = process.argv.slice(2).join(" ");
+if (args === "--version") console.log("codex 0.0.0");
+else if (args === "plugin marketplace list") console.log("cotal-mesh");
+else if (args === "plugin add cotal@cotal-mesh") {
+  const manifest = join(home, "codex-plugin", "plugins", "cotal", ".codex-plugin", "plugin.json");
+  writeFileSync(installed, JSON.parse(readFileSync(manifest, "utf8")).version);
+} else if (args === "plugin list") {
+  if (existsSync(installed)) console.log("cotal@cotal-mesh  installed  " + readFileSync(installed, "utf8"));
+} else process.exit(1);
+`);
     for (const name of ["claude", "codex"]) chmodSync(join(bin, name), 0o700);
     const env = {
       ...host, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local", "share"), XDG_CACHE_HOME: join(home, ".cache"),
-      CLAUDE_CONFIG_DIR: join(home, ".claude"), COTAL_HOME: join(home, ".cotal"),
+      CLAUDE_CONFIG_DIR: join(home, ".claude"), CODEX_HOME: join(home, ".codex"), COTAL_HOME: join(home, ".cotal"),
       PATH: [bin, "/usr/bin", "/bin"].join(delimiter),
     };
     const script = `
@@ -71,8 +86,9 @@ try {
     assert.equal(result.result.harness.name, "codex");
     assert.deepEqual(result.result.harness.missing, []);
     assert.equal(result.result.harness.failed, null);
+    assert.ok(result.result.actions.some((action) => action.action === "codex-plugin"), "setup completed the Codex plugin install");
     assert.ok(result.result.actions.every((action) => !action.action.startsWith("claude-")));
-    assert.equal(existsSync(join(home, ".cotal", "claude-plugin")), false, "unavailable unrelated Claude gets no new plugin");
+    assert.equal(existsSync(claudeManifest), false, "unavailable unrelated Claude gets no new plugin");
     checks += 1;
     if (kind === "broken") {
       const count = join(home, "readiness-count");
@@ -87,7 +103,7 @@ try {
       assert.equal(partial.outcome, "partial", "lost readiness must not report a completed setup");
       assert.equal(partial.result.harness.failed.action, "claude-plugin");
       assert.deepEqual(partial.result.actions, []);
-      assert.equal(existsSync(join(home, ".cotal", "claude-plugin")), false, "the refused native action did not write its plugin");
+      assert.equal(existsSync(claudeManifest), false, "the refused native action did not write its plugin");
       checks += 1;
     }
   }

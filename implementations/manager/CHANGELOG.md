@@ -1,5 +1,130 @@
 # @cotal-ai/manager
 
+## 0.171.5
+
+### Patch Changes
+
+- cf8aa51: Move the manager's boot sequence (execution admission, connect, registration, instance lease and the frozen-gate heal) into its own component without changing the manager API.
+- 4471d1c: Route the broker transport's own dials through the manager's dial again, so a test that replaces the manager's dial intercepts them as it did before the transport moved into its own component.
+- 56b1500: Build each manager component's dependencies in a factory beside the component instead of inline in the manager, without changing what any dependency reads.
+- 87ae094: Move resuming a preserved manager, with its commit and finalize doors, into its own component without changing the manager API.
+- 59bee02: Credential renewal reads the delivery shard through its deps instead of importing the Manager class, so the manager module is no longer part of an import cycle.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/seat@0.171.5
+
+## 0.171.4
+
+### Patch Changes
+
+- a4c17c8: Move the manager's broker dials, connection tracking and scoped executor connections into their own component without changing the manager API.
+- 930d522: Move the connector inventory the manager takes at boot into its own component without changing the manager API.
+- 4dd2f49: Move connector and harness resolution for a launch into its own component without changing the manager API.
+- 1c6566a: Move manager preservation (prepare, commit, abort, the cut over each seat, and adoption of released seats) into its own component without changing the manager API.
+- 28853bf: Move the launch readiness race, the exit watch and the exit transcript tail into their own component without changing the manager API.
+- 32f3687: Move the `start` and `launch` control doors into their own component without changing the manager API.
+- 79cc63c: Move the manager's status, seat list and model catalog reads into their own component without changing the manager API.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/seat@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- 0d30c48: Explain the platform requirements before starting the built-in PTY manager on musl or installing the Linux daemon service without systemd.
+- 6a68aab: Move the manager's typed command table and the control admission it shares with the control door into their own component without changing the manager API.
+- 072f467: Move the persona catalog doors (define, remove, list and show) into their own component without changing the manager API.
+- 9aca8fe: Move serving `spawn` and `launch` as goals, with the cached acceptance a retry reads, into its own component without changing the manager API.
+- bc32f2b: Move typing into a seat's terminal and opening its attach and console sessions into their own component without changing the manager API.
+- 7da2bcd: Correct the manager restart smoke test to verify that repeating a detached spawn leaves the running worker unchanged even when its mesh presence is offline.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/seat@0.171.3
+
+## 0.171.2
+
+### Patch Changes
+
+- bf9f8a8: Move seat stop, exit cause recording, recursive reap and the named despawn doors into their own component without changing the manager API.
+- 31dc8ae: Keep the requested space in broker preset retries and preserve the saved manager settings when a console host override or stack start is rejected.
+- 112c892: Fix `cotal down` leaving delivery and the broker running when the manager records a completed stop and exits during the receipt check.
+- 00be9bc: Retry the startup scan after a broker interruption so eligible workflow runs can resume without another manager restart.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+  - @cotal-ai/seat@0.171.2
+
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/seat@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- 16a50e3: Move the renewal of the manager's own standing credentials into its own component without changing the manager API.
+- 096501f: Move the goal-writer connection and the goal index it reconciles into its own component without changing the manager API.
+- a4fa66d: Move the core of agent start into the launch component without changing the manager API.
+- 62ee06a: Move the agent-start path out of the launch component into its own component without changing the manager API.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/seat@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

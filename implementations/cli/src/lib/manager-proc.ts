@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -12,8 +12,8 @@ import {
   readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
-  type ProcessRecord, type ProcessRecordState,
-  parsePositiveIntegerFlag, verifyIdentityPin, writePidPair,
+  type ProcessRecord, type ProcessRecordState, type SeatCap,
+  parsePositiveIntegerFlag, seatCapText, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
@@ -313,6 +313,7 @@ export type ManagerStartOpts = {
   wsPort?: number;
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
+  managerSeatCap?: SeatCap;
 };
 
 export function startManagerDetached(
@@ -359,6 +360,7 @@ export function startManagerDetached(
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
+    ...(o.managerSeatCap !== undefined ? ["--seat-cap", seatCapText(o.managerSeatCap)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -504,7 +506,7 @@ export const MANAGER_PROCESS = {
  *  component stopped, and every other caller through {@link clearManagerArtifacts}. */
 export async function stopManager(
   space: string = folderSpace(),
-  { withAgents = false, pid, root = cotalRoot() }: { withAgents?: boolean; pid?: number; root?: string } = {},
+  { withAgents = false, pid, root = cotalRoot(), onRetired }: { withAgents?: boolean; pid?: number; root?: string; onRetired?: () => void } = {},
 ): Promise<boolean> {
   const context = { root, space };
   let spared: SpareSeatRow[] | undefined;
@@ -533,6 +535,11 @@ export async function stopManager(
     // Disarmed by the attempt that armed it, inside its reservation: a stop refused the reservation
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
+    afterExit: withAgents && onRetired ? () => {
+      // The manager claims the intent to select the policy and drops its pid record only after
+      // shutdown succeeds. The CLI's cleanup of a forced or failed stop is not that evidence.
+      if (readPidfile(PID_PATH(space, root)) === undefined && !existsSync(localProcessPath(MANAGER_SHUTDOWN_INTENT, context))) onRetired();
+    } : undefined,
   });
   if (!found) return false;
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();

@@ -11,6 +11,9 @@
  * binds them to the real MCP server. The behaviour lives here so `smoke/wake-path.smoke.ts`
  * drives the SHIPPED code rather than a copy of it.
  */
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { PresenceCondition, PresenceConditionCode, PresenceStatus } from "@cotal-ai/core";
 import {
   formatInjection,
@@ -27,6 +30,82 @@ import {
 import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
 import { recordCarriedFork } from "./carried.js";
+import { watchForInterrupt } from "./interrupt-watch.js";
+
+const STOP_TRANSCRIPT_WAIT_MS = 750;
+const STOP_TRANSCRIPT_POLL_MS = 25;
+
+/** Claude provides the text and prompt id, not an assistant entry id. Look for the final text on
+ * this prompt's side of the last user or tool-result entry. An identical reply to the preceding
+ * prompt is not enough. Only complete lines count, just as in the emitter's transcript source. */
+async function waitForStopText(ev: HookEvent): Promise<void> {
+  if (ev.hook_event_name !== "Stop" || typeof ev.transcript_path !== "string" || !ev.transcript_path ||
+      typeof ev.last_assistant_message !== "string" || !ev.last_assistant_message.trim() ||
+      typeof ev.prompt_id !== "string" || !ev.prompt_id) return;
+  const expected = ev.last_assistant_message.trim();
+  const deadline = performance.now() + STOP_TRANSCRIPT_WAIT_MS;
+  const signal = AbortSignal.timeout(STOP_TRANSCRIPT_WAIT_MS);
+  // Usually the answer is already there or lands within one poll. Do not rescan an unchanged
+  // snapshot, or read the full transcript on a long-running seat to look at just its last turn.
+  let scannedSize = -1;
+  try {
+    const file = await open(ev.transcript_path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    try {
+      while (!signal.aborted) {
+        const stat = await file.stat();
+        if (!stat.isFile()) return;
+        const { size } = stat;
+        if (size !== scannedSize) {
+          scannedSize = size;
+          let before = size;
+          let trailing = Buffer.alloc(0);
+          let complete = false;
+          let matched = false;
+          let foundPrompt = false;
+          let sawAssistant = false;
+          scan: while (before > 0 && performance.now() < deadline) {
+            const length = Math.min(before, 64 * 1024);
+            before -= length;
+            const block = Buffer.allocUnsafe(length);
+            const { bytesRead } = await file.read(block, 0, length, before);
+            let data = Buffer.concat([block.subarray(0, bytesRead), trailing]);
+            for (let newline = data.lastIndexOf(10); newline >= 0; newline = data.lastIndexOf(10)) {
+              const line = data.subarray(newline + 1);
+              data = data.subarray(0, newline);
+              if (!complete) { complete = true; continue; }
+              if (inspect(line)) break scan;
+            }
+            if (before === 0 && complete) inspect(data);
+            trailing = data;
+          }
+          function inspect(line: Buffer): boolean {
+            let entry: (ClaudeEntry & { promptId?: string }) | null;
+            try { entry = JSON.parse(line.toString("utf8")); } catch { return false; }
+            if (!entry || entry.isSidechain) return false;
+            if (entry.type === "user" && entry.promptId) {
+              foundPrompt = entry.promptId === ev.prompt_id;
+              return true;
+            }
+            if (!sawAssistant && entry.type === "assistant" && Array.isArray(entry.message?.content)) {
+              const content = entry.message.content;
+              if (!content.some((b) => b?.type === "text" || b?.type === "tool_use")) return false;
+              sawAssistant = true;
+              matched = !content.some((b) => b?.type === "tool_use") &&
+                content.filter((b) => b?.type === "text").map((b) => b.text ?? "").join("\n").trim() === expected;
+            }
+            return false;
+          }
+          if (matched && foundPrompt) return;
+        }
+        await delay(STOP_TRANSCRIPT_POLL_MS, undefined, { signal });
+      }
+    } finally {
+      await file.close();
+    }
+  } catch {
+    // The normal flush still owns source errors. This observation is only a bounded grace period.
+  }
+}
 
 /**
  * The failure a `StopFailure` hook reports, or `undefined` for any other turn end.
@@ -300,6 +379,40 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
+  /** The interrupt ends the turn as `Stop` would. Its record closes the run on the event plane, so
+   *  this flushes it and reports no terminal. The prompt the turn may have been waiting on is gone,
+   *  so its condition is cleared too. */
+  const endInterruptedTurn = async (agent: MeshAgent, path: string): Promise<void> => {
+    if (!turnOpen) return;
+    sealAwaiting();
+    turnOpen = false;
+    promptOpen = false;
+    pendingTool = undefined;
+    flushEvents(path);
+    await safeCondition(agent, null);
+    await safeStatus(agent, "idle");
+    if (agent.pendingWake() > 0) agent.requestWake();
+  };
+
+  /** Stops the interrupt watch of the open main-agent turn. Claude Code fires no hook when its user
+   *  interrupts a turn, so the transcript is watched for the interrupt record while a turn is open,
+   *  and every terminal hook stops the watch. */
+  let stopInterruptWatch: (() => void) | undefined;
+  const unwatchTurn = (): void => {
+    stopInterruptWatch?.();
+    stopInterruptWatch = undefined;
+  };
+  const watchTurn = (agent: MeshAgent, path: unknown): void => {
+    unwatchTurn();
+    if (typeof path !== "string" || !path) return;
+    const stop = watchForInterrupt(path, () => {
+      if (stopInterruptWatch !== stop) return;
+      stopInterruptWatch = undefined;
+      void endInterruptedTurn(agent, path);
+    });
+    stopInterruptWatch = stop;
+  };
+
   /** Format the automatic batch WITHOUT acking it; the ids ride on THIS frame's delivery verdict. A
    *  role request is taken only when the batch carries it (SPEC §8.1). */
   const surfaceAutomatic = async (agent: MeshAgent, ev: HookEvent, reserved = 0): Promise<string | undefined> => {
@@ -465,6 +578,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "UserPromptSubmit": {
           const begun = terminals;
           turnOpen = true;
+          watchTurn(agent, ev.transcript_path);
           pendingTool = undefined; // new turn — the previous block (if any) is resolved
           promptOpen = false;
           flushEvents(ev.transcript_path);
@@ -481,6 +595,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // let a subagent open the main turn or a later tool clear an unresolved prompt.
           if (!turnOpen && ev.agent_id === undefined) {
             turnOpen = true;
+            watchTurn(agent, ev.transcript_path);
             promptOpen = false;
             await safeStatus(agent, "working");
           }
@@ -521,11 +636,15 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         }
         // StopFailure: the turn died on an API error, so Stop won't fire; it resets here too.
         case "Stop":
-        case "StopFailure":
+        case "StopFailure": {
           sealAwaiting();
           turnOpen = false;
+          unwatchTurn();
           promptOpen = false;
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
+          const stoppedAt = Date.now();
+          if (events() && event === "Stop" && typeof ev.last_assistant_message === "string" && ev.last_assistant_message.trim())
+            await waitForStopText(ev);
           flushEvents(ev.transcript_path);
           // THE TURN TERMINAL, and it has to be a second call rather than part of the flush. The
           // records this hook fires after do not say the turn ended: the harness knows, and the
@@ -540,7 +659,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // killed by a rate limit or a billing error had simply finished. See {@link stopFailure}
           // for which signals count and why. `RUN_ERROR` closes the run on its own, so there is no
           // second terminal to follow it.
-          await closeEvents(Date.now(), stopFailure(ev));
+          await closeEvents(stoppedAt, stopFailure(ev));
           if (event === "StopFailure") await safeCondition(agent, failureCondition(ev) ?? null);
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
@@ -553,9 +672,11 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // This runs after a presence write that can fail; it must NOT be sequenced behind one.
           if (agent.pendingWake() > 0) agent.requestWake();
           return {};
+        }
         case "SessionEnd":
           sealAwaiting();
           turnOpen = false;
+          unwatchTurn();
           promptOpen = false;
           flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");

@@ -265,7 +265,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     stoppedDesktopBesideCli = archivedDesktopAfter.status?.exit === 2 && archivedDesktopAfter.status?.signal === null && archivedDesktopAfter.status?.timeout === false
       && archivedDesktopAfter.unitShowAfter?.exit === 0 && archivedDesktopAfter.unitShowAfter?.signal === null && archivedDesktopAfter.unitShowAfter?.timeout === false
       && /ActiveState=inactive/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? '')) && /MainPID=0/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? ''))
-      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update left it stopped.`)
+      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update did not start or stop it.`)
       && archivedDesktopAfter.updateNamesDesktopOwner === true
       && archivedDesktopAfter.remainsStopped === true;
   }

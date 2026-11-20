@@ -41,7 +41,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
@@ -645,7 +645,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
-      Object.assign(env, { HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "rt"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"), PATH: `${join(dir, "native")}:${join(dir, "nodebin")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+      Object.assign(env, { HOME: context.home, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"), PATH: `${join(dir, "native")}:${join(dir, "nodebin")}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: configFile, DO_NOT_TRACK: "1", NO_COLOR: "1" });
       const call = (verb: string, flags: string[] = []) => {
         const args = [cli, "daemon", verb, "--daemon-home", home, "--json", ...flags];
         const result = spelling === "path"
@@ -696,7 +696,7 @@ try {
       writeFileSync(receiptFile, JSON.stringify({ ...JSON.parse(receipt), unitSha256: sha(legacy) }), { mode: 0o600 });
       const refusal = call("install");
       const repair = `${daemonCommandCopy("uninstall", home, ["--yes"])} && ${daemonCommandCopy("install", home)}`;
-      check(`Node ${spelling} legacy unit refuses with a copyable explicit repair`, refusal.status === 2 && refusal.doc.error?.code === "CONFLICT" && refusal.doc.error.remedy?.includes(repair) === true && readFileSync(unitPath, "utf8") === legacy, refusal);
+      check(`Node ${spelling} missing runtime refuses without native authority and names repair`, refusal.status === 2 && refusal.doc.error?.code === "TARGET_UNAVAILABLE" && refusal.doc.error.remedy?.includes(repair) === true && readFileSync(unitPath, "utf8") === legacy, refusal);
       // A changed source still refuses before replacement guidance can grant any native effect.
       writeFileSync(unitPath, `${legacy}\n# edited\n`);
       const callsBefore = readFileSync(context.calls, "utf8");
@@ -876,7 +876,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of available ? ["systemctl", "loginctl"] : ["systemctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       // No host PATH entries: the missing-tool cell must not find the machine's loginctl.
-      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: join(dir, "runtime"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       for (const format of ["plain", "json"]) {
         const child = spawnSync(process.execPath, [cli, "daemon", "install", "--daemon-home", daemonHome, "--dry-run", `--${format}`], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N7 ${format} did not exit normally`);
@@ -902,7 +902,17 @@ try {
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
-    for (const kind of ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor", "changed-after-plan", "protected-missing", "protected-existing", "linger-denied", "existing-unit", "source-on-enable", "directory-on-enable", "source-on-read", "directory-on-read"]) {
+    // A group-writable directory is refused only where another account can reach it. An ancestor that
+    // denies group and other accounts search permission protects it, so the refusal cells open the
+    // chain above them and the -private cells keep it closed.
+    const reachable = (path: string): boolean => {
+      for (let parent = dirname(path); ; parent = dirname(parent)) {
+        if ((lstatSync(parent).mode & 0o011) === 0) return false;
+        if (dirname(parent) === parent) return true;
+      }
+    };
+    chmodSync(root, 0o755);
+    for (const kind of ["group-ancestor", "group-ancestor-private", "world-ancestor", "group-leaf", "group-leaf-private", "symlink", "file-ancestor", "changed-after-plan", "protected-missing", "protected-existing", "linger-denied", "existing-unit", "source-on-enable", "directory-on-enable", "source-on-read", "directory-on-read"]) {
       const dir = join(root, `preflight-${kind}`);
       mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "config", "runtime", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
@@ -912,10 +922,12 @@ try {
       const receiptFile = join(dir, "cotal", "daemon", "service-unit.json");
       const lingerFile = join(dir, "linger");
       writeFileSync(lingerFile, "Linger=no\n", { mode: 0o600 });
-      if (["group-leaf", "protected-existing", "existing-unit"].includes(kind)) mkdirSync(unitDir, { recursive: true, mode: 0o700 });
-      if (kind === "group-ancestor") chmodSync(config, 0o775);
+      if (["group-leaf", "group-leaf-private", "protected-existing", "existing-unit"].includes(kind)) mkdirSync(unitDir, { recursive: true, mode: 0o700 });
+      if (kind === "group-ancestor" || kind === "group-leaf") chmodSync(dir, 0o755);
+      if (kind === "group-ancestor" || kind === "group-ancestor-private") chmodSync(config, 0o775);
       if (kind === "world-ancestor") chmodSync(config, 0o777);
-      if (kind === "group-leaf") chmodSync(unitDir, 0o775);
+      if (kind === "group-leaf") for (const open of [config, join(config, "systemd")]) chmodSync(open, 0o755);
+      if (kind === "group-leaf" || kind === "group-leaf-private") chmodSync(unitDir, 0o775);
       if (kind === "symlink") symlinkSync(join(dir, "home"), join(config, "systemd"));
       if (kind === "file-ancestor") writeFileSync(join(config, "systemd"), "not a directory");
       if (kind === "existing-unit") writeFileSync(unitPath, "foreign unit", { mode: 0o600 });
@@ -928,7 +940,7 @@ try {
       writeFileSync(configFile, JSON.stringify(context), { mode: 0o600 });
       for (const name of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
       // Only recording stand-ins can run, including during the private-group proof.
-      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(dir, "runtime"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      const env = { USER: "smoke", LOGNAME: "smoke", HOME: context.home, COTAL_HOME: join(dir, "cotal"), XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: root, XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"), XDG_DATA_HOME: join(dir, "data"), PATH: join(dir, "native"), DAEMON_UNIT_FIXTURE: configFile, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
       const call = (verb: string, flags: string[]) => {
         const child = spawnSync(process.execPath, [cli, "daemon", verb, ...flags], { cwd: dir, env, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024 });
         if (child.error || child.signal) throw new Error(`N8 ${kind} ${verb} did not exit normally`);
@@ -936,7 +948,7 @@ try {
       };
       const operations = (): string[] => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => (JSON.parse(line) as { operation: string }).operation) : [];
       const effects = () => operations().filter((operation) => !["directory-read", "linger-read"].includes(operation));
-      const unsafe = ["group-ancestor", "world-ancestor", "group-leaf", "symlink", "file-ancestor"].includes(kind);
+      const unsafe = ["world-ancestor", "symlink", "file-ancestor"].includes(kind) || kind === "group-ancestor" && reachable(config) || kind === "group-leaf" && reachable(unitDir);
       const directoryExisted = existsSync(unitDir);
       const previewRefusal = kind === "existing-unit" ? "CONFLICT" : kind === "file-ancestor" ? "TARGET_UNAVAILABLE" : unsafe ? "PERMISSION_DENIED" : undefined;
       for (const format of ["plain", "json"]) {
@@ -967,6 +979,7 @@ try {
         check(`N8 ${kind} uninstall recovers recorded installation`, removed.status === 0 && !existsSync(unitPath) && !existsSync(receiptFile), removed);
       }
     }
+    chmodSync(root, 0o700);
   } else console.log(`  ○ UNTESTED N8: Linux unit-directory preflight; this is ${process.platform}`);
 } finally {
   if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;

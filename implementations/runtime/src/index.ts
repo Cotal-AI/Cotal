@@ -13,17 +13,16 @@ export { startRun, driveRun, PauseToken, type RunLease, type DriveRequest, type 
 export {
   MeshHandler,
   EpfSettleWatcher,
-  CheckpointAnswerMissing,
   waitConsumerName,
   waitConsumerConfig,
   rearmOutstandingPauses,
   outstandingPauseTokens,
-  readSupervise,
-  spawnArgs,
   canonicalCwd,
   type MeshHandlerBinding,
   type SettleWatcher,
 } from "./mesh-handler.js";
+export { CheckpointAnswerMissing, readSupervise } from "./mesh-handler-shared.js";
+export { spawnArgs } from "./mesh-spawn.js";
 export {
   resolveCheckpoint,
   locateOpenCheckpoint,

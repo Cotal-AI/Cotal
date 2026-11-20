@@ -2,7 +2,7 @@ import { readWindowsUpdatePause, WINDOWS_INTERRUPTED_UPDATE } from "./update-win
 import { readUpdateRecovery } from "./updates.js";
 import { recoveryDisposition } from "./update-recovery.js";
 import { spawn } from "node:child_process";
-import { acquireLock } from "@cotal-ai/core";
+import { acquireLock, acquireLockAsync } from "@cotal-ai/core";
 import { cmdSpawnSpec } from "./win-cmd.js";
 import { join } from "node:path";
 import { homeCotalDir } from "./cotal-home.js";
@@ -26,6 +26,22 @@ export function readUpdateCheck(): UpdateCheck | undefined {
     if (!value || value.v !== 1 || !Number.isFinite(value.attemptedAt) || value.latest !== undefined && !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value.latest)) return undefined;
     return value;
   } catch { return undefined; }
+}
+
+function saveObservedVersion(version: string, cached: UpdateCheck | undefined, now: number): UpdateCheck & { firstSeenAt: number } {
+  const seen = version === cached?.latest ? cached.firstSeenAt : undefined;
+  const firstSeenAt = typeof seen === "number" && Number.isFinite(seen) ? seen : now;
+  const next = { v: 1 as const, latest: version, attemptedAt: now, checkedAt: now, firstSeenAt };
+  writeSecretFileAtomic(join(homeCotalDir(), "update-check.json"), `${JSON.stringify(next)}\n`);
+  return next;
+}
+
+/** Record the updater's uncached npm observation under the same lock as scheduled checks. */
+export async function observeUpdateVersion(version: string): Promise<number> {
+  mkSecretDir(homeCotalDir());
+  const held = await acquireLockAsync(join(homeCotalDir(), "update-check.lock"), { label: "update check", waitMs: 5000 });
+  try { return saveObservedVersion(version, readUpdateCheck(), Date.now()).firstSeenAt; }
+  finally { held.release(); }
 }
 
 /** Registry access goes through npm so scoped registry, proxy and TLS policy stay authoritative. */
@@ -57,7 +73,8 @@ export async function checkForUpdate(): Promise<UpdateCheck | undefined> {
         } catch { resolve({ error: "registry latest unavailable" }); }
       });
     });
-    const next: UpdateCheck = result.version ? { v: 1, latest: result.version, attemptedAt: now, checkedAt: now, firstSeenAt: result.version === cached?.latest ? cached.firstSeenAt ?? now : now } : { ...cached, v: 1, attemptedAt: now, error: result.error };
+    if (result.version) return saveObservedVersion(result.version, cached, now);
+    const next: UpdateCheck = { ...cached, v: 1, attemptedAt: now, error: result.error };
     writeSecretFileAtomic(join(homeCotalDir(), "update-check.json"), `${JSON.stringify(next)}\n`);
     return next;
   } finally { held.release(); }
@@ -75,7 +92,10 @@ export function cachedUpdateSummary(current: string): string {
   try {
     if (process.platform === "win32" && readWindowsUpdatePause()) return WINDOWS_INTERRUPTED_UPDATE;
     const recovery = readUpdateRecovery();
-    if (recovery) return `update needs repair: installed ${recovery.installed}; ${recoveryDisposition(recovery).instruction}`;
+    if (recovery) {
+      const decision = recoveryDisposition(recovery);
+      return decision.action === "active" ? decision.instruction : `update needs repair: installed ${recovery.installed}; ${decision.instruction}`;
+    }
   } catch { return "update state unreadable; automatic updates paused"; }
   const cached = readUpdateCheck();
   return !cached?.latest ? "update status unknown" : newerUpdate(cached.latest, current) ? `newer version ${cached.latest} available` : "up to date";

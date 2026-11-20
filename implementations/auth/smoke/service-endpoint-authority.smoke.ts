@@ -28,8 +28,9 @@ import { postRemoteServiceAuthority, readRemoteServiceAuthorityInfo } from "../s
 import { serviceEndpointHostCall } from "../src/service-host-client.js";
 import { mintServiceCallerPayloadObserverCreds } from "../src/service-caller-payload-bootstrap.js";
 import { serviceAuthorityEngineRequestId, serviceHostGranterFor } from "../src/service-endpoint-authority.js";
-import { serviceHostOperationId } from "../src/service-host-ops.js";
-import { authServiceConfiguration, startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { serviceHostOperationId } from "../src/service-host-kernel.js";
+import { authServiceConfiguration } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 

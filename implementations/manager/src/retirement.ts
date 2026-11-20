@@ -12,6 +12,9 @@ import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, userAuthStateDir 
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { ManagerOptions } from "./manager.js";
 import type { AgentHandle } from "./runtime/index.js";
+import type { Manager } from "./manager.js";
+import { DEPROVISION_TIMEOUT_MS } from "./seat-stop.js";
+import { withTimeout } from "./manager-timeout.js";
 
 /** What the teardown chain (trackDeprovision → deprovision → driveDeprovision →
  *  driveStaticRetirement) needs to tear one incarnation down. Each hop passes the value on as a
@@ -73,6 +76,34 @@ export interface RetirementDeps {
   lifecycleMembershipInventory(a: { id: string; lifecycleUid: string }): Promise<{ complete: boolean; channels: string[]; reason?: string }>;
   brokerTeardown<T>(task: Promise<T>, message: string): Promise<T>;
   trackLifecycle(): () => void;
+}
+
+/** Builds the {@link RetirementDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function retirementDeps(m: Manager): RetirementDeps {
+  return {
+    auth: () => m["auth"],
+    remoteAuthority: () => m["remoteAuthority"],
+    userMode: () => m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    space: () => m["space"],
+    servers: () => m["servers"],
+    secrets: () => m["secrets"],
+    serveIdentity: () => m["managerServeIdentity"],
+    lifecycleUid: () => m["managerLifecycleUid"],
+    instanceId: () => m["managerInstanceId"],
+    serveEpoch: () => m["serviceServe"]?.grant.epoch,
+    dial: (opts) => m["dial"](opts),
+    withRetirementSlot: (run) => m["withRetirementSlot"](run),
+    driveStaticRetirement: (a) => m["driveStaticRetirement"](a),
+    awaitHandleExit: (handle) => m["awaitHandleExit"](handle),
+    shredUserSecrets: (failures, family) => m["shredUserSecrets"](failures, family),
+    dropSeatRecord: (a) => m["dropSeatRecord"](a),
+    fenceRetiringAcl: (a) => m["fenceRetiringAcl"](a),
+    lifecycleMembershipInventory: (a) => m["lifecycleMembershipInventory"](a),
+    brokerTeardown: (task, message) => withTimeout(task, DEPROVISION_TIMEOUT_MS, message),
+    trackLifecycle: () => { m["lifecycleInFlight"]++; return () => m["releaseLifecycle"](); },
+  };
 }
 
 /** Retirement holds, exact-lifecycle teardown flights and confirmed predecessor coordinates. */

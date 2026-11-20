@@ -1,5 +1,111 @@
 # @cotal-ai/runtime
 
+## 0.171.5
+
+### Patch Changes
+
+- 41108ac: Move the mesh handler's conclaves (planning, executing and releasing a conclave, and the channel, members and ACL registry handles they share) out of `mesh-handler.ts` into an internal `mesh-conclave.ts` component that owns the open conclave plans and the registry handles. The package surface is unchanged.
+- 0e46c2b: Move the mesh handler's `spawn` action (cwd resolution, the worktree claim and release, the submission and its terminal await, and `spawnArgs`) out of `mesh-handler.ts` into an internal `mesh-spawn.ts` component that reads the handler's members through its dependencies. The package surface is unchanged.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/lang@0.171.5
+
+## 0.171.4
+
+### Patch Changes
+
+- 58eb0ee: Move the constants and helpers that the mesh handler shares with its components (poll and deadline bounds, the seat and agent-handle readings, the permit and supervise readers and `CheckpointAnswerMissing`) out of `mesh-handler.ts` into an internal `mesh-handler-shared.ts`, so the components no longer import the handler at runtime. The package surface is unchanged.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [82e9e79]
+- Updated dependencies [8a918ce]
+- Updated dependencies [5cbdcfe]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/lang@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/lang@0.171.3
+
+## 0.171.2
+
+### Patch Changes
+
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+  - @cotal-ai/lang@0.171.2
+
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/lang@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- f2f8058: Hosted workflow starts include syntax diagnostics in JSON refusals, and simulations reject invalid handoff destinations, nonnumeric clock starts, and duplicate script keys.
+- 95f1f36: The `cotal run show` help now explains that `--limit` applies only to text output and cannot be combined with `--json`.
+- 18044e7: Separate the mesh handler's turn and ask clients into an internal module without changing the runtime API.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/lang@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

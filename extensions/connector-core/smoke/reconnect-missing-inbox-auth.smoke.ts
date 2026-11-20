@@ -110,7 +110,7 @@ try {
   );
   check(
     "1d it no longer offers a retry as the remedy",
-    !reconnect.text.includes("consumer not found") && !reconnect.text.includes("run /reconnect"),
+    !reconnect.text.includes("consumer not found") && !reconnect.text.includes("to retry now"),
     reconnect.text,
   );
   const after = await status(agent, config);

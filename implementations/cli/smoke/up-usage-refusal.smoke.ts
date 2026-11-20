@@ -90,6 +90,8 @@ const run = (args: string[], cwd = folder) => {
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 900) });
 
 const cases: { args: string[]; message: RegExp }[] = [
+  { args: ["--file", ""], message: /--file is empty, so it names no manifest/ },
+  { args: ["-f", "  "], message: /--file is empty, so it names no manifest/ },
   { args: ["-d", "--foreground"], message: /choose --foreground or --detach, not both/ },
   { args: ["--max-sessions", "0"], message: /--max-sessions must be a positive integer/ },
   { args: ["--max-sessions", "abc"], message: /--max-sessions must be a positive integer/ },
@@ -175,6 +177,18 @@ for (const value of ["", "  "]) {
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
+
+for (const flag of ["--file", "-f", "--run"]) {
+  for (const value of ["", "  "]) {
+    for (const mode of [["--dry-run"], ["--yes"]]) {
+      const project = mkdtempSync(join(tmpdir(), "cotal-down-empty-"));
+      roots.push(project);
+      sandbox(project);
+      const result = run(["down", flag, value, ...mode, "--json"], project);
+      check(`down ${flag} ${JSON.stringify(value)} ${mode[0]} refuses usage before reading a target`, result.status === 1 && result.envelope?.error?.code === "USAGE_INVALID" && result.envelope.error.message?.includes("is empty") === true && readdirSync(join(project, ".cotal")).length === 0, shown(result));
+    }
+  }
+}
 
 const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
@@ -263,9 +277,9 @@ check("it wrote no persona, pidfile or store in the home's .cotal", !existsSync(
 // there is nothing to stop or preview, and name `cotal up` in a project as status does.
 sandbox(home);
 const homeDown = run(["down", "--yes"], home);
-check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && homeDown.stderr.includes("run `cotal up` in a project"), shown(homeDown));
+check("down --yes in a home with no stack is TARGET_NOT_FOUND, nothing to stop, and names `cotal up` in a project", homeDown.status === 2 && /there is no stack at this folder's root, and this machine has no stack started or registered, so there is nothing to stop/.test(homeDown.stderr) && /run `(?:pnpm )?cotal up` in a project/.test(homeDown.stderr), shown(homeDown));
 const homePreview = run(["down", "--dry-run", "--json"], home);
-check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && homePreview.envelope.error.remedy === "run `cotal up` in a project", shown(homePreview));
+check("down --dry-run in a home with no stack is TARGET_NOT_FOUND, nothing to preview, and names `cotal up` in a project", homePreview.status === 2 && homePreview.envelope?.error?.code === "TARGET_NOT_FOUND" && /no stack started or registered, so there is nothing to preview/.test(homePreview.envelope.error.message ?? "") && /^run `(?:pnpm )?cotal up` in a project$/.test(homePreview.envelope.error.remedy ?? ""), shown(homePreview));
 
 // A fresh folder under the home, whose only .cotal above it is the home's, becomes its own project
 // root on a bare up, also under a home that holds a stack. A run refused before it writes there leaves
@@ -387,6 +401,16 @@ const holder = createServer((socket) => socket.on("error", () => {}));
 const held = await new Promise<number>((resolve) => holder.listen(0, "127.0.0.1", () => resolve((holder.address() as AddressInfo).port)));
 const started = (root: string) => existsSync(join(root, ".cotal", "nats.pid"));
 try {
+  const emptyRestore = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-empty-restore-")));
+  roots.push(emptyRestore);
+  const restoreArgs = ["--open", "--no-manager", "--server", `nats://127.0.0.1:${held}`, "--space", "emptyrestore", "--restore", ""];
+  const restore = run(["up", "--foreground", ...restoreArgs], emptyRestore);
+  check("an explicitly empty --restore refuses foreground startup before writing project state",
+    restore.status === 1 && restore.stdout === "" && restore.stderr.includes("--restore is empty") && restore.stderr.includes("pass the backup folder") && readdirSync(emptyRestore).length === 0, shown(restore));
+  const restoreJson = run(["up", "--detach", ...restoreArgs, "--json"], emptyRestore);
+  check("an explicitly empty --restore is USAGE_INVALID in JSON and leaves the project empty",
+    restoreJson.status === 1 && restoreJson.envelope?.outcome === "refused" && restoreJson.envelope.error?.code === "USAGE_INVALID" && readdirSync(emptyRestore).length === 0, shown(restoreJson));
+
   // A refusal that names the address to pass is the whole fix, so no help follows it and scrolls the
   // fix away: a nats:// address where the root's recorded policy or --tls-cert serves TLS, and a
   // tls:// address with no TLS to serve.
@@ -529,7 +553,7 @@ try {
     check("a port an open connection holds with no listener refuses CONFLICT on both routes, saying so and naming no process to stop",
       open.status === 2 && open.envelope?.error?.code === "CONFLICT"
         && (open.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but an open connection's local end holds its port (bind failed: address already in use)`)
-        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and run \`cotal up\` again`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
+        && (open.envelope.error.remedy ?? "").includes(`close the connection that holds 127.0.0.1:${port} and retry this start`) && !(open.envelope.error.remedy ?? "").includes("stop the process")
         && openLegacy.status === 2 && openLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but an open connection's local end holds its port`) && !started(unprepared), { open: shown(open), legacy: shown(openLegacy) });
     client.end();
     await once(client, "close");
@@ -541,7 +565,7 @@ try {
     check("a port in TIME-WAIT with no listener refuses CONFLICT on both routes, saying so, with waiting as the next step",
       timeWait.status === 2 && timeWait.envelope?.error?.code === "CONFLICT"
         && (timeWait.envelope.error.message ?? "").includes(`nothing listens at the stack's broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port (bind failed: address already in use)`)
-        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and run `cotal up` again") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
+        && (timeWait.envelope.error.remedy ?? "").includes("wait up to a minute for the TIME-WAIT to clear and retry this start") && !(timeWait.envelope.error.remedy ?? "").includes("stop the process")
         && timeWaitLegacy.status === 2 && timeWaitLegacy.stderr.includes(`nothing listens at the broker address 127.0.0.1:${port}, but a closed connection in TIME-WAIT still holds its port`) && !started(unprepared), { timeWait: shown(timeWait), legacy: shown(timeWaitLegacy) });
   }
 

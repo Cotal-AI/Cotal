@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { recoverExecutionUpdate, prepareExecutionUpdate } from "../daemon/execution-update.js";
@@ -42,6 +42,8 @@ if (["linux", "darwin"].includes(process.platform)) {
     const generation = retainExecutionGeneration(installed, source);
     chmodSync(join(installed, "package.json"), 0o664);
     const journal = journalExecutionTransaction(installed, generation, join(installed, "dist/cotal.js"));
+    assert.deepEqual(readdirSync(dirname(journal)), ["execution.json"]);
+    assert.equal(lstatSync(journal).mode & 0o777, 0o600);
     publishExecutionTransaction(installed, journal);
     assert.equal(selectExecutionProgram(installed).root, generation.root);
     repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix")));

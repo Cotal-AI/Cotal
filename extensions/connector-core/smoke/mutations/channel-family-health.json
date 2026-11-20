@@ -29,7 +29,7 @@
   "mutations": [
     {
       "name": "H1 a channel's health ignores a family row above it",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": " || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel))",
       "replace": "",
       "expectRed": "a durable channel under the family reads active through the family's membership",
@@ -38,7 +38,7 @@
     },
     {
       "name": "H2 the pattern rows are dropped",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": "      if (isConcreteChannel(pattern)) continue;\n",
       "replace": "      continue;\n",
       "expectRed": "the family follow is a row of its own, joined, with its membership's health active",
@@ -47,7 +47,7 @@
     },
     {
       "name": "H3 the family row carries no health",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": "        deliveryHealth: family ? held(pattern) : undefined,",
       "replace": "        deliveryHealth: undefined,",
       "expectRed": "the family follow is a row of its own, joined, with its membership's health active",
@@ -65,7 +65,7 @@
     },
     {
       "name": "H5 a channel read only through a pattern with * takes delivery health",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": "      const stored = mine.some((p) => p === c.channel || (isChannelFamily(p) && subjectMatches(p, c.channel)));\n",
       "replace": "      const stored = joined;\n",
       "expectRed": "a durable channel followed only through a pattern with * carries no delivery health",
@@ -74,7 +74,7 @@
     },
     {
       "name": "H6 a family's health counts its own row only",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": "        deliveryHealth: family ? held(pattern) : undefined,\n",
       "replace": "        deliveryHealth: family ? (daemonMemberships?.some((m) => m.channel === pattern) ? held(pattern) : \"degraded\") : undefined,\n",
       "expectRed": "a sub-family with no row of its own reads active through the family above it, whose row stores its posts",
@@ -83,7 +83,7 @@
     },
     {
       "name": "H7 a family whose cleanup is pending is not marked a family",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-channels.ts",
       "find": "        ...(isChannelFamily(ch) ? { follow: \"family\" as const } : {}),\n",
       "replace": "",
       "expectRed": "the family left with its cleanup pending is still a family row, not followed",

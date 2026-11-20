@@ -189,19 +189,20 @@ try {
 
   const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, tail(cut).slice(-1200));
+  const launcher = /^\s{2}(.+) <command> \[options\]$/m.exec(runSync([]).stdout)?.[1];
   const store = join(root, ".cotal", "nats"), savedStore = join(root, "saved-store");
   renameSync(store, savedStore);
   try {
     const missing = runSync(["status", "--space", space, "--plain"]);
     const next = missing.stdout.split("\nNext\n")[1] ?? "";
     ok("status gives missing-store recovery in Next instead of ordinary restart advice",
-      missing.status === 0 && next.includes(`the preserved store recorded at ${store} is missing`) && next.includes("backup restore <dir> --accept-missing-source") && !/cotal up\b/.test(next), tail(missing).slice(-1800));
+      missing.status === 0 && launcher !== undefined && next.includes(`the preserved store recorded at ${store} is missing`) && next.includes(`\`${launcher} backup restore <dir> --accept-missing-source\``) && !next.includes(`${launcher} up`), tail(missing).slice(-1800));
     const blocked = runSync(["up"]);
     ok("up refuses to resume the missing store without starting anything", blocked.status === 2 && tail(blocked).includes("TARGET_NOT_FOUND") && tail(blocked).includes("nothing was started"), tail(blocked).slice(-1200));
   } finally { renameSync(savedStore, store); }
   const restoredStatus = runSync(["status", "--space", space, "--plain"]);
   ok("after the original store is returned, status offers a normal resume again",
-    restoredStatus.status === 0 && restoredStatus.stdout.includes("or resume with bare") && !restoredStatus.stdout.includes("--accept-missing-source"), tail(restoredStatus).slice(-1800));
+    restoredStatus.status === 0 && launcher !== undefined && restoredStatus.stdout.includes(`or resume with bare \`${launcher} up\``) && !restoredStatus.stdout.includes("--accept-missing-source"), tail(restoredStatus).slice(-1800));
   const made = runSync(["backup", "create", artifact, "--only", "registry"]);
   ok("the registry backup exited 0", made.status === 0, tail(made).slice(-1200));
 

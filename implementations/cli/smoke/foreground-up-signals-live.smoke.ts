@@ -11,6 +11,7 @@
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
+ * An external `down --yes` stops a named or folder-named legacy stack without a crash diagnostic.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -57,16 +58,16 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean }): Promise<boolean> {
-  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; externalDown?: "named" | "folder" }): Promise<boolean> {
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, options.externalDown === "folder" ? name : "mesh");
   for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
   const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true });
   const port = await freePort(); assert.notEqual(port, 4222);
-  const space = `foreground-${name}`;
+  const space = options.externalDown === "folder" ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, "--space", space, ...(options.auth ? [] : ["--open", "--no-manager"])];
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : ["--open", "--no-manager"])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -155,7 +156,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       await until(async () => {
         ownRecords();
         if (state.exited) throw new Error(`CLI exited before serving readiness: ${err}`);
-        const result = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
+        const result = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components", "--space", space, "--server", `nats://127.0.0.1:${port}`], 60_000);
         probeLog.push(result);
         writeFileSync(join(root, "readiness.json"), JSON.stringify(probeLog), { mode: 0o600 });
         return ["broker", "manager", "delivery"].every((name) => new RegExp(`^\\s*${name}\\s+serving\\b`, "m").test(result.out));
@@ -166,7 +167,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.ok(token(managerPath) && token(deliveryPath) && await portOpen(port), "fully-ready exact manager, delivery and listener still present"); passed++;
       console.log(`PASS foreground-up-signals ${name}: public status broker/manager/delivery serving and ps answered`);
     }
-    if (options.refusal) {
+    if (options.refusal || options.externalDown) {
       // Shipped bare down refuses --space/--server. Verify the one private registry record first.
       const registryPath = join(home, "machine", "meshes", `space.${spaceKey(space)}.json`);
       const registration = JSON.parse(readFileSync(registryPath, "utf8")) as { root?: string; space?: string; server?: string };
@@ -179,17 +180,33 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(registration.space, space);
       assert.equal(registration.server, `nats://127.0.0.1:${port}`);
       assert.deepEqual(Object.keys(env).filter((key) => /^COTAL_/i.test(key)).sort(), ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED"]);
-      assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes"], { cwd: mesh, env });
-      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--with-agents", "--yes"]);
+      const downArgs = options.refusal ? ["down", "--with-agents", "--yes"] : ["down", "--yes"];
+      assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 60_000);
       writeFileSync(join(root, "down.json"), JSON.stringify(down), { mode: 0o600 });
-      assert.equal(down.code, 0, "own-root public down --with-agents succeeds after resume and serving readiness"); passed++;
+      assert.equal(down.code, 0, `own-root ${downArgs.join(" ")} succeeds: ${down.out}${down.err}`); passed++;
       await until(() => state.exited, 20_000, () => err.slice(-3000));
       await waitForOwnedChild(() => state.closed, 3_000, `${root}: external down streams drained`);
-      assert.equal(state.code, 0, "observed N4: external down propagates clean broker exit0 despite unexpected diagnostic"); passed++;
-      assert.match(err, /exited unexpectedly/, "known N4 unexpected-exit diagnostic retained"); passed++;
+      assert.equal(state.code, 0, "external down propagates a clean broker exit"); passed++;
+      assert.doesNotMatch(err, /exited unexpectedly|stays recorded|repair:/, "external down emits no crash or retention diagnostic"); passed++;
       assert.equal(await portOpen(port), false, "own-root down closed listener"); passed++;
       assert.equal([...owned.values()].some(live), false, "own-root down removed exact owned births"); passed++;
-      console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, explicit private down, N4 unexpected diagnostic with exit${state.code}`);
+      if (options.externalDown) {
+        const meshes = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["meshes"]);
+        assert.equal(meshes.code, 0, meshes.err); passed++;
+        const spaces = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space"]);
+        assert.equal(spaces.code, 0, spaces.err); passed++;
+        if (options.externalDown === "folder") {
+          assert.match(meshes.out, /^external-folder\b[^\n]*offline/m); passed++;
+          assert.match(spaces.out, /^\s*external-folder\b/m); passed++;
+        } else {
+          assert.match(meshes.out, /no meshes registered/); passed++;
+          assert.match(spaces.out, /No spaces registered/); passed++;
+        }
+        console.log(`PASS foreground-up-signals ${name}: clean external down and expected registration`);
+        return true;
+      }
+      console.log(`${refusalBoundary ? "PASS" : "INCONCLUSIVE"} foreground-up-signals ${name}: native startup-capability refusal=${refusalBoundary}, resumed serving, explicit private down, clean exit${state.code}`);
       return refusalBoundary;
     }
     ownRecords();
@@ -390,14 +407,15 @@ async function controllerHangupCell(): Promise<void> {
 async function controllerSighupCell(): Promise<void> {
   const name = "controller-sighup";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
-  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const caller = join(root, "caller");
+  for (const p of [root, home, mesh, caller, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--root", "../mesh", "--store-dir", "./relative-store", "--log-file", "./broker.log"], { cwd: caller, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
@@ -409,6 +427,9 @@ async function controllerSighupCell(): Promise<void> {
       if (state.exited) throw new Error(`CLI exited before the stack was ready: ${err}`);
       return out.includes("Controller stack started") && existsSync(hold) && out.includes("cotal down");
     }, 120_000, () => err.slice(-3000));
+    assert.ok(existsSync(join(caller, "relative-store")) && existsSync(join(caller, "broker.log"))
+      && !existsSync(join(mesh, "relative-store")) && !existsSync(join(mesh, "broker.log")), "--root leaves both relative broker paths in the invoking folder"); passed++;
+    assert.ok(readFileSync(join(mesh, ".cotal/server-open.conf"), "utf8").includes(`log_file: ${JSON.stringify(join(realpathSync(caller), "broker.log"))}`), "the selected root's broker config names the caller's log"); passed++;
     assert.ok(child.pid); process.kill(child.pid, "SIGHUP");
     await until(() => { if (state.error) throw state.error; return state.exited; }, 30_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
@@ -492,6 +513,8 @@ async function controllerHoldCell(): Promise<void> {
 }
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await cell("external-named", { auth: true, ready: true, externalDown: "named" });
+await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });
 await checkInheritedPipeCleanup();
 passed += 10;
 await cell("group", {});

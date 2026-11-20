@@ -10,6 +10,7 @@ import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { recordedSourceIdentity } from "./install-identity.js";
 import { daemonArgv } from "@cotal-ai/cli";
 import type { NativeRun } from "./install.js";
+import { foreignDaemonUpdateReport } from "./guidance.js";
 
 let captured: { paths: DaemonPaths; pin?: Win32ProcessPin; receipt: string } | undefined;
 
@@ -86,7 +87,7 @@ export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: n
       const identity = recordedSourceIdentity(receipt, "scheduled-task", [...daemonArgv(), "daemon", "serve"]);
       if (!identity.same) {
         if (!retained.pin) {
-          if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${identity.installedEntry}). This update left it stopped.`);
+          if (!quiet) console.log(foreignDaemonUpdateReport(identity.installedEntry));
           started = true;
           return false;
         }

@@ -6,6 +6,7 @@
  *  recorded as such under its definition's lock and is not stopped again, so a repeated stop is a
  *  no-op. Shared registry and credential cleanup follow only a complete confirmed stop. Nothing
  *  outside the recorded members is touched. The whole apply holds the root's maintenance lock. */
+import { displayCmd } from "../lib/self-exec.js";
 import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
@@ -26,7 +27,7 @@ import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
-import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
@@ -56,7 +57,7 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
-  ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+  [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
 
 /** A stop records each member's stop under the space's service instance records, so a folder there this
  *  account cannot write refuses before the plan, naming it, rather than leaving every member running
@@ -232,7 +233,7 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
   const shown = agents ? [...warnings, { code: agents.code, target, message: `the real stop would refuse: ${agents.message}; ${agents.remedy}` }] : warnings;
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(shown.length ? { warnings: shown } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} up`, description: "Start it" }] }] },
   ] }));
 }
 
@@ -259,11 +260,6 @@ function strandedRegistration(journal: StackJournal, members: readonly Member[])
     ...(tlsRequired ? { tlsRequired: true } : {}),
     ...(journal.broker ? { storeDir: journal.broker.storeDir, ...(journal.broker.maxFileStore !== undefined ? { maxFileStore: journal.broker.maxFileStore } : {}), ...(journal.broker.host !== undefined ? { attachHost: journal.broker.host } : {}) } : {}),
   } };
-}
-
-/** A stale process record a complete stop removed, or for a preview, one it would remove. */
-function staleWarning(root: string, row: LocalRecord, preview = false): OutputWarning {
-  return { code: "STALE_PROCESS_RECORD", target: { root, path: row.path, pid: row.pid, state: row.state }, message: staleRecordNotice(row, preview) };
 }
 
 /** What a stop that rebuilt the registration says it did, or for a preview, what it would do. */
@@ -416,7 +412,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
     else if (full) blocked = fullStoreStop(journal0, manager, full);
   }
   const warnings = [...stackStoreWarnings(journal0), ...(blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
-    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
+    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleRecordWarning(root, row, true))])];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
@@ -479,7 +475,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
-  if (!values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
+  if (!values.yes && !interactive) {
+    const command = `${displayCmd()} down${withAgents ? " --with-agents" : ""}`;
+    throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: `run \`${command} --yes\` to stop it. \`${command} --dry-run\` shows what it stops` });
+  }
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
   // members, and put back as it was when the stop ends before any member stops.
   const stranded = strandedRegistration(journal0, members);
@@ -493,7 +492,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
   const manager = members.find((member) => member.role === "manager" && member.live);
   try {
-    if (!manager && withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    if (!manager && withAgents) {
+      if (stackStartedWithoutManager(journal0)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack was started without a manager, so --with-agents cannot stop it. No member was stopped", { target, remedy: "run `cotal down --yes` to stop the stack without requesting agent retirement" });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    }
     // Resume the exact owned broker before reads through it. This is not its stop: manager impact
     // and the broker's final dependant scope still pass their normal guards, and SIGTERM stays last.
     if (broker && brokerPid !== undefined && processStopped(brokerPid)) {
@@ -632,7 +634,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       ...abandonWarnings,
       ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []),
       ...(stranded ? [strandedNotice(journal0, stranded.previous)] : []),
-      ...cleared.map((row) => staleWarning(root, row)),
+      ...cleared.map((row) => staleRecordWarning(root, row)),
     ] : []),
     ...killed.map(({ role, instanceId, pid }) => ({ code: "STOP_ESCALATED", target: { ...target, role, instanceId, pid }, message: `the ${role} member, pid ${pid}, did not exit within ${PROCESS_STOP_GRACE_MS / 1000} s of SIGTERM, so it was stopped with SIGKILL` })),
     ...(deliveryLease === "unread" ? [{ code: "DELIVERY_LEASE_UNREAD", target, message: "the delivery lease could not be read after the delivery member stopped, so its credential was kept; the next up waits out a lease row that still names it" }] : []),
@@ -640,5 +642,5 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   ];
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(warnings.length ? { warnings } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: killed.some((k) => k.role === row.role) ? "stopped with SIGKILL" : row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
-  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal up${stackStartedWithoutManager(previous.journal) || interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
+  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${stackStartedWithoutManager(previous.journal) || interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
 }

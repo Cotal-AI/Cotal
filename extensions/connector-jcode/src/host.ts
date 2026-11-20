@@ -175,8 +175,7 @@ export async function runJcodeHost(): Promise<void> {
     if (key.startsWith("COTAL_")) delete process.env[key];
   }
 
-  // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
-  // so the decision read above is what the card reports.
+  // The card reports the captured event-plane decision because COTAL_EVENTS is stripped above.
   const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
@@ -620,9 +619,8 @@ export async function runJcodeHost(): Promise<void> {
     tui.once("exit", onTuiExit);
   };
 
-  /** Stop the TUI and wait for it to exit. It goes before the private tree: from Jcode 0.99.1 a TUI
-   *  that loses its server starts a new one on the seat's socket, which outlives the seat and makes
-   *  the next launch of the same name fail until Jcode's idle timeout ends it (#7950). */
+  /** Stop the TUI and wait for it to exit before stopping the private tree. A TUI that loses its
+   *  server can start a replacement on the seat's socket and block the next launch. */
   const stopTui = async (): Promise<void> => {
     const viewer = tui;
     if (!viewer || viewer.exitCode !== null || viewer.signalCode !== null) return;
@@ -2068,7 +2066,7 @@ export async function runJcodeHost(): Promise<void> {
     await retireRelay(relayServer, relay);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
     // hands the manager a retired seat while an unverified daemon would keep running (#839). The
-    // TUI started before readiness goes first, so it cannot start a replacement server (#7950).
+    // TUI started before readiness goes first, so it cannot start a replacement server.
     await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });

@@ -9,12 +9,13 @@ import {
   readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessRecord, readServiceStopReceipts, removePidPair, readServiceStopRequest, releaseRetainedServiceStop, clearRetainedRefusedServiceStopRequest,
   clearAbandonedServiceStopRequest, connectUserControlOrThrow, credentialRefusalMessage, disarmManagerShutdownIntent, isCommandFailure, managerShutdownIntentArmedBy, protectedLocalDirectory,
   releaseExitedServiceStopReservation, requestLocalStop, reserveNativeServiceStop, resolveNativeServiceTarget, serviceAdapterAttempt, serviceMetadataDigest,
-  stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
+  seatCapText, stopReservationPath, userViewAuth, type LocalProcess, type NativeServiceStopRequest, type ProcessIdentityRecord, type ServiceAdapterAttempt, type ServiceAdapterContext,
   type ServiceAdapterStopAbandonment, type ServiceAdapterStopContext, type ServiceAdapterStopPlan, type ServiceAdapterStopRefusal, type ServiceAdapterStopResult,
   type ServicePreset,
 } from "@cotal-ai/workspace";
 import { managerServiceLaunchSpec, managerServicePreservedExitScope, managerServiceStopScope } from "./service-child.js";
 import { managerServiceReadiness, observeManagerService } from "./service-observation.js";
+import { ptyPlatformRefusal } from "./runtime/index.js";
 
 const managerPreset: ServicePreset = {
   kind: "service-preset", name: "manager", adapter: "manager-service", timeoutMs: 60000,
@@ -129,13 +130,14 @@ async function stop(context: ServiceAdapterStopContext & { requestId: string; pl
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the native manager refused the changed request or impact before stopping; inspect again before a new confirmation");
       }
       if (phases.some((row) => row.phase === "failed")) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native manager reported a failed stop; process and cleanup completion remain unconfirmed and the original request was retained");
-      const completed = phases.find((row) => row.phase === "completed");
       const identity = assertRecordIdentity(context.process);
-      if (completed && (identity.kind === "gone" || identity.kind === "mismatch")) {
+      if (identity.kind === "gone" || identity.kind === "mismatch") {
+        // The manager can publish completion and exit after the phase read above.
+        const completed = phases.find((row) => row.phase === "completed") ?? readServiceStopReceipts(context, request).find((row) => row.phase === "completed");
+        if (!completed) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original manager process exited without its native returned receipt; disappearance was not treated as a completed stop or cleanup");
         releasable = true;
         return { requestId: request.requestId, scopeSha256: request.scopeSha256, process: { ...request.target }, nativeStop: request.preserved ? "preserved-exit-returned" : "returned", cleanup: "not-checked", observedAt: completed.observedAt };
       }
-      if (!completed && (identity.kind === "gone" || identity.kind === "mismatch")) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original manager process exited without its native returned receipt; disappearance was not treated as a completed stop or cleanup");
       await delay(100, undefined, { signal: context.signal });
     }
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native manager stop did not confirm both return and process exit; its request/reservation were retained, without force kill or restart");
@@ -222,6 +224,10 @@ export const managerService: LocalProcess = {
   buildServiceLaunch(context) {
     if (!context.cliInvocation?.length) throw new CommandFailure("refused", "UNSUPPORTED", "the manager service requires the verified cotal entry; no PATH binary was selected");
     if (context.credentialRef) throw new CommandFailure("refused", "UNSUPPORTED", "the native manager uses its selected root's supported service authority; a generic credential reference was not substituted");
+    if (context.options.runtime === "pty" || context.options.runtime === "auto") {
+      const refusal = ptyPlatformRefusal();
+      if (refusal) throw new CommandFailure("refused", "UNSUPPORTED", refusal);
+    }
     const root = String(context.options.root), target = resolveNativeServiceTarget(root, context.space, context.options.server as string | undefined);
     const path = localProcessPath(MANAGER_PIDFILE, { root: target.root, space: context.space });
     const raw = readPidfile(path), state = readProcessRecord(path, commandIsCotalSupervisor);
@@ -229,6 +235,7 @@ export const managerService: LocalProcess = {
     if (typeof context.options["console-host"] === "string" && /[\u0000- \u007f]/u.test(context.options["console-host"])) throw new CommandFailure("refused", "USAGE_INVALID", "the declared console host contains whitespace or controls; no native child was launched");
     const extra: string[] = [];
     for (const name of ["console-port", "console-host", "ws-port", "max-sessions"] as const) if (context.options[name] !== undefined) extra.push(`--${name}`, String(context.options[name]));
+    if (context.managerSeatCap !== undefined) extra.push("--seat-cap", seatCapText(context.managerSeatCap));
     // A controller resume passes only its attempt and, when present, the protected token handoff
     // path and digest. Never the token, and never with a launch spec.
     const attempt = context.attempt === undefined ? undefined : serviceAdapterAttempt(context.attempt, ["resumeCommit"]);

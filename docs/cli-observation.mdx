@@ -97,14 +97,15 @@ See [Authorize posting](web-dashboard.mdx#authorize-posting) for a channel-scope
 ### Private launch record
 
 The real child exclusively claims native PID custody. After the HTTP listener and signal handlers
-exist, it writes a create-only owner-private session record for the full instance and launch, then
+exist, it creates an owner-private session record for the full instance and launch, then
 a private process-initialization phase. This is not a fresh authenticated endpoint-health reply.
 Logs print only the session file's reference, never its bootstrap URL or readiness credential. A
 background `service start` ends with the `service logs` command for the new instance, which is where
 that reference appears. An endpoint error or warning in that log names only the error's class, its
 name and code, never its message. Background `cotal service start web` reads the matching private record
-and opens a fresh single-use link in the default browser. Repeating the command reuses the process
-and preserves existing browser sessions. The local launch capability is separate from readiness authority
+and opens a fresh single-use link in the default browser for a loopback listener. Repeating a loopback
+start reuses the process and refreshes the link in that record even without a display or with `--no-open`.
+Existing browser sessions stay valid. The local launch capability is separate from readiness authority
 and is never printed. Use `--no-open` to retain the manual private-file route, including for remote listeners.
 Foreground starts remain manual. The existing cookie and origin gates remain in use. Confirmed close
 removes only this child's unchanged session/PID records; uncertainty retains custody.
@@ -131,7 +132,7 @@ comes back, after a broker restart too, the feed resumes and reports the transit
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
 observer stream's row bound. A longer message is cut there, and its line ends with the count not
-shown and the read that carries the whole text: `cotal history <channel> --json`, or
+shown and the read that carries the whole text: `cotal history '#<channel>' --json`, or
 `cotal history --dms --json` for a direct message. A text or plain `history` row cuts a long message
 again. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader

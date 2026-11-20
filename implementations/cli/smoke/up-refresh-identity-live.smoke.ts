@@ -21,6 +21,8 @@
  * Run: pnpm smoke:up-refresh-identity:live
  */
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer, type AddressInfo } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
@@ -41,7 +43,7 @@ const rootEnv = { ...process.env };
 for (const key of Object.keys(rootEnv)) if (key.startsWith("COTAL_")) delete rootEnv[key];
 
 let passed = 0;
-const EXPECTED_CHECKS = 29 + 9 + 13 + 5 + 15 + 2 + 15; // namedSpaceElsewhere + storeRecordRepair + preFieldWarning + foregroundCrashKeepsRecord + storeRecordRepair's off-terminal line checks + detachedLinesWrap
+const EXPECTED_CHECKS = 29 + 12 + 13 + 5 + 15 + 2 + 15 + (process.platform === "linux" ? 9 + 12 : 0); // Includes suspended legacy broker and wildcard bind checks on Linux.
 const check = (name: string, ok: boolean, detail?: unknown): void => {
   if (!ok) throw new Error(`FAIL: ${name}${detail === undefined ? "" : `\n${JSON.stringify(detail, null, 2)}`}`);
   passed++;
@@ -207,7 +209,15 @@ async function namedSpaceElsewhere(): Promise<void> {
         r.status === 2 && envelope.outcome === "refused" && envelope.error?.code === "CONFLICT" && envelope.error.message === refusal && envelope.target?.root === fixture.root, `${r.stdout}${r.stderr}`);
     }
     check("none of those refusals wrote anything in the folder it ran from", !existsSync(join(other, ".cotal")), join(other, ".cotal"));
+    const created = cotal(fixture, ["persona", "create", "editcheck", "--prompt", "Original body.", "--subscribe", "", "--space", "home-space"]);
+    check("a local persona is saved before stopping the named space", created.status === 0, `${created.stdout}${created.stderr}`);
     started = !(await stop(fixture));
+    const personas = cotal(fixture, ["persona", "--space", "home-space", "--plain"]);
+    const shown = cotal(fixture, ["persona", "show", "editcheck", "--space", "home-space", "--plain"]);
+    check("the stopped named space lists and shows the local persona", !started && personas.status === 0 && /\beditcheck\b/.test(personas.stdout) && shown.status === 0 && shown.stdout.includes("Original body."), [personas, shown]);
+    const unknown = cotal(fixture, ["persona", "--space", "unknown-space", "--plain"]);
+    const outside = spawnSync(TSX, [CLI, "persona", "--space", "home-space", "--plain"], { cwd: other, env: fixture.env, encoding: "utf8", timeout: 120_000 });
+    check("another name or a folder outside the stopped project cannot read its catalog", [unknown, outside].every(r => r.status === 2 && /TARGET_NOT_FOUND/.test(r.stderr)), [unknown, { stdout: outside.stdout, stderr: outside.stderr }]);
   } finally {
     if (started) await stop(fixture);
     rmSync(fixture.home, { recursive: true, force: true });
@@ -269,7 +279,7 @@ async function storeRecordRepair(): Promise<void> {
     const repairLines = repair.stdout.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
     check("(4) off a terminal its reopening, Started and summary lines are each one line on stdout",
       repairLines.includes(`reopening the recorded store ${resolve(storeA)}`) && repairLines.some((l) => /^Started (bundled )?nats-server \S+ (on PATH )?at .+\.$/.test(l)) &&
-        repairLines.some((l) => /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(l)) && !/reopening|Started|running in the background/.test(repair.stderr),
+        repairLines.some((l) => /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `(?:pnpm )?cotal down`$/.test(l)) && !/reopening|Started|running in the background/.test(repair.stderr),
       { stdout: repair.stdout, stderr: repair.stderr });
     const log = readFileSync(join(fixture.root, ".cotal", "nats.log"), "utf8");
     const lastStoreLine = log.split("\n").filter((l) => l.includes("Store Directory:")).pop() ?? "";
@@ -334,8 +344,8 @@ async function detachedLinesWrap(): Promise<void> {
     const at = lines.findIndex((l) => l.startsWith("✓ running in the background:"));
     const end = lines.findIndex((l, i) => i > at && !/^ {2}\S/.test(l));
     const summary = lines.slice(at, end);
-    return at >= 0 && summary.length > 1 && summary.every((l) => displayWidth(l) <= 80) && summary.some((l) => l.includes("`cotal down`")) &&
-      /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `cotal down`$/.test(summary.map((l, i) => (i ? l.slice(2) : l)).join(" "));
+    return at >= 0 && summary.length > 1 && summary.every((l) => displayWidth(l) <= 80) && summary.some((l) => /`(?:pnpm )?cotal down`/.test(l)) &&
+      /^✓ running in the background: nats-server \(pid \d+\)(, [a-z -]+)* - stop with: `(?:pnpm )?cotal down`$/.test(summary.map((l, i) => (i ? l.slice(2) : l)).join(" "));
   };
   /** The lines, from the one that starts `text`, that read as `text` again, each after `indent`. */
   const shownAs = (lines: string[], indent: string, text: string): string[] => {
@@ -463,7 +473,7 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   const fixture = await makeFixture("fg-crash");
   process.env.COTAL_HOME = fixture.home;
   process.env.XDG_CONFIG_HOME = fixture.env.XDG_CONFIG_HOME;
-  const { findMesh } = await import("@cotal-ai/workspace");
+  const { findMesh, readMaintenanceLockHolder } = await import("@cotal-ai/workspace");
   const space = "fg-crash";
   const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
@@ -514,19 +524,27 @@ async function foregroundCrashKeepsRecord(): Promise<void> {
   }
 
   // CONTROL: the same foreground `up`, ended with SIGINT (the intended stop) instead of SIGKILL,
-  // exits 0 and drops the record — proving the crash branch above is the ONLY one that keeps it.
+  // exits 130 and drops the record, proving the crash branch above is the only one that keeps it.
   const control = spawn(process.execPath, ["--import", TSX_LOADER, CLI, "up", "--foreground", "--open", "--server", fixture.server, "--space", space], { cwd: fixture.root, env: fixture.env, stdio: ["ignore", "pipe", "pipe"] });
+  let controlOutput = "";
+  for (const stream of [control.stdout, control.stderr]) stream.on("data", (chunk) => { controlOutput = (controlOutput + String(chunk)).slice(-4000); });
   try {
     let railsUp = false;
     for (let i = 0; i < 60 && !railsUp; i++) {
       const set = cotal(fixture, ["channel", "set", "probe", "--desc", "p", "--server", fixture.server, "--space", space]);
-      if (set.status === 0) railsUp = true;
+      // A channel write can succeed before the legacy manager has published its stop capability.
+      // Wait for the startup lock to clear before testing the steady-state shutdown path.
+      if (set.status === 0 && !readMaintenanceLockHolder(fixture.root)) railsUp = true;
       else await sleep(1_000);
     }
     check("(control) the second foreground fixture answers channel set within the poll budget", railsUp);
-    control.kill("SIGINT");
-    const controlExit = await new Promise<number | null>((res) => control.once("exit", (code) => res(code)));
-    check("(control) SIGINT (intended stop) exits 130", controlExit === 130, controlExit);
+    const controlExit = await new Promise<number | null>((res) => {
+      if (control.exitCode !== null || control.signalCode !== null) { res(control.exitCode); return; }
+      const timer = setTimeout(() => res(null), 120_000);
+      control.once("exit", (code) => { clearTimeout(timer); res(code); });
+      control.kill("SIGINT");
+    });
+    check("(control) SIGINT (intended stop) exits 130", controlExit === 130, { exitCode: controlExit, signal: control.signalCode, output: controlOutput });
     check("(control) SIGINT drops the record", findMesh(space) === undefined, findMesh(space));
   } finally {
     if (control.exitCode === null) { try { control.kill("SIGKILL"); } catch { /* already gone */ } }
@@ -595,7 +613,81 @@ async function hostShapeRefusals(): Promise<void> {
   }
 }
 
+async function suspendedLegacyBroker(): Promise<void> {
+  const fixture = await makeFixture("suspended-legacy");
+  const { processStopped } = await import("@cotal-ai/workspace");
+  let pid: number | undefined;
+  try {
+    const started = cotal(fixture, ["up", "--server", fixture.server]);
+    check("the default legacy stack starts before suspension", started.status === 0, `${started.stdout}${started.stderr}`);
+    pid = Number(readFileSync(join(fixture.root, ".cotal/nats.pid"), "utf8"));
+    const pin = readFileSync(join(fixture.root, ".cotal/nats.pid.identity"), "utf8");
+    for (const flag of ["--file", "--run"]) {
+      const refused = cotal(fixture, ["down", flag, "", "--yes"]);
+      check(`${flag} with a blank value leaves the live stack and its pidfile intact`, refused.status === 1 && refused.stderr.includes(`${flag} is empty`) && readFileSync(join(fixture.root, ".cotal/nats.pid.identity"), "utf8") === pin, `${refused.stdout}${refused.stderr}`);
+      process.kill(pid, 0);
+    }
+    process.kill(pid, "SIGSTOP");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check("the pinned default broker is suspended", processStopped(pid));
+    for (const server of [fixture.server, `nats://127.0.0.1:${await pickFreePort()}`]) {
+      const refused = cotal(fixture, ["up", "--server", server]);
+      const output = `${refused.stdout}${refused.stderr}`;
+      check("up at either port names the suspended broker and SIGCONT, never another port", refused.status === 2 && output.includes("TARGET_UNAVAILABLE") && output.includes(`kill -CONT ${pid}`) && !output.includes("another address") && !output.includes("reopening the recorded store"), output);
+    }
+    check("both refusals preserve the broker pidfile and identity pin", Number(readFileSync(join(fixture.root, ".cotal/nats.pid"), "utf8")) === pid && readFileSync(join(fixture.root, ".cotal/nats.pid.identity"), "utf8") === pin);
+    process.kill(pid, "SIGCONT");
+    const refreshed = cotal(fixture, ["up", "--server", fixture.server]);
+    check("after SIGCONT the same broker refreshes normally", refreshed.status === 0 && Number(readFileSync(join(fixture.root, ".cotal/nats.pid"), "utf8")) === pid, `${refreshed.stdout}${refreshed.stderr}`);
+  } finally {
+    if (pid !== undefined) { try { process.kill(pid, "SIGCONT"); } catch {} }
+    await stop(fixture);
+  }
+}
+
+async function wildcardBindRefusals(): Promise<void> {
+  const listener = createServer();
+  listener.listen(0, "127.0.0.2");
+  await once(listener, "listening");
+  const held = (listener.address() as AddressInfo).port;
+  try {
+    for (const prepared of [false, true]) {
+      const fixture = await makeFixture(prepared ? "wildcard-controller" : "wildcard-legacy");
+      if (prepared) {
+        const created = cotal(fixture, ["space", "create", "wildcard-controller"]);
+        check("wildcard controller root prepares", created.status === 0, `${created.stdout}${created.stderr}`);
+      }
+      try {
+        const refused = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", `nats://127.0.0.1:${held}`]);
+        const output = `${refused.stdout}${refused.stderr}`;
+        check("a non-dial-IP listener refuses a wildcard bind with CONFLICT and keeps --host in the retry", refused.status === 2 && output.includes("CONFLICT") && output.includes(`0.0.0.0:${held}`) && output.includes("up --host 0.0.0.0 --server nats://127.0.0.1:<port>"), output);
+        check("wildcard preflight writes no broker config or pidfile", !existsSync(join(fixture.root, ".cotal/auth/server.conf")) && !existsSync(join(fixture.root, ".cotal/nats.pid")));
+        const started = cotal(fixture, ["up", "--host", "0.0.0.0", "--server", fixture.server, "--no-manager"]);
+        check("the unstarted stack immediately accepts a free port", started.status === 0, `${started.stdout}${started.stderr}`);
+        await stop(fixture);
+        // A stopped controller keeps its wildcard bind. Its address-conflict remedy checks that
+        // bind too, rather than recommending an up that cannot bind the recorded port.
+        if (prepared) {
+          const recorded = createServer();
+          recorded.listen(Number(new URL(fixture.server).port), "127.0.0.2");
+          await once(recorded, "listening");
+          try {
+            const changed = cotal(fixture, ["up", "--server", `nats://127.0.0.1:${await pickFreePort()}`]);
+            check("recorded wildcard bind conflicts name the actual held address", changed.status === 2 && changed.stderr.includes(`0.0.0.0:${new URL(fixture.server).port}`) && changed.stderr.includes("stop the process listening"), changed.stderr);
+          } finally { await new Promise<void>((resolve) => recorded.close(() => resolve())); }
+        }
+      } finally {
+        await stop(fixture);
+      }
+    }
+  } finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
+}
+
 try {
+  if (process.platform === "linux") {
+    await suspendedLegacyBroker();
+    await wildcardBindRefusals();
+  }
   await hostShapeRefusals();
   await foregroundCrashKeepsRecord();
   await orderedRefresh("alpha-root", "omega-tenant", ["alpha-root", "omega-tenant"]);

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, sep } from "node:path";
 import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
@@ -220,6 +220,77 @@ export interface SeatLaunchDeps {
   withProvisioner: <T>(fn: (prov: CotalEndpoint) => Promise<T>) => Promise<T>;
 }
 
+/** Builds the {@link SeatLaunchDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
+  return {
+    space: () => m["space"],
+    servers: () => m["servers"],
+    workspaceRoot: () => m["workspaceRoot"],
+    installedExtensions: () => m["installedExtensions"],
+    ep: () => m["ep"],
+    auth: () => m["auth"],
+    userMode: () => m["userMode"],
+    managerInstanceId: () => m["managerInstanceId"],
+    serviceServe: () => m["serviceServe"],
+    runHosting: () => m["runHosting"],
+    connectorStatuses: () => m["connectorStatuses"],
+    execution: () => m["execution"],
+    requiredRuntime: () => m["requiredRuntime"],
+    meshMode: () => m["meshMode"],
+    executionRefusal: () => m["executionRefusal"](),
+    nameError: (name) => m["nameError"](name),
+    canReadPersona: (owner, caller, admin) => m["canReadPersona"](owner, caller, admin),
+    epAdminReach: (caller) => m["epAdminReach"](caller),
+    startAgent: (opts) => m["startAgent"](opts),
+
+    awaitReadiness: (...args) => m["awaitReadiness"](...args),
+    awaitStartupOutcome: (...args) => m["awaitStartupOutcome"](...args),
+    capabilityRefusal: (...args) => m["capabilityRefusal"](...args),
+    delegatedLaunched: () => m["delegatedLaunched"],
+    dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
+    endOnceBeforeServe: (...args) => m["endOnceBeforeServe"](...args),
+    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
+    eventsRefusal: (...args) => m["eventsRefusal"](...args),
+    eventsRequired: () => m["eventsRequired"],
+    fileDigest: (...args) => m["fileDigest"](...args),
+    hostLaunchFields: (...args) => m["hostLaunchFields"](...args),
+    issuanceSeam: (...args) => m["issuanceSeam"](...args),
+    launchHarness: (...args) => m["launchHarness"](...args),
+    launchOwner: (...args) => m["launchOwner"](...args),
+    leaseStopping: () => m["leaseStopping"],
+    loadSeatRuntime: (...args) => m["loadSeatRuntime"](...args),
+    managerLifecycleUid: () => m["managerLifecycleUid"],
+    namesCapacity: () => m["namesCapacity"],
+    openOnceDelivery: (...args) => m["openOnceDelivery"](...args),
+    personaOwner: (...args) => m["personaOwner"](...args),
+    place: (...args) => m["place"](...args),
+    provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
+    readerRemedy: (...args) => m["readerRemedy"](...args),
+    readinessTimeoutMs: () => m["readinessTimeoutMs"],
+    refreshUnavailableConnectors: (...args) => m["refreshUnavailableConnectors"](...args),
+    remoteAuthority: () => m["remoteAuthority"],
+    resolveConnector: (...args) => m["resolveConnector"](...args),
+    retirement: () => m["retirement"],
+    runtimeFor: (...args) => m["runtimeFor"](...args),
+    seatCapRefusal: (...args) => m["seatCapRefusal"](...args),
+    seatCustody: () => m["seatCustody"],
+    secrets: () => m["secrets"],
+    sessionRecovery: () => m["sessionRecovery"],
+    shredUserSecrets: (...args) => m["shredUserSecrets"](...args),
+    staticLifecycle: () => m["staticLifecycle"],
+    stopAndTrack: (...args) => m["stopAndTrack"](...args),
+    trackDeprovision: (...args) => m["trackDeprovision"](...args),
+    transcripts: () => m["transcripts"],
+    userProvision: () => m["userProvision"],
+    watchExit: (...args) => m["watchExit"](...args),
+    watchOnceExit: (...args) => m["watchOnceExit"](...args),
+    withIssuer: (fn) => m["withIssuer"](fn),
+    withLifecycleExecutor: (pin, fn) => m["withLifecycleExecutor"](pin, fn),
+    withProvisioner: (fn) => m["withProvisioner"](fn),
+  };
+}
+
 /** The launch pipeline's leaf steps: spawn-directory checks, the connector inventory reads, the
  *  once-spawn and spawn-grant refusals, and the persona a spawn resolves to. */
 export class SeatLaunch {
@@ -240,7 +311,7 @@ export class SeatLaunch {
     });
   }
 
-  /** The realpath + directory checks a placed spawn directory must pass on this manager's host,
+  /** The realpath, directory and search-permission checks a placed spawn directory must pass on this manager's host,
    * shared by the served `resolve-cwd` command and the `spawn` admission check (#385 item 2): one
    * function, so the two doors never drift. Creates nothing and never substitutes the workspace root. */
   checkSpawnCwd(resolved: string): { cwd: string; host: string } | { refusal: string } {
@@ -252,6 +323,7 @@ export class SeatLaunch {
     }
     try {
       if (!statSync(cwd).isDirectory()) return { refusal: "path is not a directory" };
+      if (process.platform !== "win32") accessSync(cwd, constants.X_OK);
     } catch (error) {
       return { refusal: rejectionText(error) };
     }

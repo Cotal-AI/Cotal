@@ -95,6 +95,47 @@ const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
 const pidfileOnly = process.argv.includes("--pidfile-only");
+// A failed first-run seed is an installation blocker even when all extension pins match.
+if (!brokerDisplayOnly && !pidfileOnly) {
+  const { home, run } = sandbox();
+  chmodSync(join(home, ".cotal"), 0o700);
+  const seed = join(home, ".config", "cotal", "seed");
+  const prefix = join(home, ".config", "cotal", "extensions");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [
+    "connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi",
+  ].map(name => ({ pkg: `@cotal-ai/${name}`, version: VERSION, spec: "file:seed", source: "seeded", commands: [] })) }));
+  const cursor = join(seed, "reconcile.cursor.json");
+  const control = run(["status", "--json"]);
+  check("seed control: matching extension pins with no cursor need no seed repair", control.status === 0 && control.envelope?.result?.extensions?.items?.length === 6 && !control.envelope.result.hints.some(h => h.includes("ext seed --repair")), shown(control));
+  const componentFlags = ["status", "--components", "--space", "nosuch"];
+  const componentControl = run(componentFlags, { NO_COLOR: "1" });
+  const cause = `Request refused\n  ${join(home, ".config")} is group-writable and the private-group proof is unavailable: getfacl is not installed\n  Next\n    chmod g-w ${join(home, ".config")}, or install acl`;
+  const original = JSON.stringify({ nonce: "status-failed-seed", package: "web", phase: "add", failed: cause }) + "\n";
+  writeFileSync(cursor, original, { mode: 0o600 });
+  const json = run(["status", "--json"]);
+  const extensions = json.envelope?.result?.extensions;
+  check("a recorded seed failure does not change the JSON outcome, exit, or extension keys", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.error == null && !!extensions && Object.keys(extensions).sort().join(",") === "items,root", shown(json));
+  check("JSON hints carry the complete cause before repair and no blocked startup", json.envelope?.result?.hints[0]?.includes(cause) === true && json.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true && !/cotal (?:login|setup|up)\b/.test(json.envelope.result.hints.join("\n")), json.envelope?.result?.hints);
+  for (const format of [[], ["--plain"], ["--wide", "--verbose"]]) {
+    const text = run(["status", ...format], { NO_COLOR: "1" });
+    const next = text.stdout.slice(text.stdout.indexOf("\nNext\n"));
+    check(`status ${format.join(" ") || "human"} names the failure and puts the permission remedy before seed repair`, text.status === 0 && /Connector setup:.*incomplete.*web failed during add/.test(text.stdout) && /^ +chmod g-w /m.test(next) && next.indexOf("chmod g-w") < next.indexOf("cotal ext seed --repair") && !/cotal (?:login|setup|up)\b/.test(next) && !text.stdout.includes("cotal login"), shown(text));
+  }
+  const components = run(componentFlags, { NO_COLOR: "1" });
+  check("component health still owns its exit with a recorded seed failure", componentControl.status === 3 && components.status === componentControl.status && components.stdout.includes("cotal ext seed --repair"), shown(components));
+  const personas = join(home, ".cotal", "agents");
+  writeFileSync(personas, "");
+  const mixed = run(["status", "--space", "nosuch", "--json"]);
+  check("a recorded failure remains visible when another read makes status partial", mixed.status === 4 && mixed.envelope?.outcome === "partial" && mixed.envelope.completeness === "partial" && mixed.envelope.warnings.some(w => w.code === "PERSONAS_UNREADABLE") && mixed.envelope.result?.hints[0]?.includes(cause) === true && mixed.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true, shown(mixed));
+  rmSync(personas);
+  check("all diagnostic forms leave the seed cursor unchanged", readFileSync(cursor, "utf8") === original);
+  writeFileSync(cursor, "{broken\n");
+  const corrupt = run(["status", "--json"]);
+  check("a corrupt cursor names the unreadable file with the existing extension warning", corrupt.status === 4 && corrupt.envelope?.outcome === "partial" && corrupt.envelope.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(cursor)), shown(corrupt));
+  check("reading a corrupt cursor does not quarantine or repair it", readFileSync(cursor, "utf8") === "{broken\n");
+}
 // Component pidfile reads share the folder report's path-bearing diagnostics.
 if (!brokerDisplayOnly) {
   const { home, run } = sandbox();
@@ -229,11 +270,7 @@ if (!brokerDisplayOnly) {
   const cleanHint = "if the stored JetStream state is stale: `cotal clean store --force`, then `up` with your usual flags (`clean all` also resets identity)";
   const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; detail?: string; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
     const base = selected.envelope!.result!;
-    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? {
-      name, state: name === "nats" && opts.pid === null ? "not-recorded" : "stopped",
-      pid: opts.pid === undefined ? 4242 : opts.pid,
-      detail: opts.detail ?? (opts.pid === null ? "no pidfile" : "stale pidfile"),
-    } : { name, state: "running", pid: 4343, detail: null });
+    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? { name, state: "stopped", pid: opts.pid === undefined ? 4242 : opts.pid, detail: opts.detail ?? (opts.pid === null ? "no pidfile" : "stale pidfile") } : { name, state: "running", pid: 4343, detail: null });
     const legacy = { ...base, folder: { ...base.folder, root: opts.root ?? home, controllerStack: opts.controllerStack ?? false, processSpace: "alpha", processes, storedState: exited.includes("nats"), stackBlock: null, stackUnfinished: null },
       meshes: { ...base.meshes, items: base.meshes.items.map((m) => m.space === "alpha" ? { ...m, mode: opts.mode ?? "auth", origin: opts.origin ?? "up" } : m) },
       selected: { ...base.selected, resolved: true, space: "alpha", root: home, mode: opts.mode ?? "auth", connection: exited.includes("nats") ? "unreachable" : "reachable" },
@@ -263,9 +300,9 @@ if (!brokerDisplayOnly) {
     // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
     const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
     const [command, description] = firstCommand(next);
-    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of ps and the store reset",
+    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of who and the store reset",
       /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
-        && next.includes("cotal ps") && next.indexOf("cotal up") < next.indexOf("cotal ps") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+        && next.includes("cotal who") && next.indexOf("cotal up") < next.indexOf("cotal who") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
   }
   for (const [label, next] of [
     ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
@@ -353,7 +390,7 @@ if (!brokerDisplayOnly) {
     const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
     const rendered = renderReport(statusView(held as unknown as Parameters<typeof statusView>[0]), "plain");
     const actions = rendered.split("\nNext\n")[1] ?? "";
-    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
+    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|who|ps)\b/.test(actions), rendered);
   }
   for (const state of ["ready", "commit-intent", "active"]) {
     const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };
@@ -625,8 +662,8 @@ if (process.platform !== "win32") {
   const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
-  check("the applications line names what is set up and counts the rest behind cotal setup",
-    ascii(`  Agent applications: aa · 1 more with \`${displayCmd()} setup\``) === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
+  check("the headless applications line names what is set up and counts the rest",
+    ascii("  Agent applications: aa · 1 not set up") === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",
@@ -676,8 +713,8 @@ if (process.platform !== "win32") {
     const [port] = (await once(greeter.stdout!, "data")) as [Buffer];
     const noApp = run(["status", "--server", `nats://127.0.0.1:${port.toString().trim()}`, "--plain"], onPath);
     const next = noApp.stdout.split("\nNext\n")[1] ?? "";
-    check("when every seeded connector is missing its executable, Next offers setup instead of spawn",
-      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup +Set up an agent application\b/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
+    check("when every seeded connector is missing its executable, headless Next offers scripted setup help instead of spawn",
+      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup --help +See setup flags for scripts/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
   } finally {
     greeter.kill("SIGKILL");
   }

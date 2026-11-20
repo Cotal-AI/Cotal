@@ -1,5 +1,177 @@
 # @cotal-ai/cli
 
+## 0.171.5
+
+### Patch Changes
+
+- bcb2f8e: Explain how to keep only the built-in `pty` runtime during guided setup.
+- 3b5ce0c: Repeating a loopback dashboard start refreshes the private single-use link even without a display or with `--no-open`, while existing browser sessions stay signed in.
+- 6291f81: `cotal manager status` now reports the running stack manager instead of a previously stopped manager service.
+- 88313a0: Wait a full hour before automatically installing a newly seen npm release, even if npm changes the latest version during another release's hold.
+- 8281e1d: Repair writable connector paths before self-update, identify missing or interrupted npm, and make interrupted connector seeds and updates safe to retry.
+- 2f532c1: Stop the shell installer before it changes anything if a directory occupies the launcher path, and explain how to choose another location.
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+- e3563bc: Self-update checks extension peers against the selected Cotal release so a missing archive from a newer release cannot block the update.
+- 9f948a3: Use the current CLI launcher in stopped-space restart hints and related space recovery commands.
+- c2b0250: Self-update names unreadable prepared space records, explains how to restore access, and reports that their continuity was not checked.
+- 8671af5: `cotal update --check` now reports when an interrupted connector seed needs `cotal ext seed --repair`.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+
+## 0.171.4
+
+### Patch Changes
+
+- 06a66f2: Local MCP clients get direct connection instructions, `input --json` reports an unregistered space as a structured refusal, and removing an absent extension succeeds without changing the installation.
+- 635053e: Self-update no longer asks you to retry while it can wait for a previous install, and it tells you to free temporary disk space when npm runs out during dependency checks.
+- 0df8319: Manual self-updates now report a refused HTTP or HTTPS proxy connection and fail without changing the installation or bypassing the proxy.
+- 0224885: Let an already-current `cotal update --self` succeed even when a running Manager from another installation has an unreadable launch entry.
+- 8c2d0c9: When you rename a stopped space's project folder, `cotal up` and `cotal status` show the commands to keep the new location when the old path is gone and the stack is confirmed stopped.
+- d96fc46: When npm runs on an unsupported Node.js version, Cotal stops installation and explains how to upgrade Node.js or use the official installer.
+- 29564fe: A prepared space record this account cannot read, such as one left owned by root, is no longer reported as a record that does not parse. A command about its space, such as `cotal up` or `cotal use`, refuses `PERMISSION_DENIED`, exit 2, instead of `SCHEMA_INVALID`, and keeps the record. The refusal, the `PREPARED_RECORD_SKIPPED` warning and `cotal status` say the file could not be read and name the step that gives it back, `sudo chown "$(id -un)" <file>` and `chmod 600 <file>`, instead of `cotal space forget`. A record that does not parse or is not a prepared space record still names the forget.
+- d44bae8: `cotal status` reports an answering manager outside a broker-only stack and points to `cotal who` for the live roster.
+- cb8692a: Cotal update explains how to refresh the standalone pi extension without overwriting your copy.
+- a58d5bf: Wait for a self-update that is still renewing its npm reservation, then recheck the installed version instead of asking you to retry.
+- 4734631: Let `cotal update --self` finish interrupted-update recovery when `cotal up` failed without starting any stack members and the stack is confirmed stopped.
+- 8e3024e: `cotal up` no longer refuses a controller stack after a reboot because of a stale delivery or manager record. Before it starts a member, `up` removes each process record under the root whose process is gone, or whose pid now runs another start than its identity pin records. It names each one in a `STALE_PROCESS_RECORD` warning, as a complete `cotal down` does, and never signals the process that holds a reused pid. Before, a record whose pid had been reused refused `up` as a legacy process. A record whose pid a process started by the same `up` took refused the delivery member with `LIFECYCLE_BLOCKED`. A record that may front a live process still refuses.
+- b393c16: Report the CLI version as partial JSON with exit code 4 when the extension manifest cannot be read.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- 291b1a3: Stopping a foreground stack cleanly with `cotal down` no longer prints a broker crash error or claims that a removed space stays recorded.
+- 632460f: A bare `cotal up` in a new project now chooses a free broker port when a stopped project still holds the default address.
+- cb72a76: `cotal` and `cotal help` now explain when the working directory has been removed, even when `PATH` contains relative entries. Help still finds executable paths that do not depend on the removed folder.
+- 19b5bce: Report missing Hermes models alongside missing `uv` in foreground spawn, and explain how to choose Cloud in interactive setup.
+- f900d77: `join --creds` now explains when a credential is for another space, was revoked or predates a local space reset, and shows how to mint a replacement with `--provision`.
+- fdac103: Commands given an unmatched loopback broker address now name possible registered spaces instead of assuming an open `main` space.
+- 5f67adc: Accept explicit broker defaults on `cotal up` and keep a stopped named open space's persona catalog accessible from its project folder.
+- 342d8af: Preserve added extensions and removed connectors when updating after an npm downgrade, and leave newer connector sets untouched when an older CLI refuses reconciliation.
+- e514d98: Print `cotal --version` and `cotal -V` without loading the command runtime or installed extensions.
+- 0c4b5c0: Fix `cotal mcp` shutdown so closing a stdio client retires its local identity without waiting for another CLI process or expired shutdown timers.
+- 01f280f: Fix CLI smoke coverage for signed-out login guidance, private stack cleanup, and broker-only startup.
+- a5db381: `reset store` and `reset space` on a stopped controller stack now leave an empty store directory and record it in the stack journal. `status` no longer exits 4 with a missing-store warning after a reset, including after `space forget`, and `down` and the next `up` no longer warn `STORE_MISSING`. A store removed by hand still warns.
+- 504cbb3: Make the cleanup command printed by `up --restore --root` work from the invoking folder without mistaking a missing local restore record for completed cleanup.
+- b647c12: Make legacy shutdown retries succeed after confirmed agent retirement and show runnable setup guidance in headless status.
+- 1a76a35: Keep complete option names, requested JSON, and subcommand help in argument refusals, show seed usage for invalid `ext seed` arguments, and list only supported persona inputs in public `spawn` help.
+- eb7fd6a: Validate spawn agent names, channel flags, foreground working directories, structured detached pre-send refusals, and empty `--cwd` and `--root` flags before provisioning or writing records.
+- 3d6f145: `cotal status` now reports recorded connector seed failures and the steps to repair them instead of suggesting startup.
+- 2463109: Preview history clearing after a local stack stops, and give working shutdown instructions for renamed projects and stacks started without a manager.
+- 4a26cd5: Self-update no longer refuses a shared address when the selected stack and its broker are stopped, and `cotal status` asks you to wait for an active update before reconciling extension versions.
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+
+## 0.171.2
+
+### Patch Changes
+
+- d283195: Backup commands now explain symbolic-link loops, `up` rejects an empty `--restore` path before starting anything, and setup help labels the self-hosted example as interactive while the installation guide shows the full scripted command.
+- 7a433a6: Report self-update registry connection failures with npm's error code and the scoped registry setting to check instead of asking users to wait for publication.
+- 576ce19: Show usable next steps for manager status and credential minting, and retire durable memberships when leaving a channel that switched to live delivery.
+- ae7fa49: `pnpm dlx` runs under pnpm 11, which start the package from its global virtual store, are now recognised. The entry card and `status` suggest `pnpm dlx cotal-ai` commands instead of Node plus a store path, and `setup` offers the global install it offers under other `pnpm dlx` runs.
+- 31dc8ae: Keep the requested space in broker preset retries and preserve the saved manager settings when a console host override or stack start is rejected.
+- 2af222f: Allow self-update and local space startup through a protected symbolic-link home, and discard staged builds when the update snapshot fails.
+- 6eea486: Resolve foreground persona and broker log paths from the invoking folder, accept log rotation flags with a manifest log path, and report incompatible manifest flags as a usage refusal.
+- 66aef17: Shutdown preserves the requested agent teardown in its confirmation commands, setup points stopped projects to startup, and spawn offers compatible launch and manager restart commands.
+- 7a433a6: Report lost registry connectivity before self-update replacement as an unchanged installation instead of a release-propagation failure or raw npm errors.
+- 7a433a6: Wait for a simultaneous self-update of the same npm installation and recheck its installed CLI before replacing packages again.
+- 0a5fe42: Quote the folder path in the `backup create` permission error so the suggested `chmod` command works for paths with spaces.
+- 112c892: Fix `cotal down` leaving delivery and the broker running when the manager records a completed stop and exits during the receipt check.
+- 7a433a6: Continue self-update from the restored version, show when an update is still running, and remove abandoned release archive caches without disturbing active checks.
+- eb18727: Allow `space forget` to remove a damaged registration when another space's registry file is damaged too, instead of refusing with a recovery command that cannot run either.
+- a45b7bd: `cotal status` now shows how to list spaces and select a different one.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+- 4c5ba54: Keep npm-installed Cotal usable when Node is off PATH, leave recovery files untouched on offline updates, and preserve the npm launcher when the shell installer finds a recorded daemon service.
+- 7a433a6: Self-update reports when a signal stops npm's dependency check, and `cotal update` accepts the recorded broker URL of a stopped local stack without restarting it.
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+
+## 0.171.1
+
+### Patch Changes
+
+- 6f43df3: Channel details and watch output suggest history reads that work even for channels named `clear` or `limit`. The suggested commands quote the `#channel` argument so it stays distinct from a history subcommand.
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- a75caff: Mark endpoint work commands as unavailable, hide the web-only `--no-open` option from manager start help, and preserve `ps --slots` in manager selector errors.
+- c0b8868: History reports older direct messages only when the read finds an omission, and live follow honors time-based `--since` cutoffs.
+- 7e9479a: Clarify how to identify the broker executable, answer or resume a workflow, preview a team without its applications, and interpret the dashboard credential in `doctor auth`.
+- 4926192: Reject an empty setup project, mark forced legacy mesh registrations as unchecked, and refuse unsafe credential output paths without creating directories.
+- 185310f: Report an empty `spawn --resume` as a usage error in both launches and previews, exit `join` cleanly when `/quit` is pasted after a status command, and stop the plain console without a false broker outage warning.
+- 7ff146c: Codex setup lists its configuration and plugin files in the JSON receipt, status reports disabled plugins, and updates leave read-only Codex configuration unchanged.
+- 7c08ef8: Keep shell installs working when the system Node executable is upgraded, explain how to reinstall npm copies after a Node upgrade, and document curl-free and noncolliding install options.
+- b6dcffa: Local cleanup refusals tell you to remove only the unsupported mesh flags and their values, so a retry keeps options such as `--force`, `--dry-run` and `--store-dir`.
+- 93dc933: Configure-only setup no longer needs a runnable NATS server, setup names the install command for a missing built-in connector, and slow connector setup no longer expires the broker startup credential.
+- 2aec2ee: Report missing member records in `cotal status` when a live stack's journal does not name its launching Cotal home, even if the current home has prepared a space in that folder.
+- 5e915d4: Reject persona imports with invalid UTF-8 and keep the requested space or server in the edit and removal commands shown when a persona already exists.
+- 00fcd05: Keep the right project in CLI recovery steps for unreachable brokers, stopped spaces, and missing managers, and keep component health consistent when a broker URL has a trailing slash.
+- 11555a1: Fix Linux daemon installation when an owned group-writable systemd unit directory sits below a private directory that other accounts cannot traverse.
+- 67a59e9: Restarting a local stack no longer leaves unused manager goal-index consumers, and channel replay windows are saved without surrounding whitespace.
+- 1a51b71: List meshes and save preferences without installing connectors, reject malformed commands and conflicting seed modes before seeding, and direct users with a corrupt extension manifest to `cotal ext seed --repair`.
+- 4303dc5: Keep foreground service stop receipts intact and reject unsupported preset start options in dry runs before saving the definition.
+- 1303e3f: Make `space show` explain explicit selections and give working recovery commands for renamed stopped projects.
+- f976f2f: Show the restart step for a stopped local space that stays registered, give equivalent broker URLs the same recovery advice, and allow a named reset of an isolated stopped open space.
+- 58dcdc6: `cotal status` and `cotal ps` now tell you to repair an invalid `.cotal/channels.json` before restarting a stopped local stack.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+
 ## 0.170.0
 
 ### Patch Changes

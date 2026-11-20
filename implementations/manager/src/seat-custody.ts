@@ -10,6 +10,7 @@ import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./mana
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
+import type { Manager } from "./manager.js";
 
 /** Keep launch provenance independent of status and runtime wire contracts. */
 export function watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
@@ -41,6 +42,32 @@ export interface SeatCustodyDeps {
   bindOnceSeat: (agent: ManagedAgent) => Promise<void>;
   renewManagedStaticCred: (agent: ManagedAgent) => Promise<void>;
   resumeSupervisedAgent: (entry: ManagerResumeAgent, supervised: SupervisedRestart) => Promise<import("@cotal-ai/core").ControlReply>;
+}
+
+/** Builds the {@link SeatCustodyDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function seatCustodyDeps(m: Manager): SeatCustodyDeps {
+  return {
+    staticAuth: () => !!m["auth"] && !m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    space: () => m["space"],
+    instanceId: () => m["managerInstanceId"],
+    endpoint: () => m["ep"],
+    secrets: () => m["secrets"],
+    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
+    runtimeFor: (kind) => m["runtimeFor"](kind),
+    requiredRuntime: () => m["requiredRuntime"],
+    withLifecycleExecutor: (pin, fn) => m["withLifecycleExecutor"](pin, fn),
+    watchConnectorHolder: (handle, holder) => m["watchConnectorHolder"](handle, holder),
+    resumeEntryOf: (agent) => m["resumeEntryOf"](agent),
+    inventoryReferenceError: (entry) => m["inventoryReferenceError"](entry),
+    registerAgent: (name, agent) => { m["agents"].set(name, agent); },
+    agentFor: (name) => m["agents"].get(name),
+    watchExit: (agent) => m["watchExit"](agent),
+    bindOnceSeat: (agent) => m["bindOnceSeat"](agent),
+    renewManagedStaticCred: (agent) => m["renewManagedStaticCred"](agent),
+    resumeSupervisedAgent: (entry, supervised) => m["resumePreservedAgent"](entry, false, false, undefined, supervised),
+  };
 }
 
 /** Seat custody references, successor records, and identity-checked recovery for one manager. */

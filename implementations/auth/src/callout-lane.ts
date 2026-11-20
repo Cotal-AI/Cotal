@@ -24,7 +24,8 @@ import type { AuthCalloutLimits } from "./callout.js";
 import { chatConnectAuthority } from "./chat-session-authority.js";
 import { authConnectReaderGrants, openConnectReader } from "./connect-reader.js";
 import { openLifecycleRegistry, registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
-import { ADMISSION_KEY, parseServiceAdmissionRecord } from "./service-host-ops.js";
+import { parseServiceAdmissionRecord } from "./service-host-ops.js";
+import { ADMISSION_KEY } from "./service-host-kernel.js";
 import { dataAccountAuth, loadCalloutAuth, loadIssuer, loadServiceKeys, spaceIssuer } from "./store.js";
 
 /** What one space's callout membership exposes to whoever holds it. */

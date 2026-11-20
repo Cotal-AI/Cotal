@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serveDaemon } from "../daemon/server.js";
@@ -55,6 +56,16 @@ try {
   for (const path of [dir, state]) mkdirSync(path, { mode: 0o700 });
   const paths = { dir, state, socket: join(dir, "d.sock"), lock: join(state, "daemon.lock") };
   assert.equal(await observeUpdateDaemon(paths), undefined);
+  if (process.platform === "linux") {
+    let connections = 0;
+    const foreign = createServer(socket => { connections++; socket.destroy(); });
+    await new Promise<void>((resolve, reject) => foreign.once("error", reject).listen(paths.socket, resolve));
+    try {
+      chmodSync(paths.socket, 0o600);
+      assert.equal(await observeUpdateDaemon(paths), undefined, "a shared listener does not belong to a home with no lifetime lock");
+    } finally { await new Promise<void>(resolve => foreign.close(() => resolve())); }
+    assert.equal(connections, 0, "the unrelated listener was not contacted");
+  }
   const daemon = await serveDaemon({ paths, version: "0.0.0-lifetime", sessionDir: state, stopAllowed: async () => false });
   try {
     const answered = daemon.counters.statusAnswered;

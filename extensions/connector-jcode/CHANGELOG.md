@@ -1,5 +1,36 @@
 # @cotal-ai/connector-jcode
 
+## 0.171.5
+
+### Patch Changes
+
+- 2fdf963: Restore reliable smoke coverage for foreground launches, authorization refusals, and roster diagnostics without changing CLI behavior.
+
+## 0.171.4
+
+No changes in this release.
+
+## 0.171.3
+
+No changes in this release.
+
+## 0.171.2
+
+### Patch Changes
+
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+### Patch Changes
+
+- 3f5b207: Move the Jcode host's module-level support code (timing bounds, the bridge-recovery classifier, the seat home, MCP config, relay server and env scrub) out of `host.ts` into `host-support.ts`. `host.ts` re-exports the public names, so imports and behaviour are unchanged.
+- e7cf4bc: A Jcode seat now stops its TUI before its server, on a normal stop and when a launch fails. From Jcode 0.99.1 a TUI that loses its server starts a new one on the seat's socket, and that server made the next launch of the same name fail until Jcode's idle timeout ended it. The TUI also starts with Jcode's desktop companion autostart off, so Jcode 1.0 no longer leaves a companion process behind each seat.
+
 ## 0.170.0
 
 ### Patch Changes

@@ -327,8 +327,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const startedRoot = project("started-here");
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const started = await json(FULL("startedspace", startedRoot));
-  check("a space started here before is reported as started, and its next command is spawn",
-    started.status === 0 && started.env?.result.spaceState === "started" && started.env.result.next.command === `${commandPrefix} spawn --space startedspace` && findPreparedSpace("startedspace") === undefined, shown(started));
+  check("a past local registration with an offline broker is reported as stopped and kept",
+    started.status === 0 && started.env?.result.spaceState === "stopped" && started.env.result.next.command === `${commandPrefix} up` && started.env.result.next.cwd === startedRoot && findPreparedSpace("startedspace") === undefined, shown(started));
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
@@ -374,6 +374,32 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     unhealthy.status === 4 && /application:\s+claude · unavailable/.test(unhealthy.stdout) && !/claude not on PATH/.test(unhealthy.stdout), shown(unhealthy));
   rmSync(join(more, "claude"));
   rmSync(join(more, "claude.cmd"));
+}
+
+// Headless status uses the saved project and harness rather than a command that needs a terminal.
+if (process.platform !== "win32") {
+  const dir = project("headless pi project");
+  const headlessPath = project("headless-bin");
+  for (const name of ["node", "npm", "nats-server", "sh", "ps"])
+    symlinkSync(resolveOnPath(name, env)!, join(headlessPath, name));
+  const headless = { PATH: headlessPath };
+  const setup = await run(["setup", "--destination", "local", "--harness", "pi", "--project", ".", "--space", "headless-pi", "--configure-only", "--no-input"], dir, headless);
+  check("headless setup saves preparation when pi is missing", setup.status === 4 && harnessOf("headless-pi") === "pi", shown(setup));
+  const status = await run(["status"], dir, headless);
+  const command = status.stdout.split("\n").map((line) => line.trim()).find((line) => line.includes(" setup --destination local --harness pi "));
+  check("headless status gives the install guide and a complete setup command", status.status === 0 && command?.includes(`--project '${dir}' --space headless-pi --configure-only --no-input`) === true && status.stdout.includes("https://docs.cotal.ai/docs/connect-pi/"), shown(status));
+  if (command) {
+    const cotalBin = project("headless-launcher");
+    writeFileSync(join(cotalBin, "cotal"), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(cotalBin, "pnpm"), `#!/bin/sh\nexec "$@"\n`, { mode: 0o755 });
+    const follow = (path: string) => spawnSync("/bin/sh", ["-c", command], { cwd: dir, env: { ...env, PATH: [cotalBin, path].join(delimiter) }, encoding: "utf8", timeout: 60_000 });
+    const missing = follow(headlessPath);
+    check("following the printed command reaches application setup instead of refusing for missing flags", missing.status === 4 && /pi.*PATH/.test(missing.stderr), missing.stderr);
+    const piBin = project("headless-pi-bin");
+    writeFileSync(join(piBin, "pi"), "#!/bin/sh\necho 0.79.10\n", { mode: 0o755 });
+    const completed = follow([piBin, headlessPath].join(delimiter));
+    check("after installing pi the same command completes without starting the space", completed.status === 0 && /Configure only/.test(completed.stdout) && findPreparedSpace("headless-pi")?.root === dir, completed.stderr);
+  }
 }
 
 // ── A self-hosted space ───────────────────────────────────────────────────────────────────────────
@@ -442,8 +468,16 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   writeFileSync(file, JSON.stringify(bundle));
   const wrongName = await json(hosted("other", userRoot, ["--connection-file", file]));
   check("a connection file for another space is CONFLICT", refused(wrongName, 2, "CONFLICT") && /"hosted"/.test(wrongName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(wrongName));
-  const added = await json(hosted("hosted", userRoot, ["--connection-file", file]));
-  check("a connection file registers the space with the project as its root",
+  const help = await run(["setup", "--help"]);
+  check("setup help labels the self-hosted connection-file example as prompting in a terminal",
+    help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
+  const docs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
+  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(docs)?.[0];
+  check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
+  const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
+  const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);
+  const added = await json(exampleArgs);
+  check("the documented self-hosted example runs without a terminal and registers the space with the project as its root",
     added.status === 0 && added.env?.result.spaceState === "added" && findMesh("hosted")?.root === userRoot && findMesh("hosted")?.mode === "user" && added.env.result.written.some((w: { what: string }) => w.what === "space registration"), shown(added));
   check("and its persona lands where spawn reads for that space", existsSync(join(resolveMeshTarget(home, { space: "hosted" }).personaRoot, "default.md")));
   const again = await json(hosted("hosted", userRoot, ["--connection-file", file]));
@@ -457,7 +491,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 type Row = { name: string; state: string; selected: boolean; reachable: boolean | null; package: string | null; tool: { names: string[]; found: string | null } | null };
 const rows = (r: Awaited<ReturnType<typeof json>>): Row[] => r.env?.result?.runtimes ?? [];
 const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find((x) => x.name === name);
-{
+async function scriptedRuntimeInstalls() {
   const dir = project("rt");
   const added = await json([...FULL("rt", dir), "--runtime", "tmux"]);
   check("a named runtime is added at this cotal's version and its provider answers",
@@ -528,11 +562,34 @@ const SAVE = "Save it?";
 const START_LOCAL = "Start this local space and open the default agent?";
 const START_HOSTED = "Launch the default agent on the registered space's manager?";
 
+// Exercise the Quickstart's keys before the scripted checks install tmux in this home.
+if (process.platform !== "win32") {
+  const dir = project("pty-only");
+  const t = terminal(dir, ["--configure-only"]);
+  await t.answer(DESTINATION, ENTER);
+  await t.answer(APPLICATION, ENTER);
+  const checked = await t.at("◼ tmux (not set up · tmux found)");
+  const frame = t.s.text().slice(t.s.text().lastIndexOf(RUNTIMES));
+  check("only tmux starts checked when its tool is found but the extension is absent",
+    checked && !/[◻◼] pty\b/.test(frame) && frame.match(/◼ \w+/g)?.join() === "◼ tmux" && installed("@cotal-ai/tmux") === undefined, frame);
+  // The cursor starts on orca. Move to tmux and press Space before confirming.
+  await t.answer(RUNTIMES, DOWN + " " + ENTER);
+  await t.answer(PROJECT, ENTER);
+  await t.answer(SPACE_NAME, ENTER);
+  check("clearing every checked runtime with Space leaves only pty in the review",
+    (await t.at(SAVE)) && /^│  runtimes +pty +│$/m.test(t.s.text()), t.s.text().slice(-900));
+  await t.answer(SAVE, ENTER);
+  check("saving prepares the project without installing tmux",
+    (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-only")?.root === dir && installed("@cotal-ai/tmux") === undefined,
+    { code: t.s.code, out: t.s.text().slice(-900) });
+}
+await scriptedRuntimeInstalls();
+
 if (process.platform !== "win32") {
   {
     const dir = project("pty-cloud");
     const before = files();
-    const t = terminal(dir);
+    const t = terminal(dir, ["--configure-only"]);
     check("a terminal is asked where the space runs, with Cloud among the choices", (await t.at(DESTINATION)) && /○ Cloud/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
@@ -541,7 +598,7 @@ if (process.platform !== "win32") {
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
     check("Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in", /● Cloud \(sign in to Cotal Cloud and choose your space\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
     t.write("\x03");
-    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
+    check("Ctrl-C leaves setup before sign-in with exit 130 and saves nothing", (await t.exited()) && t.s.code === 130 && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
   }
   {
     const dir = project("pty-local");
@@ -687,6 +744,23 @@ if (process.platform !== "win32") {
   check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
   const none = await json(FULL("rt", dir));
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
+}
+
+if (process.platform !== "win32") {
+  const oldBin = project("old-bin");
+  const probed = join(oldBin, "nats-server.probed");
+  writeFileSync(join(oldBin, "nats-server"), `#!/bin/sh\nif [ "$1" != --version ]; then exit 1; fi\necho probed > "$0.probed"\necho 'nats-server: v2.9.0'\n`, { mode: 0o755 });
+  const path = { PATH: [oldBin, env.PATH].join(delimiter) };
+  const dir = project("brokerless");
+  const prepared = await json([...FULL("brokerless", dir), "--configure-only", "--yes"], dir, path);
+  check("configure-only saves the default persona without probing the old broker",
+    prepared.status === 0 && prepared.env?.result?.startup?.state === "not-requested" && !existsSync(probed)
+      && existsSync(join(dir, ".cotal", "agents", "default.md")), shown(prepared));
+  const startDir = project("broker-required");
+  const started = await json([...FULL("broker-required", startDir), "--start", "--detach", "--yes"], startDir, path);
+  check("explicit startup still refuses the old broker before writing the project",
+    refused(started, 2, "DEPENDENCY_UNAVAILABLE") && /reports version 2\.9\.0/.test(started.env?.error?.message ?? "")
+      && existsSync(probed) && !existsSync(join(startDir, ".cotal")), shown(started));
 }
 
 finish();

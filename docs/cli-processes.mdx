@@ -553,7 +553,8 @@ retry the launch. If you need to refresh the daemon's `PATH`, let any seats on t
 and run `cotal daemon setup --space <space>` on that computer.
 
 A recorded native machine daemon checks for updates daily with up to one hour of jitter.
-A newly seen release waits one hour before installation. Automatic installation uses
+A newly seen release waits one hour before installation. If the final npm check sees a different
+newer release, no update is installed and that release starts its own hold. Automatic installation uses
 `cotal update --self` and waits until every hosted Manager is empty, then holds its admission
 fence through the update. Running agents are not stopped to make room for an update.
 An explicit daemon home or a daemon not started by its recorded native service does not install
@@ -610,7 +611,13 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
-On Linux, daemon installation reads its unit directory from the systemd user manager.
+On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
+On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
+runit or s6. Use `cotal update --self` for manual updates.
+If your login does not provide `XDG_RUNTIME_DIR`, use a runtime directory owned by your user
+with mode 0700 and set `XDG_RUNTIME_DIR` to its path.
+
+Daemon installation reads its unit directory from the systemd user manager.
 An owned group-writable unit directory can be used when an ancestor owned by you or root denies
 search permission to group and other accounts, such as an owned `.config` directory with mode 0700.
 Shell-quoted home and config paths, including spaces, are decoded without running a shell.
@@ -664,7 +671,10 @@ Hosted Managers pick up newly installed applications after the guarded service r
 Active seats block that restart until they stop. When a desired space has no available
 application, `daemon status` shows this recovery under Next.
 
-To connect directly to a space, use `cotal daemon setup --space <s> [--idp <url>]`.
+To connect directly to a user-auth participant space, use `cotal daemon setup --space <s> [--idp <url>]`.
+For a local static-auth or open space, run `cotal up` in the folder that hosts it. The local stack
+runs its Manager. Daemon setup refuses with `UNSUPPORTED` (`NOT_USER_AUTH`) before turning the
+space on or recording a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
@@ -816,8 +826,8 @@ platform; where none is built or shipped, daemon endpoint operations refuse `UNS
 The default daemon and CLI share the sign-in in the same Cotal home, so signing in through either one does not require a second approval in the other. An explicit `--daemon-home` keeps its own sign-in, separate from the CLI's Cotal home.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
-On macOS, `daemon status`, `daemon install` and an explicit `update --self` repair a recorded
-LaunchAgent whose program is missing. They verify its unchanged plist, receipt and loaded job
+On Linux and macOS, `daemon status`, `daemon install` and an explicit `update --self` repair a recorded
+systemd user unit or LaunchAgent whose program is missing. They verify its unchanged source, receipt and native job
 before moving it to the current CLI installation. The repair preserves sign-in and hosting records,
 refuses to stop occupied or unreadable Managers, and keeps an operator-disabled service stopped.
 An interrupted repair retains its source and receipt intent for the next command to finish.
@@ -1012,8 +1022,10 @@ space with its cause and repair command and retries from five seconds up to five
 The serving Manager never runs first-use seeding. A child rejects a handed generation that differs
 from the Manager implementation it loaded.
 On macOS and Linux, a desktop app daemon starts its Managers from a verified private copy of
-its runtime. A running Manager can load an installed connector and launch new seats after the
-app path disappears. This does not change the service's recorded program or repair a missing app.
+its runtime. Daemon status remains available while the copy is prepared or verified. A running
+Manager can load an installed connector and launch new seats after the app path disappears.
+This does not change the service's recorded program or repair a missing app.
+Status does not wait for a starting Manager to report its hosted agents.
 Every Manager using installed extensions checks each first-party connector's manifest version
 against the generation loaded by that Manager before a new launch, including a connector already
 loaded in that process. This includes Managers started by `up` and `manager start`. A mismatch names
@@ -1023,8 +1035,9 @@ This readiness check does not prove login or reboot autostart on any OS.
 After a successful `cotal update --self`, a running default daemon from the same installation
 is restarted when its version differs, including older daemons that host no Managers.
 On Linux without `XDG_RUNTIME_DIR`, update checks the existing private `/run/user/<effective uid>`
-for the default daemon endpoint. If that runtime directory is absent, it continues with the ordinary
-Manager continuity and installation checks.
+for both the default daemon endpoint and native user-service commands. If that runtime directory
+is absent, it continues with the ordinary Manager continuity and installation checks. A recorded
+systemd service still needs an answer from its user manager.
 Update reports and skips hosted records with no live child, including stopped or refused Managers.
 A live child whose custody cannot be confirmed still blocks update and names service-disconnect
 for that space before retrying.
@@ -1256,6 +1269,8 @@ you, SYSTEM or Administrators, and its access list may grant nothing to anyone e
 directory `TARGET_NOT_FOUND`, and a symlinked, foreign or loose one `PERMISSION_DENIED`. Nothing is
 created or repaired. Bash and Zsh completion offer file paths for `--daemon-home`, including
 existing directories; the directory checks still apply when the command runs.
+On Linux, when a foreground daemon is stopped, `daemon status` and `daemon service-connect`
+name the `cotal daemon serve` command for the selected home, including `--daemon-home` if supplied.
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
@@ -1477,7 +1492,10 @@ retries. Disconnect and shutdown cancel them. An ended connection is remembered 
 daemon stops.
 `service-status` reads the daemon's current answer without contacting the space. With no current
 answer, it reports `NOT_REQUESTED` (`TARGET_NOT_FOUND`) when this daemon has no saved register
-request for the space, including after a restart. A saved request alone reports `disconnected`;
+request for the space, including after a restart. A registered static-auth or open space instead
+reports `UNSUPPORTED` and points to `cotal up`. `service-disconnect` clears any old daemon hosting
+refusal for that space without stopping its local stack or recommending setup again.
+A saved request alone reports `disconnected`;
 it does not prove approval or a connection. A registration
 awaiting approval reports `approval-pending` for the rest of that daemon process, until another
 registration or connection attempt updates it or an explicit disconnect clears it. Registration

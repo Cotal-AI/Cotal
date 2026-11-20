@@ -3,8 +3,9 @@ import { existsSync } from "node:fs";
 import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 import { openVerified, queryDaemon } from "./client.js";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
-import { installedDaemonIdentity, reconcileMissingShellRuntime, requestInstalledDaemon, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, linuxMissingProgram, reconcileMissingShellRuntime, requestInstalledDaemon, unitReceiptFile } from "./install.js";
 import { daemonManagerIntentFile } from "./manager.js";
+import { foreignDaemonUpdateReport } from "./guidance.js";
 
 /** Test hooks: the installed-service check, the daemon query and the wait bound. */
 interface GenerationWaitProbe {
@@ -41,9 +42,10 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
   } else {
     if (!existsSync(unitReceiptFile(paths))) return;
     reconcileMissingShellRuntime(paths);
+    if (process.platform === "linux" && linuxMissingProgram(paths)) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon program is missing", { remedy: "run `cotal daemon install` from a working Cotal installation to repair the recorded service" });
     const installation = installedDaemonIdentity(paths);
     if (!installation.same) {
-      if (!probe.quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      if (!probe.quiet) console.log(foreignDaemonUpdateReport(installation.installedEntry));
       return;
     }
   }

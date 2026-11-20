@@ -92,7 +92,8 @@ the turn, each held presence repeats it in parentheses after the stop reason, on
 300 characters, so a cause such as `Unknown provider: unknown` is visible. User abort never retries; it
 is identified from the `AbortSignal` captured while the turn is active and stays a plain hold, since
 the person who aborted is the party who continues. Non-aborted `stop`, `toolUse`, and positive-output
-`length` are locally provable terminal boundaries and may commit confirmed work.
+`length` are locally provable terminal boundaries and may commit confirmed work. A turn that carried
+no Cotal batch returns to `idle` when it ends, whether it finished, failed or was aborted.
 
 `session_before_compact { reason: "overflow", willRetry: true }` identifies the overflow path but is
 not itself a terminal decision. An abort or dispatch watchdog blocks automatic replay. In managed
@@ -139,6 +140,10 @@ extension re-establishes the plane. The re-establish is a fresh start of the sam
 settles any frame the outage left pending and rebuilds the mapper from the run and tool calls
 that frame opened, so a tool result written after the outage closes the call the plane came back
 with.
+
+A turn you stop, such as with Escape, ends its run with `RUN_FINISHED` whose outcome is `interrupt`.
+Pi records that stop as an abort, or, when it lands during a tool call, as an error carrying the
+abort text. Any other error ends the run with `RUN_ERROR`.
 
 Text is published at **completed-message granularity**, not as live token deltas. Pi emits
 live text updates before writing the assistant record, so those deltas cannot be recovered

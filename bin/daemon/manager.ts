@@ -1,8 +1,9 @@
 /** Per-space stock Manager children. Only an answered instance records a hosting intent. */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Worker } from "node:worker_threads";
 import {
   assertLifecycleToken, BASELINE_LIFECYCLE_ENDPOINT, controlReplyFrom, dialerFor, drainAndClose,
   invokeRepairingSplit, issuedUserCaller, jwtFromCreds, mkSecretDir, parseRemoteEndpointDeregisterResult,
@@ -15,61 +16,16 @@ import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "
 import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
-import { checkDir, daemonPaths, daemonPathsFor, ensureDir } from "./endpoint.js";
+import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import type { HostedManager, HostedAgents } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
 import { processBirth } from "./lifetime.js";
 import { probeLiveness } from "@cotal-ai/workspace/liveness";
-import { executionInventory, executionSha256, protectedExecutionEntry } from "../cotal.js";
 
 export const daemonManagerRoot = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager");
 export const daemonManagerIntentFile = (space: string, home: string) => join(home, "daemon", spaceSegment(space), "manager-host.json");
-
-/** The app can disappear while the Manager is serving. Both its lazy peers and the bearer
- *  commands it gives seats must resolve against the same complete runtime it starts with. */
-function retainAppManagerArgv(home: string, argv: string[]): string[] {
-  if (process.platform !== "darwin" && process.platform !== "linux") return argv;
-  const entry = argv.at(-1)!;
-  const source = dirname(dirname(entry));
-  if (!existsSync(join(source, "desktop-runtime.json"))) return argv;
-  const inventory = (root: string) => {
-    if (!lstatSync(root).isDirectory()) throw new Error("the Cotal app runtime is not a real directory");
-    return JSON.stringify(executionInventory(root));
-  };
-  const expected = inventory(source);
-  protectedExecutionEntry(process.execPath);
-  const nodeHash = executionSha256(readFileSync(process.execPath));
-  const store = join(home, "daemon", "app-manager-runtimes");
-  checkDir(dirname(store));
-  ensureDir(store);
-  const retained = join(store, executionSha256(`${nodeHash}\n${expected}`));
-  const verify = (root: string): void => {
-    checkDir(root);
-    const node = join(root, "cotal-node");
-    protectedExecutionEntry(node);
-    if (!lstatSync(node).isFile() || executionSha256(readFileSync(node)) !== nodeHash || inventory(join(root, "runtime")) !== expected)
-      throw new Error("the retained Cotal app runtime differs from the installed app");
-  };
-  if (!existsSync(retained)) {
-    const staging = mkdtempSync(join(store, ".copy-"));
-    try {
-      cpSync(source, join(staging, "runtime"), { recursive: true, verbatimSymlinks: true });
-      const node = join(staging, "cotal-node");
-      copyFileSync(process.execPath, node);
-      chmodSync(node, 0o700);
-      verify(staging);
-      // A seat may still use this bearer command. Never replace a published copy.
-      try { renameSync(staging, retained); }
-      catch (error) {
-        if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-        verify(retained);
-      }
-    } finally { rmSync(staging, { recursive: true, force: true }); }
-  } else verify(retained);
-  return [join(retained, "cotal-node"), ...argv.slice(1, -1), join(retained, "runtime", "dist", "cotal.js")];
-}
 
 /** Forget only the daemon's per-space hosting records after its owned service was removed. */
 export function forgetHostedManagerIntents(home: string): void {
@@ -120,6 +76,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
   const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
+  let runtimeTask: Promise<string> | undefined;
+  const retainAppRuntime = (source: string): Promise<string> => runtimeTask ??= new Promise<string>((resolve, reject) => {
+    const worker = new Worker(new URL("./manager-runtime-worker.js", import.meta.url), { workerData: { home, source }, execArgv: [] });
+    worker.once("message", resolve);
+    worker.once("error", reject);
+    worker.once("exit", (code) => reject(new Error(`desktop Manager runtime worker exited without a result (${code})`)));
+  }).finally(() => { runtimeTask = undefined; });
   const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
   const live = new Map<string, Live>();
   let closed = false;
@@ -522,7 +485,14 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       appendFileSync(logFile, safe, { mode: 0o600 });
       chmodSync(logFile, 0o600);
     };
-    const [node, ...argv] = retainAppManagerArgv(home, daemonArgv());
+    let [node, ...argv] = daemonArgv();
+    const source = dirname(dirname(argv.at(-1)!));
+    if ((process.platform === "darwin" || process.platform === "linux") && existsSync(join(source, "desktop-runtime.json"))) {
+      const retained = await retainAppRuntime(source);
+      if (closed || generationPending || l.stopping) return l.view;
+      node = join(retained, "cotal-node");
+      argv[argv.length - 1] = join(retained, "runtime", "dist", "cotal.js");
+    }
     closeProbeSession(l);
     l.exchangeFailedUntil = undefined;
     l.lastExchangeError = undefined;
@@ -751,7 +721,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         const child = l.child;
         const space = l.view.space;
         try {
-          if (!child) throw new Error("Manager unavailable");
+          // The launch already reads inventory after readiness. A booting child does not
+          // answer this IPC, so status must not wait for its inventory timeout.
+          if (!child || (l.starting && l.view.state !== "answering")) throw new Error("Manager unavailable");
           const agents = await readHostedAgents(child);
           if (l.child !== child || l.stopping) throw new Error("Manager changed");
           const row: HostedAgents = { space, observedAt: new Date().toISOString(), state: "read" as const, agents };

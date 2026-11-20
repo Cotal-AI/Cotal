@@ -33,7 +33,7 @@
   "mutations": [
     {
       "name": "the wire getter is unchecked again (the reported defect: internal reconnects read the raw cache)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
       "replace": "creds: this.credsSource ? () => this.currentCreds! : this.currentCreds",
       "expectRed": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
@@ -42,8 +42,8 @@
     },
     {
       "name": "the adoption preflight bypasses the checkpoint and presents the candidate unchecked",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    const proven = CotalEndpoint.presentableCreds(candidate, { renewable: true });\n",
+      "file": "packages/core/src/endpoint-credentials.ts",
+      "find": "    const proven = EndpointCredentials.presentableCreds(candidate, { renewable: true });\n",
       "replace": "    const proven = candidate;\n",
       "expectRed": "the refused candidate never reaches the broker (no preflight presentation on the wire)",
       "cell": "the refused candidate never reaches the broker (no preflight presentation on the wire)",
@@ -51,7 +51,7 @@
     },
     {
       "name": "the expiry comparison is loosened to a strict past-check (a cred expiring THIS instant is presented)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())\n      throw new Error(\n        opts.renewable",
       "replace": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now() - 30_000)\n      throw new Error(\n        opts.renewable",
       "expectRed": "REFUSE: a STATIC expired cred is refused and names replacement, not renewal",
@@ -60,7 +60,7 @@
     },
     {
       "name": "the dial gate tests the cached cred for TRUTHINESS again (an empty credential dials anonymously)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-connection.ts",
       "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
       "replace": "creds: this.currentCreds || this.credsSource ? () => this.presentCreds() : undefined",
       "expectRed": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",

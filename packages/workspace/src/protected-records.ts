@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, readdirSync, readlinkSync, realpathSync, statSync, unlinkSync, type Stats } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { homeCotalDir } from "./cotal-home.js";
@@ -59,8 +59,8 @@ export function prepareCotalHomeForWrite(): void {
     let dir = home;
     while (!lstatSync(dir, { throwIfNoEntry: false }) && dirname(dir) !== dir) dir = dirname(dir);
     try {
-      if (dir === home) protectedLocalEntry(home, "the Cotal home");
-      else protectedLocalDirectory(dir, "the Cotal home");
+      if (dir === home) protectedLocalEntry(join(protectedResolvedDirectory(dirname(home), "the Cotal home"), basename(home)), "the Cotal home");
+      else protectedResolvedDirectory(dir, "the Cotal home");
     } catch (e) {
       if (!isCommandFailure(e) || e.code !== "PERMISSION_DENIED") throw e;
       throw new CommandFailure(e.outcome, e.code, `${e.message}; nothing was written`, { remedy: e.remedy, target: e.target });
@@ -355,6 +355,35 @@ export function protectedLocalDirectory(path: string, what = "the path", policy?
   return privateAncestor;
 }
 
+/** Resolve an existing directory only after checking each link's physical parent chain. The
+ *  target and every path in its resolution chain must be protected against other local writers. */
+export function protectedResolvedDirectory(path: string, what = "the path"): string {
+  if (requireLocalRecordAccess() !== "posix") return realpathSync(path);
+  let pending = resolve(path), links = 0;
+  for (;;) {
+    let parent = resolve(sep);
+    const segments = pending.slice(parent.length).split(sep).filter(Boolean);
+    let followed = false;
+    for (let index = 0; index < segments.length; index++) {
+      if (segments[index] === ".") continue;
+      if (segments[index] === "..") { parent = dirname(parent); continue; }
+      const entry = join(parent, segments[index]!);
+      if (lstatSync(entry).isSymbolicLink()) {
+        protectedLocalEntry(parent, what);
+        if (++links > 40) throw new CommandFailure("refused", "PERMISSION_DENIED", `${what} has too many symbolic links`, { target: { path } });
+        const target = readlinkSync(entry);
+        pending = `${isAbsolute(target) ? target : `${parent}${sep}${target}`}${sep}${segments.slice(index + 1).join(sep)}`;
+        followed = true;
+        break;
+      }
+      parent = entry;
+    }
+    if (followed) continue;
+    protectedLocalDirectory(parent, what);
+    return parent;
+  }
+}
+
 /** {@link protectedLocalDirectory} for an existing file or directory and every directory above it,
  *  read together so one refusal names each gap in both. The entry itself is not accepted for being
  *  a root-owned sticky directory, as an ancestor is. */
@@ -472,7 +501,7 @@ export class ProtectedRecordStore<T> {
 
   directory(create = false): string | undefined {
     const access = requireLocalRecordAccess();
-    const home = homeCotalDir();
+    let home = homeCotalDir();
     if (create) prepareCotalHomeForWrite();
     try { privateDirectory(home, access); }
     catch (error) {
@@ -480,6 +509,7 @@ export class ProtectedRecordStore<T> {
       if (!create) return undefined;
       mkSecretDir(home); privateDirectory(home, access);
     }
+    home = protectedResolvedDirectory(home, "the Cotal home");
     const segments = [this.namespace, spaceKey(this.space), ...(this.family ? [this.family] : [])];
     const paths = segments.map((_, index) => join(home, ...segments.slice(0, index + 1)));
     // Windows has no create mode, so each store directory made here gets the private access list.

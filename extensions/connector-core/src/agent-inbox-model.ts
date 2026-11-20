@@ -52,8 +52,15 @@ export interface InboxItem {
   contextId?: string;
   /** How many times the broker has delivered this copy, 1 on the first; absent on a live copy.
    *  Broker-derived, never read from the payload: above 1, an earlier delivery of this message went
-   *  unacked past its ack wait and may have run, here or on another reader. */
+   *  unacked past its ack wait. That alone does not say it reached a model: a message queued here
+   *  past the wait is redelivered unseen. */
   deliveryCount?: number;
+  /** The broker's count on the first copy of this message this session received, 1 for a live copy.
+   *  Above 1, an earlier reader, or this session before a restart, may have shown it. */
+  firstDeliveryCount?: number;
+  /** The broker's count on the copy this session first handed to its host, 0 for a live copy. Below
+   *  {@link deliveryCount}, that handoff was never confirmed and the broker delivered it again. */
+  handedOverAt?: number;
   /** Set on a DM from the space's delivery daemon about one of this session's own role requests
    *  (`anycast`, SPEC §8.1) or about a channel post whose mention the daemon could not deliver
    *  (`mention`, SPEC §8): its sender was checked against the delivery lease holder. A notice asks
@@ -209,6 +216,13 @@ export function deliveryNoticeOf(m: CotalMessage): DeliveryNotice | undefined {
  *  bytes, read through the same authentication, so their content is all that links them. */
 export function idlessDigest(m: CotalMessage): string {
   return createHash("sha256").update(JSON.stringify(m)).digest("base64url");
+}
+
+/** Record that this session handed the item's current copy to its host: a take for showing, or a
+ *  hold for a frame. Only the first handoff is kept, so a frame built before or after its own hold
+ *  reads the same record, and a later copy reads an earlier handoff that was never confirmed. */
+export function handOver(item: InboxItem): void {
+  item.handedOverAt ??= item.deliveryCount ?? 0;
 }
 
 /** The dedup key a received message id contributes to ingest's coalescing, or undefined when the id
