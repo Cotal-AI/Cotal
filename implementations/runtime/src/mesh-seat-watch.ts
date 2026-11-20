@@ -12,8 +12,8 @@ import type { KV } from "@nats-io/kv";
 import { delay } from "./delay.js";
 import {
   MANAGER_ROUTE_ATTEMPTS, TURN_ACCEPT_DEADLINE_MS, WAIT_POLL_MS, seatDownReading,
-  type MeshHandlerBinding, type SeatAddress,
-} from "./mesh-handler.js";
+} from "./mesh-handler-shared.js";
+import type { MeshHandlerBinding, SeatAddress } from "./mesh-handler.js";
 import { renderRunContext } from "./run-context.js";
 
 /**
