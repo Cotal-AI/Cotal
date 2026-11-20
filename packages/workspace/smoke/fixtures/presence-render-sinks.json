@@ -3500,7 +3500,7 @@
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "yielded: status });\n    return r;\n  }\n\n  /** Drop an acti",
       "class": "non-render/control",
@@ -4155,7 +4155,7 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
       "class": "non-render/control",
