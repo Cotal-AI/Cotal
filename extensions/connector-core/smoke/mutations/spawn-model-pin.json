@@ -34,7 +34,7 @@
     },
     {
       "name": "A3 hide the recorded model from the published spawn result",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "          const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : \"\";\n",
       "replace": "          const pin = \"\";\n",
       "expectRed": "cotal_spawn tool names the recorded model on success"

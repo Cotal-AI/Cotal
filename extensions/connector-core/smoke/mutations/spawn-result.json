@@ -21,7 +21,7 @@
   "mutations": [
     {
       "name": "R1 the line drops the join channels",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "  const on = s.join?.length ? s.join.map((c) => `#${c}`).join(\", \") : undefined;",
       "replace": "  const on: string | undefined = undefined;",
       "expectRed": "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
@@ -30,7 +30,7 @@
     },
     {
       "name": "R2 a seat with no join is said to be on no channel",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "  const persona = \"it starts only on the channels its persona lists, which may be none\";",
       "replace": "  const persona = \"it starts on no channel\";",
       "expectRed": "a spawn without join says the seat has only its persona's channels and names join",
@@ -39,7 +39,7 @@
     },
     {
       "name": "R3 a rename no longer leads the line",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "  const lead = s.renamed ? `Started ${s.started} (\"${s.requested}\" was taken)` : `Started ${s.started}`;",
       "replace": "  const lead = `Started ${s.started}`;",
       "expectRed": "a renamed seat leads with the name it got and the name that was taken",
@@ -48,7 +48,7 @@
     },
     {
       "name": "R4 a seat waiting for the operator is reported like a joined one",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "  if (s.waitingFor !== undefined)\n",
       "replace": "  if (false)\n",
       "expectRed": "a seat waiting for the operator says it has not joined the mesh yet",
@@ -57,7 +57,7 @@
     },
     {
       "name": "R5 a once seat is told to be despawned",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "${s.once ? \"\" : \" Despawn it when its job is done.\"}",
       "replace": " Despawn it when its job is done.",
       "expectRed": "a once seat is not told to be despawned, since its manager stops it",
@@ -66,7 +66,7 @@
     },
     {
       "name": "R6 the tool stops passing join to the line",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "mode, model: d?.model, join, waitingFor: d?.waitingFor,",
       "replace": "mode, model: d?.model, join: undefined, waitingFor: d?.waitingFor,",
       "expectRed": "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",

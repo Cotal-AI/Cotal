@@ -391,7 +391,7 @@
     },
     {
       "name": "N34 the cotal_spawn description restores the harness list for once",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "For a single job, pass once: true",
       "replace": "For a single job on a Claude Code, jcode, OpenCode or pi helper, pass once: true",
       "expectRed": "the cotal_spawn description offers once without a harness list",

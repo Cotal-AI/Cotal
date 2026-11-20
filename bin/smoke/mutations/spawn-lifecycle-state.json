@@ -42,7 +42,7 @@
     },
     {
       "name": "cotal_spawn ignores ControlReply.details and prints only the raw error string",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "          if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? \"manager refused\", reply)}`);",
       "replace": "          if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${reply.error ?? \"manager refused\"}`);",
       "expectRed": "cotal_spawn reports the lifecycle facts, not an opaque manager refusal",

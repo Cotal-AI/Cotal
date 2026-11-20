@@ -30,7 +30,7 @@
     },
     {
       "name": "C2 drop the inline persona from the tool's handoff",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "runtime, instance, join, persona, ...(onceArg",
       "replace": "runtime, instance, join, ...(onceArg",
       "expectRed": "cotal_spawn tool forwards the inline persona whole, beside its first-turn prompt",
@@ -38,7 +38,7 @@
     },
     {
       "name": "C3 open the inline persona schema",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "          .strict()\n          .optional()\n          .describe(\"Define the helper",
       "replace": "          .optional()\n          .describe(\"Define the helper",
       "expectRed": "the inline persona schema refuses a field it has no slot for",

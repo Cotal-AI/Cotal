@@ -39,7 +39,7 @@
     },
     {
       "name": "MCP cotal_run ps drops its instance argument",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint, ...(a.page !== undefined ? { page: a.page } : {}) }, a.instance);",
       "replace": "            const reply = await agent.run(\"ps\", { endpoint: a.endpoint, ...(a.page !== undefined ? { page: a.page } : {}) });",
       "expectRed": "#3959 MCP cotal_run ps with instance succeeds against the named instance",
@@ -48,7 +48,7 @@
     },
     {
       "name": "MCP cotal_personas list drops its instance argument",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "          const reply = await agent.listPersonas(instance);",
       "replace": "          const reply = await agent.listPersonas();",
       "expectRed": "#3959 MCP cotal_personas with instance reads the named instance's catalog",

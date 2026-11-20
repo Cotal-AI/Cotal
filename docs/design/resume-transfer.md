@@ -60,7 +60,7 @@ resume document (`implementations/manager/src/resume.ts:90`), returned by `ps` a
 and printed as `forked from <id>` (`implementations/cli/src/commands/agents.ts:387`).
 
 **Resume is an operator surface.** `cotal_spawn` does not expose it to peers
-(`extensions/connector-core/src/tool-specs.ts:1350`). The manager's `spawn` row is in the
+(`extensions/connector-core/src/tool-specs-manager.ts:1350`). The manager's `spawn` row is in the
 `manager.spawn` class, which a peer with the spawn capability holds.
 
 **The Claude connector does not depend on the config home for its mesh surface.** The cotal plugin
