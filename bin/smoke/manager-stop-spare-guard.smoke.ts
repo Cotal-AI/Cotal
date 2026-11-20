@@ -42,6 +42,8 @@ const SPARE_COVERAGE = new Set([
   "implementations/manager/smoke/start-model-preflight.smoke.ts",
   "implementations/manager/smoke/preserve-state.smoke.ts",
   "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
+  // Its default stop runs over a seat still waiting for readiness and asserts that the PTY exited.
+  "implementations/manager/smoke/shutdown-custody.smoke.ts",
 ]);
 
 /**
