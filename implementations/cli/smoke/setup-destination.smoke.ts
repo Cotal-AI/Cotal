@@ -491,7 +491,7 @@ if (process.platform !== "win32") {
 type Row = { name: string; state: string; selected: boolean; reachable: boolean | null; package: string | null; tool: { names: string[]; found: string | null } | null };
 const rows = (r: Awaited<ReturnType<typeof json>>): Row[] => r.env?.result?.runtimes ?? [];
 const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find((x) => x.name === name);
-{
+async function scriptedRuntimeInstalls() {
   const dir = project("rt");
   const added = await json([...FULL("rt", dir), "--runtime", "tmux"]);
   check("a named runtime is added at this cotal's version and its provider answers",
@@ -561,6 +561,29 @@ const SAVE = "Save it?";
 // After a successful save the terminal offers startup separately, with No selected.
 const START_LOCAL = "Start this local space and open the default agent?";
 const START_HOSTED = "Launch the default agent on the registered space's manager?";
+
+// Exercise the Quickstart's keys before the scripted checks install tmux in this home.
+if (process.platform !== "win32") {
+  const dir = project("pty-only");
+  const t = terminal(dir, ["--configure-only"]);
+  await t.answer(DESTINATION, ENTER);
+  await t.answer(APPLICATION, ENTER);
+  const checked = await t.at("◼ tmux (not set up · tmux found)");
+  const frame = t.s.text().slice(t.s.text().lastIndexOf(RUNTIMES));
+  check("only tmux starts checked when its tool is found but the extension is absent",
+    checked && !/[◻◼] pty\b/.test(frame) && frame.match(/◼ \w+/g)?.join() === "◼ tmux" && installed("@cotal-ai/tmux") === undefined, frame);
+  // The cursor starts on orca. Move to tmux and press Space before confirming.
+  await t.answer(RUNTIMES, DOWN + " " + ENTER);
+  await t.answer(PROJECT, ENTER);
+  await t.answer(SPACE_NAME, ENTER);
+  check("clearing every checked runtime with Space leaves only pty in the review",
+    (await t.at(SAVE)) && /^│  runtimes +pty +│$/m.test(t.s.text()), t.s.text().slice(-900));
+  await t.answer(SAVE, ENTER);
+  check("saving prepares the project without installing tmux",
+    (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-only")?.root === dir && installed("@cotal-ai/tmux") === undefined,
+    { code: t.s.code, out: t.s.text().slice(-900) });
+}
+await scriptedRuntimeInstalls();
 
 if (process.platform !== "win32") {
   {
