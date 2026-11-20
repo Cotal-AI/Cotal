@@ -316,6 +316,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.match(out, /\bUsage\b/u, "feedback --help prints its usage heading");
   assert.match(out, /cotal feedback\b/u, "feedback --help prints its command usage");
   assert.ok(!out.includes("Unknown option"), "no usage error above the help");
+
+  const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-installation.mdx"), "utf8");
+  const synopsis = /^## feedback\b[^\n]*\n\n```bash\n([\s\S]*?)^```/m.exec(reference)?.[1];
+  assert.ok(synopsis, "the Feedback reference has a command synopsis");
+  const forms = synopsis.split(/^cotal feedback /m).slice(1);
+  assert.equal(forms.length, 2, "the reference shows public and keyed feedback forms");
+  for (const option of ["--severity <severity>", "--area <area>", "--name <name>"]) {
+    assert.ok(out.includes(option), `feedback --help shows ${option}`);
+    for (const form of forms) assert.ok(form.includes(`[${option}]`), `feedback reference is missing [${option}] in ${form.trim()}`);
+  }
 }
 
 // --- `version`, `--version` and `-V` print `cotal-ai <semver>` (+ any extensions) -----------------
