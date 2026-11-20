@@ -33,6 +33,7 @@ export interface ManagerRunDeps {
   recordsScanner: RecordsScanner;
   barrierReg: LifecycleRegistry;
   recordsJsm: Awaited<ReturnType<typeof jetstreamManager>>;
+  observeManagerGate: ReturnType<typeof managerGateReads>["observeManagerGate"];
   observeLegacyManagerGate: ReturnType<typeof managerGateReads>["observeLegacyManagerGate"];
   registeredManagerCluster: (owner: string, instanceId: string, observed: { registrationRevision: number }) => Promise<ManagerCluster>;
   refuseIfFenced: () => void;
