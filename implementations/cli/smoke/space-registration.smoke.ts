@@ -1447,6 +1447,24 @@ if (process.platform === "linux") {
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  const stoppedHistory = await json(["history", "news", "--space", "demo"], elsewhere);
+  for (const args of [
+    ["history", "news", "--server", server],
+    ["history", "news", "--server", `${server}/`],
+    ["send", "-c", "news", "test", "--server", server],
+  ]) {
+    const explicit = await json([...args, "--space", "demo"], elsewhere);
+    check(`${args.join(" ")} reports the clean stop and restart root just like name-only history`,
+      refused(stoppedHistory, 2, "TARGET_UNAVAILABLE") && refused(explicit, 2, "TARGET_UNAVAILABLE") &&
+      explicit.env?.target?.space === "demo" && explicit.env.target.root === fresh &&
+      explicit.env.error.message === stoppedHistory.env?.error.message && explicit.env.error.remedy === stoppedHistory.env?.error.remedy &&
+      explicit.env.error.message === '"demo" is stopped; its last operation, `cotal down`, completed' &&
+      explicit.env.error.remedy === `start it again with \`cotal up\` in ${fresh}`, shown(explicit));
+  }
+  const stoppedHistoryOverride = await json(["history", "news", "--space", "demo", "--server", DEAD], elsewhere);
+  check("history at a different address still refers to that address, not the stopped stack",
+    refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
+    stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
   const seedRemedy = `fix or remove ${defaultSeed}`;
   for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
     writeFileSync(defaultSeed, seed);

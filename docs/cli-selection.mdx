@@ -296,6 +296,9 @@ Its Next names the recorded broker and says to drop `--server` to reach it. If r
 no registration, the Next says to check the address instead. For a prepared space and an explicit
 `nats://127.0.0.1:<port>` address, it also gives `cotal up --root <root> --space <space> --server <url>`
 to start that project there. The request is not sent to the recorded broker in its place.
+When `--space` and `--server` name a cleanly stopped local stack and its saved broker address,
+`history` and `send` report the completed `cotal down` if that address does not answer. They name
+the folder where `cotal up` restarts the stack, without starting it themselves.
 A trailing slash or scheme case change in `--server` retains the
 registered space, including when its broker does not answer. The refusal gives the same next step
 as `--space` for that registration, including where to restart a stopped local space. Matching

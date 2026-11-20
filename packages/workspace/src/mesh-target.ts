@@ -478,13 +478,15 @@ const OUTCOME: Record<string, string> = { completed: "completed", failed: "faile
 
 /** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
  *  journal names a member it launched. Undefined for a stack that never launched one, or a journal
- *  this read cannot use; the commands that act on the journal check it fully. */
-export function stoppedStack(root: string, space: string): MeshTargetErrorDetails["stopped"] {
+ *  this read cannot use; the commands that act on the journal check it fully. With `cleanStopAt`,
+ *  require this root's completed `down` at that broker URL. */
+export function stoppedStack(root: string, space: string, cleanStopAt?: string): MeshTargetErrorDetails["stopped"] {
   try {
     const path = stackJournalPath(root), file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; server?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
     if (journal?.space !== space || !Array.isArray(journal.members) || !journal.members.some((row) => typeof (row as { instanceId?: unknown } | null)?.instanceId === "string")) return undefined;
+    if (cleanStopAt !== undefined && (journal.root !== canonicalRoot(root) || journal.operation?.kind !== "down" || journal.operation.phase !== "completed" || typeof journal.server !== "string" || brokerUrlKey(journal.server) !== brokerUrlKey(cleanStopAt))) return undefined;
     const operation = OPERATION[String(journal.operation?.kind)], outcome = OUTCOME[String(journal.operation?.phase)];
     if (operation === undefined || outcome === undefined) return undefined;
     const cap = journal.broker?.maxFileStore;
