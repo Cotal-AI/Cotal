@@ -262,12 +262,12 @@ export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?
     launchToken: launchToken!,
     readinessNonce,
     /** `undefined` = let the request through. Otherwise the named condition that refused it. */
-    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | { launchUrl: string } | undefined {
+    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | { launchUrl: string; commit: () => void } | undefined {
       if (launchNonce && pathOf(req) === "/api/browser-launch" && req.method === "POST" &&
           typeof req.headers["x-cotal-browser-launch"] === "string" && secretEquals(req.headers["x-cotal-browser-launch"], launchNonce) &&
           req.headers.origin === undefined && req.headers["transfer-encoding"] === undefined && Number(req.headers["content-length"] ?? 0) === 0) {
-        launchToken = randomBytes(32).toString("base64url");
-        return { launchUrl: `${webUrl(host, port)}?k=${launchToken}` };
+        const next = randomBytes(32).toString("base64url");
+        return { launchUrl: `${webUrl(host, port)}?k=${next}`, commit: () => { launchToken = next; } };
       }
       const origin = req.headers.origin;
       if (origin !== undefined) {
@@ -424,6 +424,7 @@ interface WebServiceLifecycle {
   readonly posting?: { creds: string; expiresAt: number };
   readonly connection: Omit<Connection, "auth">;
   readonly onSession: (session: WebSession) => void | Promise<void>;
+  readonly onLaunch?: (launchUrl: string) => void;
   readonly onReady: () => void | Promise<void>;
   readonly onClosed: () => void | Promise<void>;
 }
@@ -599,8 +600,11 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     }
 
     if (verdict !== undefined && "launchUrl" in verdict) {
+      // Keep the previous token live if the protected record cannot be refreshed.
+      lifecycle?.onLaunch?.(verdict.launchUrl);
+      verdict.commit();
       res.setHeader("cache-control", "no-store");
-      return json(res, verdict);
+      return json(res, { launchUrl: verdict.launchUrl });
     }
 
     // Only the `BODY_ROUTES` read a request body. Refuse an announced body before dispatch
