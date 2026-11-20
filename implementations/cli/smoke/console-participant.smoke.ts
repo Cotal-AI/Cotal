@@ -156,6 +156,23 @@ try {
   check("the console's FIRST send activates participant mode by itself", joined === true, seats());
   check("...and the status bar says so, which is the flag the App passes down", await cs.waitFor("on roster", 8_000, mk), clean(cs.out.slice(mk)).slice(-200));
 
+  const paletteMessages: CotalMessage[] = [];
+  alice.on("message", (m: CotalMessage) => paletteMessages.push(m));
+  const readPaletteMessage = (suffix: string) => {
+    for (const m of paletteMessages) {
+      const text = m.parts.map((p) => p.kind === "text" ? p.text : "").join("");
+      if (text.endsWith(suffix)) return { to: m.to, channel: m.channel, text };
+    }
+    return undefined;
+  };
+  // Check the actual recipient, channel, and body rather than the operator's send notice.
+  await cs.command("DM alice Keep DM Case");
+  const dm = await until(() => readPaletteMessage("Keep DM Case"), 4000);
+  check("uppercase DM sends the unchanged body to alice", dm?.to === alice.card.id && dm?.text === "Keep DM Case", dm ?? clean(cs.out).slice(-500));
+  await cs.command("MSG #general Keep Channel Case");
+  const msg = await until(() => readPaletteMessage("Keep Channel Case"), 4000);
+  check("uppercase MSG sends the unchanged body to #general", msg?.channel === "general" && msg?.text === "Keep Channel Case", msg ?? clean(cs.out).slice(-500));
+
   // Idempotence is NOT visible as a second roster row: a duplicate peer registers under the same
   // card id, so the roster still shows one. What it is visible as is an ORPHAN. Without the guard
   // every send builds and starts another peer and the reference to the previous one is overwritten,
