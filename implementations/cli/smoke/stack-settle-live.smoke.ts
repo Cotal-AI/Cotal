@@ -1359,8 +1359,9 @@ try {
   }
 
   // The same down must see completion when the manager exits between the receipt read and PID check.
-  if (process.platform === "linux") {
-    const space = "stopreceiptwindow";
+  for (const releaseOn of ["accepted", "failed"]) {
+    if (process.platform !== "linux") break;
+    const space = `stopreceiptwindow${releaseOn}`;
     const root = prepare(space);
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
     track(space);
@@ -1370,9 +1371,10 @@ try {
     check(`${space}: up records a running manager`, started.status === 0 && pid !== undefined && states !== undefined, shown(started));
     if (manager && pid !== undefined && states !== undefined) {
       const hook = join(home, "hold-stop-reader.cjs");
-      const crossed = join(home, "stop-reader-crossed");
+      const crossed = join(home, `stop-reader-crossed-${releaseOn}`);
       // Only the down process loads this hook. It returns real I/O results without changing the
-      // manager's receipts, stop policy or PID verdict. The missing failed phase is read last.
+      // manager's receipts, stop policy or PID verdict. Resume after either a missing accepted
+      // receipt or the two missing terminal receipts.
       writeFileSync(hook, `
         const fs = require("node:fs");
         const { syncBuiltinESMExports } = require("node:module");
@@ -1406,13 +1408,16 @@ try {
           catch (error) {
             if (paused && error.code === "ENOENT" && typeof path === "string" && path.startsWith(${JSON.stringify(states + "/")})) {
               if (path.endsWith(".completed.json")) missingCompletion = path;
-              if (missingCompletion && path === missingCompletion.replace(/\\.completed\\.json$/, ".failed.json")) {
+              const releaseOn = ${JSON.stringify(releaseOn)};
+              if (releaseOn === "accepted" && path.endsWith(".accepted.json") ||
+                  releaseOn === "failed" && missingCompletion && path === missingCompletion.replace(/\\.completed\\.json$/, ".failed.json")) {
+                const completion = path.replace(/\\.(accepted|failed)\\.json$/, ".completed.json");
                 kill(pid, "SIGCONT");
                 paused = false;
                 waitFor(() => {
                   try { kill(pid, 0); return false; } catch (probe) { if (probe.code === "ESRCH") return true; throw probe; }
                 });
-                if (fs.existsSync(missingCompletion)) fs.writeFileSync(${JSON.stringify(crossed)}, "");
+                if (fs.existsSync(completion)) fs.writeFileSync(${JSON.stringify(crossed)}, "");
               }
             }
             throw error;
