@@ -92,7 +92,9 @@ configuration, and cached plugin files. The receipt does not inventory every wri
 programs that setup calls.
 If persona preparation hits a filesystem error after setup saves the space, setup exits 4 with
 `OPERATION_PARTIAL`. The result retains the confirmed writes and names the path to fix before
-running setup again. Setup does not configure the application or start anything on this path.
+running setup again. If a write failed, the file may be incomplete. Check it and repair it or
+move it aside if needed before retrying. Setup does not configure the application or start
+anything on this path.
 
 Setup needs an installed connector. When `--harness` names a built-in connector that is not
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command

@@ -28,7 +28,7 @@
  * Run: pnpm smoke:setup-destination
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
@@ -436,6 +436,54 @@ if (process.platform !== "freebsd") { // FreeBSD allows readFileSync on director
       blocked.env.target?.path === blocker && blocked.env.result.written.map((w: { what: string }) => w.what).join() === "prepared space,default persona" &&
       blocked.env.result.startup.requested && blocked.env.result.startup.state === "preparation-incomplete" && !blocked.env.result.startup.stackAttempted &&
       statSync(blocker).isDirectory() && existsSync(join(agents, "default.md")) && harnessOf("blocked-demo") === undefined, shown(blocked));
+}
+
+if (process.platform !== "win32") {
+  const dir = project("blocked-backup");
+  const agents = join(dir, ".cotal", "agents");
+  const original = join(agents, "david.md");
+  const backup = `${original}.bak`;
+  const linked = join(agents, "keep-me");
+  mkdirSync(agents, { recursive: true });
+  writeFileSync(original, "my edited persona");
+  writeFileSync(linked, "keep the link target");
+  symlinkSync(linked, backup);
+  const blocked = await json([...FULL("blocked-backup", dir), "--demo", "--configure-only", "--yes"]);
+  check("a refused demo backup names the backup destination, not the edited persona",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL" &&
+      blocked.env.target?.path === backup && blocked.env.error?.remedy?.includes(`\`${backup}\``) &&
+      blocked.env.result.written.map((w: { what: string }) => w.what).join() === "prepared space,default persona", shown(blocked));
+  check("the refused backup preserves the edit, link, and target",
+    readFileSync(original, "utf8") === "my edited persona" && lstatSync(backup).isSymbolicLink() &&
+      readFileSync(linked, "utf8") === "keep the link target");
+}
+
+if (process.platform === "linux") {
+  const prlimit = resolveOnPath("prlimit");
+  if (!prlimit) throw new Error("setup short-write fixture requires prlimit on the host PATH");
+  const dir = project("short-persona");
+  const persona = join(dir, ".cotal", "agents", "default.md");
+  const args = [...FULL("short-persona", dir), "--configure-only", "--yes"];
+  const limit = 320;
+  const short = spawnSync(prlimit, [`--fsize=${limit}:unlimited`, process.execPath, BIN, ...args, "--json"],
+    { cwd: dir, env: { ...env, COTAL_TELEMETRY: "off" }, encoding: "utf8", timeout: 180_000 });
+  if (short.error) throw short.error;
+  const partial = JSON.parse(short.stdout);
+  const prepared = findPreparedSpace("short-persona");
+  check("a real short write keeps the prepared space and warns how to recover the incomplete persona",
+    short.status === 4 && partial.outcome === "partial" && partial.error?.code === "OPERATION_PARTIAL" &&
+      partial.error.cause?.code === "EFBIG" && partial.error.message.includes("file may be incomplete") &&
+      partial.error.remedy.includes("raise the file-size limit") && partial.error.remedy.includes(`Check \`${persona}\``) &&
+      /repair it or move it aside if incomplete, then run the same setup again/.test(partial.error.remedy) &&
+      partial.target?.path === persona && statSync(persona).size === limit && prepared?.root === dir &&
+      partial.result.written.map((w: { what: string }) => w.what).join() === "prepared space", shown(short));
+  renameSync(persona, `${persona}.incomplete`);
+  const recovered = await json(args, dir);
+  const inspected = await json(["persona", "show", "default", "--space", "short-persona"], dir);
+  check("following the short-write remedy restores a valid persona without rewriting the space",
+    recovered.status === 0 && recovered.env?.result?.spaceState === "prepared" &&
+      inspected.status === 0 && inspected.env?.outcome === "ok" &&
+      statSync(persona).size > limit && findPreparedSpace("short-persona")?.ts === prepared?.ts, { recovered: shown(recovered), inspected: shown(inspected) });
 }
 
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────

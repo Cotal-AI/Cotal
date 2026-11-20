@@ -21,6 +21,7 @@ import {
   inputDisabledByFlag,
   jsonFlag,
   loadMeshes,
+  localWriteProblem,
   manifestExtensionNames,
   meshFile,
   paintFor,
@@ -679,17 +680,29 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (opts.demo) {
       for (const [name, body] of Object.entries(DEMO_AGENTS)) {
         personaPath = join(agents, `${name}.md`);
-        writeDemoAgent(personaPath, body, wrote);
+        writeDemoAgent(personaPath, body, (what, path, text) => {
+          personaPath = path;
+          writePrivateRecord(path, text);
+          wrote(what, path);
+        });
       }
     }
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    const { code, path = personaPath, syscall } = error as NodeJS.ErrnoException;
+    const storage = localWriteProblem(error);
+    const { code: nativeCode, path = personaPath, syscall } = error as NodeJS.ErrnoException;
+    const code = storage?.code ?? nativeCode;
     if (code === undefined) throw error;
     const blocked = (code === "EEXIST" && syscall === "mkdir") || code === "EISDIR";
-    const remedy = `${blocked ? `move the blocking entry at ${codeSpan(path)} aside` : `fix the reported problem at ${codeSpan(path)}`}, then run the same setup again`;
+    const mayBeIncomplete = storage !== undefined || syscall === "write" || syscall === "ftruncate" || syscall === "close";
+    const entry = codeSpan(path);
+    const repair = blocked ? `move the blocking entry at ${entry} aside`
+      : mayBeIncomplete ? `${storage?.remedy ?? "fix the reported write error"}. Check ${entry} and repair it or move it aside if incomplete`
+      : `fix the reported problem at ${entry}`;
+    const detail = storage ? `${storage.reason} (${storage.code})` : error.message;
+    const remedy = `${repair}, then run the same setup again`;
     const failureTarget = { ...target, path };
-    const failure = new CommandFailure("partial", "OPERATION_PARTIAL", `the space ${inputs.space} is saved, but persona preparation stopped: ${error.message}`, {
+    const failure = new CommandFailure("partial", "OPERATION_PARTIAL", `the space ${inputs.space} is saved, but persona preparation stopped at ${entry}: ${detail}${mayBeIncomplete ? ". The file may be incomplete" : ""}`, {
       target: failureTarget, changed: written, native: { code }, cause: error, remedy,
     });
     if (opts.start) startup.state = "preparation-incomplete";
@@ -1251,19 +1264,17 @@ const MANAGED_MARKER = "# managed by cotal-setup";
 /** Write a setup-managed demo persona, refreshing it when its DEMO_AGENTS body changes — but never
  *  silently clobber a file the user has taken ownership of (one without the marker): back it up to
  *  `<name>.md.bak` first. Missing or marker-carrying files are written in place, 0o600 and never
- *  through a symlink; every write goes through `wrote`. */
-function writeDemoAgent(path: string, body: string, wrote: (what: string, path: string) => void): void {
+ *  through a symlink; `save` records the destination before writing. */
+function writeDemoAgent(path: string, body: string, save: (what: string, path: string, text: string) => void): void {
   if (existsSync(path)) {
     const cur = readFileSync(path, "utf8");
     if (cur === body) return; // already current
     if (!cur.includes(MANAGED_MARKER)) {
-      writePrivateRecord(`${path}.bak`, cur); // preserve a user/pre-marker edit
-      wrote("backup of your edited persona", `${path}.bak`);
+      save("backup of your edited persona", `${path}.bak`, cur);
     }
   }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writePrivateRecord(path, body);
-  wrote("persona", path);
+  save("persona", path, body);
 }
 
 /** The guided expert team `--demo` seeds: david (the engineer), sven (the guide) and me (your
