@@ -22,12 +22,12 @@
  *
  * Run: pnpm smoke:opencode-boot-prompt
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { opencodeLine } from "../src/opencode-line.js";
@@ -136,6 +136,32 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     threwG = (e as Error).message;
   }
   check("opencodeLine throws on 'garbage', naming it", threwG.includes("garbage"), threwG);
+
+  // The launcher refuses an unsupported OpenCode on PATH in one line naming the file, the version and
+  // the install step, with no source line or stack trace.
+  if (process.platform !== "win32") {
+    const dir = mkdtempSync(join(tmpdir(), "opencode-unsupported-"));
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const fake = join(bin, "opencode");
+    writeFileSync(fake, "#!/bin/sh\n[ \"$1\" = --version ] && { printf '0.0.1\\n'; exit 0; }\nexit 99\n", { mode: 0o700 });
+    try {
+      const run = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "src", "serve.ts")], {
+        encoding: "utf8",
+        env: { PATH: `${bin}${delimiter}${process.env.PATH}`, HOME: dir, COTAL_OPENCODE_HOME: dir, COTAL_NAME: "old-opencode" },
+        timeout: 30_000,
+      });
+      const lines = run.stderr.trim().split("\n");
+      check(
+        "an unsupported OpenCode is refused in one line naming the file, the version and the install step",
+        run.status === 1 && lines.length === 1 && lines[0].startsWith("[cotal-connector] ") &&
+          lines[0].includes(`"0.0.1" from ${fake}`) && lines[0].includes("npm install -g opencode-ai"),
+        { status: run.status, stderr: run.stderr },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 }
 
 // ── 2. the plugin: does a boot with a prompt actually drive a turn? ──────────────────────────────

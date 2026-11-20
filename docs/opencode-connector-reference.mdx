@@ -17,7 +17,8 @@ on your PATH. (Claude Code, by contrast, installs a plugin because its wake chan
 
 The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) and 2.x
 (`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
-unsupported version is refused with an error naming the version and the two supported lines.
+unsupported version is refused in one line that names the `opencode` file found, its version, the
+two supported lines and how to install a supported one. The spawn exits 1.
 
 On a per-user mesh the 2.x plugin runs [agent commands](connector-runtime-reference.mdx#agent-commands)
 in the session it drives. It lists `GET /api/command` by each command's `name` and `GET /api/skill`
