@@ -242,18 +242,18 @@ to the per-channel delivery-class mechanism. In auth mode a holder records its t
 request with the delivery daemon before it shows the request, so the sender learns who took it and
 can cancel it while it waits (§8.1). An `@mention` (§5) on a `live` channel additionally writes a
 durable copy to each mentioned target **authorized to read that channel** (its `allowSubscribe`
-covers the channel), so an authorized but offline target still receives it; an `@mention` MUST NOT
+covers the channel and none of its read exclusions matches it, §9), so an authorized but offline target still receives it; an `@mention` MUST NOT
 deliver channel content to a target outside its read ACL. Durable mention routing resolves each
 lowercased name to a unique current instance id from presence at publish time; an ambiguous
 (multiple live matches) or unresolvable name yields no durable copy, and authorization is checked
-against the resolved id's current `allowSubscribe`. A
+against the resolved id's current read grant. A
 target authorized for a channel is **mention-reachable** there whether or not it is currently joined; this is intentional (an `@mention` can pull an authorized peer in) and is distinct
 from membership; a client SHOULD distinguish "joined" (actively subscribed) from "readable /
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
 here."
 
 **Mention notice.** In auth mode, when a post on either delivery class mentions a resolved target
-whose `allowSubscribe` does not cover the channel, the delivery daemon sends the post's sender a DM
+whose read grant does not include the channel, the delivery daemon sends the post's sender a DM
 from its own principal that names those targets. The message has a text part and a data part
 `{ "cotalMentionNotice": { channel, message, names } }`, where `message` is the post's `id`. Its
 `id`, which is also its JetStream message id, is `mention.<seq>.<id>` for the post's CHAT stream
@@ -552,7 +552,9 @@ after it started is not missed.
 
 Join subscribes the instance to the channel; leave unsubscribes it. A join target MUST be within
 the instance's read ACL (`allowSubscribe`, §9); a join outside it MUST be refused by the broker on
-subscribe. A client MUST NOT publish to wildcard channels, but a wildcard read ACL (`team.>`)
+subscribe. A join MUST also respect the read exclusions (§9): a concrete channel an exclusion
+matches, or a pattern the exclusions cover in full, is refused; a pattern that partly overlaps them
+is admitted, and the broker never delivers an excluded channel to it. A client MUST NOT publish to wildcard channels, but a wildcard read ACL (`team.>`)
 authorizes subscribing to any one concrete channel under it **without enumerating channels in
 advance**. In the NATS binding, join is a native `sub.allow`-bounded core subscription to the
 channel subject and leave is the corresponding unsubscribe; **no privileged mediation is
@@ -579,7 +581,8 @@ Replay / catch-up on join:
 2. Subscribe to the channel subject (`sub.allow`-bounded; §8). The live copy now flows.
 3. If effective replay is on, read retained messages for that channel up to the watermark,
    through a single-channel history read bounded by the current read ACL (`allowSubscribe`, §8),
-   optionally limited by `replayWindow`. History is ACL-bounded, not membership-gated: an ACL-holder
+   optionally limited by `replayWindow`. Under an allow entry that a read exclusion overlaps, the
+   read goes through the delivery service's mediated range read instead (§8). History is ACL-bounded, not membership-gated: an ACL-holder
    may read a channel's retained content whether or not it is a current member (it could self-join
    and read regardless), so the confidentiality boundary here is the ACL, consistent with the live
    read.
@@ -638,7 +641,9 @@ channel its pattern matches, now and later, and not its prefix itself (`team.>` 
 `team`). Each covered channel keeps its own effective delivery class: a post on a `durable` channel
 under the family is in the member's backstop, and a post on a `live` channel is not. The join and
 leave cursors and the leave boundary apply to the family's own record as to a channel's. A family
-join MUST lie within one `allowSubscribe` entry, so every channel it can match is readable. A member
+join MUST lie within one `allowSubscribe` entry, so every channel it can match is readable, and MUST
+NOT be excluded in full (§9). The backstop re-check drops a copy on a channel the exclusions remove,
+so an excluded channel under a family is never delivered. A member
 whose own row and a family row both cover a channel holds one backstop copy of each post, and the
 backstop re-check accepts the copy while any of its covering rows' intervals contains it. A
 subscription with `*` or the root `>` takes no durable membership: it is joined live only, and the
@@ -733,7 +738,7 @@ members and, for an `@mention` on a `live` channel, for each mentioned target au
 channel (its `allowSubscribe` covers it), so an authorized but offline target still receives it. The
 agent holds **no content-bearing read** on this mixed store. A **trusted reader** (the server-side
 delivery daemon) pulls each pending entry, re-authorizes `(instance, channel, message)` against the
-member's **current read ACL** and, for `durable`-channel fan-out entries, its **membership interval**
+member's **current read ACL** (its allow entries minus its read exclusions, §9) and, for `durable`-channel fan-out entries, its **membership interval**
 (the message's CHAT sequence is `> joinCursor` and `≤ leaveCursor`; §7), not a current-member boolean,
 so a pre-leave entry stays deliverable and a post-`leaveCursor` one does not,
 and delivers each authorized copy to the member over an **at-least-once** handoff (its own
@@ -756,6 +761,25 @@ the agent cannot bypass, because a self-bound consumer has no server-side per-me
 filter. The store's stream/subject layout, the fan-out writer, the trusted reader, and the membership
 registry are reference-implementation, not normative; a conformant deployment MAY realize the backstop
 differently as long as the §4 guarantee and the §9 checks hold.
+
+**History under an exclusion.** A credential holds no history create for an allow entry that one
+of its read exclusions overlaps (§9, item 4): a wildcard filter would replay the excluded channels,
+and no deny row can stop it without stopping every sibling. History under such an entry is served by
+the delivery endpoint's **mediated range read**, `readRange`, and a single-channel newest page by its
+mediated history read. A `readRange` request is `{ filter, fromSeq, untilSeq?, sinceMs?, limit? }`,
+where `filter` is a channel or pattern the read grant admits and `sinceMs` bounds the start by age
+when `fromSeq` is 1. The delivery service MUST authorize each call fresh from the caller's read-ACL
+row: the filter lies within one entry of the live allow list and of its mint-time ceiling and is not
+excluded in full, and each stored message is kept only when its channel, taken from the subject, is
+within the live grant and the ceiling with the exclusions of both halves applied. It drops messages
+before it cuts the page. The response is `{ items: [{ seq, message }], untilSeq, next, done }`:
+messages in ascending stream order with their sequence and subject-authenticated sender; `untilSeq`,
+the upper bound resolved on the first page, which the caller passes back on later pages; `next`, the
+next sequence to scan, past every message the page looked at, kept or not; and `done`, true once
+`untilSeq` is reached. A page ends at `limit` (at most 200), at the reply's payload budget, or after a
+scan budget, and a single message larger than the budget is refused, never skipped. The service holds
+no cursor between calls. A delivery service that predates the request refuses it as unknown, so an
+older service never serves a range.
 
 In the reference, fan-out writes a post on a concrete channel for every member whose row is that
 channel or a family covering it, and each copy's `Nats-Msg-Id` is `<id>:<principal>:<lifecycleUid>`,
@@ -1019,6 +1043,30 @@ operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identit
   as the matching per-channel history-consumer create grants. `allowPublish`, the post **ACL**,
   the channels it may publish to; **default-deny** (a chat publish grant is minted only for a
   declared channel).
+- **Exclusions.** `allowSubscribe` and `allowPublish` MAY each remove channels or patterns from what
+  they allow. A list with exclusions is written `{ "allow": [...], "exclude": [...] }` wherever it
+  is carried: agent files, spawn and persona requests, the launch artifact, ledger and ACL rows, and
+  handoff, recovery and enrollment records. A list without them stays an array, so a reader that
+  predates exclusions refuses the object form instead of reading the allow list alone. Environment
+  carriers use `COTAL_EXCLUDE_SUBSCRIBE` and `COTAL_EXCLUDE_PUBLISH` beside the allow lists. The
+  grant is the set of concrete channels that some allow entry matches and no exclusion matches; the
+  exclusion always wins, and read and post exclusions are independent. Where a grant is written, an
+  exclusion MUST be refused when its overlap with the allow entries is empty, when the other
+  exclusions already remove all of that overlap, or when the exclusions together cover a whole allow
+  entry. An exclusion that overlaps an event channel of the agent's own owner MUST be refused,
+  because that owner's event payload rail is owner-wide. A read exclusion needs the lifecycle's
+  read-ACL row, from which the mediated range read serves (§8), so a credential minted with no row
+  MUST NOT carry one. A delegated grant `A − E` lies within its parent `B − F` exactly when every
+  child allow entry lies within `B ∪ E` and its overlap with each parent exclusion lies within `E`.
+  A ledger row with exclusions is written at version 2, which an older auth service refuses; a row
+  without them stays at version 1.
+- **Exclusion broker floor.** A deny row removes a channel from an overlapping wildcard subscription
+  only on nats-server 2.12.7 or later on the 2.12 line, or 2.14.0 or later (CVE-2026-58252,
+  CVE-2026-58251). Earlier servers deliver a denied subject to a subscription that only partly
+  overlaps the deny, and let a queue subscribe bypass a subject deny. A minter MUST NOT sign a grant
+  with exclusions for a broker it does not know to meet that floor. A static minter reads the version
+  from its own broker connection; the auth callout reads the request's `server_id.version` and
+  refuses a request without one. A pre-release, a 2.13 release, or an unknown version refuses.
 
 Every grant below is keyed on the agent's **principal** `<owner>.<actor>` (§2), except the reply
 inbox, which is keyed on the **connection** `<connId>`: the connection nkey (static mode) or the
@@ -1102,7 +1150,11 @@ DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
    subscribe, any channel subject outside the ACL. There is no per-channel consumer name to confine,
    so an open ACL (`team.>`, `>`) grants selective single-channel join with no enumeration and no
    read-breakout. A `>` grant is read-all chat in the space by design (credential compromise reads
-   all chat), so it suits trusted/local deployments, not least privilege.
+   all chat), so it suits trusted/local deployments, not least privilege. Read exclusions are minted
+   as native `sub.deny` rows over `cotal.<space>.chat.*.*.<exclusion>`, patterns carried as written:
+   the broker refuses a subscribe inside one and filters a wildcard subscription that overlaps one at
+   delivery. Post exclusions are `pub.deny` rows over the agent's own
+   `chat.<owner>.<actor>.<exclusion>`.
 3. A consumer create on the bare/multi-filter subject is not ACL-constrainable, so the provisioner
    pre-creates `dm_<owner>-<actor>-<uid>`, `svc_<role>`, and the per-member `dlv_<owner>-<actor>-<uid>` handoff
    durables. Agents bind their own `dm_…-<uid>`/`svc_<role>`/`dlv_…-<uid>` only (never
@@ -1113,11 +1165,15 @@ DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
    CHAT create-deny is intentionally absent: it would also deny that pinned create.
 4. CHAT history reads are bounded to `allowSubscribe`: a consumer create on the extended subject
    `$JS.API.CONSUMER.CREATE.<stream>.<name>.<filter>` carries a single filter the server pins to the
-   request body, so an agent is granted exactly one such create-subject per `allowSubscribe` channel
-   and can read history of no other channel. The unfiltered Direct Get grant is not given to agents.
+   request body, so an agent is granted exactly one such create-subject per `allowSubscribe` entry
+   that no read exclusion overlaps, and can read history of no other channel. An entry an exclusion
+   overlaps gets no create-subject, because its wildcard filter would replay the excluded channels;
+   its history is served by the mediated range read (§8). The create-subject of each read exclusion
+   is also denied. The unfiltered Direct Get grant is not given to agents.
 5. **The durable backstop is read by a trusted reader, not the agent.** The agent holds no
    content-bearing read on the mixed pre-auth fan-out store; a trusted reader (the server-side delivery
-   daemon) MUST re-authorize `(instance, channel, message)` against the member's current read ACL and,
+   daemon) MUST re-authorize `(instance, channel, message)` against the member's current read ACL,
+   exclusions applied, and,
    for `durable`-channel fan-out entries, its current membership, before handing the authorized
    copy off to the member's own lifecycle-scoped `dlv_<owner>-<actor>-<uid>` DELIVER consumer:
    broker ownership of an inbox ("this is agent A's") is not authorization, since the store can hold
@@ -1456,8 +1512,9 @@ A conformant authenticated NATS client MUST:
     subscribe, and drop it on a late permission refusal. On a `durable` channel, additionally establish
     durable membership via the privileged provisioner; if it cannot be established, report `joined live`
     with the durable backstop unestablished, never `joined durable` (§7, §9).
-14. Bound history/backfill reads by the current read ACL, and re-authorize every durable-backstop read
-    against the current read ACL (and, for `durable`-channel entries, membership) before surfacing
+14. Bound history/backfill reads by the current read ACL and its exclusions, and re-authorize every
+    durable-backstop read against the current read ACL, exclusions applied (and, for
+    `durable`-channel entries, membership) before surfacing
     content, treating a leave as a hard read boundary on the backstop (§7, §9).
 
 Test vectors use these sample principals (`<owner>.<actor>`); `<ownerA>` = `u_aaaaaaaaaaaaaaaaaaaaaaaaaa`,
@@ -2374,7 +2431,8 @@ service that owns the actor ledger and the space's provisioning authority answer
 the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
 a parent the ledger's delegation envelope bounds it by, and then provisions that UID's durables. The
 grant's read is the set those durables read: `target.allowSubscribe`, or `target.subscribe` when
-that list is omitted or empty, and the bound measures the same set. The
+that list is omitted or empty, and the bound measures the same set. `target.allowSubscribe` and
+`target.allowPublish` take either shape (§9); exclusions are part of the grant the bound measures. The
 parent is the request's supervising actor unless the request carries `spawn: { served, runId? }`, the
 manager `spawn` request subject the participant served and, for a run's spawn, the run id. The host
 reads every manager `spawn` request subject published in the space and takes the caller from a
@@ -4076,7 +4134,8 @@ as true. A client that knows the space requires events can therefore refuse a co
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
 record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
-`subscribe`, `allowSubscribe`, `allowPublish`, `capabilities`, `endpoints` and `save`. The top-level
+`subscribe`, `allowSubscribe`, `allowPublish` (each list in either shape, §9), `capabilities`,
+`endpoints` and `save`. The top-level
 `prompt` stays the first-turn kickoff. With `persona`, `name` is the helper's name, numbered on a collision
 as a persona identity is, and the request MUST NOT carry `config` or `identity`. The manager MUST
 read the record as it reads a catalog file: the same validation, the same rule that a record naming
@@ -5978,7 +6037,8 @@ file from its own workspace, secret store, launch material, or temporary directo
 **The handoff.** The manager releases one closed handoff document, `kind`
 `cotal-managed-handoff/v1`, carrying by value: `space`, `owner`, `actor`, `lifecycleUid`, `server`,
 `tlsRequired`, `authProvider`, `idp { url, issuer, audience }`, `exchangeUrl` (the enrollment's pinned
-exchange base), `sentinelCreds`, `actorToken`, `subscribe`, `allowSubscribe`, `allowPublish`, and an
+exchange base), `sentinelCreds`, `actorToken`, `subscribe`, `allowSubscribe` and `allowPublish` (each
+in either shape, §9), and an
 optional `policy { events: "required" }`. It MUST NOT carry a signing seed or key, an issuer or
 callout record, the auth service's loopback capability, the owner-derivation secret, a provisioner,
 deprovisioner, delivery, membership, supervisor, or other manager credential, a control token, or a
@@ -7391,7 +7451,8 @@ manager on a user-auth or open mesh does not read `runId`; on a user-auth mesh t
 bounds the helper, as the next paragraph says.
 
 On a user-auth mesh the issuing host bounds a hosted run's spawns through the ledger. When it admits
-a run for a participant manager it writes `delegation: { scope, allowSubscribe, allowPublish }`, the
+a run for a participant manager it writes `delegation: { scope, allowSubscribe, allowPublish }` (each
+list in either shape, §9), the
 starter's ledger row as it stands at admission, and omits it when the starter has no row. Each
 helper the run spawns is enrolled with the starter as its parent (§13.6) and MUST fall within both
 the starter's current row, through the ledger walk, and `delegation`, by the same per-link rule, so a
@@ -7647,7 +7708,11 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
   (§13.9 event-read row), incl. the caller's own per-goal subtree
   `P.epe.*.*.*.goal.<owner>.<actor>.<uid>.>`; the live tail of watch, granted per
   capability, none by default
-- `P.chat.*.*.<ch>` for every `allowSubscribe` channel, the **live read boundary**: native core-sub join/leave is a `sub.allow`-bounded subscribe to this subject (wildcard sender owner+actor), so an agent whose ACL permits a channel joins it alone with no manager. Wildcards preserved (e.g. `P.chat.*.*.team.>` for `allowSubscribe: team.>`); a `team.>` grant matches strictly deeper channels, not the bare `team`; a `>` grant is read-all chat in the space on credential compromise
+- `P.chat.*.*.<ch>` for every `allowSubscribe` entry, the **live read boundary**: native core-sub join/leave is a `sub.allow`-bounded subscribe to this subject (wildcard sender owner+actor), so an agent whose ACL permits a channel joins it alone with no manager. Wildcards preserved (e.g. `P.chat.*.*.team.>` for `allowSubscribe: team.>`); a `team.>` grant matches strictly deeper channels, not the bare `team`; a `>` grant is read-all chat in the space on credential compromise
+
+`sub.deny`, only when the read grant has exclusions (§9):
+
+- `P.chat.*.*.<x>` for every read exclusion `<x>`, the pattern carried as written
 
 `pub.allow`:
 
@@ -7686,7 +7751,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
   own subscription, never a caller-chosen subject)
 - `$JS.API.INFO`
 - `$JS.API.STREAM.INFO.<CHAT|KV|CHKV|DLVKV>`: CHAT plus the world-readable presence/registry/lease KVs only; **not** DM/DLV/EPC (an agent reaches those by name — its own pre-created `dmD`/`dlvD`, or a subject-scoped `DIRECT.GET` on EPC — and `subjects_filter` is a request-body field, so INFO there would only leak inbox/delivery subject metadata). `TASK` rides the `role` gate below, not this row.
-- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` channel (history reads; the single filter the server pins to the body, the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer)
+- `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<ch>>` for every `allowSubscribe` entry that no read exclusion overlaps (history reads; the single filter the server pins to the body, the agent's only CHAT consumer create. The live tail is the core `sub.allow` subscription above, not a JetStream consumer. History under an overlapped entry is the mediated range read, §8)
 - `$JS.API.CONSUMER.INFO.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.MSG.NEXT.<CHAT>.<chatHistD>`
 - `$JS.API.CONSUMER.DELETE.<CHAT>.<chatHistD>`
@@ -7727,6 +7792,9 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `$JS.API.CONSUMER.CREATE.<DLV>`
 - `$JS.API.CONSUMER.CREATE.<DLV>.>`
 - `$JS.API.CONSUMER.DURABLE.CREATE.<DLV>.>`
+- when the grant has exclusions (§9): `P.chat.<owner>.<actor>.<x>` for every post exclusion `<x>`, and
+  `$JS.API.CONSUMER.CREATE.<CHAT>.<chatHistD>.<P.chat.*.*.<x>>` for every read exclusion `<x>`, each
+  pattern carried as written
 
 A bare/multi-filter consumer create on `CHAT` is **not** explicitly denied (that would also deny the
 pinned `chatHistD` create the agent needs), so it is default-denied (the agent holds no such allow),
@@ -8023,6 +8091,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-20 | **Channel exclusions in grants (§4, §7, §8, §9, §12, §13, Appendix B), additive except refusals by older peers.** `allowSubscribe` and `allowPublish` may remove channels or patterns from what they allow, written `{ "allow": [...], "exclude": [...] }` wherever a list is carried; a list without exclusions stays an array. The grant is the channels some allow entry matches and no exclusion matches. An exclusion that removes nothing, removes only what others already remove, or removes a whole allow entry is refused, and so is one overlapping the owner's own event channels. A read exclusion is a `sub.deny` row and a post exclusion a `pub.deny` row, signed only for nats-server 2.12.7+ on the 2.12 line or 2.14.0+, read from the minter's connection or the callout's `server_id.version`. An allow entry an exclusion overlaps gets no history create; its history is the delivery endpoint's new `readRange` mediated range read, authorized per call and filtered before the page is cut. Joins, mentions and the durable backstop apply the exclusions. A ledger row with exclusions is version 2. Older peers refuse the object form, the version 2 row and `readRange`. |
 | 2026-11-18 | **An agent's own commands and skills on the `agent` endpoint (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 2 with four commands. `commands` lists the harness commands and skills an agent runs as `{ name, target, description?, inputHint? }` entries or answers `{ supported: false }`, and the agent waits at most 10 s for the harness's list. `command` queues one by `{ target, name, args? }` and answers its `{ id }` at once, without waiting for a turn. `command-cancel` cancels a queued command by `id`, and `command-state` reads its state: `queued`, `taken`, `started`, `cancelled`, `refused` with `not-found`, `failed-precondition` or `unavailable`, or `unknown` with `internal`. A state only moves forward, and a cancel of a command that is no longer queued is `conflict` with its state in `details`. The four declare the `owner` authority word only, so an interactive ledger row gets their four caller rows and no grant row can name them. At most 8 commands are queued, with no time bound. Stopping the agent moves every queued command to `refused` with `unavailable`, and the agent remembers the last 32 commands to end. The prompt commands and their digests are unchanged, and an agent on revision 1 answers the four new commands `unimplemented`. |
 | 2026-11-18 | **Principal-route follow-ups (§6, §13.3, §13.5, §13.21), corrections.** A serve of the `agent` endpoint takes a fresh `prompts.seq` when it starts, so one `(runtime.id, seq)` never names two states, and `spec/cotal.schema.json` gives `prompts.open` and `prompts.seq` as non-negative integers, as §6 already said. A caller drops any message on the no-responders sentinel other than the broker's no-responders status and keeps waiting, on every route, where it used to end the call `internal`: a JetStream API request can name the sentinel as its reply subject. §13.5 now states that a service call drops a stored message on its reply read, as the principal route does; clients already did. The principal route has no cast: a request with `replyExpected: false` is refused before its handler runs. Stopping a principal serve waits for a handler in flight only until its request's `deadlineMs` has passed since the request arrived, and drops a reply that comes later. A principal-route `deadlineMs` is at most 30000: the serve refuses a larger one as `bad-request` before its handler runs, and a caller refuses it before publishing, so stop waits at most 30 s. A refused reply read is still `permission-denied` when the deadline passes first. |
 | 2026-11-18 | **Principal-route and prompt-desk corrections (§6, §13.14, §13.21, §13.22), additive.** A caller drops a stored message that reaches its reply read, one a JetStream read such as a Direct Get delivers on any subject its requester names, the sentinel included, and keeps waiting past a message under another head. Stopping a client ends its principal serves and waits for their handlers before the connection closes, and a process serves an endpoint once for its lifecycle. Under one `runtime.id` the presence `prompts.seq` never goes back, also across a stopped serve. The desk's admission refusals the schemas cannot express are now stated, and a reader drops a prompt with two options that share an id. No subject or schema changes. |

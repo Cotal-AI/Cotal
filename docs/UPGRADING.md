@@ -1,5 +1,29 @@
 # Upgrading a running deployment
 
+## Channel exclusions
+
+A read or post grant can now remove channels or patterns from what it allows, written as
+`{ allow, exclude }` ([channel permissions](channels-and-permissions.mdx#exclusions)). Nothing
+changes for grants without exclusions: they stay plain lists and every component reads them as
+before.
+
+A grant with exclusions needs every component that handles it at this version. Older components
+refuse it rather than grant the allow list alone:
+
+- An older manager, persona reader or auth service refuses the `{ allow, exclude }` form, and an
+  older auth service refuses the version 2 ledger row that stores it.
+- An older delivery daemon does not read the new read-registry row, so it holds that agent's
+  stored copies instead of delivering them, and refuses its joins and history reads.
+- An older connector does not know its exclusions. The broker refuses its history reads under an
+  excluded wildcard, and a start that backfills such a channel fails.
+
+Exclusions need nats-server 2.12.7 or later on the 2.12 line, or 2.14.0 or later. A credential
+with exclusions is not signed for an older or unknown server. Update the broker first, then the
+auth service and delivery daemon, then managers and connectors, and only then add exclusions.
+
+Quote patterns on the command line, for example `--exclude-subscribe 'team.secret.>'`: an
+unquoted `>` is a shell redirect.
+
 ## Participant payload history after 0.168.0
 
 Participant connections can read retained tool payloads for their own owner and for foreign

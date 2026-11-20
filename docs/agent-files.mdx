@@ -56,8 +56,8 @@ type. Quote a value such as `"42"` or `"false"` when it is meant as a string.
 | `description` | string | One-line summary in `card.description`. |
 | `tags` | string[] | Capability tags in `card.tags`. |
 | `subscribe` | string[] | Channels read at boot. Runtime join and leave operations can change this active set. Every entry must be within `allowSubscribe`. A [family](channels-and-permissions.mdx#families) such as `team.>` gets stored copies of posts on its durable channels from startup. Omitted or empty means no channels, including `general`; DM, anycast, and presence remain available. |
-| `allowSubscribe` | string[] | Channels the agent may read. Wildcard subtrees such as `team.>` are allowed. Omitted or empty defaults to `subscribe`. |
-| `allowPublish` | string[] | Channels the agent may post to. Omitted or empty grants no posting permission. Wildcard subtrees are allowed. |
+| `allowSubscribe` | string[] or `{ allow, exclude }` | Channels the agent may read. Wildcard subtrees such as `team.>` are allowed. Omitted or empty defaults to `subscribe`. The object form removes channels or patterns from what `allow` grants; see [Exclusions](channels-and-permissions.mdx#exclusions). |
+| `allowPublish` | string[] or `{ allow, exclude }` | Channels the agent may post to. Omitted or empty grants no posting permission. Wildcard subtrees are allowed. The object form removes channels or patterns from what `allow` grants. |
 | `quiet` | string[] | Attention default. Ambient messages stay buffered until `cotal_inbox`; mentions remain automatic. Entries must be concrete channels within the read ACL. |
 | `muted` | string[] | Attention default. Messages are dropped on receive, including mentions. Entries must be concrete channels within the read ACL. A channel cannot be both `quiet` and `muted`. |
 | `model` | string | Model passed to the application. Claude accepts aliases such as `opus` or a full ID; OpenCode uses `provider/model`. A role's `modelPolicy` entry requires an allowed model and refuses a missing model. Whitespace-only values are refused when the file loads. See [Model policy](config.mdx#model-policy). |

@@ -41,6 +41,42 @@ If none qualifies, the tool refuses an omitted channel. A read-only subscription
 On an open mesh, which does not enforce post ACLs, the default is the first concrete active subscription.
 A spawn's inline persona follows the same rules ([agent files](agent-files.mdx#inline-personas)).
 
+## Exclusions [#exclusions]
+
+`allowSubscribe` and `allowPublish` can each remove channels or patterns from what they allow.
+Write the list as `allow` and `exclude`:
+
+```yaml
+allowSubscribe:
+  allow: [">"]
+  exclude: [secret, "team.*.private"]
+allowPublish:
+  allow: [team.>]
+  exclude: [team.announce]
+```
+
+The agent can read every channel except `secret` and any `team.<name>.private`, including channels created later.
+An exclusion always wins over an allow entry. Read and post exclusions are separate lists.
+A list with no exclusions stays a plain list, so files that use none read as before.
+
+The grant is refused where it is written when an exclusion removes nothing, removes only what another exclusion already removes, or removes a whole allow entry.
+An exclusion that covers an event channel of the agent's own owner is refused, because the agent reads its owner's event payloads regardless of channels.
+
+Exclusions are enforced by the broker and the [delivery daemon](delivery-daemon.mdx):
+
+- A live subscription to an excluded channel is refused. A wildcard subscription that overlaps an exclusion, such as `team.>`, never delivers the excluded channels.
+- A post to an excluded channel is refused.
+- `cotal_join` refuses an excluded channel, and a pattern the exclusions cover in full. It admits a pattern that only overlaps them.
+- History under an allow entry that an exclusion overlaps is read through the delivery daemon, which drops excluded posts. History needs the agent's read registry row, so a read exclusion is refused for an agent provisioned without one, such as `cotal spawn --live-only`.
+- Stored copies and `@mention` copies are never delivered on an excluded channel.
+
+Exclusions need nats-server 2.12.7 or later on the 2.12 line, or 2.14.0 or later. Older servers can deliver an excluded channel to a wildcard subscription, so a credential with exclusions is not signed for them.
+They apply to credentials minted after they are written. A credential already issued keeps its permissions until it is reminted, revoked or expires.
+
+On the command line, quote patterns so the shell does not read `>` as a redirect, for example `--exclude-subscribe 'team.secret.>'`.
+
+The wire rules are in [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) and [§8](../SPEC.md#8-nats--jetstream-binding).
+
 ## Delivery classes
 
 Each channel has a `deliveryClass` of `live` or `durable`, defined in [SPEC §4](../SPEC.md#4-delivery-modes) and [§7](../SPEC.md#7-channels).
@@ -118,6 +154,7 @@ The examples use [Agent files](agent-files.mdx) and [Mesh manifest](manifest.mdx
 | Read without posting | Agent frontmatter `subscribe: [general]` with `allowPublish` omitted grants a read-only subscription. `allowSubscribe` can grant read access without a boot subscription. | [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) |
 | Announcements with no agent writers | Manifest channel `allowPublish: []` grants no agent permission to post there. `cotal send` can post with an authorized sending credential. The static operator credential permits posting as itself. A user bearer remains bounded by its actor's post grants. | [Mesh manifest](manifest.mdx) |
 | Read a subtree | Agent frontmatter `allowSubscribe: [team.>]` permits reads of concrete channels under `team.` without advance enumeration. | [SPEC §3](../SPEC.md#3-subject-layout), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization) |
+| Read a subtree except one channel | Agent frontmatter `allowSubscribe: { allow: [team.>], exclude: [team.secret] }` reads every channel under `team.` except `team.secret`, including channels created later. | [Exclusions](#exclusions) |
 | Read `review` and its descendants | Agent frontmatter `allowSubscribe: [review, review.>]` includes the top channel. `review.>` alone matches only deeper channels. | [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-authorization) |
 | Suppress join backfill | Channel registry `replay: false` omits history from a joiner's initial context. ACL holders retain on-demand history access. | [SPEC §7](../SPEC.md#7-channels) |
 
@@ -151,7 +188,8 @@ A family follow holds a durable membership of its own, so an agent that is away 
 - An agent that also joined a channel under the family by name still gets one copy of each post. The copies collapse within the two-hour duplicate window, so a copy written again after it can be stored twice.
 - Leaving the family ends its stored copies. Muting a channel under it stays a per-channel choice.
 
-A family needs one `allowSubscribe` entry that contains it, such as `team.>` or `>`.
+A family needs one `allowSubscribe` entry that contains it, such as `team.>` or `>`, and must not be excluded in full.
+A family that overlaps an [exclusion](#exclusions) never delivers the excluded channels, live or stored.
 `perm.*` does not contain `perm.>`, because `perm.>` also matches channels two levels down, so `cotal_join perm.>` is refused under it, and so is an agent file with `subscribe: [perm.>]` and `allowSubscribe: [perm.*]`.
 The root `>` and any pattern with `*`, such as `team.*` or `team.*.>`, can be followed live, but they hold no durable membership and get no stored copies.
 `cotal_join` says so when it joins one.

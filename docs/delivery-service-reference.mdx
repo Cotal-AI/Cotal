@@ -80,7 +80,8 @@ The per-member store is **mixed**: it holds copies for whatever channels a membe
 each post landed. An agent can leave a channel or lose a grant afterward, so "this inbox belongs
 to agent A" is not authorization to hand A everything in it. Agents therefore hold **no
 content-bearing read** on the store; the daemon reads it on their behalf and re-authorizes every
-`(instance, channel, message)` entry against the member's **current read ACL** and, for
+`(instance, channel, message)` entry against the member's **current read ACL**, its read
+[exclusions](channels-and-permissions.mdx#exclusions) applied, and, for
 `durable`-channel entries, its **membership interval** (the post's sequence sits between the
 member's join and leave cursors) before releasing content ([SPEC §7](../SPEC.md#7-channels),
 [§8](../SPEC.md#8-nats--jetstream-binding), [§9](../SPEC.md#9-nats--jetstream-security-and-authorization)).
@@ -169,7 +170,12 @@ resolve that provisioning boundary explicitly, without clearing leases or fabric
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
 `ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its
-`ctl.delivery` rail. Both are `ctl` subjects that [SPEC §13.11](../SPEC.md#1311-the-hard-cut)
+`ctl.delivery` rail, and so do their mediated history reads. An agent whose read grant has an
+exclusion holds no history consumer for the allow entry it overlaps, so it reads that history with
+`readRange`. The daemon re-reads the agent's read registry row on every call, drops excluded posts
+before it cuts the page, and pages by count, size and a scan budget, with the caller carrying the
+position ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)). A daemon older than this request refuses
+it. Both are `ctl` subjects that [SPEC §13.11](../SPEC.md#1311-the-hard-cut)
 retires; the reference implementation still serves them (see
 [the control surface](control-surface.mdx)). A manager that starts while the daemon is still binding, or while the
 daemon re-checks who owns its lease, waits up to 60 seconds for the rail to answer. Only a request
