@@ -1388,11 +1388,12 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
   // A folder space whose broker did not answer is not the target, so it is not this folder's here.
   try { folder = folderSpaceOverSelection(cwd, current, offline) ?? null; } catch (e) { if (!isMeshRegistryError(e)) throw e; }
   const chosen = selected.ok ? selected.target : undefined;
+  const chosenServer = chosen && brokerUrlKey(chosen.server);
   // A `--server` that names another address is the only broker dialed for the selected space.
-  const checked = (m: MeshEntry) => all || (m.space === chosen?.space && m.server === chosen.server);
   const check = async (m: MeshEntry): Promise<BrokerCheck | "not-checked"> => {
-    if (!checked(m)) return "not-checked";
-    if (preflight && m.space === chosen?.space && m.server === chosen.server) {
+    const selectedAddress = m.space === chosen?.space && brokerUrlKey(m.server) === chosenServer;
+    if (!all && !selectedAddress) return "not-checked";
+    if (preflight && selectedAddress) {
       if (preflight.ok) return "reachable";
       if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
       return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported" || preflight.kind === "non-nats-listener" ? "unreachable" : "reachable";
@@ -1567,7 +1568,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     hints.push(moved.remedy);
     return { resolved: false, code: "moved-folder", message: moved.message };
   }
-  const overridden = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
+  const overridden = (target.source === "flag-server" || target.source === "flag-space-override") &&
+    (target.recordedServer === undefined || brokerUrlKey(target.recordedServer) !== brokerUrlKey(target.server));
   if (base.rootGone && !overridden) return { ...base, connection: "root-gone", snapshot: { state: "skipped", reason: "the stack's project folder was moved or deleted" } };
   if (target.mode === "user") {
     // Status never static-mints on a user-auth mesh (the flip). Everything here is offline
@@ -1604,12 +1606,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // stack runs, so Next names that address as the refusal of other commands does. A stopped stack
     // this machine started keeps its registration, as a connect keeps it, so Next names the `up` that
     // starts it again rather than a registration to repair.
-    const flagged = (target.source === "flag-server" || target.source === "flag-space-override") && target.recordedServer !== target.server;
-    const offline = preflight.kind === "unreachable" && !flagged && target.origin === "up";
+    const offline = preflight.kind === "unreachable" && !overridden && target.origin === "up";
     const store = offline ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
-    if (preflight.kind === "unreachable" && (flagged || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
+    if (preflight.kind === "unreachable" && (overridden || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);
@@ -2064,7 +2065,8 @@ function spaceStateCell(r: StatusResult, entry: StatusResult["meshes"]["items"][
   const selected = r.selected.resolved && entry.space === r.selected.space;
   // The selected connection describes this row only when it dialed the row's address; under
   // `--all` with a `--server` that names another, the row shows its own address's check.
-  if (selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && r.selected.server === entry.server) return connectionCell(r.selected);
+  if (selected && r.selected.resolved && entry.check !== "not-checked" && r.selected.server !== null && entry.server !== null &&
+    brokerUrlKey(r.selected.server) === brokerUrlKey(entry.server)) return connectionCell(r.selected);
   if (entry.check === "not-checked") return "";
   return stateCell(entry.check === "slow-link" ? "not answering" : entry.check === "broker-stopped" ? "broker process is stopped" : entry.check, entry.check === "reachable" ? "ok" : "failed");
 }
@@ -2276,8 +2278,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   // A connection to a `--server` address other than the recorded one does not say whether the stack
   // answers; the hint `readSelected` adds names that address. A user-auth space is probed on its own path.
   const dialed = r.selected.resolved ? r.selected : undefined;
+  const recordedServer = r.meshes.items.find((m) => m.space === dialed?.space)?.server;
   const elsewhere = dialed !== undefined && dialed.mode !== "user" && (dialed.source === "flag-server" || dialed.source === "flag-space-override")
-    && r.meshes.items.find((m) => m.space === dialed.space)?.server !== dialed.server;
+    && (recordedServer == null || dialed.server === null ? recordedServer !== dialed.server : brokerUrlKey(recordedServer) !== brokerUrlKey(dialed.server));
   const stack = servedStack(r.folder, r.selected), own = stack !== undefined;
   const seedBlocksRestart = r.selected.channelSeedBlocksRestart;
   // This folder's own stack is blocked the same way under another selection, and its block leads too.

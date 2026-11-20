@@ -55,6 +55,7 @@ import {
 } from "@cotal-ai/core";
 import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, processStopped, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import type { StatusResult } from "../src/commands/status.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -393,6 +394,20 @@ try {
   check("bare status says not serving for a live pid whose rail does not answer (#2073)",
     /Manager\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/Manager\s+running \(pid/.test(bareText), bareText);
   check("bare status keeps exit 0 when the manager is not serving (#2073)", bare.status === 0, bareText);
+
+  const slash = cli("status", "--space", SPACE, "--server", `${server}/`, "--plain");
+  check("a trailing slash keeps the sole Spaces row reachable and checked",
+    slash.status === 0 && new RegExp(`^ {2}-> ${SPACE} +reachable +open$`, "m").test(slash.stdout) && !slash.stdout.includes("Unselected spaces are not dialed"), slash.stdout);
+  for (const [address, connection, inventory] of [
+    [`${server}/`, "ok", "reachable"],
+    [`nats://127.0.0.1:${await freePort()}`, "unreachable", "not-checked"],
+  ] as const) {
+    const json = cli("status", "--space", SPACE, "--server", address, "--json");
+    const { result } = JSON.parse(json.stdout) as { result: StatusResult | null };
+    check(`status at ${address} checks the registration as ${inventory}`,
+      json.status === 0 && result?.selected.resolved === true && result.selected.connection === connection &&
+      result.meshes.items.length === 1 && result.meshes.items[0]?.space === SPACE && result.meshes.items[0].check === inventory, json.stdout);
+  }
 
   // A missing PID record does not contradict a live lease holder.
   rmSync(managerRecord);
