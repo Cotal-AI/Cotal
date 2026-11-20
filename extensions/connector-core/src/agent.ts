@@ -98,7 +98,7 @@ export interface MeshAgentOptions {
   eventsArmed?: boolean;
   /** The event state root read by the connector before it scrubbed the process environment. */
   eventsWorkspaceRoot?: string;
-  /** A once task this seat pulled and did not claim within {@link ONCE_HANDOFF_MS} is sealed and
+  /** A once task this seat pulled and did not claim within `ONCE_HANDOFF_MS` in once.ts is sealed and
    *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
    *  cannot hold a served task. */
   onceClaimBound?: boolean;
@@ -224,8 +224,8 @@ export class MeshAgent extends EventEmitter {
    *  path) vanishes from `turn-pending`, and the manager's notice for it brings the pull that drops it. */
   private activeTurns = new Map<string, ActiveTurn>();
   /** Turns that left this seat, by goal id: the run's settlement with its deadline, or this seat's
-   *  own yield, so a late yield is refused with {@link settledTurnError}. Bounded by
-   *  {@link MAX_SETTLED_TURNS}. */
+   *  own yield, so a late yield is refused with `settledTurnError` in agent-turns.ts. Bounded by
+   *  `MAX_SETTLED_TURNS` in agent-turns.ts. */
   private settledTurns = new Map<string, SettledTurn>();
   /** Set once the launching manager's turn notices are subscribed; the endpoint re-binds the
    *  subscription on every rebuilt connection. */
