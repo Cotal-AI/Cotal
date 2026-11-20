@@ -210,13 +210,18 @@ const composed: Command = { ...command, async run(args) {
     }
     if (paths && await repairMissingInstalledProgram(paths)) console.log("The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped.");
   }
-  if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
+  if (process.platform === "linux" && args.values.self === true && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
-    if (prefix && existsSync(join(prefix, "lib/node_modules/.cotal-update-child"))) {
-      const marker = JSON.parse(readFileSync(join(prefix, "lib/node_modules/.cotal-update-child"), "utf8"));
-      if (marker.phase === "ambiguous" || marker.phase === "pending") interruptedChildRoot = join(prefix, "lib/node_modules");
-      if ((marker.phase === "ambiguous" && marker.custody === undefined) ||
-        (marker.phase === "pending" && marker.gated === undefined && marker.intermediary === false && ["global install", "global reconcile"].includes(marker.operation))) {
+    const root = prefix && join(prefix, "lib/node_modules");
+    if (root) {
+      let marker;
+      try { marker = JSON.parse(readFileSync(join(root, ".cotal-update-child"), "utf8")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      // A surviving child can take the closure writer after its parent dies. Wait for it
+      // under the npm reservation before recovering the journal or checking the packages.
+      if (marker !== undefined || recoveryAdmission) interruptedChildRoot = root;
+      if (process.env.COTAL_AUTO_UPDATE !== "1" && ((marker?.phase === "ambiguous" && marker.custody === undefined) ||
+        (marker?.phase === "pending" && marker.gated === undefined && marker.intermediary === false && ["global install", "global reconcile"].includes(marker.operation)))) {
         legacyRepair = true;
         const paths = daemonPaths();
         if (existsSync(unitReceiptFile(paths))) {

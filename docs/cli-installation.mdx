@@ -513,11 +513,11 @@ available, the administrator runs `npm install -g --prefix '<install-prefix>' co
 Then run `cotal update` as your normal account to reconcile your connectors and extensions.
 Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
 
-From 0.167.1, retrying `cotal update --self` after killing its updater waits up to ten minutes
+On Linux, retrying `cotal update --self` after killing its updater waits up to ten minutes
 for its recorded live install or reconciliation child to finish. The reservation stays held during
-that wait. The command then restores the interrupted transaction and continues the requested
-self-update. An expired wait, an unpublished child PID or ambiguous descendant state still refuses
-without starting a competing replacement.
+that wait. The command then handles the recovery record and checks the installed packages, even if
+there is no newer release. An expired wait, an unpublished child PID or ambiguous descendant state
+still refuses without starting a competing replacement.
 
 When two `cotal update --self` commands target the same npm installation, one waits up to ten
 minutes for the other update to finish. Only a command that has to wait prints a waiting line, once.
