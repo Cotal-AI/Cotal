@@ -223,10 +223,10 @@ the original config folder restores that folder even if the new release has alre
 retained connector set. The snapshot is removed
 after successful update or restoration.
 Starting in 0.167.1, reconciliation rebuilds an unfinished retained connector copy when neither
-selection record names it and no live or unproven seat holder needs it. Cleanup removes empty
-unpublished update journals and abandoned installation staging, including owned read-only folders,
-under the installation update lock. Selected connector sets and unfinished recorded transactions
-remain protected.
+selection record names it and no live or unproven seat holder needs it. Under the installation update
+lock, cleanup removes abandoned installation staging, including owned read-only folders, and empty
+or incompletely written update journals not named by recovery. It names damaged journals without
+skipping unrelated staging. Selected connector sets and unfinished recorded transactions remain protected.
 If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. A home or configuration folder reached through a symbolic link is accepted only when the physical folder and every link's parent chain are protected against other local writers. Unsafe physical folders and links inside retained connector state still refuse the update. If a snapshot cannot be saved, update discards the unpublished staged build. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
 If reconciliation still fails after retry, the command preserves the original child's exit status
 through restoration. An interrupt takes precedence over that status.

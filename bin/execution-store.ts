@@ -184,21 +184,61 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     };
     const recovery = readUpdateRecovery();
     const protectedJournal = recovery?.execution;
-    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
-      const directory = join(store, name), stat = lstatSync(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+    const unreadableJournals: string[] = [];
+    const removedJournals: string[] = [];
+    const scannedTransactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
+      const directory = join(store, name);
       const path = join(directory, "execution.json");
-      if (!lstatSync(path, { throwIfNoEntry: false }) && readdirSync(directory).length === 0 && path !== protectedJournal) {
-        rmSync(directory, { recursive: true });
+      try {
+        const stat = lstatSync(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+        protectedExecutionEntry(directory);
+        const journal = lstatSync(path, { throwIfNoEntry: false });
+        if (!journal && path !== protectedJournal) {
+          const entries = readdirSync(directory);
+          // A crash before the initial rename can leave just the atomic writer's temporary file.
+          if (entries.length === 1 && /^execution\.json\.[a-f0-9]{32}$/.test(entries[0])) {
+            const temporary = join(directory, entries[0]);
+            const entry = lstatSync(temporary);
+            if (entry.isFile() && entry.uid === uid) {
+              protectedExecutionEntry(temporary);
+              rmSync(temporary);
+              entries.pop();
+            }
+          }
+          if (entries.length === 0) {
+            rmSync(directory, { recursive: true });
+            return [];
+          }
+        }
+        let record: { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
+        try { record = executionRecord(path) as typeof record; }
+        catch (error) {
+          // The initial writer returns the path to recovery only after writing the complete JSON.
+          // Do not infer abandonment from a read, ownership or validation failure.
+          if (!(error instanceof SyntaxError) || path === protectedJournal || journal?.uid !== uid || readdirSync(directory).length !== 1) throw error;
+          rmSync(directory, { recursive: true });
+          removedJournals.push(path);
+          return [];
+        }
+        if (!record || record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
+        generation(record.target);
+        if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
+        if (record.previous.descriptor) generation(record.previous.descriptor.generation);
+        return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
+      } catch {
+        unreadableJournals.push(path);
         return [];
       }
-      const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
-      if (record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
-      generation(record.target);
-      if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
-      if (record.previous.descriptor) generation(record.previous.descriptor.generation);
-      return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
     });
+    // An incomplete scan cannot prove unique rollback ancestry. Keep the completion evidence for
+    // a later scan, but still remove abandoned staging under the same lock.
+    const journalWarnings = [
+      ...(removedJournals.length ? [`removed incomplete execution journals: ${removedJournals.join(", ")}`] : []),
+      ...(unreadableJournals.length ? [`retained unreadable or invalid execution journals: ${unreadableJournals.join(", ")}`] : []),
+    ];
+    if (journalWarnings.length) warn(new Error(journalWarnings.join(". ")));
+    const transactions = unreadableJournals.length ? [] : scannedTransactions;
     // A successful successor supersedes its uniquely identified rollback ancestry. Unlike the
     // absence of this home's recovery record, its explicit completion is installation-wide proof.
     for (const completed of transactions.filter(row => row.finished)) {
