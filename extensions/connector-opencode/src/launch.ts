@@ -24,8 +24,8 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { accessSync, closeSync, constants, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { openPrivateAppend } from "@cotal-ai/core/secret-fs";
@@ -35,16 +35,15 @@ import { opencodeLine } from "./opencode-line.js";
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
  *  an npm `.cmd` shim that child_process can't spawn, and the real `opencode.exe` it wraps
  *  (`<bindir>/node_modules/opencode-ai/bin/opencode.exe`) isn't itself on PATH — resolve and spawn
- *  it directly, so there's no `cmd.exe` wrapper to orphan the server on kill. POSIX spawns the name
- *  as-is. Unresolved on Windows → returns the bare name so spawn fails with a clear ENOENT. */
+ *  it directly, so there's no `cmd.exe` wrapper to orphan the server on kill. */
 function resolveOpencodeBin(): string {
   const override = process.env.COTAL_OPENCODE_BIN?.trim() || process.env.COTAL_OPENCODE_RESOLVED_BIN?.trim();
+  if (process.platform !== "win32") return located(override || "opencode");
   if (override) return override;
-  if (process.platform !== "win32") return "opencode";
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
     for (const exe of [join(dir, "opencode.exe"), join(dir, "node_modules", "opencode-ai", "bin", "opencode.exe")]) {
-      if (existsSync(exe)) return exe;
+      if (executableFile(exe)) return resolve(exe);
     }
   }
   return "opencode";
@@ -52,11 +51,22 @@ function resolveOpencodeBin(): string {
 
 export const BIN = resolveOpencodeBin();
 
-/** The file `bin` names, for a message: itself when it is a path, else its first match on PATH. */
+function executableFile(file: string): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Keep explicit paths. On POSIX, pin the first executable regular file on PATH. */
 function located(bin: string): string {
-  if (bin.includes("/") || bin.includes("\\")) return bin;
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (dir && existsSync(join(dir, bin))) return join(dir, bin);
+  if (bin.includes("/")) return bin;
+  for (const dir of (process.env.PATH ?? "/usr/bin:/bin").split(delimiter)) {
+    const absoluteDir = isAbsolute(dir) ? dir : dir ? `${process.cwd()}/${dir}` : process.cwd();
+    const file = `${absoluteDir}/${bin}`;
+    if (executableFile(file)) return file;
   }
   return bin;
 }
@@ -216,7 +226,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     process.stderr.write(`[cotal-connector] OpenCode version probe failed${stderr ? `: ${stderr.split(/\r?\n/).slice(-2).join(" | ")}` : ""}\n`);
     process.exit(1);
   }
-  const line = opencodeLine(versionRaw, located(BIN));
+  const line = opencodeLine(versionRaw, BIN);
 
   mkdirSync(agentHome, { recursive: true });
   // A launcher killed between starting the serve and recording it would leave a serve on this DB that
