@@ -14,7 +14,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir } from "@cotal-ai/workspace";
-import { inspectLock, extensionNpmMutationPath, oneLine } from "@cotal-ai/workspace";
+import { codeSpan, CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -757,7 +757,7 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   return `${provider.name} (${state}) in ${context.root} - ${next}`;
 }
 
-/** One installed extension as the listing reports it. */
+/** One recorded extension as the listing reports it. */
 export interface ExtensionRow {
   readonly pkg: string;
   /** The manifest pin recorded at add time. */
@@ -770,10 +770,35 @@ export interface ExtensionRow {
   readonly provides: readonly string[];
 }
 
-/** The installed extensions, read from the manifest, under the cotal-owned install root. */
+/** Keep every recorded pin, and check its on-disk metadata without loading the extension. */
 function list(presentation: Presentation): void {
-  const items = loadExtensionsManifest().extensions.map(extensionRow);
-  writeResult(presentation, { command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items } }, extensionsView);
+  const entries = loadExtensionsManifest().extensions;
+  const warnings = entries.flatMap((entry): OutputWarning[] => {
+    const dir = extensionPackageDir(entry.pkg);
+    const path = join(dir, "package.json");
+    let problem: string;
+    try {
+      if (installedExtensionPackage(entry.pkg)) return [];
+      problem = lstatSync(dir, { throwIfNoEntry: false })
+        ? `has a corrupt package at ${dir}: ${path} is missing`
+        : `is not installed at ${dir}`;
+    } catch (error) {
+      problem = error instanceof CorruptExtensionPackageError
+        ? `has a corrupt package.json at ${path}`
+        : `could not be checked: ${path} is unreadable`;
+    }
+    // Do not echo a registry spec containing a URL or opaque selector in a text warning.
+    const recovery = entry.source === "seeded" ? "Run `cotal ext seed --repair` to reinstall it."
+      : isPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec)
+        ? `Run ${codeSpan(`cotal ext add ${shellWord(entry.spec)}`)} to reinstall it.`
+        : `Run ${codeSpan(`cotal ext remove ${shellWord(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
+    return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${recovery}` }];
+  });
+  writeResult(presentation, {
+    command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },
+    warnings,
+    ...(warnings.length ? { completeness: "partial", partial: { message: "Some recorded extension packages could not be verified." } } : {}),
+  }, extensionsView);
 }
 
 function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }): Report {
