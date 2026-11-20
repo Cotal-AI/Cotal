@@ -395,10 +395,12 @@ export class SimHandler implements EffectHandler {
 
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     const value = this.resolve("events", this.script.events, ctx);
+    const timeout = req.timeout === undefined ? undefined : parseDuration(req.timeout);
     // A scripted null is a timeout, and a timeout consumes the whole timeout budget.
-    if (value === null && req.timeout !== undefined) await this.timed(parseDuration(req.timeout), ctx);
-    else await this.timedBy(this.script.clock?.wait, "1m", ctx);
-    return value;
+    const delay = value === null && timeout !== undefined ? timeout : parseDuration(this.script.clock?.wait ?? "1m");
+    const late = timeout !== undefined && delay > timeout;
+    await this.timed(late ? timeout : delay, ctx);
+    return late ? null : value;
   }
 
   /**

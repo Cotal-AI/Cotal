@@ -353,6 +353,9 @@ moves the virtual clock forward.
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
+If the `clock.wait` delay is longer than the step's `timeout`, the simulated wait returns `null`
+and advances virtual time only to that timeout.
+
 The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
 with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,
 stops the simulation with L6001 and exit 5. The failure names the table, the step's name and its step key,
