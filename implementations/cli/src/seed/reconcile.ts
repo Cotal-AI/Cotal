@@ -133,6 +133,17 @@ export function assertReadableSeedState(): void {
   readRecovery();
 }
 
+/** Read the refusal for an unfinished seed that needs manual repair, without running reconcile. */
+export function readSeedRepairRefusal(generation: string): Error | undefined {
+  const cursor = readCursor();
+  if ((!cursor && !readRecovery()) || reconcileLockActive()) return;
+  const child = seedChildStatus();
+  if (child.kind === "ambiguous") return ambiguousSeedChild(child.path);
+  if (child.kind !== "none") return;
+  if (cursor && interruptedUpgrade(cursor, generation)) return;
+  return seedRepairRefusal(cursor, generation);
+}
+
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
 export async function runSeed(flags: SeedFlags): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
@@ -189,7 +200,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<Re
         if (child.kind === "live")
           throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
         if (child.kind === "ambiguous")
-          throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
+          throw ambiguousSeedChild(child.path);
         const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
         if (child.kind === "stale") {
           await reconcile("repair", automatic);
@@ -205,19 +216,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<Re
           await reconcile("repair", automatic);
           return NOOP;
         }
-        if (cursor?.failed) throw failedSeed(cursor);
-        if (cursor) {
-          const storeGeneration = readStamp()?.generation ?? "absent";
-          throw new Error(
-            `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}; ` +
-              `seed store generation ${storeGeneration}, running generation ${generation}; ` +
-              "no live reconcile or seed child found) - run `cotal ext seed --repair`",
-          );
-        }
-        throw new Error(
-          "a previous connector repair was interrupted (recovery journal present; no live reconcile or seed child found) - " +
-            "run `cotal ext seed --repair`",
-        );
+        throw seedRepairRefusal(cursor, generation);
       }
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -824,6 +823,24 @@ function childFailure(r: SpawnSyncReturns<string>): string {
 /** The refusal after a seed that failed: what failed, and that `--repair` finishes it. */
 function failedSeed(cursor: ReconcileCursor): Error {
   return new Error(`a previous connector seed failed (package "${cursor.package}", phase ${cursor.phase}): ${cursor.failed} - fix that, then run \`cotal ext seed --repair\``);
+}
+
+function ambiguousSeedChild(path: string): Error {
+  return new Error(`a connector seed may be mid-flight (marker ${path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
+}
+
+function seedRepairRefusal(cursor: ReconcileCursor | undefined, generation: string): Error {
+  if (cursor?.failed) return failedSeed(cursor);
+  if (!cursor) return new Error(
+    "a previous connector repair was interrupted (recovery journal present; no live reconcile or seed child found) - " +
+      "run `cotal ext seed --repair`",
+  );
+  const storeGeneration = readStamp()?.generation ?? "absent";
+  return new Error(
+    `a previous connector seed was interrupted (package "${cursor.package}", phase ${cursor.phase}; ` +
+      `seed store generation ${storeGeneration}, running generation ${generation}; ` +
+      "no live reconcile or seed child found) - run `cotal ext seed --repair`",
+  );
 }
 
 /** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk at the
