@@ -76,10 +76,13 @@ try {
   const npmPackage = join(root, "npm-package");
   mkdirSync(npmHome);
   mkdirSync(npmPackage);
-  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "dist/cotal.js" }, scripts: { postinstall: "node scripts/pin-npm-node.mjs" } }));
+  const binRoot = resolve(import.meta.dirname, "../../../bin");
+  const { engines, scripts } = JSON.parse(readFileSync(join(binRoot, "package.json"), "utf8"));
+  const postinstall = scripts.postinstall.replace(/^node /, "");
+  writeFileSync(join(npmPackage, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.0.0", bin: { cotal: "dist/cotal.js" }, engines, scripts: { postinstall: scripts.postinstall } }));
   mkdirSync(join(npmPackage, "dist"));
   mkdirSync(join(npmPackage, "scripts"));
-  copyFileSync(resolve(import.meta.dirname, "../../../bin/scripts/pin-npm-node.mjs"), join(npmPackage, "scripts/pin-npm-node.mjs"));
+  copyFileSync(join(binRoot, postinstall), join(npmPackage, postinstall));
   writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
