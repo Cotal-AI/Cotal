@@ -44,7 +44,7 @@ import {
   setupSpaceStreams,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
@@ -998,6 +998,41 @@ try {
       general.status === 0 && general.envelope?.completeness === "complete" && (general.envelope?.result?.items ?? []).some((i) => i.text === "channel stays"),
       shown(general),
     );
+  }
+
+  // Keep the same follower and broker store across a short restart of a live channel.
+  for (const ep of endpoints) await ep.stop();
+  await provisioner.stop();
+  const publisher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "operator"),
+    card: { name: "restart-publisher", kind: "endpoint" }, consume: false, watchPresence: false, watchChannels: false, registerPresence: false });
+  publisher.on("error", () => {});
+  const liveChannel = await run(["channel", "set", "updates", "--delivery", "live", "--no-replay", "--json"]);
+  check("restart control: live channel saved", liveChannel.status === 0, shown(liveChannel));
+  const restarted = follow(["history", "updates", "--follow", "--json"]);
+  let replacement: ReturnType<typeof spawn> | undefined;
+  let releaseReplacement: (() => void) | undefined;
+  try {
+    const snap = await restarted.until((line) => line.includes('"type":"snapshot"'));
+    await killAndAwaitExit(broker);
+    await wait(2_000);
+    replacement = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
+    releaseReplacement = teardownOnSignal(replacement, storeDir);
+    await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
+    const gap = await restarted.until((line) => line.includes('"type":"gap"'), 10_000);
+    await publisher.start();
+    const text = "post after broker restart";
+    await publisher.multicast(text, { channel: "updates" });
+    const event = await restarted.until((line) => line.includes(`"text":"${text}"`));
+    const seen = restarted.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; text?: string } });
+    check("a short broker restart reports one loss and one gap before resuming live history",
+      snap && gap && event && seen.map((row) => row.type).join() === "snapshot,error,gap,event"
+        && seen[1]?.data.code === "TARGET_UNAVAILABLE" && seen[3]?.data.text === text,
+      { lines: restarted.lines, stderr: restarted.stderr() });
+  } finally {
+    await killAndAwaitExit(restarted.child, "SIGINT");
+    await publisher.stop().catch(() => {});
+    if (replacement) await killAndAwaitExit(replacement);
+    releaseReplacement?.();
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
