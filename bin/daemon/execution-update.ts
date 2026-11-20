@@ -46,7 +46,10 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   try {
     const npm = cmdSpawnSpec("npm", ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"]);
     const result = await updateRuntime.spawnGlobal(globalRoot, "install", npm.file, npm.args, process.env, false, npm.windowsVerbatimArguments);
-    if (result.status !== 0) throw new Error(`target staging failed: ${result.error ?? result.stderr ?? result.stdout}`);
+    if (result.status !== 0) {
+      if (result.signal) throw new Error(`target staging interrupted: npm terminated by ${result.signal}`);
+      throw new Error(`target staging failed: ${result.error || result.stderr.trim() || result.stdout.trim() || `npm exited ${result.status}`}`);
+    }
     const source = join(staging, "lib/node_modules/cotal-ai");
     verifyGlobalEntry(join(staging, "lib/node_modules"), version);
     verifySelected(source, version);

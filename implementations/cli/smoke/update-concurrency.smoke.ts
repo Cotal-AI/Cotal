@@ -185,6 +185,44 @@ if (globalHelperRoot) {
   }
 }
 
+// The finished npm leader does not prove its seed prefix is idle while a descendant survives.
+if (process.platform === "linux") {
+  const path = extensionNpmMutationPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const ready = join(dirname(path), "seed-descendant.pid");
+  const mutation = beginExtensionNpmMutation(false, true);
+  const leader = spawn(process.execPath, ["-e", `
+    const { spawn } = require('node:child_process');
+    spawn(process.execPath, ['-e', 'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', process.argv[1]], {stdio: 'ignore'});
+    setInterval(() => {}, 1000);
+  `, ready], { detached: true, stdio: "ignore" });
+  try {
+    assert.ok(leader.pid);
+    mutation.markLive(leader.pid);
+    await waitFor(() => existsSync(ready) && readFileSync(ready, "utf8").length > 0, "a seed npm descendant");
+    leader.kill("SIGKILL");
+    await waitForExit(leader);
+    assert.throws(() => mutation.complete(null, "SIGKILL", "interrupted"), /running process group/);
+    assert.throws(() => claimExtensionMutationLock(), /running process group/);
+    process.kill(Number(readFileSync(ready, "utf8")), "SIGTERM");
+    let release: (() => void) | undefined;
+    await waitFor(() => {
+      try { release = claimExtensionMutationLock(); return true; }
+      catch (error) { if (!/running process group/.test(String(error))) throw error; return false; }
+    }, "the seed npm process group to finish");
+    release?.();
+    assert.equal(existsSync(path), false, "a finished seed group needs no manual marker cleanup");
+  } finally {
+    if (leader.pid && existsSync(path)) {
+      try { process.kill(-leader.pid, "SIGKILL"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    }
+    await waitForExit(leader);
+    if (existsSync(path)) mutation.clear();
+    rmSync(ready, { force: true });
+  }
+}
+
 // Killing the old update parent cannot orphan either the global npm install or the verified
 // reconcile child behind a stale parent-owned lock. The root-scoped child record is authoritative.
 if (process.platform !== "win32") {

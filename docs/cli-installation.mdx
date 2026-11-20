@@ -245,9 +245,20 @@ its process group are gone. A live writer or unreadable evidence leaves the reco
 For an older record without child custody, manual repair still requires this account's other
 application processes to exit. It stops only this installation's service after confirming its
 hosted Managers have no seats, and starts the enabled service again after the attempt.
+If the systemd user manager is unavailable, the update keeps the record and asks you to retry when
+the manager answers on the user bus. A staging process stopped by a signal reports that signal.
+If npm is interrupted during connector seeding on Linux, rerun `cotal ext seed --repair` or
+`cotal update --self`. Wait for any remaining npm processes in the reported group to exit first.
 
 A runtime bundled with the desktop app refuses `update --self` before changing its installation.
 Update that app with its signed platform installer so the app, CLI and runtime stay together.
+
+If npm is missing from `PATH`, `update --self` exits 1 and `update --check` reports partial results
+with exit 4. Install npm or add it to `PATH`, then retry. A registry connection failure still
+leaves the installation unchanged without failing `update --self`.
+On Linux and macOS, an installed self-update restores owner write access to its own connector
+directories before staging a release. If it cannot make those directories writable, it names the
+directory to fix and stops before staging.
 
 
 ```bash

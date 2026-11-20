@@ -124,7 +124,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   throw usage(EXT_USAGE);
 }
 
-async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
+async function npm(args: string[], cwd: string, seeding = false): Promise<{ status: number | null; output: string }> {
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
@@ -133,11 +133,22 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
   const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--include=optional"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const mutation = beginExtensionNpmMutation();
+  const seedGroup = seeding && process.platform === "linux";
+  const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
   let preservePending = false;
+  let stopForwarding = () => {};
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd, env, windowsVerbatimArguments }));
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd, env, windowsVerbatimArguments, detached: seedGroup }));
+    if (seedGroup && child.pid !== undefined) {
+      const pid = child.pid;
+      const forward = (signal: NodeJS.Signals) => {
+        try { process.kill(-pid, signal); } catch { /* npm's process group may have already exited */ }
+      };
+      const onInt = () => forward("SIGINT"), onTerm = () => forward("SIGTERM");
+      process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
+      stopForwarding = () => { process.off("SIGINT", onInt); process.off("SIGTERM", onTerm); };
+    }
     let spawnError = "";
     let stdout = "";
     let stderr = "";
@@ -153,8 +164,15 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
         preservePending = true;
       }
     }
+    let drain: ReturnType<typeof setTimeout> | undefined;
+    if (seedGroup) child.once("exit", () => {
+      // A descendant can keep npm's output pipes open after npm itself has exited. The
+      // custody check below protects the prefix, so do not wait indefinitely on those pipes.
+      drain = setTimeout(() => { child.stdout?.destroy(); child.stderr?.destroy(); }, 1000);
+      drain.unref();
+    });
     const closed = await new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose) =>
-      child.once("close", (status, signal) => resolveClose({ status, signal })),
+      child.once("close", (status, signal) => { clearTimeout(drain); resolveClose({ status, signal }); }),
     );
     if (published) mutation.complete(
       closed.status,
@@ -163,10 +181,12 @@ async function npm(args: string[], cwd: string): Promise<{ status: number | null
         ? `npm intermediary terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
-    return { status: spawnError ? null : closed.status, output: `${spawnError}${stdout}${stderr}`.trim() };
+    const output = `${spawnError}${stdout}${stderr}`.trim();
+    return { status: spawnError ? null : closed.status, output: output || (closed.signal ? `npm terminated by ${closed.signal}` : "") };
   } catch (e) {
     return { status: null, output: `spawn error: ${(e as Error).message}` };
   } finally {
+    stopForwarding();
     if (!published && !preservePending) mutation.clear();
   }
 }
@@ -438,6 +458,8 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
     }
   } catch (e) {
     // Nothing has committed: put the prefix back the way the add found it.
+    // A retained npm marker means the prefix may still have a writer. Do not roll it back underneath it.
+    if (existsSync(extensionNpmMutationPath())) throw e;
     if (rollbackDir) {
       rmSync(liveDir, { recursive: true, force: true });
       renameSync(rollbackDir, liveDir);
@@ -445,7 +467,7 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
     } else if (stageRoot) {
       rmSync(stageRoot, { recursive: true, force: true });
     } else {
-      await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], liveDir);
+      await npm(["remove", "--no-audit", "--no-fund", "--install-links", pkg], liveDir, seeding);
       linkExtensionPeers(manifest.extensions, pkg, announce);
     }
     throw interrupted ? new ExtensionAddInterrupted(pkg) : e;
@@ -473,7 +495,7 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
   // links the running binary's copy below (one core instance is the whole point).
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir);
+  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir, seeding);
   if (r.status !== 0) {
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }

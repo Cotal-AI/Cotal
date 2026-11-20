@@ -140,6 +140,7 @@ const composed: Command = { ...command, async run(args) {
   let reconcileDaemonObserved = false;
   let recoveryFence = false;
   let repairService: DaemonPaths | undefined;
+  let repairServiceStopped = false;
   let interruptedChildRoot: string | undefined;
   let legacyRepair = false;
   let admission: UpdateAdmission | undefined;
@@ -229,18 +230,25 @@ const composed: Command = { ...command, async run(args) {
   }
   const runtime = { ...updateRuntime, automaticGenerationWait: process.platform === "linux",
     claimGlobalUpdate: (root: string, onWait?: () => void) => claimGlobalNpmUpdateLock(root, { waitMs: 10 * 60_000, renew: true, onWait, ...(legacyRepair && root === interruptedChildRoot ? { repairAmbiguous: () => {
+      const ancestors = new Set<number>();
+      const unavailable = () => new CommandFailure("refused", "LIFECYCLE_BLOCKED", "The interrupted update cannot be recovered until the systemd user manager answers on the user bus. Run `cotal update --self` again when it is available.", {
+        native: { outcome: "not-executed" },
+      });
+      let native: string;
+      try {
+        native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+      } catch { throw unavailable(); }
+      const manager = /^u ([1-9]\d*)$/.exec(native);
+      if (!manager) throw unavailable();
+      const managerPid = Number(manager[1]);
+      const managerStart = processBirth(managerPid);
+      if (!managerStart) throw unavailable();
       if (repairService) {
         const plan = planUninstall(repairService, undefined);
         if (!installedDaemonIdentity(repairService).same || plan.mechanism !== "systemd-user") throw new Error("daemon installation changed before repair");
         submitSystemdUnitControl("stop", plan.unit);
+        repairServiceStopped = true;
       }
-      const ancestors = new Set<number>();
-      const native = execFileSync("busctl", ["--user", "--no-pager", "--timeout=5s", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", "s", "org.freedesktop.systemd1"], { encoding: "utf8", timeout: 6000 }).trim();
-      const manager = /^u ([1-9]\d*)$/.exec(native);
-      if (!manager) throw new Error("the native user manager PID could not be authenticated for repair");
-      const managerPid = Number(manager[1]);
-      const managerStart = processBirth(managerPid);
-      if (!managerStart) throw new Error("the native user manager lifetime is unreadable");
       for (let pid = process.pid; pid > 1 && !ancestors.has(pid);) {
         ancestors.add(pid);
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -635,7 +643,7 @@ const composed: Command = { ...command, async run(args) {
   } finally {
     closeWindowsGeneration();
     if (repairService) {
-      await startEnabledInstalled(repairService, undefined);
+      if (repairServiceStopped) await startEnabledInstalled(repairService, undefined);
       try { await managerViaDaemon({ paths: repairService }, { op: "managers-abort-restart" }); }
       catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NOT_RUNNING") throw error; }
     }

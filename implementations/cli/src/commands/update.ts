@@ -22,6 +22,7 @@ import {
   recordUpdateDeferral,
   recordUpdateRefusal,
   recordUpdateReplacement,
+  prepareConnectorConfigForUpdate,
   setUpdateSetting,
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
@@ -43,6 +44,7 @@ import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
+import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
@@ -103,7 +105,10 @@ interface CommandResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly error?: string;
+  readonly errorCode?: string;
 }
+
+const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
 
 export interface ExecutionReplacement {
   readonly entry: string;
@@ -339,6 +344,25 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
         native: { outcome: "not-executed" },
       });
     }
+    try {
+      if (rt.prepareExecution) {
+        prepareConnectorConfigForUpdate();
+        if (recoverExtensionPromotion(true)) prepareConnectorConfigForUpdate();
+      } else recoverExtensionPromotion();
+    } catch (error) {
+      const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
+        native: { outcome: "not-executed" }, remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
+      });
+      recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
+      throw failure;
+    }
+    // Built-in self-update skips the extension overlay. Validate its inventory after recovery, not before.
+    try { loadExtensionsManifest(); }
+    catch (error) {
+      rt.err(c.red(`✗ ${message(error)}`));
+      process.exitCode = 1;
+      return;
+    }
   }
   const restored = await recoverInterruptedUpdate(rt);
   if (restored) {
@@ -501,14 +525,17 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     warnings.push({ code: "EXTENSION_INVENTORY_UNREADABLE", target: null, message: "The extension inventory could not be read. It was not repaired or treated as empty." });
   }
   const latest = latestVersion(rt);
-  if (!latest.ok) warnings.push({ code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
+  const missingNpm = !latest.ok && latest.missingNpm;
+  if (!latest.ok) warnings.push(missingNpm
+    ? { code: "NPM_UNAVAILABLE", target: null, message: "npm is not on PATH. Update availability is unknown." }
+    : { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
   const pending = readUpdatePending(current);
   if (pending.kind === "unreadable") warnings.push({ code: "RECONCILIATION_UNREADABLE", target: null, message: `Reconciliation state could not be read: ${pending.error}` });
   const result = { kind: "update-check", reconciliation: pending, current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
   writeResult(presentationOf(args.values), {
     command: "update", target: null, result, warnings,
-    ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
+    ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: missingNpm ? MISSING_NPM_REMEDY : "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
   }, (r) => ({ sections: [
     ...(pending.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [pending.instruction] }] }]),
     { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },
@@ -562,6 +589,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   if (self) {
     const latest = latestVersion(rt);
     if (!latest.ok) {
+      if (latest.missingNpm) {
+        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+        rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
+        return 1;
+      }
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
       else if (latest.npmResult && await npmProxyRefused(latest.npmResult, rt.env)) {
         rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
@@ -1111,10 +1143,11 @@ export function printLegacyReport(
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; npmResult?: CommandResult } {
+function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; missingNpm?: true; npmResult?: CommandResult } {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
     const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
+    if (result.errorCode === "ENOENT") return { ok: false, error: "npm is not on PATH", missingNpm: true };
     if (result.status !== 0) return { ok: false, error: failure(result), npmResult: result };
     try {
       return { ok: true, version: parseNpmVersion(result.stdout) };
@@ -1852,9 +1885,10 @@ function runNpm(args: string[], inherit = false): CommandResult {
       stdout: `${result.stdout ?? ""}`,
       stderr: `${result.stderr ?? ""}`,
       error: result.error?.message,
+      errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
     };
   } catch (e) {
-    return { status: null, stdout: "", stderr: "", error: message(e) };
+    return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
   }
 }
 
@@ -1924,7 +1958,7 @@ async function runGlobalProcess(
         ? `${operation} child terminated by ${closed.signal}`
         : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
     );
-    return { status: error ? null : closed.status, stdout, stderr, ...(error ? { error } : {}) };
+    return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
@@ -1943,7 +1977,7 @@ function latestNotAvailable(result: CommandResult, version: string): boolean {
 }
 
 function failure(result: CommandResult): string {
-  return [result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
+  return [result.signal && `process terminated by ${result.signal}`, result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
 }
 
 function message(value: unknown): string {
