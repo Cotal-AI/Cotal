@@ -10,7 +10,7 @@ import { SERVICE_ENDPOINT_USAGE, serviceEndpointHostCall, type ServiceEndpointVa
  * logged in as YOU across every repo on this box.
  */
 import * as prompts from "@clack/prompts";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore, type Subcommand } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertExclusions, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, channelGrantField, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type ChannelGrantField, type Command, type FlagSpec, type ParsedArgs, type SecretStore, type Subcommand } from "@cotal-ai/core";
 import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, keptCatalogCredentials, loadMeshes, removeCatalogAccount, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
   type DeviceLoginPrompt,
@@ -386,7 +386,7 @@ async function resolveGrantOwner(
 
 /** The two explicit shapes of a grant in either spelling, printed by its usage refusal. */
 const grantForms = (command: "auth" | "actor"): string =>
-  `cotal ${command} grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,run,role:default; a named flag still overrides its field), or cotal ${command} grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--role r] [--label l]`;
+  `cotal ${command} grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,run,role:default; a named flag still overrides its field), or cotal ${command} grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--exclude-publish a,b] [--role r] [--label l]`;
 
 /** The grant verbs of each spelling. */
 const grantUsage = (command: "auth" | "actor"): string =>
@@ -423,8 +423,15 @@ async function evictRevokedPrincipal(space: string, principal: string, rootOverr
   }
 }
 
+/** A row as the grant commands print it: each channel list in its wire shape, `{ allow, exclude }`
+ *  when the row removes channels (SPEC §9). */
 function publicActor(row: ActorRow & { kind?: string }) {
-  return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, parent: row.parent ?? null, scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish };
+  return { owner: row.owner, actor: row.actor, kind: row.kind, role: row.role ?? null, label: row.label ?? null, parent: row.parent ?? null, scope: row.scope, allowSubscribe: channelGrantField(row.allowSubscribe, row.excludeSubscribe), allowPublish: channelGrantField(row.allowPublish, row.excludePublish) };
+}
+
+/** A channel list for a person: its entries, then the channels its exclusions remove. */
+function channelsText(field: ChannelGrantField): string {
+  return Array.isArray(field) ? field.join(", ") || "none" : `${field.allow.join(", ")} except ${field.exclude.join(", ")}`;
 }
 
 /** The ledger rows of one IdP subject, as `--sub` names them: the ledger keeps no subject, so the
@@ -436,7 +443,7 @@ function grantView(space: string, rows: readonly ReturnType<typeof publicActor>[
   return { sections: [{ title, blocks: [
     { kind: "fields" as const, rows: [["Space", space], ["Source", "local authoritative actor ledger"]] as [string, string][] },
     // A re-grant replaces the whole row, so every field it must spell again is shown.
-    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }, { key: "role", label: "Role" }, { key: "label", label: "Label" }, { key: "parent", label: "Parent" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: row.allowSubscribe.join(", ") || "none", post: row.allowPublish.join(", ") || "none", role: row.role ?? "none", label: row.label ?? "none", parent: row.parent ?? "none" })) } : { kind: "lines" as const, lines: [only ? "No rows for this owner in this authoritative ledger snapshot." : "No rows in this authoritative ledger snapshot."] },
+    rows.length ? { kind: "table" as const, columns: [{ key: "principal", label: "Principal" }, { key: "kind", label: "Kind" }, { key: "scope", label: "Capabilities" }, { key: "read", label: "May read" }, { key: "post", label: "May post" }, { key: "role", label: "Role" }, { key: "label", label: "Label" }, { key: "parent", label: "Parent" }], rows: rows.map((row) => ({ principal: `${row.owner}.${row.actor}`, kind: row.kind ?? "not recorded", scope: row.scope.join(", ") || "none", read: channelsText(row.allowSubscribe), post: channelsText(row.allowPublish), role: row.role ?? "none", label: row.label ?? "none", parent: row.parent ?? "none" })) } : { kind: "lines" as const, lines: [only ? "No rows for this owner in this authoritative ledger snapshot." : "No rows in this authoritative ledger snapshot."] },
     { kind: "lines" as const, lines: [{ text: "Recorded grants are not proof of current connections, task progress or the authority of a cached account session.", tone: "hint" as const }] },
   ] }] };
 }
@@ -506,7 +513,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
   const [sub, actor] = args.positionals;
   const values = args.values as {
     sub?: string; owner?: string; scope?: string; "allow-subscribe"?: string;
-    "allow-publish"?: string; role?: string; label?: string; parent?: string; full?: boolean;
+    "allow-publish"?: string; "exclude-publish"?: string; role?: string; label?: string; parent?: string; full?: boolean;
   };
   const st = actorState(target);
   const { dir, space } = st;
@@ -552,6 +559,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
         scope: csv(values.scope, ["spawn", "run", "role:default"]),
         allowSubscribe: csv(values["allow-subscribe"], [">"]),
         allowPublish: csv(values["allow-publish"], [">"]),
+        ...(csv(values["exclude-publish"], []).length ? { excludePublish: csv(values["exclude-publish"], []) } : {}),
         ...(values.role ? { role: values.role } : {}),
         ...(values.label ? { label: values.label } : {}),
         ...(values.parent ? { parent: values.parent } : {}),
@@ -573,11 +581,12 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
       });
       // A re-grant writes the row again and rotates its lifecycle even when no field changed, so the
       // receipt says what the earlier row held relative to this one.
-      const fields = (r: Pick<ActorRow, "scope" | "allowSubscribe" | "allowPublish" | "role" | "label" | "parent">) => JSON.stringify([r.scope, r.allowSubscribe, r.allowPublish, r.role ?? null, r.label ?? null, r.parent ?? null]);
+      const fields = (r: Pick<ActorRow, "scope" | "allowSubscribe" | "allowPublish" | "excludeSubscribe" | "excludePublish" | "role" | "label" | "parent">) =>
+        JSON.stringify([r.scope, channelGrantField(r.allowSubscribe, r.excludeSubscribe), channelGrantField(r.allowPublish, r.excludePublish), r.role ?? null, r.label ?? null, r.parent ?? null]);
       const previous = current === undefined ? "none" as const : fields(current) === fields(row) ? "unchanged" as const : "replaced" as const;
       const result = { kind: "actor-grant", grant: publicActor({ ...row, kind: "interactive" }), fullOptionExplicit: values.full === true, previous, previousLifecycleRetired: retired };
       writeResult(presentationOf(args.values), { command, target: { space, owner: row.owner, actor: row.actor }, result }, (data) => ({ sections: [
-        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", data.grant.allowSubscribe.join(", ") || "none"], ["May post", data.grant.allowPublish.join(", ") || "none"], ["Role", data.grant.role ?? "none"], ["Label", data.grant.label ?? "none"], ["Parent", data.grant.parent ?? "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
+        { title: data.previous === "unchanged" ? "Actor grant stored unchanged" : "Actor grant stored", blocks: [{ kind: "fields", rows: [["Principal", `${data.grant.owner}.${data.grant.actor}`], ["Space", space], ["Earlier grant", data.previous === "none" ? "none" : data.previous === "unchanged" ? "the same fields" : "replaced"], ...(data.previousLifecycleRetired ? [["Earlier lifecycle", "retired, so a bearer issued under it no longer works"] as [string, string]] : []), ["Capabilities", data.grant.scope.join(", ") || "none"], ["May read", channelsText(data.grant.allowSubscribe)], ["May post", channelsText(data.grant.allowPublish)], ["Role", data.grant.role ?? "none"], ["Label", data.grant.label ?? "none"], ["Parent", data.grant.parent ?? "none"], ["Wide defaults requested", data.fullOptionExplicit ? "explicit --full" : "no"]] }, { kind: "lines", lines: [{ text: "The local authority stored this grant. No process was launched and no cached login was treated as a grant.", tone: "hint" }] }] },
       ] }));
       return;
     }
@@ -658,10 +667,10 @@ const authCommands: Command[] = [
     hidden: true,
     group: "Identity",
     summary: "(legacy) manage the space's actor ledger - grant/revoke which (user, actor) pairs may run agents. `auth grants`, `auth grant` and `auth revoke` replace it",
-    usage: "cotal actor <grant <actor> | revoke <actor> | label <actor> <label> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--role r] [--label l] [--json|--plain]",
+    usage: "cotal actor <grant <actor> | revoke <actor> | label <actor> <label> | list> [--sub <IdP subject>|--owner <u_…>] [--space <s>] [--full | --scope a,b --allow-subscribe a,b --allow-publish a,b] [--exclude-publish a,b] [--role r] [--label l] [--json|--plain]",
     positionals: "<grant <actor> | revoke <actor> | label <actor> <label> | list>",
     subcommands: [
-      { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--role r] [--label l] [--parent <owner.actor>] [--space <s>]", outputs: ["json", "plain"] },
+      { name: "grant", flagNames: ["space", "sub", "owner", "full", "scope", "allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish", "role", "label", "parent"], summary: "store an actor's whole ledger row: name all three ACL flags, or --full for the wide defaults", usage: "cotal actor grant <actor> (--sub <IdP subject> | --owner <u_…>) (--full | --scope a,b --allow-subscribe a,b --allow-publish a,b) [--exclude-publish a,b] [--role r] [--label l] [--parent <owner.actor>] [--space <s>]", outputs: ["json", "plain"] },
       { name: "revoke", flagNames: ["space", "sub", "owner"], summary: "revoke an actor's ledger row", usage: "cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>) [--space <s>]", outputs: ["json", "plain"] },
       { name: "label", flagNames: ["space", "sub", "owner"], summary: "change only an interactive row's display label, keeping its lifecycle", usage: "cotal actor label <actor> (--sub <IdP subject> | --owner <u_…>) <label> [--space <s>]", outputs: ["json", "plain"] },
       { name: "list", flagNames: ["space", "sub"], summary: "list the space's actor ledger, or one IdP subject's rows", usage: "cotal actor list [--sub <IdP subject>] [--space <s>]", outputs: ["json", "plain"] },
@@ -674,6 +683,8 @@ const authCommands: Command[] = [
       { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,run,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (with --full: default > = all channels) - the user's envelope: their agents can never read beyond it" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (with --full: default > = all channels) - also the envelope for their agents' posting" },
+      { name: "exclude-subscribe", type: "string", value: "<a,b>", description: "channels or patterns removed from the read ACL: refused on an actor grant, which has no read-ACL row to serve history under an excluded wildcard" },
+      { name: "exclude-publish", type: "string", value: "<a,b>", description: "channels or patterns removed from the post ACL (e.g. --allow-publish '>' --exclude-publish announce); their agents can never post there either" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
       { name: "label", type: "string", value: "<l>", description: "display label for `actor list` (never the IdP subject)" },
       { name: "parent", type: "string", value: "<owner.actor>", description: "spawning principal audit link (operator grants are authority - this does not attenuate)" },
@@ -817,7 +828,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
     throw new CommandFailure("refused", "USAGE_INVALID", "actor label needs the actor and its new label", { remedy: labelForm });
   if ((extra.length && !labelling) || (mode !== list && mode !== "grant" && mode !== "revoke" && !labelling) || (mode === list ? actor !== undefined : !actor))
     throw new CommandFailure("refused", "USAGE_INVALID", grantUsage(command));
-  const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? ["sub"] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full"] : [])];
+  const allowed = [...GRANT_COMMON_FLAGS, ...(mode === list ? ["sub"] : ["sub", "owner"]), ...(mode === "grant" ? ["scope", "allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish", "role", "label", "parent", "full"] : [])];
   if (Object.keys(flags).some((key) => !allowed.includes(key))) throw new CommandFailure("refused", "USAGE_INVALID", `a flag does not belong to this ${command} action`);
   if (mode === list) {
     if (flags.sub === "") throw new CommandFailure("refused", "USAGE_INVALID", `${command} ${list} --sub is empty, so no subject's rows can be listed`, { remedy: `name the IdP subject \`cotal login\` prints: \`cotal ${command} ${list} --sub <IdP subject>\``, selfContained: true });
@@ -827,7 +838,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   // or ACL it could never use.
   const ledgerless = ledgerlessTarget(flags as { space?: string });
   if (ledgerless) throw noLedger(ledgerless, mode === "grant" ? "no inert grant was written" : labelling ? "no label was written" : "nothing was revoked");
-  const values = flags as { owner?: string; sub?: string; role?: string; parent?: string; scope?: string; full?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
+  const values = flags as { owner?: string; sub?: string; role?: string; parent?: string; scope?: string; full?: boolean; "allow-subscribe"?: string; "allow-publish"?: string; "exclude-subscribe"?: string; "exclude-publish"?: string };
   const problems: string[] = [];
   const omitted = mode === "grant" && !values.full ? (["scope", "allow-subscribe", "allow-publish"] as const).filter((flag) => values[flag] === undefined) : [];
   if (omitted.length) problems.push(`with ${omitted.map((flag) => `--${flag}`).join(", ")} left off: an omitted flag would be the WIDE default (scope spawn,run,role:default, read '>', post '>')`);
@@ -852,8 +863,14 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
     if (parts.length !== 2) throw new Error(`"${values.parent}" is not <owner>.<actor>`);
     assertDerivedOwnerToken(parts[0]!); assertValidOwnerToken(parts[1]!);
   });
-  for (const flag of ["allow-subscribe", "allow-publish"] as const)
+  for (const flag of ["allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish"] as const)
     for (const channel of csv(values[flag], [])) check(`--${flag}`, () => assertValidChannel(channel));
+  // An interactive actor has no read-ACL row (it never enrolls in the delivery mirror), and history
+  // under an excluded wildcard is served only from that row, so the grant refuses a read exclusion.
+  if (csv(values["exclude-subscribe"], []).length)
+    invalid.push("--exclude-subscribe: an actor grant cannot exclude channels from reading, because an interactive actor has no read-ACL row to serve history under an excluded wildcard; name the channels it may read in --allow-subscribe instead");
+  // A post exclusion must remove part of the post list it narrows (the --full default is `>`).
+  check("--exclude-publish", () => assertExclusions(csv(values["allow-publish"], [">"]), csv(values["exclude-publish"], []), "--allow-publish"));
   const unknown = csv(values.scope, []).filter((scope) => !isGrantCapability(scope));
   if (unknown.length) invalid.push(`--scope: ${unknown.length === 1 ? "an unknown capability" : "unknown capabilities"} ${unknown.map((scope) => JSON.stringify(scope)).join(", ")}; the capabilities are ${GRANT_CAPABILITIES.join(", ")} and role:<role>`);
   if (invalid.length)
@@ -1019,7 +1036,7 @@ const authCommand: Command = {
     { name: "redeem", flagNames: ["space", "json", "plain"], summary: "conferring-handle redemption requires a supported native auth path", examples: [{ command: "cotal auth redeem <private-handle-file>", note: "redeem a capability handle file" }], usage: "cotal auth redeem <private-handle-file> [--space <space>]", prepareMeshTarget: false },
     { name: "signer", flagNames: ["space", "out", "force", "json", "plain"], summary: "export existing account-signing material to a protected private file", examples: [{ command: "cotal auth signer --out <private-file>", note: "export the signer to a private file" }], usage: "cotal auth signer --out <private-file> [--force]", prepareMeshTarget: false },
     { name: "grants", flagNames: ["space", "sub", "json", "plain"], summary: "read the authoritative local actor grants, not cached sign-in claims", examples: [{ command: "cotal auth grants", note: "list who may use this space" }, { command: "cotal auth grants --sub <subject>", note: "list one person's grants" }], usage: "cotal auth grants [--sub <IdP subject>] [--space <space>] [--json|--plain]", reads: true, prepareMeshTarget: false },
-    { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", examples: [{ command: "cotal auth grant <actor> --sub <subject> --full", note: "grant a person the wide default access" }], usage: "cotal auth grant <actor>", prepareMeshTarget: false },
+    { name: "grant", flagNames: ["space", "sub", "owner", "scope", "allow-subscribe", "allow-publish", "exclude-subscribe", "exclude-publish", "role", "label", "parent", "full", "json", "plain"], summary: "store a deliberate operator grant through the existing authority path", examples: [{ command: "cotal auth grant <actor> --sub <subject> --full", note: "grant a person the wide default access" }], usage: "cotal auth grant <actor>", prepareMeshTarget: false },
     { name: "revoke", flagNames: ["space", "sub", "owner", "json", "plain"], summary: "retire and revoke an interactive actor grant under its existing authority", examples: [{ command: "cotal auth revoke <actor> --sub <subject>", note: "remove a person's access" }], usage: "cotal auth revoke <actor>", prepareMeshTarget: false },
   ] as const).map((sub) => ({ ...sub, outputs: ["json", "plain"] as const })),
   validate: validateAuthArguments, run: authGroup,

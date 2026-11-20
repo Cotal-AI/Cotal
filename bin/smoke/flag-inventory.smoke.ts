@@ -299,10 +299,11 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // must name --scope, --allow-subscribe and --allow-publish. `--no-expiry` (2026-10): `auth mint`
   // issues a credential with no expiry only when asked, and records the request; the default is 24 h.
   // `--replace` (2026-10): `auth mint` replaces a label's standing credential that has expired or has
-  // no expiry.
+  // no expiry. `--exclude-publish` and `--exclude-subscribe` (2026-11): a grant removes channels from
+  // its post list; it refuses a read exclusion, because an interactive actor has no read-ACL row.
   auth: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "expires-at:string",
+      "allow-publish:string", "allow-subscribe:string", "channels:string", "endpoint:string", "exclude-publish:string", "exclude-subscribe:string", "expires-at:string",
       "expires-in:string", "force:boolean", "full:boolean", "identity:string", "json:boolean:j", "label:string",
       "no-expiry:boolean", "no-persona:boolean", "out:string", "owner:string", "parent:string", "plain:boolean", "profile:string", "provision:boolean",
       "replace:boolean", "role:string", "scope:string", "server:string", "space:string:s", "sub:string", "yes:boolean:y",
@@ -512,10 +513,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   topology: { flags: ["file:string:f"], positionals: true },
   clean: { flags: [...TARGET, "attempt:string", "discard-history:boolean", "dms:boolean", "dry-run:boolean", "force:boolean", "store-dir:string"], positionals: true },
-  // Per-user auth (D4c): the actor-ledger operator surface.
+  // Per-user auth (D4c): the actor-ledger operator surface, with the grant exclusions `auth` has.
   actor: {
     flags: [
-      "allow-publish:string", "allow-subscribe:string", "full:boolean", "json:boolean:j", "label:string", "owner:string",
+      "allow-publish:string", "allow-subscribe:string", "exclude-publish:string", "exclude-subscribe:string", "full:boolean", "json:boolean:j", "label:string", "owner:string",
       "parent:string", "plain:boolean", "role:string", "scope:string", "space:string", "sub:string",
     ],
     positionals: true,
