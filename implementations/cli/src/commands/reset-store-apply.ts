@@ -1,5 +1,5 @@
 import * as prompts from "../lib/prompts.js";
-import { lstatSync, mkdirSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
@@ -16,8 +16,7 @@ import { instanceProjection, serviceInstances } from "../lib/service-instances.j
 import { readLocalServiceCensus } from "../lib/service-census.js";
 import { cotalLinkAt, linkedCotalRefusal } from "../lib/paths.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { acquireStackOperationLock, readStackJournal, stackNeverStarted, writeStackJournal } from "../lib/stack-journal.js";
-import { readStoreIdentity } from "../lib/store-identity.js";
+import { acquireStackOperationLock, readStackJournal, recordResetStore, stackNeverStarted } from "../lib/stack-journal.js";
 import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
@@ -233,23 +232,6 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   if (answers)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `something still answers at the recorded broker address ${brokerAddressForDisplay(target.server) ?? "of this space"}; nothing was removed`, { target: where, remedy: `stop the space with \`cotal down\` from ${root}, or stop whatever listens there, then ${afterStop}` });
   return store;
-}
-
-/** After a reset removed a stack's store, leave it as a fresh `up` prepares it: an empty private
- *  directory whose identity the stack journal records. `status`, `down` and the next `up` then
- *  report nothing lost, and keep `STORE_MISSING` for a store removed by hand. A root whose journal
- *  is another space's or names another store is left as the removal left it. Runs under the stack
- *  operation lock. */
-export function recordResetStore(root: string, space: string, path: string, changed: readonly unknown[]): void {
-  try {
-    const snapshot = readStackJournal(root);
-    const broker = snapshot?.journal.space === space ? snapshot.journal.broker : undefined;
-    if (!snapshot || !broker || resolve(broker.storeDir) !== path) return;
-    mkdirSync(path, { mode: 0o700 });
-    writeStackJournal(root, snapshot, { ...snapshot.journal, broker: { ...broker, storeIdentity: readStoreIdentity(path) }, updatedAt: new Date().toISOString() });
-  } catch (error) {
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", `the store was removed, but its empty replacement was not recorded (${error instanceof Error ? error.message : String(error)}); status reports it missing until the next up starts the space on an empty store`, { target: { space, root, storeDir: path }, changed });
-  }
 }
 
 /** Named store-only cleanup. Trust, credentials, service definitions and registration remain. */

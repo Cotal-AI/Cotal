@@ -190,6 +190,17 @@ try {
   const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, tail(cut).slice(-1200));
   const launcher = /^\s{2}(.+) <command> \[options\]$/m.exec(runSync([]).stdout)?.[1];
+  mkdirSync(join(root, "private store"));
+  for (const target of ["store", "all"]) {
+    for (const storeFlag of [[], ["--store-dir", "./private store/../.cotal/nats"]]) {
+      const clean = runSync(["clean", target, "--dry-run", ...storeFlag]);
+      const text = tail(clean);
+      ok(`preservation refuses the ${target} preview and names another preview${storeFlag.length ? " of the same quoted path" : ""}`,
+        clean.status === 2 && text.includes("LIFECYCLE_BLOCKED") && !text.includes("--force")
+          && text.includes(`clean ${target}${storeFlag.length ? " --store-dir './private store/../.cotal/nats'" : ""} --dry-run\` again`), text);
+    }
+  }
+  ok("the refused previews left the preserved cut ready", journal().state === "ready");
   const store = join(root, ".cotal", "nats"), savedStore = join(root, "saved-store");
   renameSync(store, savedStore);
   try {

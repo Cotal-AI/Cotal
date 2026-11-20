@@ -4,8 +4,8 @@
  *  and it grants no PID-only stop authority: recovery requires the launching home, host and exact
  *  process creation pins; ordinary stops still recheck the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, rmdirSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { existsSync, mkdirSync, rmdirSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
@@ -343,6 +343,20 @@ export function writeStackJournal(root: string, expected: StackJournalSnapshot |
     writeSecretFileAtomic(stackJournalPath(canonical), text);
     return { journal: next, sha256: createHash("sha256").update(text).digest("hex") };
   } finally { lock.release(); }
+}
+
+/** Leave an empty private replacement after deliberate removal of a stack's recorded store. Run
+ *  under the root's maintenance lock. A journal for a different space or path stays untouched. */
+export function recordResetStore(root: string, space: string, path: string, changed: readonly unknown[]): void {
+  try {
+    const snapshot = readStackJournal(root);
+    const broker = snapshot?.journal.space === space ? snapshot.journal.broker : undefined;
+    if (!snapshot || !broker || resolve(broker.storeDir) !== path) return;
+    mkdirSync(path, { mode: 0o700 });
+    writeStackJournal(root, snapshot, { ...snapshot.journal, broker: { ...broker, storeIdentity: readStoreIdentity(path) }, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", `the store was removed, but its empty replacement was not recorded (${error instanceof Error ? error.message : String(error)}); status reports it missing until the next up starts the space on an empty store`, { target: { space, root, storeDir: path }, changed });
+  }
 }
 
 /** Whether the root's maintenance journal fences this stack. A settled active controller restore of
