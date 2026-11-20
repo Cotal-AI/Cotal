@@ -72,6 +72,9 @@ per-agent ACLs. It runs in the background by default and records the mesh so `co
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
 native stack in this terminal.
 
+`--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
+before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
+
 If a separately started manager service at the same root blocks `up --no-manager`, the refusal
 names the command to stop that instance and the retry retains both `--space` and `--no-manager`.
 
