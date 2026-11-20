@@ -356,7 +356,7 @@ export function protectedLocalDirectory(path: string, what = "the path", policy?
 }
 
 /** Resolve an existing directory only after checking each link's physical parent chain. The
- *  target and every path used to reach it must be protected against other local writers. */
+ *  target and every path in its resolution chain must be protected against other local writers. */
 export function protectedResolvedDirectory(path: string, what = "the path"): string {
   if (requireLocalRecordAccess() !== "posix") return realpathSync(path);
   let pending = resolve(path), links = 0;
