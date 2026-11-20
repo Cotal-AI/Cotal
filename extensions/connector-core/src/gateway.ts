@@ -561,6 +561,9 @@ export function registerCotalGatewayTools(
           // asks the host again with the same approval until the person decides or the hold ends.
           let resumeId = approvalId;
           const deadline = Date.now() + approvalHoldSeconds * 1000;
+          // The pause that reaches the deadline is the last: its timer can fire a little early, and the
+          // hold still ends with the open that follows it.
+          let lastPause = false;
           for (;;) {
             try {
               const c = await host.open(account, candidate, context, selection, resumeId, space);
@@ -576,9 +579,12 @@ export function registerCotalGatewayTools(
             } catch (e) {
               if (!(e instanceof ApprovalRequired)) throw e;
               const remaining = deadline - Date.now();
-              if (approvalHoldSeconds > 0 && remaining > 0 && !(await pause(Math.min(APPROVAL_POLL_MS, remaining), extra.signal))) {
-                resumeId = e.pending.approval.id;
-                continue;
+              if (approvalHoldSeconds > 0 && remaining > 0 && !lastPause) {
+                lastPause = remaining <= APPROVAL_POLL_MS;
+                if (!(await pause(Math.min(APPROVAL_POLL_MS, remaining), extra.signal))) {
+                  resumeId = e.pending.approval.id;
+                  continue;
+                }
               }
               const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
               const joined = e.space ?? space;

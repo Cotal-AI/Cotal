@@ -115,6 +115,7 @@ const host: GatewayHost = {
       if (approvalId && approvalRecorded) throw new Error("the authority has not recorded the person's approval");
       throw new ApprovalRequired(pendingApproval, "team");
     }
+    if (name === "approval_early") throw new ApprovalRequired(pendingApproval, "team");
     if (name === "approval_now") {
       approvalNow += 1;
       if (approvalNow === 1) throw new ApprovalRequired(pendingApproval, "team");
@@ -352,6 +353,21 @@ try {
     approvalBody.message.includes("does not start another request") &&
     approvalBody.message.includes(pendingApproval.approval.id));
   check("a held connect asks the host again every 2 seconds until its hold ends", probes === 3 && heldMs >= 3000 && heldMs < 6000, { probes, heldMs });
+  // A timer can fire a little before its time by Date.now(). Here the pause that reaches the deadline
+  // always does, and the hold still ends with that pause's open.
+  {
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
+      realSetTimeout(fn, typeof ms === "number" && ms > 100 && ms < 2000 ? ms - 50 : ms, ...args)) as unknown as typeof setTimeout;
+    const before = opened.filter((o) => o === "acct_a/approval_early").length;
+    try {
+      await a.callTool({ name: "cotal_connect", arguments: { name: "approval_early" } });
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    const early = opened.filter((o) => o === "acct_a/approval_early").length - before;
+    check("a held connect whose last pause ends early asks the host no more often", early === 3, { early });
+  }
   check("pending approval retries the same approval and never renames or issues", probes > 1 &&
     !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe") && resumedApprovals.length > 0);
   approvalRecorded = true;
