@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
-import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type Mesh, type SeatFrame, type SeatRef, type SeatRow } from "./mesh.js";
+import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -100,18 +100,20 @@ interface Session {
   open: Map<string, number>;
   turn?: Turn;
   client: AgentContext;
-  /** The manager that held the agent a loaded thread opened with. It stays a Machine choice. */
-  held?: string;
+  /** The manager that held the agent a loaded thread opened with, as the load described it. It stays a
+   *  Machine choice, and is not described again. */
+  held?: ManagerChoice;
 }
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
 
 /** A seat no manager listed. When a manager did not answer, the seat may run there, so that is the
- *  answer, not that the seat does not exist. On a space where people sign in, a manager whose
- *  computer is gone stays registered, so the answer says how to remove it. */
-function notListed(m: Mesh, name: string, silent: readonly string[]): RequestError {
+ *  answer, not that the seat does not exist. On a space where people sign in, a registration of the
+ *  person's whose computer is gone stays listed, so the answer says how to remove those. */
+function notListed(m: Mesh, name: string, listed: SeatList): RequestError {
+  const { silent, removable = [] } = listed;
   if (silent.length === 0) return RequestError.resourceNotFound(name);
-  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.${m.userMode ? ` ${deregisterRemedy(m.space, silent)}` : ""}`);
+  return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : ""}`);
 }
 
 function canonical(path: string): string {
@@ -238,13 +240,15 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   });
 
   /** The launch lists of the manager a thread starts on. A loaded thread passes the manager that
-   *  `held` its agent: it stays a choice, and the thread opens while no manager may start a new one. */
-  const offerFor = async (m: Mesh, machine?: string, held?: string): Promise<Offer> => {
+   *  `held` its agent: it stays a choice, and the thread opens while no manager may start a new one.
+   *  The load passes its id; a later change passes the choice the load described. */
+  const offerFor = async (m: Mesh, machine?: string, held?: string | ManagerChoice): Promise<Offer> => {
+    const heldId = typeof held === "string" ? held : held?.instanceId;
     const listed = await m.managers().catch((e: unknown) => {
-      if (held === undefined || !(e instanceof NoLaunchManager)) throw e;
+      if (heldId === undefined || !(e instanceof NoLaunchManager)) throw e;
       return [];
     });
-    const managers = held === undefined || listed.some((x) => x.instanceId === held) ? listed : [...listed, await m.manager(held)];
+    const managers = heldId === undefined || listed.some((x) => x.instanceId === heldId) ? listed : [...listed, typeof held === "string" ? await m.manager(held) : held!];
     // Read the lists of the manager a new session starts on, never whichever the exchange picks.
     const from = machine ?? defaultManager(managers)?.instanceId;
     const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
@@ -489,7 +493,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const m = await mesh();
       const listed = await m.seats();
       const matches = listed.rows.filter((row) => row.name === params.sessionId);
-      if (matches.length === 0) throw notListed(m, params.sessionId, listed.silent);
+      if (matches.length === 0) throw notListed(m, params.sessionId, listed);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);
       const row: SeatRow = matches[0]!;
       // A person whose grant does not let them spawn may not read the launch lists. Their thread
@@ -505,6 +509,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const why = launch ? refusal(offer.catalogs, row.agent) : undefined;
       if (why) throw RequestError.invalidParams(undefined, why);
       const base = initialSelection(offer);
+      const held = row.managerInstanceId ? offer.managers.find((x) => x.instanceId === row.managerInstanceId) : undefined;
       const session: Session = {
         id: row.name,
         cwd: params.cwd,
@@ -513,7 +518,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         mapper: new FrameMapper(),
         open: new Map(),
         client,
-        ...(row.managerInstanceId ? { held: row.managerInstanceId } : {}),
+        ...(held ? { held } : {}),
       };
       const previous = sessions.get(row.name);
       if (previous) unbind(previous);
@@ -543,7 +548,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       const m = await mesh();
       const listed = await m.seats();
       const rows = listed.rows.filter((row) => row.name === params.sessionId);
-      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed.silent);
+      if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed);
       for (const row of rows) options.hidden.add(row.lifecycleUid);
       return {};
     });

@@ -27,7 +27,8 @@ export interface ManagerChoice {
   readonly host?: string;
   /** The manager runs on the host this process runs on. */
   readonly local: boolean;
-  /** The manager's presence is current. A registration whose computer is gone can stay listed. */
+  /** The manager's presence is current, or off a signed-in space, it answered for its host. A
+   *  registration whose computer is gone can stay listed. */
   readonly live?: boolean;
 }
 
@@ -110,13 +111,16 @@ export class NoLaunchManager extends Error {
 /** What a person on a space where people sign in can do about a registered manager that does not
  *  answer. Its registration stays listed until it is removed, as `cotal ps` says. */
 export function deregisterRemedy(space: string, instanceIds: readonly string[]): string {
-  return `For a computer that is gone, ask the space's auth service to remove your registration: ${instanceIds.map((id) => `\`cotal endpoint deregister manager ${id} --space ${space} --yes\``).join(", ")}.`;
+  return `For a computer that is gone, ask the space's auth service to remove your registration, which needs the \`supervise\` scope: ${instanceIds.map((id) => `\`cotal endpoint deregister manager ${id} --space ${space} --yes\``).join(", ")}.`;
 }
 
 /** The seats the managers listed, and the managers that did not answer, whose seats are missing. */
 export interface SeatList {
   readonly rows: SeatRow[];
   readonly silent: readonly string[];
+  /** The silent managers that are the person's own registrations and did not answer, on a space
+   *  where people sign in. Such a registration may belong to a computer that is gone. */
+  readonly removable?: readonly string[];
 }
 
 export interface Mesh {

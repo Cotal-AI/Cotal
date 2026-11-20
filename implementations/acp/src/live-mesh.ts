@@ -18,6 +18,7 @@ import {
   type CotalEndpoint,
   type CotalMessage,
   type ManagerInstanceListing,
+  type Presence,
   type Profile,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
@@ -36,6 +37,25 @@ export interface LiveMeshOptions {
   readonly log: (line: string) => void;
   /** Ends the bridge: the person's sign-in was granted again, and its reader cannot recover. */
   readonly stop: (reason: string) => void;
+}
+
+/** The manager reads whose unanswered pinned call names the deregister command on a signed-in space.
+ *  An unanswered `start` may have been accepted, so it never does. */
+const READS = new Set(["managerStatus", "models", "listPersonas", "ps"]);
+
+/** Whether a reply should name the deregister command: an unanswered read of one of the person's own
+ *  registered managers. The space's own manager is not theirs to remove, and a manager that answered
+ *  with a refusal is not gone. */
+export function namesDeregister(op: string, instanceId: string | undefined, own: ReadonlySet<string>, reply: { ok: boolean; unanswered?: boolean }): boolean {
+  return instanceId !== undefined && own.has(instanceId) && READS.has(op) && !reply.ok && reply.unanswered === true;
+}
+
+/** A manager as a choice, its host read from the roster's current row for it. An offline row says
+ *  nothing about where the manager runs now, so it is not live and not local. */
+export function managerChoice(instanceId: string, roster: readonly Presence[], here: string): ManagerChoice {
+  const row = roster.find((p) => parsePrincipalKey(p.card.id)?.actor === `manager_${instanceId}` && p.status !== "offline");
+  const seen = managerCandidate(instanceId, row).host;
+  return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
 }
 
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
@@ -59,7 +79,7 @@ export function answeredReads<T>(reads: readonly ({ instanceId: string; rows: T[
  *  service would refuse to choose. Every call names its manager, so a host's `local-primary` choice
  *  does not apply. Agents are read from every live one, so an agent left on the space's manager stays
  *  listed. `why` says why nothing may start. */
-export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch: string[]; read: string[]; why?: string } {
+export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch: string[]; read: string[]; own: string[]; why?: string } {
   const live = (placement: ManagerInstanceListing["placement"]) =>
     listed.filter((m) => m.placement === placement && m.state === "candidate").map((m) => m.instanceId).sort();
   const remote = live("remote");
@@ -69,7 +89,7 @@ export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch
   const why = launch.length > 0 ? undefined
     : registered.length > 0 ? `none of your managers is live (${registered.map((m) => `${m.instanceId}: ${m.state}`).join(", ")}); start one with \`cotal manager start\``
     : "the space lists no live manager for you";
-  return { launch, read: [...remote, ...local], ...(why ? { why } : {}) };
+  return { launch, read: [...remote, ...local], own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };
 }
 
 /** A seat id as a manager reports it: the principal in user mode, a bare actor otherwise. */
@@ -208,13 +228,17 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       throw plain(e);
     });
 
+  /** The person's registered managers, as the last manager list read named them. Empty off a
+   *  signed-in space. */
+  let own: ReadonlySet<string> = new Set();
+
   /** One manager command, pinned to an instance when one is named. On a space where people sign in,
-   *  a registered manager that does not answer may be one whose computer is gone, so the reply says
-   *  how to remove it. */
+   *  one of the person's registered managers that does not answer a read may be one whose computer is
+   *  gone, so the reply says how to remove it. */
   const ask = async (op: string, args?: Record<string, unknown>, instanceId?: string, timeoutMs?: number): Promise<ManagerReply> => {
     const t = await resolve("control-caller-privileged", instanceId);
     const reply = await askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", timeoutMs, instanceId ? { instanceId } : undefined);
-    return started && instanceId && !reply.ok && reply.unanswered ? { ...reply, error: `${reply.error ?? "the manager did not answer"} ${deregisterRemedy(target.space, [instanceId])}` } : reply;
+    return namesDeregister(op, instanceId, own, reply) ? { ...reply, error: `${reply.error ?? "the manager did not answer"} ${deregisterRemedy(target.space, [instanceId!])}` } : reply;
   };
 
   /** The incarnation a seat command must reach. A manager names an open- or static-mode seat by its
@@ -233,18 +257,16 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
-  /** A manager as a choice, its host read from its presence when the roster carries a current row.
-   *  An offline row says nothing about where the manager runs now. */
-  const choice = (instanceId: string): ManagerChoice => {
-    const row = observer.getRoster().find((p) => parsePrincipalKey(p.card.id)?.actor === `manager_${instanceId}` && p.status !== "offline");
-    const seen = managerCandidate(instanceId, row).host;
-    return { instanceId, ...(seen ? { host: seen } : {}), local: seen === hostname(), live: row !== undefined };
-  };
+  const choice = (instanceId: string): ManagerChoice => managerChoice(instanceId, observer.getRoster(), hostname());
 
   /** On a user-auth space, the person's managers as the space's auth service lists them. The list
    *  spends no selection, a manager whose presence has not arrived is still listed, and each later
    *  call is pinned to a manager it names, which the exchange authorizes again. */
-  const yourManagers = async () => managerPlan(await ownManagers!().catch((e: unknown) => Promise.reject(plain(e))));
+  const yourManagers = async () => {
+    const plan = managerPlan(await ownManagers!().catch((e: unknown) => Promise.reject(plain(e))));
+    own = new Set(plan.own);
+    return plan;
+  };
 
   const defaultPersona = resolvePreference("persona", { space: target.space }).value;
   const defaultAgent = resolvePreference("harness", { space: target.space }).value;
@@ -327,6 +349,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     async seats() {
       let answered: { instanceId: string; rows: unknown[] }[];
       let silent: string[];
+      const removable: string[] = [];
       if (!started) {
         const reply = await controlPs(client, ctx, { readOnly: true });
         if (!reply.ok) throw new Error(reply.error);
@@ -342,7 +365,10 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
         const reads = await Promise.all(plan.read.map(async (instanceId) => {
           try {
             const reply = await ask("ps", undefined, instanceId);
-            if (!reply.ok) throw failure(reply, "the manager did not list its agents");
+            if (!reply.ok) {
+              if (namesDeregister("ps", instanceId, own, reply)) removable.push(instanceId);
+              throw failure(reply, "the manager did not list its agents");
+            }
             return { instanceId, rows: (reply.data as unknown[] | undefined) ?? [] };
           } catch (e) {
             if (e instanceof SignInChangedError) throw e;
@@ -367,7 +393,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
           };
         }),
       );
-      return { rows, silent };
+      return { rows, silent, removable };
     },
 
     async despawn(seat: SeatRef) {
