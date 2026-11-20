@@ -25,6 +25,18 @@ export interface ReadinessWaitDeps {
   onAgentExit: (...args: Parameters<Manager["onAgentExit"]>) => ReturnType<Manager["onAgentExit"]>;
 }
 
+/** Builds the {@link ReadinessWaitDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function readinessWaitDeps(m: Manager): ReadinessWaitDeps {
+  return {
+    agents: () => m["agents"],
+    ep: () => m["ep"],
+    shutdownReadiness: () => m["shutdownReadiness"],
+    managedPrincipal: (...args) => m["managedPrincipal"](...args),
+    onAgentExit: (...args) => m["onAgentExit"](...args),
+  };
+}
+
 /** The launch readiness race (join, exit or the bound), the exit watch that outlives it, and the transcript tail an exit reports. */
 export class ReadinessWait {
   constructor(private readonly deps: ReadinessWaitDeps) {}

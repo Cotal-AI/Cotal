@@ -16,6 +16,8 @@ import { caughtEnvelope } from "./turn-relay.js";
 import { pendingEnrollment } from "./pending-enrollment.js";
 import type { RunHosting } from "./run-hosting.js";
 import type { TeardownTarget } from "./retirement.js";
+import type { Manager } from "./manager.js";
+import { bearerEntryArgv } from "./preserved-resume.js";
 
 type EnrollManagedAgent = (args: {
   requestId?: string;
@@ -93,6 +95,23 @@ export interface UserProvisionDeps {
   withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T>;
   shredUserSecrets(failures: CleanupFailure[], family: { actorToken?: string; sentinelCreds?: string; health?: string }): Promise<void>;
   bearerEntryArgv(): string[];
+}
+
+/** Builds the {@link UserProvisionDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function userProvisionDeps(m: Manager): UserProvisionDeps {
+  return {
+    space: () => m["space"],
+    workspaceRoot: () => m["workspaceRoot"],
+    secrets: () => m["secrets"],
+    managerInstanceId: () => m["managerInstanceId"],
+    runHosting: () => m["runHosting"],
+    remoteAuthority: () => m["remoteAuthority"],
+    deprovision: (target) => m["deprovision"](target),
+    withProvisioner: (fn) => m["withProvisioner"](fn),
+    shredUserSecrets: (failures, family) => m["shredUserSecrets"](failures, family),
+    bearerEntryArgv,
+  };
 }
 
 /** User-mode local grants, hosted enrollment and delegated lifecycle handoff composition. */

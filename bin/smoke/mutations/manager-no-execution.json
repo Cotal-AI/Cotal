@@ -85,8 +85,8 @@
     {
       "name": "workflow admission loses none capability refusal",
       "file": "implementations/manager/src/manager.ts",
-      "find": "private runHost(): RunHosting {\n    if (this.execution === \"none\") throw new EpEnvelopeError(\"unimplemented\", this.executionRefusal());",
-      "replace": "private runHost(): RunHosting {",
+      "find": "protected runHost(): RunHosting {\n    if (this.execution === \"none\") throw new EpEnvelopeError(\"unimplemented\", this.executionRefusal());",
+      "replace": "protected runHost(): RunHosting {",
       "expectRed": "run-start refuses natively before any allocation",
       "cell": "run-start refuses natively before any allocation",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"

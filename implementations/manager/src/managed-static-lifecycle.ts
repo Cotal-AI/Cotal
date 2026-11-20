@@ -19,6 +19,7 @@ import { CHAT_EXPIRY_CONCURRENCY, ChatSessionExpiry, chatOpenLists, chatRetireRe
 import type { Manager, ManagedAgent } from "./manager.js";
 import type { TeardownTarget, RetirementHold } from "./retirement.js";
 import type { EvictionResult } from "@cotal-ai/core";
+import { foreignEventChannels } from "./seat-launch.js";
 
 
 /** One initial terminal entry plus three re-drives. The short first retry absorbs a one-shot
@@ -84,6 +85,49 @@ export interface ManagedStaticLifecycleDeps {
   restartSupervisedSeat: (row: StaticManagedSlotRow, record: SeatRecord) => Promise<string | undefined>;
   adoptSeat: (row: StaticManagedSlotRow, record: SeatRecord) => Promise<string | undefined>;
   dropSeatRecord: (a: { name: string; lifecycleUid: string }) => void;
+}
+
+/** Builds the {@link ManagedStaticLifecycleDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function managedStaticLifecycleDeps(m: Manager): ManagedStaticLifecycleDeps {
+  return {
+    space: () => m["space"],
+    servers: () => m["servers"],
+    auth: () => m["auth"],
+    secrets: () => m["secrets"],
+    workspaceRoot: () => m["workspaceRoot"],
+    instanceId: () => m["managerInstanceId"],
+    processUid: () => m["managerLifecycleUid"],
+    userMode: () => m["userMode"],
+    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
+    evictor: () => m["staticLifecycleEvict"],
+    retryDelays: () => m["staticReconcileRetryDelaysMs"],
+    resumeRequired: () => m["resumeRequired"],
+    records: () => m["goalWriter"]?.ctx.kv,
+    agentFor: (name) => m["agents"].get(name),
+    retirementFor: (name) => m["retirement"].held(name),
+    recordStaticRetirement: (a) => m["retirement"].recordStaticRetirement(a),
+    noteRetiredPrincipal: (principal) => { m["retirement"].rememberRetired(principal); },
+
+    foreignEventChannels: (channels, owner, actor) => foreignEventChannels(channels, owner, actor),
+    withIssuer: (fn) => m["withIssuer"](fn),
+    deprovisionBroker: (a) => m["deprovisionBroker"](a),
+    reapOrphanSeat: (a) => m["reapOrphanSeat"](a),
+    withLifecycleExecutor: (pin, fn) => m["withLifecycleExecutor"](pin, fn),
+    readerRemedy: (owner, channel) => m["readerRemedy"](owner, channel),
+    withProvisioner: (fn) => m["withProvisioner"](fn),
+    beginLifecycle: (resumeOperation) => m["beginLifecycle"](resumeOperation),
+    maintenanceError: () => m["maintenanceError"](),
+    withRetirementSlot: (run) => m["withRetirementSlot"](run),
+    managedStaticInstanceReads: (capabilities) => m["managedStaticInstanceReads"](capabilities),
+    issuanceSeam: (i, mode, a, exp) => m["issuanceSeam"](i, mode, a, exp),
+    refreshSeatRecord: (a) => m["refreshSeatRecord"](a),
+    dial: (opts) => m["dial"](opts),
+    seatRecordFor: (row) => m["seatRecordFor"](row),
+    restartSupervisedSeat: (row, record) => m["restartSupervisedSeat"](row, record),
+    adoptSeat: (row, record) => m["adoptSeat"](row, record),
+    dropSeatRecord: (a) => m["dropSeatRecord"](a),
+  };
 }
 
 /** Static chat admission, credential renewal, terminal cleanup and resumable reconciliation. */

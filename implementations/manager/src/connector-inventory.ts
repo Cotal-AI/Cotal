@@ -21,6 +21,24 @@ export interface ConnectorInventoryDeps {
   prepareClaudeWake: (...args: Parameters<Manager["prepareClaudeWake"]>) => ReturnType<Manager["prepareClaudeWake"]>;
 }
 
+/** Builds the {@link ConnectorInventoryDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function connectorInventoryDeps(m: Manager): ConnectorInventoryDeps {
+  return {
+    bootNotes: () => m["bootNotes"],
+    setBootNotes: (value) => { m["bootNotes"] = value; },
+    connectorRequirements: () => m["connectorRequirements"],
+    setConnectorRequirements: (value) => { m["connectorRequirements"] = value; },
+    connectorStatuses: () => m["connectorStatuses"],
+    setConnectorStatuses: (value) => { m["connectorStatuses"] = value; },
+    execution: () => m["execution"],
+    installedExtensions: () => m["installedExtensions"],
+    machineSetupCommand: () => m["machineSetupCommand"],
+    classSpawnEnabled: (...args) => m["classSpawnEnabled"](...args),
+    prepareClaudeWake: (...args) => m["prepareClaudeWake"](...args),
+  };
+}
+
 /** The connector inventory taken at boot: which harnesses resolve on this host and the notes for those that do not. */
 export class ConnectorInventory {
   constructor(private readonly deps: ConnectorInventoryDeps) {}

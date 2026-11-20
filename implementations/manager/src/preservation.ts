@@ -58,6 +58,55 @@ export interface PreservationDeps {
   withProvisioner: <T>(fn: (prov: CotalEndpoint) => Promise<T>) => Promise<T>;
 }
 
+/** Builds the {@link PreservationDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function preservationDeps(m: Manager): PreservationDeps {
+  return {
+    agents: () => m["agents"],
+    auth: () => m["auth"],
+    credRenewTimer: () => m["credRenewTimer"],
+    setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
+    ep: () => m["ep"],
+    execution: () => m["execution"],
+    lifecycleInFlight: () => m["lifecycleInFlight"],
+    maintenanceState: () => m["maintenanceState"],
+    setMaintenanceState: (value) => { m["maintenanceState"] = value; },
+    managerInstanceId: () => m["managerInstanceId"],
+    meshMode: () => m["meshMode"],
+    preservationAttemptId: () => m["preservationAttemptId"],
+    setPreservationAttemptId: (value) => { m["preservationAttemptId"] = value; },
+    preservationGeneration: () => m["preservationGeneration"],
+    setPreservationGeneration: (value) => { m["preservationGeneration"] = value; },
+    preservationInventory: () => m["preservationInventory"],
+    setPreservationInventory: (value) => { m["preservationInventory"] = value; },
+    preserveStopTimeoutMs: () => m["preserveStopTimeoutMs"],
+    resumeCredRenewal: () => m["resumeCredRenewal"],
+    space: () => m["space"],
+    unverifiedStops: () => m["unverifiedStops"],
+    setUnverifiedStops: (value) => { m["unverifiedStops"] = value; },
+    userMode: () => m["userMode"],
+    workspaceRoot: () => m["workspaceRoot"],
+    awaitLifecycleDrain: (...args) => m["awaitLifecycleDrain"](...args),
+    deprovision: (...args) => m["deprovision"](...args),
+    dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
+    dropSeatRecord: (...args) => m["dropSeatRecord"](...args),
+    executionRefusal: (...args) => m["executionRefusal"](...args),
+    fileDigest: (...args) => m["fileDigest"](...args),
+    logSeatReaped: (...args) => m["logSeatReaped"](...args),
+    onAgentExit: (...args) => m["onAgentExit"](...args),
+    recordContinuityAtStop: (...args) => m["recordContinuityAtStop"](...args),
+    renewDaemonCreds: (...args) => m["renewDaemonCreds"](...args),
+    resumeEntry: (...args) => m["resumeEntry"](...args),
+    resumeEntryOf: (...args) => m["resumeEntryOf"](...args),
+    runtimeFor: (...args) => m["runtimeFor"](...args),
+    stopHandle: (...args) => m["stopHandle"](...args),
+    teardownTarget: (...args) => m["teardownTarget"](...args),
+    validateRetainedAuthority: (...args) => m["validateRetainedAuthority"](...args),
+    watchExit: (...args) => m["watchExit"](...args),
+    withProvisioner: (fn) => m["withProvisioner"](fn),
+  };
+}
+
 /** Preserving the manager for a restart: prepare, commit and abort, the cut that releases or tears down each seat, and adoption of released seats at the next start. */
 export class Preservation {
   constructor(private readonly deps: PreservationDeps) {}

@@ -29,6 +29,21 @@ export interface HarnessResolutionDeps {
   workspaceRoot: () => Manager["workspaceRoot"];
 }
 
+/** Builds the {@link HarnessResolutionDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function harnessResolutionDeps(m: Manager): HarnessResolutionDeps {
+  return {
+    connectorStatuses: () => m["connectorStatuses"],
+    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
+    eventsRequired: () => m["eventsRequired"],
+    expectedConnectorGeneration: () => m["expectedConnectorGeneration"],
+    installedExtensions: () => m["installedExtensions"],
+    servers: () => m["servers"],
+    space: () => m["space"],
+    workspaceRoot: () => m["workspaceRoot"],
+  };
+}
+
 /** Resolving a connector by name and the host fields, harness binaries and capability and events refusals a launch carries. */
 export class HarnessResolution {
   constructor(private readonly deps: HarnessResolutionDeps) {}

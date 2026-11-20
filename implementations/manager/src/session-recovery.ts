@@ -10,6 +10,7 @@ import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { writeContinuityAssignment } from "./launch.js";
 import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
+import type { Manager } from "./manager.js";
 
 const SESSION_RESTART_LIMIT = 3;
 const SESSION_RESTART_WINDOW_MS = 120_000;
@@ -43,6 +44,38 @@ export interface SessionRecoveryDeps {
   tail: (session: AttachSession) => Promise<string>;
   stopHandle: (agent: ManagedAgent, graceful: boolean, cause: FreeSlotCause) => void;
   trackStoppedHandle: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
+}
+
+/** Builds the {@link SessionRecoveryDeps} for a Manager. It reads Manager members by name at each use, so a
+ *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
+export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
+  return {
+    workspaceRoot: () => m["workspaceRoot"],
+    execution: () => m["execution"],
+    executionRefusal: () => m["executionRefusal"](),
+    instanceId: () => m["managerInstanceId"],
+    endpoint: () => m["ep"],
+    beginLifecycle: () => m["beginLifecycle"](),
+    freeSlot: (agent, floor, cause) => m["freeSlot"](agent, floor, cause),
+    reapChildrenOf: (principal) => m["reapChildrenOf"](principal),
+    managedPrincipal: (agent) => m["managedPrincipal"](agent),
+    inlineSnapshotChange: (agent) => m["inlineSnapshotChange"](agent),
+    agentFor: (name) => m["agents"].get(name),
+    maintenanceState: () => m["maintenanceState"],
+    resolveConnector: (name) => m["resolveConnector"](name),
+    runtimeFor: (kind) => m["runtimeFor"](kind),
+    reserveCustody: (runtime) => m["reserveCustody"](runtime),
+    recordSlotCustody: (agent, reference) => m["recordSlotCustody"](agent, reference),
+    spawnCustodied: (runtime, name, spec, cwd, reserved) => m["spawnCustodied"](runtime, name, spec, cwd, reserved),
+    awaitReadiness: (agent, timeoutMs, opts) => m["awaitReadiness"](agent, timeoutMs, opts),
+    readinessTimeoutMs: () => m["readinessTimeoutMs"],
+    recordSlotRuntime: (agent) => m["recordSlotRuntime"](agent),
+    refreshSeatRecord: (agent) => m["refreshSeatRecord"](agent),
+    watchExit: (agent) => m["watchExit"](agent),
+    tail: (session) => m["tail"](session),
+    stopHandle: (agent, graceful, cause) => m["stopHandle"](agent, graceful, cause),
+    trackStoppedHandle: (agent, floor, cause) => m["trackStoppedHandle"](agent, floor, cause),
+  };
 }
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
