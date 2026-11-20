@@ -1997,7 +1997,7 @@ export class CotalEndpoint extends EventEmitter {
   async channelMembers(
     channel?: string,
   ): Promise<ChannelMember[] | Map<string, ChannelMember[]>> {
-    return this.subscriptions.channelMembers(channel);
+    return channel === undefined ? this.subscriptions.channelMembers() : this.subscriptions.channelMembers(channel);
   }
 
   /**
