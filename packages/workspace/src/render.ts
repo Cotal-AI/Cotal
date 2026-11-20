@@ -93,7 +93,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       // An operator-registered entry is KEPT (only `cotal meshes rm` drops it), so the recovery
       // there is to point it at the right root — never a claim that it was removed for you.
       return d.removed === false
-        ? parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"`, `re-register it with \`cotal meshes add ${d.space} --server <url> --root <dir>\` (\`--force\` replaces), or \`cotal meshes rm ${d.space}\``)
+        ? parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"`, `re-register it with ${codeSpan(`cotal meshes add ${d.space === undefined ? "<space>" : shellPath(d.space)} --server <url> --root <dir>`)} (\`--force\` replaces), or ${codeSpan(`cotal meshes rm ${d.space === undefined ? "<space>" : shellPath(d.space)}`)}`)
         : parts(`registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}"; stale entry removed`, "re-run `cotal up` or check `cotal meshes`");
     case "unreadable-auth":
       // With no space, the root's trust folder itself could not be read or entered, or holds an
@@ -118,7 +118,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       if (d.space !== undefined) return d.rootMissing
         ? d.stackRemedy !== undefined
           ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
-          : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with \`cotal space forget ${d.space}\`, then prepare it again with \`cotal space create ${d.space} --root <dir>\``)
+          : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with ${codeSpan(`cotal space forget ${shellPath(d.space)}`)}, then prepare it again with ${codeSpan(`cotal space create ${shellPath(d.space)} --root <dir>`)}`)
         : d.unsettled !== undefined
           ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
           : d.stopped !== undefined
@@ -135,7 +135,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
       if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
-        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
+        ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace === undefined ? "<space>" : shellPath(d.stackSpace)} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
         : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, d.stackRemedy ?? stackHomeRemedy());
     }
     case "user-auth-unrecorded":
@@ -187,7 +187,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
       // A deleted root cannot be restarted from, so the step is moving it back or forgetting the space (#7318).
       if (!existsSync(t.root))
-        return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which no longer exists`, `if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with \`cotal space forget ${t.space}\``);
+        return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which no longer exists`, `if that folder was moved or renamed, move it back and run \`cotal up\` there; otherwise forget the space with ${codeSpan(`cotal space forget ${shellPath(t.space)}`)}`);
       return { message: `no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root} but not running`, remedy: "run `cotal up` there to restart", restartRoot: t.root };
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering

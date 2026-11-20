@@ -553,7 +553,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     const cmd = displayCmd();
     const resetSpace = storeResetSpace(root, folder.processSpace);
     hints.push(resetSpace !== undefined
-      ? `if the stored JetStream state is stale: \`${cmd} reset store ${resetSpace}\`, then \`up\` with your usual flags`
+      ? `if the stored JetStream state is stale: ${codeSpan(`${cmd} reset store ${shellWord(resetSpace)}`)}, then \`up\` with your usual flags`
       : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   }
   // A held backup or missing preserved store blocks startup. Keep the selection's diagnostics,
@@ -656,7 +656,7 @@ function readBootAttempts(root: string, gaps: Gaps): NonNullable<StatusResult["b
   // A `.cotal` link that leads nowhere leaves this folder no records of its own, and the walk to a
   // root passes over it.
   const here = cotalLinkHere();
-  if (here?.dangling) gaps.add("COTAL_DIR_DANGLING", `this folder's .cotal links to ${here.target}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with \`cotal space create <space> --root ${here.root}\``, { root: here.root, path: here.path, link: here.target });
+  if (here?.dangling) gaps.add("COTAL_DIR_DANGLING", `this folder's .cotal links to ${here.target}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with ${codeSpan(`cotal space create <space> --root ${shellWord(here.root)}`)}`, { root: here.root, path: here.path, link: here.target });
   // Neither inventory is read through a link; the folder it leads to reports its own.
   const link = cotalDirLink(root);
   if (link !== undefined) {
@@ -2277,7 +2277,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     // Name what fixes the default persona alone; setup does far more than that.
     if (!noApplication) {
       if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
-      else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${s.space}`, description: "See what is wrong with the default persona" });
+      else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
       else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
     }
     items.push({ command: `${cmd} who`, description: "See the live roster" });
@@ -2318,7 +2318,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (block && blocked) {
-    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${blocked.space}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
+    const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${shellWord(blocked.space)}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
   } else if (stack && r.folder.stackUnfinished) {
     const part = r.folder.stackUnfinished;
@@ -2346,7 +2346,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     // `up` neither adopts nor replaces a service outside the stack that runs one of this root's
     // records, so each is stopped first, with the stop `up` names.
     const held = r.folder.heldServices ?? [], space = r.selected.space;
-    items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${space} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
+    items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
   } else if (!storeBlocked && !seedBlocksRestart && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
@@ -2358,14 +2358,14 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
-  if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${r.selected.space} --yes`, description: "Stop the stack whose folder is gone and free its name" });
+  if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${shellWord(r.selected.space)} --yes`, description: "Stop the stack whose folder is gone and free its name" });
   if (r.selected.resolved && r.selected.mode === "user" && r.selected.login && !r.selected.login.subject) items.unshift({ command: `${cmd} login --idp ${r.selected.login.idp}`, description: "Sign in to the selected space" });
   // A delivery member that runs with no lease is not replaced by `up`; `down` kills one that does not exit.
   const deliveryPid = stackDeliveryPid(r);
   if (r.selected.resolved && r.selected.deliveryResponder === "unbound" && deliveryPid !== undefined)
     items.unshift(
-      { command: `${cmd} service status stack-delivery${own ? "" : ` --space ${r.selected.space}`}`, description: `Read the delivery member's record: pid ${deliveryPid} is alive but holds no lease, so it is starting or not responding` },
-      { command: own ? `${cmd} down --yes` : `${cmd} down --space ${r.selected.space} --yes`, description: "If it stays that way, stop the stack; down kills a member that does not exit on SIGTERM" },
+      { command: `${cmd} service status stack-delivery${own ? "" : ` --space ${shellWord(r.selected.space)}`}`, description: `Read the delivery member's record: pid ${deliveryPid} is alive but holds no lease, so it is starting or not responding` },
+      { command: own ? `${cmd} down --yes` : `${cmd} down --space ${shellWord(r.selected.space)} --yes`, description: "If it stays that way, stop the stack; down kills a member that does not exit on SIGTERM" },
       { command: own ? `${cmd} up` : `${cmd} up --root ${shellWord(r.selected.root)}`, description: "Then start the stack again" },
     );
   // A manager that does not answer cannot report its stop impact, so no stop route reaches it.
@@ -2379,7 +2379,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     if (r.store.jetStreamDisabled && r.stackManager && r.selected.resolved)
       items.unshift(
         { command: `kill -TERM ${r.stackManager.pid}`, description: "The broker disabled JetStream after the write failure and serves none until it restarts, which needs the manager stopped first. On this host, end the manager; it stops its agents by its default policy" },
-        { command: own ? `${cmd} down --yes` : `${cmd} down --space ${r.selected.space} --yes`, description: "Then stop the other members" },
+        { command: own ? `${cmd} down --yes` : `${cmd} down --space ${shellWord(r.selected.space)} --yes`, description: "Then stop the other members" },
         { command: own ? `${cmd} up` : `${cmd} up --root ${shellWord(r.selected.root)}`, description: `${first}; then up starts the broker again with the history it kept` },
       );
     else items.unshift({ command: `${cmd} down`, description: `${first}; then \`${cmd} up\` starts the broker again with the history it kept` });
@@ -2401,7 +2401,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   }
   // The broker keeps serving a store it found damage in, from what it can still read there.
   if (r.store?.state === "damaged" && r.selected.resolved && r.services?.instances?.some((row) => row.definition === STACK_DEFINITION.broker))
-    items.unshift({ command: `${cmd} service logs stack-broker${own ? "" : ` --space ${r.selected.space}`}`, description: "Read what the broker logged about the damage it found in its store; history holds only what it could still read" });
+    items.unshift({ command: `${cmd} service logs stack-broker${own ? "" : ` --space ${shellWord(r.selected.space)}`}`, description: "Read what the broker logged about the damage it found in its store; history holds only what it could still read" });
   return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
@@ -2425,8 +2425,10 @@ function ownedServicesOverview(services: OwnedServiceStatus | undefined): Sectio
   blocks.push({ kind: "lines", lines: [cell(`Local records and process observations as of ${services.observedAt}; non-atomic. Recorded readiness is historical, not a fresh endpoint response. No OS unit query, service control, adoption or remote process ownership is implied.`, "hint")] });
   // The space is known here, and a sole instance names its service and full ID as well.
   const sole = services.instances?.length === 1 ? services.instances[0] : undefined;
-  const inspect = sole ? `${displayCmd()} svc status ${sole.definition} --instance ${sole.instanceId} --space ${services.space}` : `${displayCmd()} svc status <service> --instance <full-id> --space ${services.space}`;
-  if (services.instances?.length || services.definitions?.length) blocks.push({ kind: "commands", items: [{ command: inspect, description: "Inspect one exact owned instance and its recorded supervisor" }, { command: `${displayCmd()} svc`, description: "Read the full saved-service inventory" }] });
+  if (services.space !== null && (services.instances?.length || services.definitions?.length)) {
+    const inspect = `${displayCmd()} svc status ${sole ? `${sole.definition} --instance ${sole.instanceId}` : "<service> --instance <full-id>"} --space ${shellWord(services.space)}`;
+    blocks.push({ kind: "commands", items: [{ command: inspect, description: "Inspect one exact owned instance and its recorded supervisor" }, { command: `${displayCmd()} svc`, description: "Read the full saved-service inventory" }] });
+  }
   return { title: `Owned services  → ${services.space}`, blocks };
 }
 
