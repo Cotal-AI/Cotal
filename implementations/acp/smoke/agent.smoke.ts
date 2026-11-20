@@ -408,11 +408,12 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   away.managerList = [{ instanceId: "m2", host: "there", local: false }, { instanceId: "m3", host: "elsewhere", local: false }];
   const c = connect(async () => away);
   await c.init;
-  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
-  const machine = s.configOptions?.find((o) => o.id === "machine") as { currentValue?: string } | undefined;
-  check("with no manager on this machine, session/new reads the first listed manager's lists", away.catalogsAsked[0] === "m2", away.catalogsAsked);
+  let failed: unknown;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch((e: unknown) => { failed = e; return undefined; });
+  const machine = s?.configOptions?.find((o) => o.id === "machine") as { currentValue?: string } | undefined;
+  check("with no manager on this machine, session/new reads the first listed manager's lists", s !== undefined && away.catalogsAsked[0] === "m2", failed ?? away.catalogsAsked);
   check("and shows that manager as the machine", machine?.currentValue === "m2", machine);
-  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }), 500);
+  if (s) await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }), 500);
   check("its first prompt spawns pinned to that manager", away.spawned[0]?.managerInstanceId === "m2", away.spawned.map((r) => r.managerInstanceId));
   c.conn.close();
 }
