@@ -20,7 +20,7 @@
   "mutations": [
     {
       "name": "the spawn guard is never consulted",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (ext === undefined && req.worktree !== undefined) await this.claimWorktree(req.worktree, req.persona, goalId);",
       "replace": "    if (false) await this.claimWorktree(req.worktree!, req.persona, goalId);",
       "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
@@ -29,7 +29,7 @@
     },
     {
       "name": "the liveness read is inverted, so a dead holder still blocks its tree",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))",
       "replace": "    if (true || rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))",
       "expectRed": "a spawn into the dead holder's tree performs: sequential reuse is legal",
@@ -38,7 +38,7 @@
     },
     {
       "name": "a fresh spawn never records its holder",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "      if (typeof handle.worktree === \"string\")\n        this.worktreeHolders.set(handle.worktree, { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
       "replace": "      if (false)\n        this.worktreeHolders.set(String(handle.worktree), { name: parseAgentHandle(handle.agent).name, uid: parseAgentHandle(handle.agent).uid });",
       "expectRed": "the second spawn refuses as the effect's own L4008, naming the tree and its holder",
@@ -56,7 +56,7 @@
     },
     {
       "name": "the handle loses its worktree, so the journal and the turn client ride bare handles",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    ...(typeof ext.worktree === \"string\" ? { worktree: ext.worktree } : {}),\n    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
       "replace": "    ...(typeof d.role === \"string\" ? { role: d.role } : {}),",
       "expectRed": "the settled handle carries the logical worktree into the journal",
@@ -65,7 +65,7 @@
     },
     {
       "name": "a free tree is read but never claimed",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (holder === undefined) {\n      this.worktreeHolders.set(worktree, { pending: goalId });\n      return;\n    }",
       "replace": "    if (holder === undefined) return;",
       "expectRed": "a second spawn into the tree refuses as L4008 while the first is still bringing its seat up",
@@ -74,7 +74,7 @@
     },
     {
       "name": "the in-flight arm is dropped, so a reservation refuses nothing",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (\"pending\" in holder)\n      throw new EffectError(",
       "replace": "    if (false)\n      throw new EffectError(",
       "expectRed": "a spawn into the tree refuses as L4008 naming the in-flight goal",
@@ -83,7 +83,7 @@
     },
     {
       "name": "a spawn that ends without a handle keeps its reservation",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    this.worktreeHolders.delete(worktree);\n  }",
       "replace": "    return;\n  }",
       "expectRed": "the tree is free again: the failed spawn left no reservation behind",
@@ -101,7 +101,7 @@
     },
     {
       "name": "the incomplete-scan retry is unbounded",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "        if (!(e instanceof IncompleteKvScan) || attempt >= WORKTREE_SCAN_ATTEMPTS) throw e;",
       "replace": "        if (!(e instanceof IncompleteKvScan)) throw e;",
       "expectRed": "the guard gives up with the scan's own error after its bounded retries instead of parking the spawn for good",
@@ -110,7 +110,7 @@
     },
     {
       "name": "the claim is not re-read after the liveness wait",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (now !== undefined && now !== holder)",
       "replace": "    if (false)",
       "expectRed": "exactly one of the two is admitted and the other is L4008: the claim is re-read after the wait, not assumed",
@@ -119,7 +119,7 @@
     },
     {
       "name": "the bound external state carries neither the worktree nor the onFork policy",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "          ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),\n          ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),\n",
       "replace": "",
       "expectRed": "the bound external state carries the worktree (for adoption's reservation) and the onFork policy (for a fork)",

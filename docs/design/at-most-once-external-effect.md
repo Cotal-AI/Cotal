@@ -253,7 +253,7 @@ What the held step's first dispatch armed is the host's to end, inside the hold'
 hosted runtime claims the open attempt's pause (§6.1). `SimHandler` arms nothing.
 
 The hosted `ask` also relays each attempt to its seat as a `turn` goal under the attempt's token
-(`relayAsk` in `mesh-handler.ts`), and nothing withdraws a relay goal today: the manager serves no
+(`relayAsk` in `mesh-turn-ask.ts`), and nothing withdraws a relay goal today: the manager serves no
 `cancel` for one, and a discharged `ask` leaves its relay as well (#2596). The hold leaves it too,
 so the seat may still be shown that turn until it yields or the relay's deadline, the ask's
 recorded `deadlineAt`, passes. The relay is one goal per attempt and is never submitted again, so a
