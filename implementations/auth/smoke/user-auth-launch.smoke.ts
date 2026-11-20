@@ -90,7 +90,7 @@ childEnv.COTAL_ID = "cli_send";
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
-const { authDir, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, LEGACY_DEFAULT_AGENT, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
@@ -351,6 +351,28 @@ try {
   // WORKTREE's connector into the sandbox prefix, never the operator store.
   const extAdd = await cotal(["ext", "add", CLAUDE]);
   check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
+  const defaultNative = join(home, "default-native");
+  mkdirSync(defaultNative);
+  writeFileSync(join(defaultNative, "claude"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi\nprintf "DEFAULT_NATIVE_REACHED read=%s post=%s subscriptions=%s;\\n" "$COTAL_ALLOW_SUBSCRIBE" "$COTAL_ALLOW_PUBLISH" "$COTAL_SUBSCRIBE"\n', { mode: 0o700 });
+  const narrowDefault = await cotal(["spawn", "--foreground", "--space", SPACE], { env: { PATH: `${defaultNative}:${childEnv.PATH}` } });
+  check("seeded default launches within a narrow member's grant",
+    narrowDefault.status === 0 && narrowDefault.out.includes("DEFAULT_NATIVE_REACHED read=general post=general subscriptions=;") &&
+      narrowDefault.out.includes("event plane not armed: the launching member cannot delegate it"), narrowDefault.out);
+  const defaultPath = join(root, ".cotal", "agents", "default.md");
+  const seededSource = readFileSync(defaultPath, "utf8");
+  const defaultEnv = { PATH: `${defaultNative}:${childEnv.PATH}` };
+  try {
+    writeFileSync(defaultPath, LEGACY_DEFAULT_AGENT);
+    const legacy = await cotal(["spawn", "--foreground", "--name", "legacy_default", "--space", SPACE], { env: defaultEnv });
+    check("the untouched legacy default uses the same narrow channel scope",
+      legacy.status === 0 && legacy.out.includes("DEFAULT_NATIVE_REACHED read=general post=general subscriptions=;"), legacy.out);
+    writeFileSync(defaultPath, seededSource.replaceAll('[">"]', "[]"));
+    const empty = await cotal(["spawn", "--foreground", "--name", "empty_default", "--no-events", "--space", SPACE], { env: defaultEnv });
+    check("an authored default keeps both explicit empty lists",
+      empty.status === 0 && empty.out.includes("DEFAULT_NATIVE_REACHED read= post= subscriptions=;"), empty.out);
+  } finally {
+    writeFileSync(defaultPath, seededSource);
+  }
   // The read list keeps the persona's own `general` (a spawn whose list omits a channel its persona
   // subscribes to is refused on that alone), so `ops.wide` is the only ask beyond the cli grant.
   // `--foreground`: a bare spawn is a managed launch, which needs a terminal to attach and refuses

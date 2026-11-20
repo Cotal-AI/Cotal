@@ -184,6 +184,7 @@ export interface UserViewAuth {
    *  callout-minted instrument-view rows pin (1c.2c). */
   lifecycleUid: string;
   managerInstanceId?: string;
+  authority?: Awaited<ReturnType<AuthProvider["userCredentials"]>>["authority"];
   source: () => Promise<string>;
 }
 
@@ -221,9 +222,9 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
     request.managerInstanceId = managerCallerBinding(result.bearer, { space: conn.space, ...original, instanceId: request.managerInstanceId }).instanceId;
     return { ...result, principal: original };
   };
-  const { bearer, sentinelCreds, principal: { owner, actor, lifecycleUid } } = await mint();
+  const { bearer, sentinelCreds, authority, principal: { owner, actor, lifecycleUid } } = await mint();
   const managerInstanceId = request.managerInstanceId;
-  return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(authority?.owner === owner ? { authority } : {}), ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
 }
 
 /** #2312: exchange this machine's login for a `session-caller` bearer bound to ONE redeemed

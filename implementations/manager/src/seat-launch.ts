@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } 
 import { homedir, hostname } from "node:os";
 import { isAbsolute, sep } from "node:path";
 import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
+import { readLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
 import { listDirectory } from "./list-dir.js";
@@ -364,7 +364,7 @@ export class SeatLaunch {
     spawner: string | undefined,
     authenticatedCaller: EpCaller | undefined,
   ): Promise<
-    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined }
+    | { ref: string; configPath: string; def: AgentDef | undefined; agent: string; inline?: undefined; seededDefault: boolean }
     | { ref: string; configPath?: undefined; def: AgentDef; agent: string; inline: { save: boolean } }
     | { error: string; code?: "bad-request" }
   > {
@@ -444,9 +444,10 @@ export class SeatLaunch {
     // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
     // the manifest's own `agent:` field drove the launch object already.
     let def: AgentDef | undefined;
+    let seededDefault = false;
     if (!opts.resolved) {
       try {
-        def = loadLaunchPersonaFile(configPath);
+        ({ def, seededDefault } = readLaunchPersonaFile(configPath));
       } catch (e) {
         return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
@@ -462,7 +463,7 @@ export class SeatLaunch {
           return { error: `no persona "${ref}"` };
       }
     }
-    return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
+    return { ref, configPath, def, seededDefault: seededDefault && ref === "default" && !opts.config, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
   }
 
   /** Whether a persona path resolves into the inline snapshot directory, the directory itself

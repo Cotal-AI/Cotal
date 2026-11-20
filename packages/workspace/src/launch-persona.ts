@@ -3,6 +3,40 @@ import { parseDocument } from "yaml";
 import { parseAgentFileSource, utf16Problem, type AgentDef } from "@cotal-ai/core";
 import { MeshManifestSchema } from "./mesh-manifest-schema.js";
 
+/** The shipped default persona. Keep its bytes stable so existing untouched copies are recognized. */
+export const DEFAULT_AGENT = `---
+name: default_agent
+role: default
+description: An agent on the mesh
+tags: []
+subscribe: []
+allowSubscribe: [">"]
+allowPublish: [">"]
+capabilities: [spawn, run]
+---
+
+You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
+coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
+your peers and work with them. Edit this file to give yourself a name, role, and purpose.
+`;
+
+/** The pre-wildcard-post template that setup already migrates when still untouched. */
+export const LEGACY_DEFAULT_AGENT = `---
+name: default_agent
+role: default
+description: An agent on the mesh
+tags: []
+subscribe: []
+allowSubscribe: [">"]
+allowPublish: []
+capabilities: [spawn]
+---
+
+You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
+coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
+your peers and work with them. Edit this file to give yourself a name, role, and purpose.
+`;
+
 /** A workstation-file refusal, mapped onto existing native bad-request/CLI schema-invalid codes. */
 export class PersonaSourceError extends Error {
   readonly code = "SCHEMA_INVALID";
@@ -36,6 +70,11 @@ export function personaFileReference(value: string): string {
 
 /** Read a regular persona file on the execution host; never deploy a manifest from this door. */
 export function loadLaunchPersonaFile(path: string): AgentDef {
+  return readLaunchPersonaFile(path).def;
+}
+
+/** Read the parsed persona and its shipped-template match from the same file descriptor. */
+export function readLaunchPersonaFile(path: string): { def: AgentDef; seededDefault: boolean } {
   const notRegular = () => new PersonaSourceError(`persona is not a regular file: ${path}`, { remedy: "pass a regular persona file" });
   if (!statSync(path).isFile()) throw notRegular();
   // Follow persona links as before. NONBLOCK keeps a replacement FIFO from hanging the open;
@@ -56,6 +95,6 @@ export function loadLaunchPersonaFile(path: string): AgentDef {
   if (manifest) throw new PersonaSourceError("--file names a Mesh manifest, not a persona file; use `cotal team deploy <file>`. No agent was allocated", { remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
   const encoding = utf16Problem(source);
   if (encoding) throw new PersonaSourceError(`invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
-  try { return parseAgentFileSource(source, path); }
+  try { return { def: parseAgentFileSource(source, path), seededDefault: source === DEFAULT_AGENT || source === LEGACY_DEFAULT_AGENT }; }
   catch (error) { throw new PersonaSourceError(`invalid persona definition ${path}: ${personaDefinitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
 }

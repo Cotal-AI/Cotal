@@ -118,7 +118,7 @@ const { connect: rawConnect } = await import("@nats-io/transport-node");
 const { Kvm } = await import("@nats-io/kv");
 const { createHash } = await import("node:crypto");
 const { decodeJwt } = await import("jose");
-const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
+const { agentCredsDir, authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths, DEFAULT_AGENT } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, fetchIdpJwt, grantActor, loadCalloutAuth, loadAuthServiceInfo,
   actorLedgerDir, managedActorLedgerDir, ledgerRowFilename, deriveOwnerForIdpSubject, loadOwnerSecret, loadPinnedIdp, loadIssuer, loadIdpSession,
@@ -411,7 +411,9 @@ function spawnAuthService(): ChildProcess {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
   env.COTAL_HOME = home;
-  return spawn(process.execPath, [...process.execArgv, SELF, "auth-service", "--space", SPACE, "--server", SERVER, "--exchange-public-port", String(publicPort), "--exchange-public-url", publicUrl], {
+  const entry = process.env.SMOKE_RELEASED_AUTH_CLI;
+  const argv = entry === undefined ? [...process.execArgv, SELF] : [entry];
+  return spawn(process.execPath, [...argv, "auth-service", "--space", SPACE, "--server", SERVER, "--exchange-public-port", String(publicPort), "--exchange-public-url", publicUrl], {
     cwd: root,
     env,
     stdio: process.env.SMOKE_AUTH_SERVICE_DEBUG ? ["ignore", "inherit", "inherit"] : "ignore",
@@ -1860,7 +1862,7 @@ try {
 
   // A genuine signerless participant, registered through the stock auth authority service.
   // The owner's actor has spawn and supervise, but never admin.
-  grantActor(dir, { ...cliRow0, scope: ["spawn", "supervise"], allowPublish: ["general", `events.${OWNER}.>`] });
+  grantActor(dir, { ...cliRow0, scope: ["spawn", "run", "role:default", "supervise"], allowPublish: ["general", `events.${OWNER}.>`] });
   const idpToken = await fetchIdpJwt(base, loadIdpSession(home, base)!.token);
   const authorityCall = async <T,>(request: unknown): Promise<T> => {
     const info = loadAuthServiceInfo(dir)!;
@@ -1928,6 +1930,13 @@ try {
       validateRetainedAgent: async () => { throw new Error("unused fixture retained agent"); },
     } });
   await participant.start();
+
+  writeFileSync(join(participantRoot, ".cotal", "agents", "default.md"), DEFAULT_AGENT);
+  const defaultLaunch = await cotal(["spawn", "--detach", "--space", SPACE, "--on", state.instanceId, "--agent", "e2e"], 45_000);
+  const defaultTarget = enrollmentRequests.find((r) => r.target.actor === "default_agent")?.target;
+  check("the signed-in CLI launches the seeded default through its hosted manager with explicit narrow lists",
+    defaultLaunch.status === 0 && defaultTarget?.allowSubscribe?.join() === "general" &&
+      defaultTarget.allowPublish?.includes("general") === true && !defaultTarget.allowPublish.includes(">") && !defaultTarget.subscribe?.length, defaultLaunch.out);
 
   // Owner-equal event-plane admission through the real typed door, over a non-admin bearer.
   const ownerUid = mintLifecycleUid();
@@ -2053,7 +2062,7 @@ try {
   // 148 -> 151: D2's spawn and admin views also read ps.
   // One CLI attach denial after the operator loses spawn scope.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 71 : 160;
+  const EXPECTED = endpointCliFocus ? 71 : 161;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

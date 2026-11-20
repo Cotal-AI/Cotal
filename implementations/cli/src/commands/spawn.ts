@@ -19,6 +19,8 @@ import {
   mintCreds,
   newIdentity,
   DEV_OWNER,
+  eventChannel,
+  patternInAllow,
   parseShareSelection,
   principalKey,
   assertLifecycleToken,
@@ -58,6 +60,7 @@ import {
   type RuntimeProvider,
   type SecretStore,
   type SpaceAuth,
+  type UserAuthGrant,
   attemptCleanup,
   describeCleanupFailures,
   rejectionText,
@@ -65,9 +68,11 @@ import {
 } from "@cotal-ai/core";
 import {
   parseCommaList,
+  CLI_USER_ACTOR,
   CommandFailure,
   isCommandFailure,
   loadLaunchPersonaFile,
+  readLaunchPersonaFile,
   personaFileReference,
   PersonaSourceError,
   inputDisabledByFlag,
@@ -773,6 +778,9 @@ export async function launchManagedPersona(
     subscribe: parseCommaList(values.subscribe),
     allowSubscribe: parseCommaList(values["allow-subscribe"]),
     allowPublish: parseCommaList(values["allow-publish"]),
+    ...(ref === "default" && managerConfigRef === undefined && t.userAuthority && !t.userAuthority.grant.scope.includes("admin")
+      ? { callerAcl: { allowSubscribe: t.userAuthority.grant.allowSubscribe, allowPublish: t.userAuthority.grant.allowPublish } }
+      : {}),
     // #373: send the bit only when the operator chose it. On an events-required space the
     // policy still forces the plane on (the manager refuses a non-admin caller on such a space
     // anyway, so the operator must hold the admin tier for the spawn to succeed at all).
@@ -1400,8 +1408,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // user's own choice, so one that is missing is still refused.
   const implicitDefault = ref === "default" && personaFrom === undefined && values.config === undefined && handoffText === undefined && redeemedEnrollment === undefined;
   let def: AgentDef;
+  let seededDefault: boolean;
   try {
-    def = loadLaunchPersonaFile(path);
+    ({ def, seededDefault } = readLaunchPersonaFile(path));
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (!(implicitDefault && code === "ENOENT")) {
@@ -1425,7 +1434,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
     }
     if (written !== undefined) provenance.wrote("default persona", written);
-    def = loadLaunchPersonaFile(path);
+    ({ def, seededDefault } = readLaunchPersonaFile(path));
   }
 
   // Provenance: say which persona file WON resolution (--config > positional > preference > default)
@@ -1581,20 +1590,36 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
   let subscribe = channels.subscribe ?? def.subscribe;
+  let defaultOwner: string | undefined;
+  let defaultGrant: UserAuthGrant | undefined;
+  if (seededDefault && ref === "default" && values.config === undefined && values.file === undefined && target.mode === "user" && !target.userAuth?.remote) {
+    const provider = resolveAuthProvider();
+    if (provider.actorGrant) {
+      const dir = userAuthStateDir(target.root, space);
+      defaultOwner = await provider.ownerForLogin({ store: workspaceSecretStore(target.root), dir, space });
+      const grant = await provider.actorGrant({ dir, owner: defaultOwner, actor: CLI_USER_ACTOR });
+      if (grant && !grant.scope.includes("admin")) defaultGrant = grant;
+    }
+  }
   let allowSubscribe: string[];
   try {
-    allowSubscribe = resolveReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? def.allowSubscribe);
+    allowSubscribe = resolveReadAcl(subscribe ?? [], channels["allow-subscribe"] ?? (channels.subscribe === undefined ? defaultGrant?.allowSubscribe : undefined) ?? def.allowSubscribe);
   } catch (e) {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
-  let allowPublish = channels["allow-publish"] ?? def.allowPublish;
+  let allowPublish = channels["allow-publish"] ?? defaultGrant?.allowPublish ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
   // Default events on only where supported. An explicit request or registration policy still refuses below.
-  const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel);
+  const defaultEventsAllowed = !defaultOwner || !defaultGrant || patternInAllow(defaultGrant.allowPublish, eventChannel({ owner: defaultOwner, actor: CLI_USER_ACTOR }));
+  const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel && defaultEventsAllowed);
+  if (!launchEvents && events === undefined && connector.eventChannel && !defaultEventsAllowed) {
+    const message = "event plane not armed: the launching member cannot delegate it";
+    recordOperationWarning({ code: "EVENT_PLANE_NOTICE", target: { space }, message });
+  }
   const eventPayloads = policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired

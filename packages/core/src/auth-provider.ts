@@ -510,6 +510,8 @@ export interface AuthProvider extends Extension {
    * fresh so a scope edit bites the caller's next control op with no restart or reconnect.
    */
   actorScope(opts: { dir: string; owner: string; actor: string }): Promise<string[] | undefined>;
+  /** Read the local actor's channel grant when the provider owns the ledger. This is not authorization. */
+  actorGrant?(opts: { dir: string; owner: string; actor: string }): Promise<UserAuthGrant | undefined>;
   /**
    * Remove this provider's SECRET material for a space from the given store — the DELETE half of
    * the seam pair (every kind that reads and writes through a {@link SecretStore} must be

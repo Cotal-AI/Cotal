@@ -774,6 +774,11 @@ export const cotalAuthProvider: AuthProvider = {
     return row ? [...row.scope] : undefined;
   },
 
+  async actorGrant({ dir, owner, actor }) {
+    const row = findActorUnified(dir, owner, actor);
+    return row ? { scope: row.scope, allowSubscribe: row.allowSubscribe, allowPublish: row.allowPublish, dmHistory: "own" } : undefined;
+  },
+
   async trustFingerprint({ store, dir, space }) {
     return userAuthTrustFingerprint(store, dir, space);
   },
