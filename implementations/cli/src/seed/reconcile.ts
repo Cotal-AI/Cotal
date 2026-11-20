@@ -20,11 +20,13 @@ import {
   logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
+  repairConnectorSelection,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
+import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
@@ -185,6 +187,17 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<Re
   const generation = seedGeneration();
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
+  if (mode === "repair" && !automatic) {
+    assertReleasedSeedWriter(generation, "reconcile");
+    const release = claimUpdateClosureAccess();
+    try {
+      repairConnectorSelection(() => {
+        const sourceDowngrade = seedDowngradeRefusal(generation);
+        if (sourceDowngrade) throw sourceDowngrade;
+      });
+      recoverExtensionPromotion();
+    } finally { release(); }
+  }
   inheritConnectorConfig();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a

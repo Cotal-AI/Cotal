@@ -214,7 +214,7 @@ async function extSeedGate(extCmd: Command | undefined, words: string[], configF
   }
   const parsed = parseOrExit(extCmd, words);
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
-  recoverExtensionPromotion();
+  if (parsed.values.repair !== true || parsed.values.reset === true) recoverExtensionPromotion();
   await extCmd.run(parsed);
   return true;
 }
