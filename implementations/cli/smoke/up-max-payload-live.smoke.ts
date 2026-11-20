@@ -17,6 +17,7 @@
  *  3. `down`, then a PLAIN `up` with no flag renders and serves N again from the record.
  *  4. Open legacy and controller starts serve and retain the limit without adding authentication,
  *     and accept a replacement limit once stopped.
+ *  5. An open broker-only start accepts a low limit, but adding a manager refuses before launch.
  *
  * Sandboxes COTAL_HOME and a project root under a scratch base with proven-clean `.cotal` ancestry;
  * kills only its own children. Needs `nats-server` on PATH.
@@ -181,6 +182,27 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
   }
   const last = await run(["down", "--yes"]);
   ok("the final down exits 0", last.status === 0, last.out.slice(-1500));
+
+  if (open) {
+    const brokerOnly = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "8192"]);
+    try {
+      ok("a broker-only start accepts and serves 8192 bytes", brokerOnly.status === 0 && await servedMaxPayload(port) === 8192, brokerOnly.out);
+      const add = await run(["up", "--server", server]);
+      ok("adding a manager refuses on the recorded floor before launch",
+        add.status === 1 && add.out.includes("--max-payload 8192 is below 263168 bytes") &&
+        add.out.includes("nothing was started") && !add.out.includes("Starting stack-manager"), add.out);
+      ok("the refusal gives a stop and restart command and a broker-only option",
+        add.out.includes("cotal down --yes") && add.out.includes("cotal up --max-payload 1048576") &&
+        add.out.includes("cotal up --no-manager"), add.out);
+      const status = await run(["status", "--components", "--space", space]);
+      ok("the manager stays intentionally omitted and the broker keeps its limit",
+        /manager\s+not-started.*started with --no-manager/.test(status.out) &&
+        /broker\s+serving/.test(status.out) && recordedPayload() === 8192 && await servedMaxPayload(port) === 8192, status.out);
+    } finally {
+      const clean = await run(["down", "--yes"]);
+      ok("the low-payload broker stops", clean.status === 0, clean.out);
+    }
+  }
 }
 
 try {

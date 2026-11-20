@@ -1991,12 +1991,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       // contract on the limit the broker already serves, so a recorded one below the floor is refused
       // before that launch rather than dying on the publish.
       const refreshPayload = maxPayload ?? runningPolicy?.maxPayload;
-      if (!noManager && held.mode !== "open" && refreshPayload !== undefined && refreshPayload < MANAGER_START_PAYLOAD_FLOOR) {
+      if (!noManager && refreshPayload !== undefined && refreshPayload < MANAGER_START_PAYLOAD_FLOOR) {
         console.error(
           c.red(
             `✗ --max-payload ${refreshPayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`,
           ),
         );
+        console.error(`  From the stack's project root, run \`cotal down --yes\`, then \`cotal up --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}\`, or keep it broker-only with \`cotal up --no-manager\`.`);
         process.exit(1);
       }
       // The store directory is fixed the same way: an explicit --store-dir on a live refresh can

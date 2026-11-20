@@ -804,8 +804,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // publishes its contract on that limit, so the floor applies before any member starts, including
   // when a bare up adds a manager to a broker an earlier --no-manager left running.
   const effectivePayload = request.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
-  if (!request.noManager && mode !== "open" && effectivePayload !== undefined && effectivePayload < MANAGER_START_PAYLOAD_FLOOR)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${effectivePayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, { target: { root, space }, remedy: `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager` });
+  if (!request.noManager && effectivePayload !== undefined && effectivePayload < MANAGER_START_PAYLOAD_FLOOR)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${effectivePayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, {
+      target: { root, space },
+      remedy: brokerIsRunning()
+        ? `from the stack's project root, run \`cotal down --yes\`, then \`cotal up --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}\`, or keep it broker-only with \`cotal up --no-manager\``
+        : `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager`,
+    });
   const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal);
   // A recorded stack keeps its space and broker address. The refusal names what is recorded and the
   // bare up that starts it there.
