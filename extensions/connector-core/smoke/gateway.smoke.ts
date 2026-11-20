@@ -297,6 +297,8 @@ try {
   // ---- name allocation ----
   const first = await call(a, "cotal_connect", { name: "claude" });
   const id1 = idOf(first);
+  const unavailable = [...new Set(first.text.match(/\bcotal_[a-z][a-z_]*\b/g))].filter((name) => !tools.some((tool) => tool.name === name));
+  check("the hosted connect reply names only tools served by the gateway", unavailable.length === 0, unavailable);
   check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
   check("connect names the connection's own read, join and post access", first.text.includes("\nReads #lobby; may join #lobby; may post to #lobby."), first);
   check(
