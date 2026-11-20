@@ -574,7 +574,8 @@ directory or notifier stamp. Missing registry data or an unreadable extension in
 unknown or partial, never an empty successful check.
 If the extension manifest is corrupt, the check still reports the running and registry versions,
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
-and the `EXTENSION_INVENTORY_UNREADABLE` warning.
+and the `EXTENSION_INVENTORY_UNREADABLE` warning. The check directs you to `cotal ext seed --repair`
+before running an update.
 
 If an interrupted connector seed needs manual repair, the Reconciliation section gives the same
 diagnosis and `cotal ext seed --repair` guidance as the extension command, even when recorded

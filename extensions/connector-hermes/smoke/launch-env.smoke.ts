@@ -338,7 +338,10 @@ assert.equal(readFileSync(join(opBare, "config.yaml"), "utf8"), BARE_CONFIG, "a 
 // holds no key for that provider only found out mid-turn, from a provider refusal whose advice pointed
 // at their own credentials. A launch with no model is refused, naming what sets one, and writes no
 // profile at all, so nothing is left behind that a later spawn could take for a working one.
-const mgdConfig = { name: "reviewer", role: "review", space: "smoke" };
+const mgdConfig = {
+  name: "reviewer", role: "review", space: "smoke", servers: "nats://127.0.0.1:4222", kind: "agent" as const, tls: false,
+  subscribe: [], allowSubscribe: [], allowPublish: [],
+};
 const mgdNone = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-none-"));
 assert.throws(
   () => setupProfile(mgdNone, { model: undefined, config: mgdConfig }),

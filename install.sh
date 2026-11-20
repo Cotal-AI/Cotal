@@ -27,14 +27,19 @@
 #   install was verified against is what makes that failure impossible rather than rare.
 #
 # UNINSTALL
-#   Stop the spaces and agents that use this installation.
+#   Stop the local spaces and agents that use this installation.
+#   Run cotal daemon status to check the machine daemon. If you installed it,
+#   run cotal daemon uninstall from its owning installation before removing
+#   any files. Pass the same --daemon-home if you set one at install time.
 #   rm -rf ~/.local/share/cotal ~/.local/bin/cotal   # this installer's files
 #   then delete the `# cotal` block from your shell rc.
-#   This leaves settings, installed extensions, and the connector seed store in
+#   This leaves project files, systemd linger, and the configuration directory.
+#   Settings, installed extensions, and the connector seed store are in
 #   $XDG_CONFIG_HOME/cotal (if set and non-empty), otherwise ~/.config/cotal.
 #   Back up settings you want to keep. Delete that directory only if no other
 #   Cotal installation or running Cotal process uses it.
 #   Delete ~/.cotal separately only to remove your meshes, agents and credentials.
+#   If the CLI is already gone, see https://docs.cotal.ai/docs/installation/#remove-cotal.
 #
 # Apache-2.0. Everything below runs inside main(), invoked by the brace-wrapped last line.
 # A compound command is not executed until its closing brace is parsed, so any prefix that is
