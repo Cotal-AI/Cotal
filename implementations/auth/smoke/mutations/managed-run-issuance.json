@@ -192,7 +192,7 @@
       "name": "the verify door answers the manager as the parent",
       "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "      return { request: r, parent: spawner.parent };",
-      "replace": "      return { request: r, parent: principalKey(owner, r.actor).key };",
+      "replace": "      return { request: r, parent: `${owner}.${r.actor}` };",
       "expectRed": "FAIL: U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
       "cell": "U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
       "completionMarker": "COTAL_SMOKE_SENTINEL cells=28",
