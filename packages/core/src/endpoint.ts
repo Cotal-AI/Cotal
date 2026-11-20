@@ -2542,8 +2542,8 @@ export class CotalEndpoint extends EventEmitter {
    *  delivery daemon can re-authorize the agent's durable entries and validate its runtime
    *  durable-joins without holding any in-memory ledger. Written ATOMICALLY ({@link writeAclRecord}),
    *  so a present record is always complete (`[]` = known no-read, never a half-write). */
-  async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    return this.durableBackstop.commitAcl(targetId, lifecycleUid, allowSubscribe);
+  async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[], excludeSubscribe: string[] = []): Promise<void> {
+    return this.durableBackstop.commitAcl(targetId, lifecycleUid, allowSubscribe, excludeSubscribe);
   }
 
   /**
@@ -2551,15 +2551,15 @@ export class CotalEndpoint extends EventEmitter {
    * Process discipline: call only in the same act that bakes `allowSubscribe` into the JWT; the
    * write is not crypto-bound to credential bytes.
    */
-  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    return this.durableBackstop.reissueAcl(targetId, lifecycleUid, allowSubscribe);
+  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[], excludeSubscribe: string[] = []): Promise<void> {
+    return this.durableBackstop.reissueAcl(targetId, lifecycleUid, allowSubscribe, excludeSubscribe);
   }
 
-  /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
-   *  (`allowSubscribe`) from the durable registry (exact key `<owner>.<actor>.<uid>`), or `undefined`
-   *  if no record (an unknown lifecycle — the reader DEFERS, never drops). A present `[]` (known
-   *  no-read) returns `[]` (the reader DROPS). */
-  async aclForOwner(owner: string, lifecycleUid: string): Promise<string[] | undefined> {
+  /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read grant
+   *  (allow list plus every read exclusion of the row) from the durable registry (exact key
+   *  `<owner>.<actor>.<uid>`), or `undefined` if no record (an unknown lifecycle — the reader DEFERS,
+   *  never drops). A present `[]` (known no-read) returns an empty `allow` (the reader DROPS). */
+  async aclForOwner(owner: string, lifecycleUid: string): Promise<{ allow: string[]; exclude: string[] } | undefined> {
     return this.durableBackstop.aclForOwner(owner, lifecycleUid);
   }
 
@@ -2570,6 +2570,7 @@ export class CotalEndpoint extends EventEmitter {
   async aclForAlias(principal: string): Promise<{
     allowSubscribe: string[];
     issuedAllowSubscribe: string[];
+    excludeSubscribe: string[];
     lifecycleUid: string;
   } | undefined> {
     return this.durableBackstop.aclForAlias(principal);
@@ -2922,13 +2923,13 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Start the Plane-3 fan-out writer + trusted reader on THIS (privileged, server-side delivery-daemon)
    *  endpoint, AND serve the `ctl.delivery` control service (runtime durable join/leave/list). `aclFor`
-   *  maps an owner id to its current read ACL for the reader's re-authorization — read FRESH per entry
+   *  maps an owner id to its current read grant (allow list and exclusions) for the reader's re-authorization — read FRESH per entry
    *  from the durable ACL registry (async). Call once after connect; idempotent durable creation lets it
    *  resume on a daemon restart. Both the JS loops AND the `ctl.delivery` subscription are (re)bound by
    *  {@link armPlane3} on EVERY (re)connect — a reconnect drains the old connection, so re-binding both
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
-    aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
+    aclFor: (owner: string, lifecycleUid: string) => MaybePromise<{ allow: string[]; exclude: string[] } | undefined>,
     opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
     return this.deliveryPlane.startPlane3(aclFor, opts);

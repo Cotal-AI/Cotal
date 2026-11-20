@@ -294,6 +294,14 @@ export interface AclRecord {
    * `allowSubscribe` (legacy).
    */
   issuedAllowSubscribe?: string[];
+  /** Read exclusions of the live ACL (SPEC §9), normalized from the stored form. When this or
+   *  {@link AclRecord.issuedExcludeSubscribe} is nonempty, the stored row writes both allow lists
+   *  as `{ allow, exclude }` objects, so a reader that predates exclusions finds no array and treats
+   *  the lifecycle as unknown rather than reading the wildcard alone. */
+  excludeSubscribe?: string[];
+  /** Read exclusions baked into the last credential issue; a commit never drops them. A channel
+   *  excluded by either half is unreadable. */
+  issuedExcludeSubscribe?: string[];
   /** Bumped each write; stale-write guard companion to the KV revision CAS. */
   revision: number;
   /** Epoch ms of the last write (diagnostics only). */

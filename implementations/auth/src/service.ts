@@ -1145,7 +1145,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       if (resolvedRead.length > 0)
         await jsm.consumers.info(dlvStream(space), dlvDurable(owner, actor, lifecycleUid));
       const acl = await provisioner.aclForOwner(principalKey(owner, actor).key, lifecycleUid);
-      if (acl === undefined || JSON.stringify(acl) !== JSON.stringify(read))
+      if (acl === undefined || JSON.stringify(acl) !== JSON.stringify({ allow: read, exclude: [] }))
         throw new EpEnvelopeError("unavailable", `the chat session's read-ACL row did not read back for ${lifecycleUid}`, undefined, "unknown");
     } finally {
       await provisioner.stop();

@@ -105,7 +105,7 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
-  await dlv.startPlane3((id) => allowById.get(id));
+  await dlv.startPlane3((id) => { const allow = allowById.get(id); return allow && { allow, exclude: [] }; });
   // The former allow-all manager is split into scoped creds (PR 1.5): the provisioner endpoint (`mgr`)
   // keeps setupSpaceStreams/seedChannelRegistry/provisionAgent; a `supervisor` cred serves the control
   // tiers; an `operator` cred posts chat AS itself (the daemon's fan-out reads CHAT and delivers).

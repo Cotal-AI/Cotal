@@ -2,9 +2,10 @@
 // join or leave a channel's Plane-3 backstop, retry the tombstone of a membership a refused live sub forced
 // out, check a lifecycle's ACL row and copy the catch-up window for a privileged join. Moved verbatim from
 // endpoint.ts; the endpoint keeps the fields and forwards to these. Not re-exported by the index.
-import { readAcl } from "./acls.js";
+import { aclExclusions, readAcl } from "./acls.js";
+import { membershipInGrant } from "./channel-grant.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
-import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
+import { chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
 import type { DeliveryClass, Plane3Entry, ControlReply, CotalMessage } from "./types.js";
 import { type JetStreamClient, type JetStreamManager, AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
@@ -54,7 +55,7 @@ export class EndpointDurable {
    *  direct reads, so a row narrowed before this read began is the row it returns. */
   async aclAllows(owner: string, lifecycleUid: string, channel: string): Promise<boolean> {
     const row = await readAcl(await this.aclRegistry(), owner, lifecycleUid);
-    return row !== undefined && membershipInAllow(row.record.allowSubscribe, channel);
+    return row !== undefined && membershipInGrant(row.record.allowSubscribe, aclExclusions(row.record), channel);
   }
 
   /** Idempotently copy the eligible chat messages in `(fromSeqExcl, toSeqIncl]` for `channel` into the

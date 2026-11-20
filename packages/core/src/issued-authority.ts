@@ -37,6 +37,7 @@ import { assertGeneration, callerTokens, type EpCaller } from "./endpoint-subjec
 export { assertGeneration, isIssuedCaller, EP_RAIL_V1, type IssuedCaller } from "./endpoint-subjects.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
 import { subjectMatches, token } from "./subjects.js";
+import { patternCoveredBy, patternMeet } from "./channel-grant.js";
 import { acceptedBucket, acceptedKey, assertIssuedSpace, closed, issuedCallerOfToken, refSnapshot, type IssuedAuthorityRef } from "./issued-accepted.js";
 export { acceptedBucket, acceptedKey, assertIssuedSpace, issuedCallerOfToken, readAcceptedRow } from "./issued-accepted.js";
 export type { IssuedAuthorityRef } from "./issued-accepted.js";
@@ -218,13 +219,25 @@ function patternsOverlap(a: string, b: string): boolean {
 /** Does the ceiling permit a SUBSCRIPTION whose filter is `pattern` (which may carry wildcards)?
  *  Every subject the filter could deliver must sit inside one allow entry, and no deny entry may
  *  overlap it: a subscription is a claim over a set of subjects, so a partial cover is a refusal,
- *  never a narrower grant invented on the caller's behalf. */
-export function issuedPermitsPattern(value: IssuedSubjectPermission, pattern: string): boolean {
+ *  never a narrower grant invented on the caller's behalf.
+ *
+ *  `ownDeny` is the deny list the claim itself carries (a delegated grant's exclusions, SPEC §9), so
+ *  the claim reaches `pattern` minus `ownDeny`. That set is within the ceiling when `pattern` lies
+ *  inside the ceiling's allow entries together with `ownDeny`, and every subject a ceiling deny
+ *  shares with `pattern` lies inside `ownDeny`. Both are decided exactly by the channel-grant
+ *  pattern algebra. With no `ownDeny` the conservative check above is unchanged. */
+export function issuedPermitsPattern(value: IssuedSubjectPermission, pattern: string, ownDeny: readonly string[] = []): boolean {
   const parsed = readIssuedSubjectPermission(value);
   subjectToken(pattern, true);
-  if (parsed.deny.some((d) => patternsOverlap(d, pattern))) return false;
+  if (ownDeny.length === 0) {
+    if (parsed.deny.some((d) => patternsOverlap(d, pattern))) return false;
+    if (parsed.allow.mode === "none") return false;
+    return parsed.allow.mode === "all" || parsed.allow.patterns.some((a) => patternCovers(a, pattern));
+  }
+  for (const own of ownDeny) subjectToken(own, true);
+  if (parsed.deny.some((d) => { const shared = patternMeet(d, pattern); return shared !== undefined && !patternCoveredBy(shared, ownDeny); })) return false;
   if (parsed.allow.mode === "none") return false;
-  return parsed.allow.mode === "all" || parsed.allow.patterns.some((a) => patternCovers(a, pattern));
+  return parsed.allow.mode === "all" || patternCoveredBy(pattern, [...parsed.allow.patterns, ...ownDeny]);
 }
 
 // ---- the evidence store --------------------------------------------------------------------------

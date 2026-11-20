@@ -13,7 +13,8 @@ import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, readMember } from "./members.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
-import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
+import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
+import { channelInGrant, membershipInGrant } from "./channel-grant.js";
 import type { AgentCard, ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { JetStreamApiCodes, type ConsumerConfig, type ConsumerMessages, type JetStreamClient, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
@@ -166,7 +167,7 @@ export class EndpointDeliveryPlane {
    *  daemon). `aclFor` maps an owner id to its current read ACL (`allowSubscribe`) for the reader's
    *  re-authorization — read FRESH per entry from the durable ACL registry KV, hence async. */
   plane3?: {
-    aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>;
+    aclFor: (owner: string, lifecycleUid: string) => MaybePromise<{ allow: string[]; exclude: string[] } | undefined>;
     /** Composition-root hook: reload+reconnect the membership feed's rw connection as part of an
      *  explicit `reloadCreds` (the feed owns its own connections, outside this endpoint). `expected`
      *  is the renewal owner's generation token for the rw cred (see {@link reloadCreds}). */
@@ -280,7 +281,7 @@ export class EndpointDeliveryPlane {
    *  {@link armPlane3} on EVERY (re)connect — a reconnect drains the old connection, so re-binding both
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
-    aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
+    aclFor: (owner: string, lifecycleUid: string) => MaybePromise<{ allow: string[]; exclude: string[] } | undefined>,
     opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
@@ -376,13 +377,15 @@ export class EndpointDeliveryPlane {
     // its single live lifecycle-keyed ACL row SERVER-SIDE — the trusted registry, never a caller
     // assertion, decides which lifecycle joins. Two live rows (a reservation breach / unfinished
     // teardown) refuse loudly rather than binding a membership to a guessed lifecycle.
-    let acl: { allowSubscribe: string[]; lifecycleUid: string } | undefined;
+    let acl: { allowSubscribe: string[]; excludeSubscribe: string[]; lifecycleUid: string } | undefined;
     try { acl = await this.aclForAlias(caller); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     if (acl === undefined)
       return { ok: false, error: `durableJoin: no read ACL on record for ${caller} (not provisioned for durable delivery)` };
-    if (!membershipInAllow(acl.allowSubscribe, channel))
-      return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]` };
+    // A concrete excluded channel is refused; a family over one is admitted, and the reader drops
+    // each excluded copy before handoff.
+    if (!membershipInGrant(acl.allowSubscribe, acl.excludeSubscribe, channel))
+      return { ok: false, error: `channel "${channel}" is not within your read ACL [${acl.allowSubscribe.join(", ")}]${acl.excludeSubscribe.length ? ` excluding [${acl.excludeSubscribe.join(", ")}]` : ""}` };
     const uid = acl.lifecycleUid;
     // The lookup above may be stale by the time the row is written (a retirement can fence and purge
     // this lifecycle meanwhile), so the write re-checks the exact ACL row itself (`aclFence`).
@@ -494,12 +497,13 @@ export class EndpointDeliveryPlane {
     // requires the channel in BOTH the live row AND the mint-time ceiling (`issuedAllowSubscribe`).
     // Revocation still works: narrowing allowSubscribe stops the next read. Raising the ceiling
     // requires reissueAcl (provision/remint), which is the same act that bakes the list into the JWT.
-    let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; lifecycleUid: string } | undefined;
+    let acl: { allowSubscribe: string[]; issuedAllowSubscribe: string[]; excludeSubscribe: string[]; lifecycleUid: string } | undefined;
     try { acl = await this.aclForAlias(caller); }
     catch (e) { return { ok: false, error: (e as Error).message }; }
     if (acl === undefined)
       return { ok: false, error: `readHistory: no read ACL on record for ${caller} - not permitted` };
-    const inLive = channelInAllow(acl.allowSubscribe, channel);
+    // `excludeSubscribe` already joins the live and mint-time exclusions (SPEC §9).
+    const inLive = channelInGrant(acl.allowSubscribe, acl.excludeSubscribe, channel);
     const inIssued = channelInAllow(acl.issuedAllowSubscribe, channel);
     if (!inLive || !inIssued) {
       // Name the live list in the error — that is what operators edit and what revocation clears.
@@ -908,14 +912,14 @@ export class EndpointDeliveryPlane {
     // Each mention is resolved once. A live channel delivers to the agents among them that may read
     // it, and on either class a mention of an agent that may not read the channel is reported to the
     // sender below, so a post never claims a reader it cannot have.
-    const mentioned: Array<{ name: string; owner: string; row: { allowSubscribe: string[]; lifecycleUid: string } }> = [];
+    const mentioned: Array<{ name: string; owner: string; row: { allowSubscribe: string[]; excludeSubscribe: string[]; lifecycleUid: string } }> = [];
     for (const name of msg.mentions ?? []) {
       const owner = this.resolveOwnerByName(name);
       if (!owner || owner === msg.from.id) continue;
       // A mention arrives as an ALIAS (the roster names no lifecycle): resolve its single live ACL
       // row for BOTH the read-authorization and the lifecycle to address. Ambiguity (two live rows)
       // refuses THIS copy loudly rather than guessing a lifecycle.
-      let row: { allowSubscribe: string[]; lifecycleUid: string } | undefined;
+      let row: { allowSubscribe: string[]; excludeSubscribe: string[]; lifecycleUid: string } | undefined;
       try { row = await this.aclForAlias(owner); }
       catch (e) { this.emit("error", e as Error); continue; }
       if (row) mentioned.push({ name, owner, row });
@@ -942,12 +946,12 @@ export class EndpointDeliveryPlane {
       }
     } else {
       for (const { owner, row } of mentioned) {
-        if (!channelInAllow(row.allowSubscribe, channel)) continue; // @mention can't bypass the read ACL
+        if (!channelInGrant(row.allowSubscribe, row.excludeSubscribe, channel)) continue; // @mention can't bypass the read ACL or an exclusion
         if (!this.plane3MayAct()) return;   // same rule on the live-mention path
         await this.publishDinbox(owner, row.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
       }
     }
-    const unreadable = mentioned.filter(({ row }) => !channelInAllow(row.allowSubscribe, channel)).map(({ name }) => name);
+    const unreadable = mentioned.filter(({ row }) => !channelInGrant(row.allowSubscribe, row.excludeSubscribe, channel)).map(({ name }) => name);
     if (unreadable.length) {
       if (!this.plane3MayAct()) return;
       await this.sendMentionNotice(msg, channel, seq, unreadable);
@@ -1081,7 +1085,9 @@ export class EndpointDeliveryPlane {
     }
     // KNOWN owner whose CURRENT ACL no longer covers the channel — a revocation/narrowing. Drop: the
     // entry is no longer authorized (SPEC §7 current-ACL gate before surfacing).
-    if (!channelInAllow(acl, entry.channel)) { m.ack(); return; }
+    // An exclusion is part of the current ACL: an excluded channel's copy is dropped here like any
+    // channel the grant no longer covers (SPEC §9).
+    if (!channelInGrant(acl.allow, acl.exclude, entry.channel)) { m.ack(); return; }
     // INTERVAL re-auth (not a current-member boolean): a pre-leave entry (seq ≤ leaveCursor) stays
     // deliverable; seq > leaveCursor (or after a rejoin's newer joinCursor) is the hard cut. Any of the
     // lifecycle's rows that cover the channel may hold the post, whichever row addressed the copy.

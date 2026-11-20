@@ -111,7 +111,7 @@ const agentCreds = await provisionAgent(mgr, auth, ident, { subscribe: ["log", "
 // backstop. The reader re-authorizes against the agent's current ACL (its allowSubscribe), keyed on
 // the member's principal dot-form (`local.<id>` in the dev default).
 const agentPrincipal = principalKey(DEV_OWNER, ident.id).key;
-await dlv.startPlane3((owner) => (owner === agentPrincipal ? allowSub : undefined));
+await dlv.startPlane3((owner) => (owner === agentPrincipal ? { allow: allowSub, exclude: [] } : undefined));
 const errors: string[] = [];
 const got: { channel?: string; text: string; historical: boolean }[] = [];
 const agent = new CotalEndpoint({ space, servers: server, creds: agentCreds, card: { name: "ag1", kind: "agent", id: ident.id }, channels: ["log", "general"], lifecycleUid: UID });

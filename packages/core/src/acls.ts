@@ -15,8 +15,58 @@
  */
 import { Kvm, type KV } from "@nats-io/kv";
 import { aclBucket, aclKey, aclAliasFilter, parseLifecycleSubjectKey, patternInAllow } from "./subjects.js";
+import { assertExclusions } from "./channel-grant.js";
 import type { AclRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
+
+/** A stored allow list: a plain array, or `{ allow, exclude }` when the row carries exclusions. */
+type StoredList = string[] | { allow: string[]; exclude: string[] };
+
+const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+/** Decode one stored list, or `undefined` when it is neither shape (the row is then unknown). */
+function decodeList(v: unknown): { allow: string[]; exclude: string[] } | undefined {
+  if (isStrings(v)) return { allow: v, exclude: [] };
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  if (Object.keys(o).some((k) => k !== "allow" && k !== "exclude") || !isStrings(o.allow) || !isStrings(o.exclude)) return undefined;
+  return { allow: o.allow, exclude: o.exclude };
+}
+
+/** Normalize a stored row, or `undefined` when it is half-written or garbled (DEFER, never DROP). A row
+ *  with exclusions stores both lists as objects; readers that predate exclusions require an array
+ *  and treat such a row as unknown, which is the fail-closed outcome (SPEC §9). */
+function decodeAclRecord(raw: unknown): AclRecord | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const live = decodeList(r.allowSubscribe);
+  if (!live) return undefined;
+  const issued = r.issuedAllowSubscribe === undefined ? undefined : decodeList(r.issuedAllowSubscribe);
+  if (r.issuedAllowSubscribe !== undefined && !issued) return undefined;
+  return {
+    allowSubscribe: live.allow,
+    ...(issued ? { issuedAllowSubscribe: issued.allow } : {}),
+    ...(live.exclude.length ? { excludeSubscribe: live.exclude } : {}),
+    ...(issued?.exclude.length ? { issuedExcludeSubscribe: issued.exclude } : {}),
+    revision: r.revision as number,
+    updatedAt: r.updatedAt as number,
+  };
+}
+
+/** The stored form of a row: plain arrays when neither half carries an exclusion, otherwise both
+ *  halves as objects, even a half whose own exclusions are empty, so that no half an old reader
+ *  consults is an array (an old reader checks only `allowSubscribe`). */
+function encodeAclRecord(rec: AclRecord): Record<string, unknown> {
+  const exclude = rec.excludeSubscribe ?? [], issuedExclude = rec.issuedExcludeSubscribe ?? [];
+  const objects = exclude.length + issuedExclude.length > 0;
+  const list = (allow: string[], ex: string[]): StoredList => (objects ? { allow: [...allow], exclude: [...ex] } : [...allow]);
+  return {
+    allowSubscribe: list(rec.allowSubscribe, exclude),
+    ...(rec.issuedAllowSubscribe ? { issuedAllowSubscribe: list(rec.issuedAllowSubscribe, issuedExclude) } : {}),
+    revision: rec.revision,
+    updatedAt: rec.updatedAt,
+  };
+}
 
 /** Open the ACL registry bucket. Auth mode OPENs the bucket pre-created at `cotal up`; a privileged
  *  caller may pass `{ create: true }` to lazily CREATE it. Mirrors {@link openMembersRegistry}. */
@@ -44,8 +94,8 @@ export async function readAcl(
   const e = await kv.get(aclKey(owner, lifecycleUid));
   if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
   try {
-    const record = e.json<AclRecord>();
-    if (!Array.isArray(record.allowSubscribe)) return undefined; // half/garbled — treat as unknown (DEFER)
+    const record = decodeAclRecord(e.json<unknown>());
+    if (!record) return undefined; // half/garbled — treat as unknown (DEFER)
     return { record, revision: e.revision };
   } catch {
     return undefined;
@@ -138,11 +188,11 @@ async function enumerateLiveAclRows(
   for (const e of await liveKvEntries(kv, aclAliasFilter(principal))) {
     const parsed = parseLifecycleSubjectKey(e.key);
     if (!parsed || `${parsed.owner}.${parsed.actor}` !== principal) continue;
-    let record: AclRecord;
-    try { record = e.json<AclRecord>(); } catch { continue; } // a garbled value is never a live row
-    // Same half/garbled rejection {@link readAcl} applies: a record without its `allowSubscribe`
-    // array is UNKNOWN (the reader DEFERS), not a live row, and must not count toward ambiguity.
-    if (!Array.isArray(record.allowSubscribe)) continue;
+    let record: AclRecord | undefined;
+    try { record = decodeAclRecord(e.json<unknown>()); } catch { continue; } // a garbled value is never a live row
+    // Same half/garbled rejection {@link readAcl} applies: a record without a decodable
+    // `allowSubscribe` is UNKNOWN (the reader DEFERS), not a live row, and must not count toward ambiguity.
+    if (!record) continue;
     live.push({ lifecycleUid: parsed.lifecycleUid, record, revision: e.revision });
   }
   return live;
@@ -168,8 +218,9 @@ export async function reissueAcl(
   owner: string,
   lifecycleUid: string,
   allowSubscribe: string[],
+  excludeSubscribe: string[] = [],
 ): Promise<AclRecord> {
-  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: true });
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, excludeSubscribe, { reissue: true });
 }
 
 /**
@@ -182,8 +233,9 @@ export async function commitAcl(
   owner: string,
   lifecycleUid: string,
   allowSubscribe: string[],
+  excludeSubscribe: string[] = [],
 ): Promise<AclRecord> {
-  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: false });
+  return writeAcl(kv, owner, lifecycleUid, allowSubscribe, excludeSubscribe, { reissue: false });
 }
 
 /**
@@ -201,8 +253,10 @@ async function writeAcl(
   owner: string,
   lifecycleUid: string,
   allowSubscribe: string[],
+  excludeSubscribe: string[],
   opts: { reissue: boolean },
 ): Promise<AclRecord> {
+  assertExclusions(allowSubscribe, excludeSubscribe, "allowSubscribe");
   const key = aclKey(owner, lifecycleUid);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -211,10 +265,15 @@ async function writeAcl(
     // MUST NOT raise it. Legacy rows missing the field treat their then-current allowSubscribe
     // as the ceiling.
     let issued: string[];
+    // The mint-time exclusions move with the ceiling: a reissue writes the credential's own, and a
+    // commit keeps them, so a registry write can never drop an exclusion the credential carries.
+    let issuedExclude: string[];
     if (opts.reissue || !cur) {
       issued = [...allowSubscribe];
+      issuedExclude = [...excludeSubscribe];
     } else {
       issued = [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)];
+      issuedExclude = [...(cur.record.issuedExcludeSubscribe ?? [])];
       const excess = allowSubscribe.filter((a) => !patternInAllow(issued, a));
       if (excess.length > 0) {
         throw new Error(
@@ -227,10 +286,12 @@ async function writeAcl(
     const next: AclRecord = {
       allowSubscribe: [...allowSubscribe],
       issuedAllowSubscribe: issued,
+      ...(excludeSubscribe.length ? { excludeSubscribe: [...excludeSubscribe] } : {}),
+      ...(issuedExclude.length ? { issuedExcludeSubscribe: issuedExclude } : {}),
       revision: (cur?.record.revision ?? 0) + 1,
       updatedAt: Date.now(),
     };
-    const data = new TextEncoder().encode(JSON.stringify(next));
+    const data = new TextEncoder().encode(JSON.stringify(encodeAclRecord(next)));
     if (!cur) {
       try {
         await kv.create(key, data);
@@ -286,11 +347,12 @@ export async function fenceAcl(kv: KV, owner: string, lifecycleUid: string): Pro
     const next: AclRecord = {
       allowSubscribe: [],
       issuedAllowSubscribe: [...(cur.record.issuedAllowSubscribe ?? cur.record.allowSubscribe)],
+      ...(cur.record.issuedExcludeSubscribe?.length ? { issuedExcludeSubscribe: [...cur.record.issuedExcludeSubscribe] } : {}),
       revision: (cur.record.revision ?? 0) + 1,
       updatedAt: Date.now(),
     };
     try {
-      await kv.update(key, new TextEncoder().encode(JSON.stringify(next)), cur.revision);
+      await kv.update(key, new TextEncoder().encode(JSON.stringify(encodeAclRecord(next))), cur.revision);
       return "fenced";
     } catch (e) {
       lastErr = e; // the row moved, or was removed, under us: re-read
@@ -309,4 +371,11 @@ export async function fenceAcl(kv: KV, owner: string, lifecycleUid: string): Pro
  *  (vs. DEFER for an absent owner). */
 export async function deleteAcl(kv: KV, owner: string, lifecycleUid: string): Promise<void> {
   await kv.purge(aclKey(owner, lifecycleUid));
+}
+
+/** Every read exclusion a row carries: the live half's and the mint-time half's. A channel either
+ *  half excludes is unreadable, so a registry write that drops an exclusion without a remint grants
+ *  nothing the credential does not (SPEC §9). */
+export function aclExclusions(record: AclRecord): string[] {
+  return [...new Set([...(record.excludeSubscribe ?? []), ...(record.issuedExcludeSubscribe ?? [])])];
 }

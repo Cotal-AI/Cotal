@@ -298,7 +298,7 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
-  await dlv.startPlane3((owner) => (owner === `${DEV_OWNER}.${aId.id}` ? aclC : undefined));
+  await dlv.startPlane3((owner) => (owner === `${DEV_OWNER}.${aId.id}` ? { allow: aclC, exclude: [] } : undefined));
   await wait(200);
   const dual = await a.joinChannel("ops.dual");
   check("manager-present joinChannel(ops.dual) reports durable:true (Plane-3)", dual.joined === true && dual.durable === true, dual);

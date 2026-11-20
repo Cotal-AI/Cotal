@@ -2,6 +2,9 @@ import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
 import { spacePrefix, chatSubject, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
+import { assertExclusions, exclusionsOverlapping, patternsOverlap } from "./channel-grant.js";
+import { requireExclusionFloor } from "./broker-floor.js";
+import { EVENT_CHANNEL_PREFIX } from "./event-channel.js";
 import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
 import { epcStreamName } from "./endpoint-binding.js";
 import { epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller } from "./endpoint-subjects.js";
@@ -469,6 +472,19 @@ export function permissionsFor(
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);
+  // Exclusions (SPEC §9): channels or patterns removed from the allow entries. A deny row only removes
+  // a channel on a broker that applies it to every overlapping wildcard subscription, so an exclusion
+  // is minted only for a broker known to meet the floor; there is no exclusion-less fallback.
+  const excludeSubscribe = opts.excludeSubscribe ?? [], excludePublish = opts.excludePublish ?? [];
+  assertExclusions(allowSubscribe, excludeSubscribe, "allowSubscribe");
+  assertExclusions(allowPublish, excludePublish, "allowPublish");
+  if (excludeSubscribe.length + excludePublish.length > 0) requireExclusionFloor(opts.brokerVersion);
+  // An own-owner event channel's payloads ride `evp.<owner>.*`, which this credential reads whatever
+  // its channel list says (event-payloads.ts), so excluding that channel could not remove them.
+  const ownEvents = `${EVENT_CHANNEL_PREFIX}${pr.owner}.*`;
+  for (const ch of excludeSubscribe)
+    if (patternsOverlap(ch, ownEvents))
+      throw new Error(`allowSubscribe: exclusion "${ch}" covers an event channel of this agent's own owner (${ownEvents}), whose payloads it reads regardless of channels; it cannot be excluded`);
   if (!pr.lifecycleUid)
     throw new Error("permissionsFor(agent): a lifecycleUid is required - the agent's dm/dlv/chathist grants are lifecycle-keyed exact names (SPEC 13.1)");
   const uid = assertLifecycleToken(pr.lifecycleUid);
@@ -522,7 +538,13 @@ export function permissionsFor(
     // old unfiltered DIRECT.GET.<CHAT> (which could fetch ANY message regardless of channel). The
     // name is the agent's own, so info/fetch/delete can't reach a peer's consumer. NO broad
     // CONSUMER.CREATE.<CHAT> / .> deny here: NATS deny beats allow, which would also kill these.
-    ...allowSubscribe.map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", "*", ch)}`),
+    // An entry that a read exclusion overlaps gets NO direct create: a filter of `team.>` or `team.*`
+    // would replay the excluded channels, and no deny row can match those literal wildcard tokens
+    // without matching every sibling. Its history is read through the delivery daemon's mediated
+    // range read, which re-checks the exclusions per message (SPEC §8).
+    ...allowSubscribe
+      .filter((ch) => exclusionsOverlapping(ch, excludeSubscribe).length === 0)
+      .map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", "*", ch)}`),
     `$JS.API.CONSUMER.INFO.${CHAT}.${chatHistD}`,
     `$JS.API.CONSUMER.MSG.NEXT.${CHAT}.${chatHistD}`,
     `$JS.API.CONSUMER.DELETE.${CHAT}.${chatHistD}`,
@@ -699,6 +721,10 @@ export function permissionsFor(
     `$JS.API.CONSUMER.CREATE.${DLV}`,
     `$JS.API.CONSUMER.CREATE.${DLV}.>`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.>`,
+    // Exclusions: the excluded posts, and the history create of each excluded read, patterns carried
+    // as written (defence in depth: no create row overlapping it is minted above).
+    ...excludePublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
+    ...excludeSubscribe.map((ch) => `$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${chatSubject(space, "*", "*", ch)}`),
   ];
   // CHAT live read boundary (SPEC v0.3 §9 / Appendix B): mint the read ACL as a native `sub.allow`
   // over cotal.<space>.chat.*.<channel> — one per allowSubscribe channel, wildcards passed through
@@ -732,7 +758,13 @@ export function permissionsFor(
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail.
   // A take's reply rides the take's own request subtree, like the delivery control replies.
   const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...payloadReads, ...epSub] } };
+  // A read exclusion is a native subscribe deny, the pattern carried as written: a subscribe inside it
+  // is refused, and a wildcard subscription that overlaps it is filtered at delivery (SPEC §9).
+  const subDeny = excludeSubscribe.map((ch) => chatSubject(space, "*", "*", ch));
+  return {
+    pub: { allow: pubAllow, deny: pubDeny },
+    sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...payloadReads, ...epSub], ...(subDeny.length ? { deny: subDeny } : {}) },
+  };
 }
 
 export { INSTRUMENT_PROFILES };

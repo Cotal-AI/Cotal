@@ -5,6 +5,7 @@ export { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 export * from "./advisory-lock.js";
 export * from "./local-consumer-custody.js";
 export * from "./subjects.js";
+export * from "./channel-grant.js";
 export * from "./endpoint-subjects.js";
 export * from "./digest-id.js";
 export * from "./endpoint-auth-digest.js";

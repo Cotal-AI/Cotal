@@ -1,4 +1,5 @@
 import { assertValidChannel, resolveReadAcl, principalKey, assertLifecycleToken } from "./subjects.js";
+import { assertExclusions } from "./channel-grant.js";
 import { type Identity } from "./identity.js";
 import type { MintOpts, SpaceAuth } from "./provision-jwt.js";
 import { mintCreds, principalOf } from "./provision-jwt.js";
@@ -47,7 +48,7 @@ export interface DurableProvisioner {
    * Raise the mint-time ceiling. Only the provisioning path that also remints the JWT.
    * Process discipline, not crypto binding — see {@link reissueAcl}.
    */
-  reissueAcl(principal: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void>;
+  reissueAcl(principal: string, lifecycleUid: string, allowSubscribe: string[], excludeSubscribe?: string[]): Promise<void>;
   provisionTaskQueue(role: string): Promise<void>;
 }
 
@@ -96,6 +97,14 @@ export async function provisionAgentDurables(
   // live filter (subscribe) must sit within the read ACL (allowSubscribe), or the provisioner
   // would hand the agent live delivery it isn't permitted to read.
   const allowSubscribe = resolveReadAcl(subscribe, opts.allowSubscribe);
+  const excludeSubscribe = opts.excludeSubscribe ?? [];
+  assertExclusions(allowSubscribe, excludeSubscribe, "allowSubscribe");
+  for (const ch of subscribe)
+    if (excludeSubscribe.includes(ch)) throw new Error(`subscribe "${ch}" is excluded from allowSubscribe`);
+  // History under an excluded wildcard is served only by the delivery daemon from this lifecycle's
+  // ACL row (SPEC §8), so a launcher that writes no row cannot carry a read exclusion.
+  if (excludeSubscribe.length > 0 && opts.durableMembership === false)
+    throw new Error("a live-only agent (no read-ACL row) cannot carry a read exclusion: history under an excluded wildcard is served from that row; drop the exclusion or provision durable delivery");
   await provisioner.provisionDmInbox(pr.owner, pr.actor, uid);
   // The Plane-3 backstop carries channel copies only. A channel-less lifecycle has no authorized
   // DLV copy and therefore gets no consumer. Re-granting from [] to nonempty calls the unchanged
@@ -114,7 +123,7 @@ export async function provisionAgentDurables(
   // (SPEC §9.6). Not crypto-bound to the JWT bytes — process discipline that this call stays next
   // to the mint.
   if (opts.durableMembership !== false) {
-    await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe);
+    await provisioner.reissueAcl(principalKey(pr.owner, pr.actor).key, uid, allowSubscribe, excludeSubscribe);
   }
   for (const role of taskRoles(opts.role, opts.capabilities)) await provisioner.provisionTaskQueue(role);
   return allowSubscribe;

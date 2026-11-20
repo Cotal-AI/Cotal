@@ -4,7 +4,7 @@
 import { jetstream, jetstreamManager, JetStreamApiCodes, type JetStreamClient, type JetStreamManager, type ConsumerInfo, type JetStreamPublishOptions } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
+import { aclExclusions, openAclRegistry, readAcl, readAclForAlias, AmbiguousAclAlias, commitAcl as writeAclRecord, reissueAcl as writeAclReissue } from "./acls.js";
 import { effectiveDeliveryClass, readChannelConfig, readChannelDefaults } from "./channels.js";
 import type { EndpointDeliveryPlane } from "./endpoint-delivery-plane.js";
 import type { EndpointPresence } from "./endpoint-presence.js";
@@ -98,8 +98,8 @@ export class EndpointDurableBackstop {
    *  delivery daemon can re-authorize the agent's durable entries and validate its runtime
    *  durable-joins without holding any in-memory ledger. Written ATOMICALLY ({@link writeAclRecord}),
    *  so a present record is always complete (`[]` = known no-read, never a half-write). */
-  async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+  async commitAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[], excludeSubscribe: string[] = []): Promise<void> {
+    await writeAclRecord(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe, excludeSubscribe);
   }
 
   /**
@@ -107,16 +107,18 @@ export class EndpointDurableBackstop {
    * Process discipline: call only in the same act that bakes `allowSubscribe` into the JWT; the
    * write is not crypto-bound to credential bytes.
    */
-  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[]): Promise<void> {
-    await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe);
+  async reissueAcl(targetId: string, lifecycleUid: string, allowSubscribe: string[], excludeSubscribe: string[] = []): Promise<void> {
+    await writeAclReissue(await this.aclRegistry(), targetId, lifecycleUid, allowSubscribe, excludeSubscribe);
   }
 
-  /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read ACL
-   *  (`allowSubscribe`) from the durable registry (exact key `<owner>.<actor>.<uid>`), or `undefined`
-   *  if no record (an unknown lifecycle — the reader DEFERS, never drops). A present `[]` (known
-   *  no-read) returns `[]` (the reader DROPS). */
-  async aclForOwner(owner: string, lifecycleUid: string): Promise<string[] | undefined> {
-    return (await readAcl(await this.aclRegistry(), owner, lifecycleUid))?.record.allowSubscribe;
+  /** The server-side delivery daemon's fresh-per-entry ACL read: one LIFECYCLE's current read grant
+   *  (`allowSubscribe` and every read exclusion of the row, live and mint-time) from the durable
+   *  registry (exact key `<owner>.<actor>.<uid>`), or `undefined` if no record (an unknown lifecycle —
+   *  the reader DEFERS, never drops). A present `[]` (known no-read) returns an empty `allow` (the
+   *  reader DROPS). */
+  async aclForOwner(owner: string, lifecycleUid: string): Promise<{ allow: string[]; exclude: string[] } | undefined> {
+    const row = await readAcl(await this.aclRegistry(), owner, lifecycleUid);
+    return row && { allow: row.record.allowSubscribe, exclude: aclExclusions(row.record) };
   }
 
   /** Resolve an ALIAS to its single live lifecycle-keyed ACL row (`readAclForAlias`): the daemon's
@@ -126,6 +128,8 @@ export class EndpointDurableBackstop {
   async aclForAlias(principal: string): Promise<{
     allowSubscribe: string[];
     issuedAllowSubscribe: string[];
+    /** Every read exclusion of the row, live and mint-time. */
+    excludeSubscribe: string[];
     lifecycleUid: string;
   } | undefined> {
     const row = await readAclForAlias(await this.aclRegistry(), principal);
@@ -134,7 +138,7 @@ export class EndpointDurableBackstop {
     // Legacy rows predate the ceiling field: treat missing as equal to allowSubscribe so behaviour
     // matches what that row already exposed. New rows always carry an explicit ceiling.
     const issued = row.record.issuedAllowSubscribe ?? allow;
-    return { allowSubscribe: allow, issuedAllowSubscribe: issued, lifecycleUid: row.lifecycleUid };
+    return { allowSubscribe: allow, issuedAllowSubscribe: issued, excludeSubscribe: aclExclusions(row.record), lifecycleUid: row.lifecycleUid };
   }
 
   /** Ensure + bind the manager singleton-lease bucket. Mirrors the presence-bucket pattern (connectAndBind):

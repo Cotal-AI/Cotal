@@ -555,6 +555,68 @@ export class EndpointHistory {
   }
 
 
+  /** Scan CHAT under `subject` in ascending sequence from `fromSeq` (or from `sinceMs` ago, when
+   *  given) up to and including `untilSeq`, keeping the rows `keep` accepts, until `limit` rows or
+   *  `budget` serialized bytes are held. The served side of the mediated range read (SPEC §8): the
+   *  delivery daemon reads with its own CHAT grant and `keep` applies the caller's grant to each row
+   *  BEFORE the page is cut, so rows the caller may not read never take a place in it. `next` is the
+   *  first sequence not yet scanned and moves past every row looked at, kept or not; `done` says the
+   *  scan reached `untilSeq`. A single kept row larger than `budget` throws: it can never be sent. */
+  async readChatRange(
+    subject: string,
+    opts: { fromSeq: number; untilSeq: number; sinceMs?: number; limit: number; budget: number; keep: (msg: HistoryMessage) => boolean },
+  ): Promise<{ rows: { seq: number; msg: HistoryMessage }[]; next: number; done: boolean }> {
+    if (!this.nc) throw new Error(this.deps.notLiveMsg());
+    const rows: { seq: number; msg: HistoryMessage }[] = [];
+    if (opts.fromSeq > opts.untilSeq) return { rows, next: opts.fromSeq, done: true };
+    const nc = this.nc;
+    const reader = await this.acquireHistoryReader(nc, this.jsm ?? (this.jsm = await jetstreamManager(nc)), chatStream(this.space));
+    try {
+      const since = opts.sinceMs === undefined ? undefined : Date.now() - opts.sinceMs;
+      const consumer = await this.openHistoryReader(reader, {
+        filter_subjects: [subject],
+        ...(since !== undefined && since > 0
+          ? { deliver_policy: DeliverPolicy.StartTime, opt_start_time: new Date(since).toISOString() }
+          : { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: opts.fromSeq }),
+      });
+      try {
+        const pending = (await consumer.info(true)).num_pending;
+        if (pending === 0) return { rows, next: opts.untilSeq + 1, done: true };
+        const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });
+        let delivered = 0, bytes = 0, next = opts.fromSeq, done = false;
+        try {
+          for await (const m of iter) {
+            delivered++;
+            if (m.info.deliverySequence !== delivered)
+              throw new Error(`history: delivery ${m.info.deliverySequence} arrived where ${delivered} was due on ${subject} - the range has a gap, so the page is not served`);
+            if (m.seq > opts.untilSeq) { done = true; break; }
+            const msg = this.deps.decodeHistory(m);
+            if (msg && opts.keep(msg)) {
+              const size = JSON.stringify({ seq: m.seq, message: msg }).length;
+              if (size > opts.budget)
+                throw new Error(`history: the message at sequence ${m.seq} alone exceeds the reply budget (${opts.budget} bytes) - refused loudly rather than skipped`);
+              if (bytes + size > opts.budget || rows.length >= opts.limit) break; // this row starts the next page
+              rows.push({ seq: m.seq, msg });
+              bytes += size;
+            }
+            next = m.seq + 1;
+            if (m.seq === opts.untilSeq || delivered >= pending) { done = true; break; }
+          }
+        } finally {
+          iter.stop();
+        }
+        if (!done && rows.length < opts.limit && bytes === 0 && delivered === 0)
+          throw new Error(`history: the range read on ${subject} ended before it delivered anything - the window was cut short, not empty`);
+        return { rows, next, done };
+      } finally {
+        await this.closeHistoryReader(reader);
+      }
+    } finally {
+      this.releaseHistoryReader(reader);
+    }
+  }
+
+
   /** This connection's history-reader id, the key of its credential's reader deletes
    *  ({@link historyReaderConsumer}). A static credential's is its connId, the nkey it signs with.
    *  Under the auth callout the connId is the inbox nonce this client chose, so the callout keys the

@@ -438,6 +438,17 @@ export interface MintOpts {
    *  resolved by the caller). Each becomes a `chat.<id>.<ch>` publish grant. **Default-deny**:
    *  omitted/empty ⇒ no chat publish grant at all — publishing must be declared. */
   allowPublish?: string[];
+  /** Read exclusions: concrete channels removed from wildcard entries of `allowSubscribe`
+   *  (SPEC §9). Each becomes a `sub` deny on `chat.*.*.<ch>` and a deny on its history create; an
+   *  allow entry with an exclusion under it gets no direct history create row. */
+  excludeSubscribe?: string[];
+  /** Post exclusions: concrete channels removed from wildcard entries of `allowPublish`. Each
+   *  becomes a `pub` deny on the agent's own `chat.<owner>.<actor>.<ch>`. */
+  excludePublish?: string[];
+  /** The version of the nats-server the credential will be presented to. REQUIRED, and checked
+   *  against {@link meetsExclusionFloor}, whenever an exclusion is set: the callout passes the
+   *  connecting node's `server_id.version`, a static signer its own broker connection's version. */
+  brokerVersion?: string;
   /** The agent's role — scopes its TASK-queue consumer to svc_<role>. */
   role?: string;
   /** Capabilities declared in the agent file (e.g. `"spawn"`). Each gates a set of manager ep

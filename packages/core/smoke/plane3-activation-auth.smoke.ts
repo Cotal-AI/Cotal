@@ -118,7 +118,7 @@ try {
   // and the reader's aclFor all key by this dot-form under the owner+actor grammar.
   const aPrincipal = `${DEV_OWNER}.${aId.id}`;
   const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"], lifecycleUid: uidA });
-  await dlv.startPlane3((owner) => (owner === aPrincipal ? ["general", "review"] : undefined));
+  await dlv.startPlane3((owner) => (owner === aPrincipal ? { allow: ["general", "review"], exclude: [] } : undefined));
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,

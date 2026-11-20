@@ -107,7 +107,7 @@ try {
   // member PRINCIPAL dot-form (`local.<nkey>`), and durableJoinFor keys the members registry by it.
   const aPrincipal = `${DEV_OWNER}.${aId.id}`;
   const aCreds = await provisionAgent(mgr, auth, aId, { subscribe: ["general"], allowSubscribe: ["general", "review"], lifecycleUid: uidA });
-  await dlv.startPlane3((owner) => (owner === aPrincipal ? ["general", "review"] : undefined));
+  await dlv.startPlane3((owner) => (owner === aPrincipal ? { allow: ["general", "review"], exclude: [] } : undefined));
 
   const a = new CotalEndpoint({
     space, servers: SERVERS, creds: aCreds,

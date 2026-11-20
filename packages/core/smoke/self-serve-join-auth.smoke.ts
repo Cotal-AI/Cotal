@@ -260,7 +260,7 @@ try {
   // re-auths against), which joinChannel/leaveChannel/listMemberships already target. (The old
   // `sup.serveControl(CONTROL_SELF_SERVICE)` mediation stub duplicated this real handler on a rail
   // the manager no longer owns; removed with the ctl tier.)
-  await dlv.startPlane3((id) => acls[id]);
+  await dlv.startPlane3((id) => { const allow = acls[id]; return allow && { allow, exclude: [] }; });
   await wait(200);
 
   got.length = 0;

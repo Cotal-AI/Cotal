@@ -150,7 +150,7 @@ try {
     [principalKey(DEV_OWNER, bobId.id).key, acl.allowSubscribe],
     [principalKey(DEV_OWNER, carolId.id).key, acl.allowSubscribe],
   ]);
-  await reader.startPlane3((owner) => aclFor.get(owner));
+  await reader.startPlane3((owner) => { const allow = aclFor.get(owner); return allow && { allow, exclude: [] }; });
 
   const a = new CotalEndpoint({
     space,

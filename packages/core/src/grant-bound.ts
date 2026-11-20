@@ -16,7 +16,8 @@
  */
 import { capabilityRole, permissionsFor } from "./provision.js";
 import { issuedPermitsPattern, mintAcceptedToken, type IssuedEvidence, type IssuedSubjectAllow, type IssuedSubjectPermissions } from "./issued-authority.js";
-import { presenceKeySubject, resolveReadAcl } from "./subjects.js";
+import { chatHistDurable, chatStream, chatSubject, presenceKeySubject, resolveReadAcl } from "./subjects.js";
+import { assertExclusions, exclusionsOverlapping } from "./channel-grant.js";
 import { isIssuedCaller, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 import type { EpCapability } from "./endpoint-grants.js";
 import { personaEndpointPartName } from "./persona-endpoints.js";
@@ -27,6 +28,10 @@ export interface DelegatedGrant {
   readonly subscribe?: readonly string[];
   readonly allowSubscribe?: readonly string[];
   readonly allowPublish?: readonly string[];
+  /** Channels removed from wildcard entries of `allowSubscribe` (SPEC §9). */
+  readonly excludeSubscribe?: readonly string[];
+  /** Channels removed from wildcard entries of `allowPublish`. */
+  readonly excludePublish?: readonly string[];
   readonly role?: string;
   readonly capabilities?: readonly string[];
   /** Endpoint commands, as {@link lowerPersonaEndpoints} lowers a persona's `endpoints`. */
@@ -57,12 +62,18 @@ export function capabilityWithin(parentScope: readonly string[], token: string):
 type MintExtra = Parameters<typeof permissionsFor>[3];
 
 /** Each part of a grant, with the mint options that project it alone. `project` is absent for a
- *  token no mint maps, which nothing can be shown to hold. */
-function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintExtra }[] {
-  const out: { part: GrantOverreach; project?: MintExtra }[] = [];
-  for (const ch of resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined))
-    out.push({ part: { field: "allowSubscribe", value: ch }, project: { allowSubscribe: [ch] } });
-  for (const ch of grant.allowPublish ?? []) out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] } });
+ *  token no mint maps, which nothing can be shown to hold. A channel part also carries the grant's
+ *  own exclusions that overlap it, which the bound treats as the part's own deny rows. */
+function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintExtra; excluded?: string[] }[] {
+  const out: { part: GrantOverreach; project?: MintExtra; excluded?: string[] }[] = [];
+  const read = resolveReadAcl([...(grant.subscribe ?? [])], grant.allowSubscribe ? [...grant.allowSubscribe] : undefined);
+  const excludeSubscribe = [...(grant.excludeSubscribe ?? [])], excludePublish = [...(grant.excludePublish ?? [])];
+  assertExclusions(read, excludeSubscribe, "allowSubscribe");
+  assertExclusions([...(grant.allowPublish ?? [])], excludePublish, "allowPublish");
+  for (const ch of read)
+    out.push({ part: { field: "allowSubscribe", value: ch }, project: { allowSubscribe: [ch] }, excluded: exclusionsOverlapping(ch, excludeSubscribe) });
+  for (const ch of grant.allowPublish ?? [])
+    out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] }, excluded: exclusionsOverlapping(ch, excludePublish) });
   if (grant.role !== undefined) out.push({ part: { field: "role", value: grant.role }, project: { role: grant.role } });
   for (const token of grant.capabilities ?? []) {
     const project = isDelegableCapability(token) ? { capabilities: [token] } : undefined;
@@ -106,14 +117,23 @@ export function grantOverreach(
     return { pub: new Set(perms.pub.allow), sub: new Set(perms.sub.allow) };
   };
   const empty = rows({});
-  const held = (extra: MintExtra): boolean => {
+  // A read part's history-create row is DERIVED from its live read row, and a spawner whose
+  // wildcard carries an exclusion holds no such row for it (the mint withholds it, SPEC §9), so it
+  // is left out of the comparison: the read itself is compared on the `sub` row, and a helper's
+  // history rows never reach past its own read entries. The projection mints nothing and carries no
+  // exclusion, so it needs no broker version; its rows are never signed.
+  const historyCreate = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(caller.owner, caller.actor, caller.uid)}.`;
+  const held = (extra: MintExtra, part: GrantOverreach, excluded: readonly string[]): boolean => {
     const projected = rows(extra);
-    const pub = [...projected.pub].filter((r) => !empty.pub.has(r));
+    const pub = [...projected.pub].filter((r) => !empty.pub.has(r) && !r.startsWith(historyCreate));
     const sub = [...projected.sub].filter((r) => !empty.sub.has(r));
     if (pub.length + sub.length === 0) return false;
-    return pub.every((r) => issuedPermitsPattern(ceiling.publish, r)) && sub.every((r) => issuedPermitsPattern(ceiling.subscribe, r));
+    // The part's own exclusions, as the deny rows its mint would carry.
+    const ownSub = part.field === "allowSubscribe" ? excluded.map((x) => chatSubject(space, "*", "*", x)) : [];
+    const ownPub = part.field === "allowPublish" ? excluded.map((x) => chatSubject(space, caller.owner, caller.actor, x)) : [];
+    return pub.every((r) => issuedPermitsPattern(ceiling.publish, r, ownPub)) && sub.every((r) => issuedPermitsPattern(ceiling.subscribe, r, ownSub));
   };
-  return partsOf(grant).filter(({ project }) => project === undefined || !held(project)).map(({ part }) => part);
+  return partsOf(grant).filter(({ part, project, excluded }) => project === undefined || !held(project, part, excluded ?? [])).map(({ part }) => part);
 }
 
 /**

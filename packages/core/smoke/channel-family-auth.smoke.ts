@@ -147,7 +147,7 @@ try {
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
   await dlv.start();
-  await dlv.startPlane3((owner) => acls.get(owner));
+  await dlv.startPlane3((owner) => { const allow = acls.get(owner); return allow && { allow, exclude: [] }; });
 
   const launch = async (who: typeof alice) => {
     const ep = new CotalEndpoint({

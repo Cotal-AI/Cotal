@@ -129,7 +129,7 @@ try {
   const agentId = newIdentity();
   const agentUid = mintLifecycleUid(); // ag1's one lifecycle uid (SPEC §13.1)
   // Plane-3's ACL resolver is keyed by the agent PRINCIPAL (dot-form `local.<nkey>`), not the raw nkey.
-  await dlv.startPlane3((owner) => (owner === principalKey(DEV_OWNER, agentId.id).key ? ["general"] : undefined));
+  await dlv.startPlane3((owner) => (owner === principalKey(DEV_OWNER, agentId.id).key ? { allow: ["general"], exclude: [] } : undefined));
 
   // An agent: provision its bind-only durables + boot membership, mint scoped creds, join #general.
   const agentCreds = await provisionAgent(mgr, auth, agentId, { subscribe: ["general"], allowPublish: ["general"], role: "worker", lifecycleUid: agentUid });
