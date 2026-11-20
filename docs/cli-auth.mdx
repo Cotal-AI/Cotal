@@ -72,6 +72,7 @@ cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds> | -
 cotal auth mint <name> --identity <private-creds> --out <private-file>
 cotal auth mint <name> --replace
 cotal auth mint <name> --no-persona [--allow-subscribe <a,b>] [--allow-publish <a,b>] [--role <role>]
+cotal auth mint <name> --provision --allow-subscribe 'team.>' --exclude-subscribe team.secret [--allow-publish <a,b>] [--exclude-publish <a,b>]
 cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
 ```
 
@@ -94,7 +95,14 @@ the characters allowed, and its Next names the value with each such character re
 
 `agent` is the default profile. Its channel ACLs and role come from the selected root's
 `<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.
-Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. Use
+Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants.
+`--exclude-subscribe` and `--exclude-publish` remove channels or patterns from the list beside them
+([exclusions](channels-and-permissions.mdx#exclusions)). Each needs its list flag, must remove
+something, and is refused for the observer and admin profiles. A read exclusion also needs
+`--provision`, because history under the excluded wildcard is served from the registry row it
+writes. Mint asks the broker for its version before it signs: a broker that does not answer
+refuses `TARGET_UNAVAILABLE`, and one below the exclusion floor refuses `UNSUPPORTED`. Quote a
+pattern with `>`, which the shell otherwise reads as a redirect. Use
 `--no-persona` to ignore the label's persona, including its boot subscriptions and role. With that
 flag, only explicit flags or a matching `--identity` supply grants; an omitted role grants no task
 queue, and empty ACL flags grant no channels. Generated replacement advice includes `--no-persona`
