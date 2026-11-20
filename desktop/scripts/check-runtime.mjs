@@ -3,8 +3,134 @@ import { mkdtempSync, mkdirSync, cpSync, readFileSync, readdirSync, realpathSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { connect } from 'node:net';
+import { setTimeout as pause } from 'node:timers/promises';
+
+async function checkMacQuarantine(source) {
+  assert.equal(process.platform, 'darwin');
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'cd-quarantine-')));
+  const home = join(scratch, 'home');
+  const daemonHome = join(scratch, 'daemon-home');
+  const app = join(scratch, 'Cotal.app');
+  const runtime = join(app, 'Contents/Resources/runtime');
+  const node = join(app, 'Contents/MacOS/cotal-node');
+  const cli = join(runtime, 'dist/cotal.js');
+  const space = 'gatekeeper-proof';
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
+  Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), DO_NOT_TRACK: '1', COTAL_NO_UPDATE_CHECK: '1', COTAL_SKIP_CONNECTOR_SEED: '1' });
+  const probe = (command, args, timeout = 10_000) => {
+    const r = spawnSync(command, args, { cwd: runtime, env, encoding: 'utf8', timeout, killSignal: 'SIGKILL' });
+    return { status: r.status, signal: r.signal, stdout: r.stdout?.trim(), stderr: r.stderr?.trim(), error: r.error?.message };
+  };
+  const inspect = (label, executable, addons) => {
+    for (const file of [executable, ...addons]) {
+      console.log(JSON.stringify({ label, file, xattr: probe('/usr/bin/xattr', ['-l', file]),
+        spctl: probe('/usr/sbin/spctl', ['--assess', '-vv', file]), codesign: probe('/usr/bin/codesign', ['-dv', file]) }));
+    }
+  };
+  const load = (label, executable, addons) => {
+    console.log(JSON.stringify({ label, file: executable, run: probe(executable, ['--version']) }));
+    for (const file of addons) {
+      const args = ['-e', 'require(process.argv[1])', file];
+      console.log(JSON.stringify({ label, file, dlopen: probe(executable, args), dlopenFromRunnerNode: probe(process.execPath, args) }));
+    }
+  };
+  const startManager = (socket) => new Promise((resolve, reject) => {
+    const client = connect(socket);
+    let text = '';
+    client.setTimeout(105_000, () => client.destroy(new Error('manager-start timed out')));
+    client.once('error', reject);
+    client.once('end', () => reject(new Error('daemon ended before replying')));
+    client.once('connect', () => client.write(`${JSON.stringify({ v: 1, id: 'quarantine-proof', op: 'manager-start', space })}\n`));
+    client.on('data', (chunk) => {
+      text += chunk;
+      if (text.includes('\n')) {
+        client.destroy();
+        try { resolve(JSON.parse(text.split('\n')[0])); } catch (error) { reject(error); }
+      }
+    });
+  });
+  let daemon, ended;
+  try {
+    cpSync(source, app, { recursive: true, verbatimSymlinks: true });
+    mkdirSync(home, { mode: 0o700 });
+    mkdirSync(join(daemonHome, 'daemon'), { recursive: true, mode: 0o700 });
+    const manifest = JSON.parse(readFileSync(join(runtime, 'desktop-runtime.json'), 'utf8'));
+    const addonPaths = manifest.files.filter(({ path }) => path.endsWith('.node')).map(({ path }) => path);
+    for (const name of ['pty.node', 'process.node']) assert.ok(addonPaths.some(path => path.endsWith(`/${name}`)), `missing ${name}`);
+    const fixture = probe(node, ['--input-type=module', '-e', `
+      import { mkdirSync, writeFileSync } from 'node:fs';
+      import { dirname, join } from 'node:path';
+      import { globalConfigDir } from '@cotal-ai/core';
+      import { recordMesh, spaceSegment } from '@cotal-ai/workspace';
+      import { saveIdpSession } from '@cotal-ai/auth';
+      const [space, version, daemonHome] = process.argv.slice(1);
+      const home = process.env.COTAL_HOME;
+      const idp = 'http://127.0.0.1:1';
+      const stamp = join(globalConfigDir(), 'seed/stamp.json');
+      mkdirSync(dirname(stamp), { recursive: true, mode: 0o700 });
+      writeFileSync(stamp, JSON.stringify({ generation: version }), { mode: 0o600 });
+      recordMesh({ space, server: 'nats://127.0.0.1:1', root: home, mode: 'user', origin: 'manual', ts: new Date().toISOString(),
+        userAuth: { provider: 'cotal', remote: true, idp: { url: idp, issuer: idp, audience: idp }, endpoints: { url: idp } } });
+      saveIdpSession(daemonHome, idp, { token: 'fixture-session', sub: 'fixture', expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      console.log(join(daemonHome, 'daemon', spaceSegment(space), 'manager', 'manager.log'));
+    `, space, manifest.version, daemonHome]);
+    assert.equal(fixture.status, 0, JSON.stringify(fixture));
+
+    // Run the already-approved app's daemon first, then model its files still carrying download marks.
+    // Only the disposable app copy is marked. No Gatekeeper settings or signing are changed.
+    daemon = spawn(node, [cli, 'daemon', 'serve', '--daemon-home', daemonHome], { cwd: scratch, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    daemon.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+    daemon.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+    ended = new Promise(resolve => {
+      daemon.once('error', error => resolve({ error: error.message }));
+      daemon.once('close', (status, signal) => resolve({ status, signal }));
+    });
+    let socket;
+    for (let i = 0; i < 600 && !socket && daemon.exitCode === null && daemon.signalCode === null; i++) {
+      socket = /^daemon ready at (.+)$/m.exec(stdout)?.[1];
+      if (!socket) await pause(50);
+    }
+    assert.ok(socket, `daemon did not become ready: ${stdout}${stderr}`);
+    console.log(JSON.stringify({ macOS: probe('/usr/bin/sw_vers', []), architecture: process.arch, gatekeeper: probe('/usr/sbin/spctl', ['--status']) }));
+    const quarantine = `0081;${Math.floor(Date.now() / 1000).toString(16)};Safari;${randomUUID().toUpperCase()}`;
+    const mark = probe('/usr/bin/xattr', ['-rw', 'com.apple.quarantine', quarantine, app], 60_000);
+    assert.equal(mark.status, 0, JSON.stringify(mark));
+
+    const manager = await startManager(socket);
+    const managerLog = existsSync(fixture.stdout) ? readFileSync(fixture.stdout, 'utf8').slice(-16_384) : undefined;
+    console.log(JSON.stringify({ manager, managerLog, stderr }));
+    daemon.kill('SIGTERM');
+    const force = setTimeout(() => daemon.kill('SIGKILL'), 10_000);
+    try { console.log(JSON.stringify({ daemonExit: await ended })); } finally { clearTimeout(force); }
+
+    const appAddons = addonPaths.map(path => join(runtime, path));
+    inspect('app bundle', app, []);
+    inspect('app', node, appAddons);
+    const store = join(daemonHome, 'daemon/app-manager-runtimes');
+    const copies = existsSync(store) ? readdirSync(store).filter(name => /^[a-f0-9]{64}$/.test(name)) : [];
+    assert.equal(copies.length, 1, 'expected the daemon to publish a retained runtime');
+    const retained = join(store, copies[0]);
+    const retainedNode = join(retained, 'cotal-node');
+    const retainedAddons = addonPaths.map(path => join(retained, 'runtime', path));
+    inspect('retained', retainedNode, retainedAddons);
+    load('app', node, appAddons);
+    load('retained', retainedNode, retainedAddons);
+  } finally {
+    if (daemon && daemon.exitCode === null && daemon.signalCode === null) daemon.kill('SIGKILL');
+    await ended;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[2] === '--mac-quarantine-app') {
+  await checkMacQuarantine(process.argv[3]);
+  process.exit(0);
+}
+
 const root = fileURLToPath(new URL('../src-tauri/', import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), 'cd-check-'));
 const staged = join(root, 'runtime'), relocated = join(scratch, 'runtime');

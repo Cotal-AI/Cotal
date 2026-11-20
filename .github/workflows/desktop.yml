@@ -306,6 +306,13 @@ jobs:
           "$node" -e 'console.log(process.version)'
           "$node" "$runtime/dist/cotal.js" --version
           find "$runtime/node_modules" -name '*.node' -print0 | xargs -0 -n 1 "$node" -e 'require(require("node:path").resolve(process.argv[1]))'
+      - name: Measure Gatekeeper on the bundled and retained macOS runtime
+        if: github.event_name == 'workflow_dispatch' && runner.os == 'macOS' && runner.arch == 'ARM64'
+        run: |
+          set -euo pipefail
+          app=$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$app"
+          pnpm --dir desktop check:runtime --mac-quarantine-app "$PWD/$app"
       - name: Remove temporary signing material
         if: always()
         shell: pwsh
