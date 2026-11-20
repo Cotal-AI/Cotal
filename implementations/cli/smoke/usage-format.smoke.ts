@@ -110,6 +110,9 @@ check("linear serve --json is refused naming the flag, that serve has no --json 
 // after a space, and an option typed with a typographic dash is named with hyphens.
 const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const spaceTypo = run(["space", "--json", "--jso"]);
+check("an unknown option cannot become the space subcommand", spaceTypo.status === 1 && spaceTypo.stderr === ""
+  && JSON.parse(spaceTypo.stdout).error.remedy === "run `cotal help space`", shown(spaceTypo));
 const dashValue = run(["history", "--from", "-bob"]);
 check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
 if (process.platform !== "win32") {
@@ -131,6 +134,18 @@ check("-c=value is refused naming the value it would give", usageShape(shortEqua
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
+}
+const historyTypo = run(["history", "\u2013\u2013limit=10", "--json"]);
+check("the typographic history option correction retains the attached limit", historyTypo.status === 1 && historyTypo.stderr === ""
+  && JSON.parse(historyTypo.stdout).error.remedy === "type the option with hyphens: --limit=10", shown(historyTypo));
+if (process.platform !== "win32") {
+  const query = "reviewer's $HOME = usage";
+  const refused = run(["docs", `\u2013\u2013search=${query}`]);
+  const correction = /^  type the option with hyphens: (.+)$/m.exec(refused.stderr)?.[1];
+  const copied = correction && runShell(`docs ${correction} --json`);
+  check("the typographic option correction quotes the attached value for the shell",
+    usageShape(refused, /starts with a typographic dash/) && !!copied && copied.status === 0 && JSON.parse(copied.stdout).result.query === query,
+    { refused: shown(refused), copied });
 }
 // Before the command word the same word was an unknown command: `––json status` got no suggestion
 // and `−−version` was offered the version command.
