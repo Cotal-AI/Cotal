@@ -7,9 +7,10 @@
  * run the chat server in its place.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isConfigPermissionError, isConfigProtected } from "@cotal-ai/connector-core";
 
 /** The server's name in Desktop's config. Not `cotal`: that name is the Claude Code plugin's server. */
 const DESKTOP_SERVER = "cotal-desktop";
@@ -63,6 +64,12 @@ export function readDesktopEntry(path: string): unknown {
   return servers?.[DESKTOP_SERVER] ?? (ours(servers?.[LEGACY_DESKTOP_SERVER]) ? servers?.[LEGACY_DESKTOP_SERVER] : undefined);
 }
 
+/** Compare the exact entry writeDesktopEntry would leave, including an owned legacy entry. */
+export function desktopEntryCurrent(path: string, entry: DesktopEntry): boolean {
+  const servers = readConfig(path).mcpServers;
+  return !ours(servers?.[LEGACY_DESKTOP_SERVER]) && JSON.stringify(servers?.[DESKTOP_SERVER]) === JSON.stringify(entry);
+}
+
 /** Whether Desktop's config has a server named `cotal`. That is also the Claude Code plugin's server
  *  name, so a Code session in Desktop runs this one instead of the plugin. */
 export function desktopNameClash(path: string): boolean {
@@ -84,7 +91,7 @@ export function desktopRunning(platform: NodeJS.Platform = process.platform): bo
 /** Write `entry` as the `cotal-desktop` server in the config at `path`. An older entry of ours named
  *  `cotal` moves with it. Returns what changed, or that nothing was written because Claude Desktop
  *  is running. */
-export function writeDesktopEntry(path: string, entry: DesktopEntry, running: () => boolean = desktopRunning): "added" | "updated" | "current" | "not added" | "not updated" {
+export function writeDesktopEntry(path: string, entry: DesktopEntry, running: () => boolean = desktopRunning): "added" | "updated" | "current" | "not added" | "not updated" | "read-only" {
   const config = readConfig(path);
   const servers = { ...config.mcpServers };
   const before = servers[DESKTOP_SERVER];
@@ -92,10 +99,20 @@ export function writeDesktopEntry(path: string, entry: DesktopEntry, running: ()
   if (legacyOurs) delete servers[LEGACY_DESKTOP_SERVER];
   servers[DESKTOP_SERVER] = entry;
   if (JSON.stringify(config.mcpServers ?? {}) === JSON.stringify(servers)) return "current";
+  if (isConfigProtected(path)) return "read-only";
   if (running()) return before === undefined && !legacyOurs ? "not added" : "not updated";
   config.mcpServers = servers;
   const tmp = `${path}.cotal-${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: existsSync(path) ? statSync(path).mode & 0o777 : 0o600 });
-  renameSync(tmp, path);
+  let staged = false;
+  try {
+    writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: existsSync(path) ? statSync(path).mode & 0o777 : 0o600, flag: "wx" });
+    staged = true;
+    renameSync(tmp, path);
+  } catch (error) {
+    if (isConfigPermissionError(error)) return "read-only";
+    throw error;
+  } finally {
+    if (staged) rmSync(tmp, { force: true });
+  }
   return before === undefined && !legacyOurs ? "added" : "updated";
 }

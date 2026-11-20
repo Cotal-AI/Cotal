@@ -155,7 +155,7 @@ try {
   const lost = await booting;
   ok("U2 up exits 1 and names the delivery daemon it lost", lost.status === 1 && lost.out.includes(`! control plane degraded: the delivery daemon started for space "${SPACE}" (pid ${lostDaemon}) exited before this boot finished`), lost.out);
   ok("U3 its summary leaves the daemon out", /running in the background: nats-server \(pid \d+\), manager /.test(lost.out), lost.out);
-  ok("U3b its Next offers only cotal down, since spawn needs the control plane it lost", /\nNext\n {2}cotal down +Stop the stack\n/.test(lost.out) && !lost.out.includes("cotal spawn"), lost.out);
+  ok("U3b its Next offers only cotal down, since spawn needs the control plane it lost", /\nNext\n {2}(?:pnpm )?cotal down +Stop the stack\n/.test(lost.out) && !lost.out.includes("cotal spawn"), lost.out);
   ok("U4 the daemon exited and gave its lease back", await until(() => !alive(lostDaemon), 10_000) && await deliveryRow() === undefined);
   const restoring = cliWith({ COTAL_DELIVERY_BROKER_GONE_MS: "2000" }, ...UP);
   ok("U5 the next up restores the daemon without waiting for a lease", restoring.status === 0 && alive(pidOf(DELIVERY_PIDFILE)) && !/still leased/.test(restoring.out), restoring.out);

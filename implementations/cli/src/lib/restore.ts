@@ -827,20 +827,19 @@ const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held work
  *  degraded attempt goes forward through bare `up`, which continues it. `leftOut` is what the restore
  *  left only in its previous store ({@link restoreLeftOut}). `cleanupRoot` is the project to enter
  *  when an active restore was started from another root. */
-export function restoreNextStep(state: string, attemptId: string, leftOut?: string, cleanupRoot?: string): string {
-  if (state === "restore-ready") return `roll the pre-commit attempt back with \`cotal backup recover ${attemptId} --yes\`; preview it first with --dry-run`;
+export function restoreNextStep(state: string, attemptId: string, leftOut?: string, cleanupRoot?: string, cmd = "cotal"): string {
+  if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${cmd} backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
   if (state === "active") {
-    const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}cotal backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
+    const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
     if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
     return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run`;
   }
-  return `recover forward with bare \`cotal up\` from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
+  return `recover forward with bare ${codeSpan(`${cmd} up`)} from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
 
 /** A ready journal's next step. Resume and backup use the store at its recorded path, so a folder
  *  moved after the cut is told to move back, and a missing store is named. */
-function readyNextStep(root: string, source: Parameters<typeof preservedSourceState>[1]): string {
-  const where = preservedSourceState(root, source);
+function readyNextStep(source: StoreIdentity, where: ReturnType<typeof preservedSourceState>): string {
   if (where.state === "moved") return `this folder was moved from ${where.recordedRoot} after its state was preserved: move it back there, then create a backup or resume with bare \`${displayCmd()} up\``;
   if (where.state === "missing") return `the preserved store recorded at ${source.path} is missing: if this folder was moved, move it back; if the store is lost, restore a backup with \`${displayCmd()} backup restore <dir> --accept-missing-source\``;
   return `create a backup with \`${displayCmd()} backup create <dir>\`, or resume with bare \`${displayCmd()} up\``;
@@ -857,10 +856,13 @@ function claimedNextStep(root: string, claim: MaintenanceClaim): string {
 
 /** The attempt a root's maintenance journal holds and the step that moves it on, as `cotal status`
  *  shows it and a command that refuses over that journal names it. */
-export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null } {
+export function maintenanceNextStep(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>): { attemptId: string; next: string | null; sourceMissing?: true } {
   const attemptId = "restore" in journal ? journal.restore.attemptId : journal.state === "claimed" ? journal.claim.attemptId : journal.cut.attemptId;
+  if (journal.state === "ready") {
+    const source = preservedSourceState(root, journal.source);
+    return { attemptId, next: readyNextStep(journal.source, source), ...(source.state === "missing" ? { sourceMissing: true } : {}) };
+  }
   const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
-    : journal.state === "ready" ? readyNextStep(root, journal.source)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
 }
@@ -916,10 +918,10 @@ export function rolledBackNotes(rolledBack: ReturnType<typeof restoreRolledBackR
  *  that what was written after the artifact is not restored. One whose replaced store also held
  *  another account's streams says those are not restored. The store it set aside holds the only
  *  copy, which cleanup-fallback deletes only with `--discard-history`. */
-export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>, cleanupRoot?: string): string[] {
+export function leftOutNotes(attemptId: string, selection: string, onlyCopy: ReturnType<typeof restoreOnlyCopy>, cleanupRoot?: string, cmd = "cotal"): string[] {
   if (!onlyCopy) return [];
   const accounts = onlyCopy.otherAccounts;
-  const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}cotal backup cleanup-fallback ${attemptId}`);
+  const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`);
   const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
   if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved, so the chat and DM history and workflow runs written after it are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];

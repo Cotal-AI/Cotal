@@ -19,7 +19,6 @@ import {
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
-  movedRootRemedy,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
@@ -27,6 +26,7 @@ import {
   presentationOf,
   readCurrentSelection,
   recordOperationSpaceNote,
+  stackElsewhereRemedy,
   stackJournalRoot,
   writeResult,
   type Cell,
@@ -186,25 +186,30 @@ export async function space(args: ParsedArgs): Promise<void> {
 }
 
 async function read(sub: "show" | undefined, rest: string[], presentation: Presentation): Promise<void> {
+  if (sub === "show" && rest.length > 1) throw usage("usage: cotal space show [<name>]");
+  const project = canonicalRoot(findCotalRoot(process.cwd()));
+  const recordedRoot = cotalDirLink(project) === undefined ? stackJournalRoot(project) : undefined;
+  let moved: ReturnType<typeof journalRecordedElsewhere>;
+  if (recordedRoot !== undefined && !existsSync(recordedRoot)) {
+    try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not identify a moved project. */ }
+  }
   if (sub === undefined) {
     const current = getCurrent() ?? null;
     const items = await Promise.all(loadMeshes().map(async (m) => row(m, current, m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired))));
     const offline = items.filter((m) => m.check !== "reachable" && m.check !== "not-checked").map((m) => m.space);
-    const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
+    const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current, moved?.recordedRoot === p.root && moved.journal.space === p.space ? project : undefined));
     const folder = folderSpaceOverSelection(process.cwd(), current, offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
-    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
+    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, (rows) => spacesView(rows, project, moved));
     return;
   }
   if (sub === "show") {
-    if (rest.length > 1) throw usage("usage: cotal space show [<name>]");
     const current = getCurrent() ?? null;
     // With no name it is about this folder: the space it has registered, or the one it holds
     // prepared or stopped, which `show` names even though every other command here targets the
     // selection. Then the selection.
     const registered = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
-    // A folder whose only trace of its space is its own stack journal records no space to show, so
-    // `show` falls through to the selection there; the journal's own refusals name that space.
+    // A journal without a matching local record does not name a space to show.
     const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
     const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
     const folder = registered ?? recorded?.space;
@@ -214,7 +219,8 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     } else if (current !== null && recorded !== undefined && recorded.space !== current) {
       noteFolderSpaceShown(recorded.space, recorded.state, current);
     }
-    const name = rest[0] ?? folder ?? current;
+    const movedSpace = rest[0] === undefined && folder === undefined && moved !== undefined && findPreparedSpace(moved.journal.space)?.root === moved.recordedRoot ? moved.journal.space : undefined;
+    const name = rest[0] ?? folder ?? movedSpace ?? current;
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
     const m = findMesh(name);
@@ -222,13 +228,9 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       const p = findPreparedSpace(name);
       // No space has the name, so the refusal is not headed with it.
       if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { target: { requested: name }, remedy: "see the registered spaces with `cotal space`" });
-      const project = findCotalRoot(process.cwd());
-      const journal = !existsSync(p.root) && stackJournalRoot(project) === p.root && cotalDirLink(project) === undefined
-        ? journalRecordedElsewhere(project)?.journal : undefined;
-      const moved = journal?.space === p.space ? project : undefined;
-      const canAdoptAfterForget = journal?.space === p.space && journal.operation.kind === "down" && journal.operation.phase === "completed";
-      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current, moved) };
-      writeResult(presentation, { command: "space", target: { space: p.space }, result }, (row) => preparedView(row, moved, canAdoptAfterForget));
+      const matching = moved?.recordedRoot === p.root && moved.journal.space === p.space ? moved : undefined;
+      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current, matching && project) };
+      writeResult(presentation, { command: "space", target: { space: p.space }, result }, (row) => preparedView(row, project, matching));
       return;
     }
     const check: Check = m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired);
@@ -309,7 +311,13 @@ function checkCell(s: Pick<SpaceRow, "check">): Cell {
 const nameCell = (s: Pick<SpaceRow, "space" | "current">, folder: string | null = null): Cell =>
   s.current ? { text: `${s.space} (selected)`, tone: "selected" } : s.space === folder ? { text: `${s.space} (this folder's)`, tone: "selected" } : s.space;
 
-function spacesView(result: SpacesResult): Report {
+function movedPreparedRemedy(project: string, moved: NonNullable<ReturnType<typeof journalRecordedElsewhere>>): string {
+  return displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation));
+}
+
+function spacesView(result: SpacesResult, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
+  const cmd = displayCmd();
+  const movedRow = result.prepared.find((p) => moved?.recordedRoot === p.root && moved.journal.space === p.space);
   // A space that ran and was stopped says so, as `status` does, rather than reading as never started.
   const ran = result.prepared.some((p) => p.state !== "prepared");
   const prepared: Section[] = result.prepared.length === 0 ? [] : [{
@@ -318,21 +326,22 @@ function spacesView(result: SpacesResult): Report {
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, ...(ran ? [{ key: "state", label: "State" }] : []), { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p === movedRow ? { text: `${project} (moved from ${p.root})`, tone: "waiting" } : p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
       },
       // A folder that is gone cannot be started, so its space names the steps `space show` gives.
       { kind: "commands", items: [
-        ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: "cotal up", description: "Start a prepared space from its project folder" }] : []),
-        ...(result.prepared.some((p) => p.state === "unsettled") ? [{ command: "cotal status", description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
-        ...result.prepared.filter((p) => p.rootMissing).map((p) => ({ command: `cotal space forget ${p.space}`, description: `Its folder is gone: forget it, then prepare it again with \`cotal space create ${p.space} --root <dir>\`` })),
+        ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: `${cmd} up`, description: "Start a prepared space from its project folder" }] : []),
+        ...(result.prepared.some((p) => p.state === "unsettled") ? [{ command: `${cmd} status`, description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
+        ...result.prepared.filter((p) => p.rootMissing && p !== movedRow).map((p) => ({ command: `${cmd} space forget ${shellWord(p.space)}`, description: `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}` })),
       ] },
+      ...(movedRow && moved ? [{ kind: "lines" as const, lines: [{ text: movedPreparedRemedy(project, moved), tone: "hint" as const }] }] : []),
     ],
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
     return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Sign in to Cotal Cloud with `cotal login`, or prepare a local space.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [...(result.prepared.length ? [] : [{ command: "cotal login", description: "Sign in to Cotal Cloud" }]), { command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
   const root = canonicalRoot(process.cwd());
-  const occupied = [...result.items, ...result.prepared].some((s) => canonicalRoot(s.root) === root) || listSpaceAccounts(authDir(root)).length > 0;
+  const occupied = movedRow !== undefined || [...result.items, ...result.prepared].some((s) => canonicalRoot(s.root) === root) || listSpaceAccounts(authDir(root)).length > 0;
   return {
     sections: [{
       title: "Spaces",
@@ -366,14 +375,13 @@ function spacesView(result: SpacesResult): Report {
   };
 }
 
-function preparedView(p: PreparedDetail, moved: string | undefined, canAdoptAfterForget: boolean): Report {
+function preparedView(p: PreparedDetail, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   const cmd = displayCmd();
   const hints: Cell[] = [];
   if (moved !== undefined) {
     hints.push(
       { text: `this folder holds the stack journal of "${p.space}" and was moved from ${p.root}`, tone: "waiting" },
-      { text: displayRemedy(movedRootRemedy(p.root), cmd), tone: "hint" });
-    if (canAdoptAfterForget) hints.push({ text: `to keep this location, run ${codeSpan(`${cmd} space forget ${p.space}`)}, then ${codeSpan(`${cmd} space create ${p.space} --adopt --root ${shellWord(moved)}`)}`, tone: "hint" });
+      { text: movedPreparedRemedy(project, moved), tone: "hint" });
   } else if (p.rootMissing) {
     hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with ${codeSpan(`${cmd} space forget ${p.space}`)}, then prepare it again with ${codeSpan(`${cmd} space create ${p.space} --root <dir>`)}`, tone: "hint" });
   } else if (p.state === "unsettled") {

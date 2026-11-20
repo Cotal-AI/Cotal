@@ -6,7 +6,7 @@ import { unknownCommandMessage } from "../lib/nearest-word.js";
 import { findServicePreset, servicePresetCommand } from "../lib/service-presets.js";
 import { cliVersion, printVersion, readExtensionVersions } from "../lib/version.js";
 import { managerServiceCommand } from "./manager-service.js";
-import { readUpdatePending } from "../lib/update-pending.js";
+import { manifestRepair, readUpdatePending } from "../lib/update-pending.js";
 
 /** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
  *  changes nothing, and neither help nor completion offers it. */
@@ -49,7 +49,7 @@ export async function version(args: ParsedArgs): Promise<void> {
           : {
               completeness: "partial",
               warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${unreadable}` }],
-              partial: { message: "the installed extensions could not be listed", remedy: "repair the manifest with `cotal ext seed --repair`" },
+              partial: { message: "the installed extensions could not be listed", remedy: manifestRepair },
             }),
       },
       () => ({ sections: [] }),

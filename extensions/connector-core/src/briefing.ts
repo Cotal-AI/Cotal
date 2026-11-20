@@ -10,6 +10,7 @@
  */
 import { feedbackLine, type AgentConfig } from "./config.js";
 import { CHANNEL_GUIDANCE, MESH_FIRST_STEER, ORIENTATION_BOOTSTRAP, TOOL_STEER, WORKFLOW_STEER } from "./orientation.js";
+import { cotalToolSpecs } from "./tool-specs.js";
 
 /** The harnesses a briefing is rendered for, keyed as each connector tags its tools (`source`).
  *  `gateway` is a conversation that joined through `cotal_connect`; how it hears messages depends on
@@ -50,20 +51,30 @@ export const REPLY_ETIQUETTE =
   "Reply only when a reply is actually needed: a silent acknowledgement is correct, and " +
   '"agreed/thanks/good point" messages are noise.';
 
-/** The briefing for one agent in one harness, as paragraphs. A connector prepends its persona and
- *  places the text where its harness takes a system prompt; it never edits the paragraphs. */
-export function briefing(config: Pick<AgentConfig, "name" | "role" | "space" | "feedbackKey">, harness: BriefingHarness): string {
+/** The briefing for one agent, using the same gated catalog as tool registration. A gateway
+ *  passes the tools its server offers and its connection grants. */
+export function briefing(config: AgentConfig, harness: BriefingHarness, offered?: ReadonlySet<string>): string {
   const arrives = ARRIVES[harness];
-  return [
-    `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}".`,
+  const tools = new Set(cotalToolSpecs(config, harness, undefined, offered).map((spec) => spec.name));
+  const meshFirst = tools.has("cotal_spawn") ? MESH_FIRST_STEER :
+    "Keep multi-agent work on the mesh. Use cotal_dm or cotal_anycast to reach a peer so the work stays visible to the user and addressable by peers. " +
+    "Use a harness subagent only for a self-contained job nobody else needs to follow.";
+  const guidance = [
     ORIENTATION_BOOTSTRAP,
     TOOL_STEER,
-    feedbackLine(config).trim(),
-    MESH_FIRST_STEER,
-    WORKFLOW_STEER,
+    tools.has("cotal_feedback") ? feedbackLine(config).trim() : "Feedback is not available through this connection.",
+    meshFirst,
+    tools.has("cotal_run") ? WORKFLOW_STEER : "Durable workflow runs are not available through this connection.",
     CHANNEL_GUIDANCE,
     `Other agents coordinate with you here as lateral peers. ${arrives ? `${arrives} ` : ""}${REPLY_GUIDANCE}`,
     ATTENTION_GUIDANCE,
     REPLY_ETIQUETTE,
+  ].map((paragraph) => paragraph.split(/(?<=[.!?]) +/).filter((sentence) =>
+    // A gateway can narrow any tool, not just the optional native tools above.
+    (sentence.match(/\bcotal_[a-z][a-z_]*\b/g) ?? []).every((name) => tools.has(name)),
+  ).join(" ")).filter(Boolean);
+  return [
+    `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}".`,
+    ...guidance,
   ].join("\n\n");
 }

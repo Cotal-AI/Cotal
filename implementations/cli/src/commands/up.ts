@@ -75,6 +75,7 @@ import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetst
 import { Kvm } from "@nats-io/kv";
 import {
   assertManagerName,
+  processStopped,
   readManagerName,
   readManagerSeatCap,
   recordManagerName,
@@ -313,7 +314,7 @@ import { cliControl } from "../lib/control.js";
 const pendingRestores = new Map<string, PreparedRestore>();
 
 /** What a guarded restore returned, for `backup restore` to report as its own receipt. `up --restore`
- *  never sets a sink and its output is unchanged. Delivered only after the native activation wrote
+ *  never sets a sink and prints its own startup receipt. Delivered only after the native activation wrote
  *  the active journal; every earlier failure still throws through the same restore guards. */
 export interface RestoreStartupResult {
   attemptId: string;
@@ -439,6 +440,8 @@ function assertIssuedBackupDirArgument(raw: string): void {
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  if (typeof args.values.file === "string" && !args.values.file.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
   if (args.values.restore === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
@@ -1717,6 +1720,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     startupLock = undefined;
   };
   try {
+    // A suspended pinned broker still holds this root's store, even at a different requested port.
+    const brokerPin = verifyIdentityPin(cotalPath(NATS_PIDFILE));
+    if (brokerPin.kind === "match" && processStopped(brokerPin.record.pid))
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPin.record.pid}, is suspended and cannot answer; no broker was launched`, { target: { root: cotalRoot(), pid: brokerPin.record.pid }, remedy: `resume it with ${codeSpan(`kill -CONT ${brokerPin.record.pid}`)} and run ${codeSpan(`${displayCmd()} up`)} again` });
     // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
     // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
     // it on the lock would refuse the very resume the lock is here to protect.
@@ -2241,7 +2248,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
     refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   }
-  await assertBrokerAddressFree(server, "cotal up");
+  await assertBrokerAddressFree(server, `${displayCmd()} up${values.host === undefined ? "" : ` --host ${shellWord(host)}`}`, host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
@@ -2249,6 +2256,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     checkStartStore(values["store-dir"], values.space ?? folderSpace());
   }
   const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+  const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
   const boundListener: DetachOpts["boundListener"] = restored ? {
     serverName: restored.serverName,
     serverNonce: restored.serverNonce,
@@ -2262,7 +2270,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   } : undefined;
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
-    const quietRestore = restored !== undefined && restoreSinks.has(restored.attemptId);
     // The receipt names its space before the launch prints anything, as every report does. A start that
     // refuses the space reports that on stderr under its own `Mesh:` heading, so those checks run
     // first; the launch below repeats them and finds them settled.
@@ -2329,18 +2336,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       server,
       startupLock,
     );
-    // `backup restore` prints its own receipt; `up --restore` names the attempt and its next step here.
-    if (restored && !quietRestore) {
-      console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
-      const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
-      console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
-      if (composition.note) console.log(c.yellow(composition.note));
-      const cleanupRoot = values.__invokedRoot && values.__invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
-      for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot)) console.log(c.yellow(line));
-      const journal = readMaintenanceJournal(restored.root);
-      if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-        console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot)}`));
-    }
+    if (restored && !quietRestore) printRestoreReceipt(restored, values.__invokedRoot);
     if (!quietRestore) {
       const managerRecord = managerRecordState(receiptSpace);
       console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: detachedNext({ ...detached, controlPlane, ...(managerRecord.state === "unattributable" ? { unattributableManager: managerRecord.path, noManager } : {}) }, receiptSpace) }] }, "rich", process.stdout)}`);
@@ -2594,12 +2590,27 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       startupLock,
     );
     activationFinished = true;
+    if (restored && !quietRestore) printRestoreReceipt(restored, values.__invokedRoot);
   }
   releaseStartupLock();
   await new Promise<void>(() => {});
   } finally {
     releaseStartupLock();
   }
+}
+
+/** The human receipt for a completed `up --restore`. `backup restore` prints its own receipt. */
+function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: string): void {
+  console.log(c.green(`✓ restored the backup ${restored.selection === "registry" ? "registry" : "in full"} as restore attempt ${restored.attemptId}`));
+  const composition = restoreComposition(restored.space, restored.restoredStreams, restored.mode);
+  console.log(c.dim(`restored: ${composition.restoredWords}; recreated empty: ${composition.emptyWords}`));
+  if (composition.note) console.log(c.yellow(composition.note));
+  const cleanupRoot = invokedRoot && invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
+  const cmd = displayCmd();
+  for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
+  const journal = readMaintenanceJournal(restored.root);
+  if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
@@ -3746,7 +3757,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     stderrLine("✗ ", `${brokerAddressForDisplay(server) ?? "selected address"} already has a broker - a fresh boot will not adopt it. Stop the owned stack or select another address; team deploy supports only all-new channel cards, not agent apply.`, c.red);
     process.exit(1);
   }
-  await assertBrokerAddressFree(server, `cotal up -f ${file}`);
+  await assertBrokerAddressFree(server, `${displayCmd()} up -f ${shellWord(file)}`, host);
   // Connectors + their required binaries must exist before any mutation (no fallback).
   const conn = await preflightConnectors(prepared);
   if (conn) {
@@ -4444,11 +4455,12 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-async function assertBrokerAddressFree(server: string, command: string): Promise<void> {
-  const bindError = await listenerBindError(server);
+async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
+  const bindError = await listenerBindError(server, bindHost);
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
-  const { host, port } = brokerListenAddress(server), address = new URL(server);
-  const { says, frees } = addressHolder("the broker address", host, port);
+  const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
+  const host = bindHost ?? dialHost;
+  const { says, frees } = await addressHolder("the broker address", host, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
     remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,

@@ -13,6 +13,9 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 ## down [#down]
 
+An empty or whitespace-only `--file` (`-f`) or `--run` value refuses `USAGE_INVALID`, exit 1,
+before any process stops or any record changes. It never falls through to the folder's whole-stack stop.
+
 Every `down` runs to its end when the reader of its output goes away, as `| head` does. It
 keeps stopping, writes nothing more, and exits with the stop's own status.
 
@@ -64,7 +67,8 @@ project root. A root with no `.cotal/` directory, or with no stack registered at
 `TARGET_NOT_FOUND`, exit 2, because there is no stack there to preview. Its next step is the folder
 where `cotal up` started a stack, or, when this machine has no stack started or registered at all,
 `cotal up` in a project, as `cotal status` says. A bare `down` in such a folder refuses the same
-way. A root whose stack is
+way, including with `--json` or `--plain`. Its JSON target names the current root rather than
+replacing the missing-stack diagnosis with an unsupported-output refusal. A root whose stack is
 already stopped shows the no-op described below instead. In the machine home, a stack an earlier
 release started there is read the same way, and the Next names `cotal down --preserve-state`, its
 stop, or says that none of it is running. Add `--space <name>` to
@@ -119,6 +123,8 @@ warning says so. The JSON `cleanup` field then reads `registration-removed-deliv
 definitions and the journal remain for the next `up`, and the space stays prepared at its root. A
 selection that names it stays, so the next command run without `--space` refuses with
 `TARGET_UNAVAILABLE`, exit 2, and names the root to start it in, rather than reach another space.
+When the stack was started with `--no-manager`, the stop receipt recommends `cotal up --no-manager`
+to restart it without a manager.
 No descendant, lease or authority cleanup is
 implied. A dry run reads records and, with a live manager, how much the space's store holds. It takes
 no lock, does not establish native impact and exits 0;

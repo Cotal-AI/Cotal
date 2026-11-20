@@ -144,34 +144,35 @@ const deliveryDaemons = (space: string) => daemonsOf("__daemon-deliver", space);
 const pids: number[] = [];
 let startedOccupant = false;
 try {
-  ok("detached summary omits unavailable mode-dependent components", renderDetachedSummary({
+  const launchers = ["cotal", "pnpm cotal"];
+  ok("detached summary omits unavailable mode-dependent components", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: false,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42) - stop with: `cotal down`");
-  ok("detached summary reports partial component availability independently", renderDetachedSummary({
+  }) === `✓ running in the background: nats-server (pid 42) - stop with: \`${launcher} down\``));
+  ok("detached summary reports partial component availability independently", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal down`");
+  }) === `✓ running in the background: nats-server (pid 42), delivery daemon - stop with: \`${launcher} down\``));
   // Bare `down` refuses the machine home, so the home stack's summary names the stop that works.
-  ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", renderDetachedSummary({
+  ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: true,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: `cotal down --preserve-state`");
+  }) === `✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: \`${launcher} down --preserve-state\``));
   // With no manager, --preserve-state refuses until one serves the space, so the summary names both steps.
-  ok("a machine-home summary with no manager names cotal up before down --preserve-state", renderDetachedSummary({
+  ok("a machine-home summary with no manager names cotal up before down --preserve-state", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: false,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal up` to start its manager, then `cotal down --preserve-state`");
+  }) === `✓ running in the background: nats-server (pid 42), delivery daemon - stop with: \`${launcher} up\` to start its manager, then \`${launcher} down --preserve-state\``));
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
@@ -218,14 +219,15 @@ try {
   ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
   ok(
     "auth up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(up.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(up.stdout)),
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
   const upText = plain(up.stdout);
   ok("the receipt begins with the mesh it started", upText.startsWith(`Mesh: ${SPACE}\n\n`), up.stdout);
   ok("it says the new project's space is named after its folder", upText.includes(`This new project's space is named after its folder, "${SPACE}"`), up.stdout);
-  ok("it ends with a Next that launches an agent and stops the stack", new RegExp(`\nNext\n\\s+cotal spawn --space ${SPACE}\\s+Launch your default agent\n\\s+cotal down\\s+Stop the stack\\s*$`).test(upText), up.stdout);
+  ok("it ends with a Next that launches an agent and stops the stack", launchers.some((launcher) =>
+    new RegExp(`\nNext\n\\s+${launcher} spawn --space ${SPACE}\\s+Launch your default agent\n\\s+${launcher} down\\s+Stop the stack\\s*$`).test(upText)), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
@@ -376,7 +378,7 @@ try {
   );
   ok(
     "a no-op refresh ends with the Next a launch ends with: spawn, because its manager runs, and the stop",
-    /\nNext\n\s+cotal spawn --space \S+\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(plain(noop.stdout)),
+    /\nNext\n\s+(pnpm )?cotal spawn --space \S+\s+Launch your default agent\n\s+\1cotal down\s+Stop the stack\s*$/.test(plain(noop.stdout)),
     plain(noop.stdout),
   );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
@@ -386,7 +388,7 @@ try {
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down", "--yes");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
-  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
+  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+(?:pnpm )?cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
 
   for (let i = 0; i < 24 && !dead; i++) {
@@ -434,7 +436,7 @@ try {
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
-    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
+    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
   // A read of a registration whose address this running stack serves is refused by the holder's
   // name, and the record stays: deleting it would leave its folder naming no space at all, and the
@@ -469,7 +471,7 @@ try {
   const openManagerPid = () => Number(readFileSync(openRecord(MANAGER_PIDFILE), "utf8").trim());
   const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
   const openBoot = openRefresh();
-  ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
+  ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
   const openManager = openManagerPid();
   pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
   for (const extra of [[], ["--runtime", "pty"]]) {
@@ -539,13 +541,13 @@ process.report.getReport = () => {
   // internal names.
   const removal = `rm ${shellWord(openRecord(MANAGER_PIDFILE))}`;
   const recordCheck = "The manager pidfile names no process, so cotal cannot check whether a manager still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.";
-  const recoveryNext = [[removal, "Remove it once no manager runs for this folder"], ["cotal up", "Then start the manager"]];
+  const recoveryNext = launchers.map((launcher) => JSON.stringify([[removal, "Remove it once no manager runs for this folder"], [`${launcher} up`, "Then start the manager"]]));
   for (const extra of [[], ["--runtime", "pty"]]) {
     const degraded = openRefresh(...extra);
     const degradedOut = plain(degraded.stdout + degraded.stderr);
     ok(`an open refresh${extra.length ? " with --runtime" : ""} over a manager pidfile that holds no pid exits 1 with the degraded line, and its Next states the operator's check, then removes that file and refreshes instead of a down that refuses it`,
       degraded.status === 1 && degradedOut.includes(`! control plane degraded: the manager pidfile at ${openRecord(MANAGER_PIDFILE)} holds content that is not a pid ("not-a-pid")`) &&
-        nextCheck(degraded.stdout) === recordCheck && JSON.stringify(nextRows(degraded.stdout).slice(1)) === JSON.stringify(recoveryNext) && !/stopped stack/.test(degraded.stdout) && !/cutover preflight|Plane-3|fanout\/reader/.test(degradedOut), degradedOut);
+        nextCheck(degraded.stdout) === recordCheck && recoveryNext.includes(JSON.stringify(nextRows(degraded.stdout).slice(1))) && !/stopped stack/.test(degraded.stdout) && !/cutover preflight|Plane-3|fanout\/reader/.test(degradedOut), degradedOut);
   }
   // On an 80-column terminal the report wraps as every other warning does. Only the words wider than
   // the line stay whole: the pidfile path, and the Next command that removes it.
@@ -587,7 +589,7 @@ process.report.getReport = () => {
     { pidfile: existsSync(record(DELIVERY_PIDFILE)), daemons: process.platform === "linux" ? deliveryDaemons(SPACE) : "not read" });
   ok(
     "open up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(open.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(open.stdout)),
     open.stdout,
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
@@ -641,7 +643,7 @@ process.report.getReport = () => {
   ok("broker-only up --detach exits 0", brokerOnly.status === 0, brokerOnly.stdout + brokerOnly.stderr);
   ok(
     "broker-only up reports the exact running component set (no manager)",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: `cotal down`$/m.test(brokerOnlyOut),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: `(?:pnpm )?cotal down`$/m.test(brokerOnlyOut),
     brokerOnly.stdout,
   );
   ok("broker-only boot writes no manager pidfile", !existsSync(record(MANAGER_PIDFILE)), record(MANAGER_PIDFILE));

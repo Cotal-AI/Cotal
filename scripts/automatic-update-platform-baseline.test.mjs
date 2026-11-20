@@ -287,6 +287,7 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes('const stackEnded = foreignStackEnded('));
   assert(source.includes("const endObservation = ok(await call('observe container immediately after stock down'"));
   assert(source.includes("observedAt: report.calls.findLast(entry => entry.label === 'observe container immediately after stock down').startedAt"));
+  assert(source.includes("observedUntil: report.calls.findLast(entry => entry.label === 'observe container immediately after stock down').finishedAt"));
   assert(source.includes("assert(stackEnded, 'owned stock stack end was not confirmed')"));
   assert(source.indexOf("'observe container immediately after stock down'") < source.indexOf("'stop owned foreign supervisor and broker'"));
   for (const name of ['owned local stack cleanup succeeds', 'foreign container cleanup succeeds', 'source generation unchanged']) assert(source.includes(name));
@@ -501,7 +502,10 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
   }
   assert(workflow.jobs.priority.steps.some(step => step.run?.includes('--stale-version 0.161.1 --method self')));
   const desktop = workflow.jobs['desktop-beside-cli'];
-  assert(desktop.steps.some(step => step.with?.['run-id'] === 43456519342 && step.with?.name === 'desktop-release-Linux-X64'));
+  const releasedDesktop = step => step.run?.includes("gh release download v0.164.2") && step.run.includes("--pattern 'Cotal_0.164.2_amd64.deb'");
+  assert(desktop.steps.some(releasedDesktop));
+  assert(workflow.jobs['release-cells'].steps.some(step => releasedDesktop(step) && step.if === "matrix.scenario == 'candidate-next-stopped-desktop-self'"));
+  for (const job of Object.values(workflow.jobs)) assert(!job.steps?.some(step => typeof step.with?.['run-id'] === 'number'), 'a pinned run id names artifacts that expire');
   assert(desktop.steps.some(step => step.run?.includes('--desktop-runtime') && step.run.includes('--desktop-node')));
   assert.deepEqual(workflow.jobs['candidate-B'].strategy.matrix.source, ['0.164.0']);
   assert.deepEqual(workflow.jobs['candidate-B-expanded'].strategy.matrix.source, sources);

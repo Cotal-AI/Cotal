@@ -74,7 +74,7 @@ try {
       const brokerRecord = join(root, ".cotal", "nats.pid");
       if (existsSync(brokerRecord)) brokerPid = Number(readFileSync(brokerRecord, "utf8").trim());
       suite.check(`${label} startup reaches the real retained broker launcher`,
-        brokerPid !== undefined && probeLiveness(brokerPid) === "alive" && /✓ running in the background: nats-server \(pid \d+\) - stop with: `cotal down`/.test(output), output);
+        brokerPid !== undefined && probeLiveness(brokerPid) === "alive" && /✓ running in the background: nats-server \(pid \d+\) - stop with: `(?:pnpm )?cotal down`/.test(output), output);
       if (malformed) {
         // What only the operator can establish before removing the file: a manager that does not
         // answer on the mesh, so that `cotal ps` finds none, may still be running.
@@ -91,9 +91,10 @@ try {
         // `down` refuses that pidfile too, so Next states the operator's check, then removes the file
         // and runs the broker-only start again.
         const next = plain(result.stdout).trimEnd().split("\n");
+        const upRows = next.slice(next.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/));
         suite.check("a broker-only start's Next states the operator's check, then removes the pidfile and runs up --no-manager again, not a down that refuses it",
-          JSON.stringify(next.slice(next.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) ===
-            JSON.stringify([[recordCheck], [`rm ${pidfile}`, "Remove it once no manager runs for this folder"], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
+          ["cotal", "pnpm cotal"].some((launcher) => JSON.stringify(upRows) ===
+            JSON.stringify([[recordCheck], [`rm ${pidfile}`, "Remove it once no manager runs for this folder"], [`${launcher} up --no-manager`, "Then refresh the stack without a manager"]])), output);
         // `down` refuses that record too, without calling it a process. Its Next states the check
         // only the operator can make before it names the removal. Nothing is stopped or removed.
         const refused = run("down", "--yes");
@@ -102,12 +103,13 @@ try {
           refused.status === 1 && !refusedOutput.includes("Stop that process") &&
           plain(refused.stderr).includes(`the manager pidfile at ${pidfile} holds content that is not a pid ("garbage"), so it names no process and cotal cannot tell whether a manager still runs; refusing to remove it or report a clean stop`), refusedOutput);
         const refusedNext = plain(refused.stdout).trimEnd().split("\n");
+        const downRows = refusedNext.slice(refusedNext.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/));
         suite.check("down's Next states the operator's check before the removal, then runs the same down",
-          JSON.stringify(refusedNext.slice(refusedNext.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) === JSON.stringify([
+          ["cotal", "pnpm cotal"].some((launcher) => JSON.stringify(downRows) === JSON.stringify([
             [recordCheck],
             [`rm ${pidfile}`, "Remove it once no manager runs for this folder"],
-            ["cotal down --yes", "Then stop the stack"],
-          ]), refusedOutput);
+            [`${launcher} down --yes`, "Then stop the stack"],
+          ])), refusedOutput);
         suite.check("down keeps that pidfile and the broker",
           readFileSync(pidfile, "utf8") === "garbage" && brokerPid !== undefined && probeLiveness(brokerPid) === "alive", refusedOutput);
         // This fixture started no manager (--no-manager), so it knows none runs for this folder.

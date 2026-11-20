@@ -6,8 +6,9 @@
  * its local control socket and print the reply for the runtime to apply, but only once the
  * connector has proved it holds the endpoint's key and the reply's MAC verifies (the control
  * exchange in `@cotal-ai/core/control-exchange`). The key itself is never sent. It must NEVER
- * block the session: any error → exit 0, no output. The Claude Code hook
- * entry points are one-liners over {@link runHookRelay}.
+ * block the session: any error → exit 0, no output. An event the hook marks as held waits for its
+ * reply with no deadline once a proven server has it, while the runtime's own dialog stays open.
+ * The Claude Code hook entry points are one-liners over {@link runHookRelay}.
  */
 import { connect } from "node:net";
 import { checkControlSocketDir, clientExchange, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
@@ -130,9 +131,20 @@ function done(out: string, confirm?: (then: () => void) => void): void {
  *  the only kind the relay forwards. */
 export type LocalHookAnswer = (event: unknown, session: { managed: boolean }) => Record<string, unknown> | undefined;
 
+export interface HookRelayOptions {
+  /** Events the connector holds until someone answers them, such as a tool permission. The 2 s
+   *  deadline still bounds the dial and the server's proof of a held event, and ends once its request
+   *  was sent to a proven server, so only the runtime's own hook timeout bounds the wait for the reply. */
+  readonly holds?: (event: unknown) => boolean;
+}
+
 /** Relay one hook event from stdin to the connector's control socket and print the reply. `answer`
  *  runs first, so a decision that needs no connector state holds even when the socket is down. */
-export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: unknown, session: { managed: boolean }) => Promise<void>): Promise<void> {
+export async function runHookRelay(
+  answer?: LocalHookAnswer,
+  observe?: (event: unknown, session: { managed: boolean }) => Promise<void>,
+  opts: HookRelayOptions = {},
+): Promise<void> {
   const managed = hasIdentity();
   if (!managed && !answer && !observe) return done(""); // plain session with nothing to answer — no-op
   const raw = (await readStdin()).trim() || "{}";
@@ -173,6 +185,12 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
   // operator to ignore the channel.
   if (!control) return done("");
   const endpoint = control;
+  let held = false;
+  try {
+    held = opts.holds?.(event) === true;
+  } catch {
+    /* a predicate that throws holds nothing */
+  }
   const startupCritical = isSessionStart(event);
   const launch = startupCritical && LAUNCH_SOURCES.has((event as { source?: unknown }).source);
   let sock: ReturnType<typeof connect> | undefined;
@@ -274,7 +292,14 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
             );
             finish("");
           },
-          { maxReplyBytes: MAX_HOOK_REPLY_BYTES, onRequestSent: () => (requestSent = true) },
+          {
+            maxReplyBytes: MAX_HOOK_REPLY_BYTES,
+            onRequestSent: () => {
+              requestSent = true;
+              // A proven server has the held event: it answers when someone does, or closes.
+              if (held) clearTimeout(timer);
+            },
+          },
         );
       } catch {
         finish("");

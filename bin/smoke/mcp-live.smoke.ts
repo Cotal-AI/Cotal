@@ -190,6 +190,10 @@ try {
   const handle = /connection_id: ([^\s]+)/.exec(text(connected))?.[1];
   assert.ok(handle, text(connected));
   check("cotal_connect returns a real connection and the persona channel grants", text(connected).includes("general") && identities().length === 1);
+  for (const [surface, copy] of [["initialize", instructions ?? ""], ["cotal_connect", text(connected)]]) {
+    const unavailable = [...new Set(copy.match(/\bcotal_[a-z][a-z_]*\b/g))].filter((name) => !tools.includes(name));
+    check(`${surface} names only tools served by stdio MCP`, unavailable.length === 0, unavailable);
+  }
   await until(() => observer!.getRoster().some((p) => p.card.name === "reader"), "reader presence missing");
   const presence = observer.getRoster().find((p) => p.card.name === "reader")!;
   check("presence uses the mcp connector and one stable lifecycle", presence.card.meta?.connector === "mcp" && Boolean(presence.lifecycleUid));

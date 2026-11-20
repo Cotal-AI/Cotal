@@ -106,7 +106,7 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  */
 export function setupProfile(
   home: string,
-  opts: { model: string | undefined; persona?: string; config: Pick<AgentConfig, "name" | "role" | "space" | "feedbackKey"> },
+  opts: { model: string | undefined; persona?: string; config: AgentConfig },
 ): void {
   // A managed profile is a temporary directory and reads nothing from ~/.hermes, so the model the
   // operator configured there is not a model this gateway has. With none resolved here, hermes

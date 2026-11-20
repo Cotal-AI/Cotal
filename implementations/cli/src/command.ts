@@ -44,6 +44,7 @@ import {
   type OperationScope,
   type OutputWarning,
   staleStoreHint,
+  UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "./ui.js";
 import { debugFlag } from "./lib/debug-flag.js";
@@ -676,22 +677,36 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
-  const useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate;
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate;
+  function skipUnreadableConnectorOverlay(error: unknown): boolean {
+    if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
+    if (builtin.name === "down") {
+      const parsed = parseOrExit(builtin, ownWords(builtin));
+      if (parsed.positionals.length || parsed.values.file || parsed.values.run || parsed.values["with-agents"] || parsed.values["preserve-state"]) return false;
+    }
+    // These built-ins can report or stop recorded state without loading extension commands.
+    // Status still reports the unreadable inventory from its own readers.
+    useExtensionOverlay = false;
+    setInstalledExtensionsEnabled(false);
+    return true;
+  }
   const configFolder = globalConfigDirProblem();
   if (useExtensionOverlay) {
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder)) return;
       recoverExtensionPromotion();
     } catch (e) {
-      if (repeatedLeading) {
-        const warnings: OutputWarning[] = [];
-        let found: Command | undefined;
-        try { found = findCommand(overlayExtensions(registry, collisionWarning(warnings)), word); }
-        catch { /* The current manifest cannot supply refusal context. */ }
-        return repeatedGlobalFlag(repeatedLeading, found, ownWords(found), warnings);
+      if (!skipUnreadableConnectorOverlay(e)) {
+        if (repeatedLeading) {
+          const warnings: OutputWarning[] = [];
+          let found: Command | undefined;
+          try { found = findCommand(overlayExtensions(registry, collisionWarning(warnings)), word); }
+          catch { /* The current manifest cannot supply refusal context. */ }
+          return repeatedGlobalFlag(repeatedLeading, found, ownWords(found), warnings);
+        }
+        seedRefusal(e);
+        process.exit(1);
       }
-      seedRefusal(e);
-      process.exit(1);
     }
   }
   function collisionWarning(warnings: OutputWarning[]) {
@@ -703,11 +718,13 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       commands = useExtensionOverlay && !versionJson ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
-      if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
-      // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
-      // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
-      stderrLine("✗ ", (e as Error).message, c.red);
-      process.exit(1);
+      if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
+      else {
+        if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
+        // A corrupt extensions manifest must not silently shrink the surface.
+        stderrLine("✗ ", (e as Error).message, c.red);
+        process.exit(1);
+      }
     }
     for (const cmd of commands) {
       const problems = [
@@ -889,7 +906,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
       const renderRemedy = ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
-      if (isConnectRefusal(e)) failureExit(cmd, inOperationSpace(await choice(e.failure(renderRemedy)), scope.space), json, parsed.values.plain === true, scope);
+      if (isConnectRefusal(e)) {
+        const failure = e.failure(renderRemedy), cause = e.cause;
+        if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
+          const { stoppedStackAddressProblem } = await import("./commands/stack-up.js");
+          const held = await stoppedStackAddressProblem(cause.details.root, cause.details.space);
+          if (held) failureExit(cmd, inOperationSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }), scope.space), json, parsed.values.plain === true, scope);
+        }
+        failureExit(cmd, inOperationSpace(await choice(failure), scope.space), json, parsed.values.plain === true, scope);
+      }
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         const target = spaceRootTarget({ root: e.details.root, space: targetErrorSpace(e.details) });

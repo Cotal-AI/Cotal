@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -116,6 +116,15 @@ try {
   const npmLink = readlinkSync(npmLauncher);
   const bootstrap = realpathSync(join(npmHome, ".npm-global/lib/node_modules/cotal-ai/dist/cotal.js"));
   assert.equal(realpathSync(npmLauncher), join(dirname(bootstrap), "cotal-npm"), "npm's executable links to the shell launcher");
+  const launcherText = readFileSync(npmLauncher, "utf8");
+  for (const [shell, ...args] of [["/bin/sh", "-n"], ["bash", "--posix", "-n"]]) {
+    const syntax = spawnSync(shell, args, { env: npmEnv, input: launcherText, encoding: "utf8", timeout: 10_000 });
+    assert.equal(syntax.status, 0, `${shell}: ${output(syntax)}`);
+  }
+  // Restrict substitutions to simple one-liners so no case pattern can fool Bash 3.2's parser.
+  const substitutions = [...launcherText.matchAll(/\$\(([^()\n]*)\)/g)];
+  assert.equal(substitutions.length, launcherText.split("$(").length - 1, "launcher command substitutions are flat and single-line");
+  assert(substitutions.every(([, command]) => !/\bcase\b/.test(command)), "launcher has no case inside a command substitution");
   const noNode = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(noNode.status, 0, output(noNode));
   assert.equal(noNode.stdout.trim(), "cotal-ai 0.0.0", "npm launcher uses the install-time Node without Node on PATH");
@@ -133,6 +142,39 @@ try {
   assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
   assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
   assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage a second installation");
+
+  {
+    const staging = join(npmHome, ".npm-global");
+    const moved = join(npmHome, "moved prefix's");
+    renameSync(staging, moved);
+    const movedBin = join(moved, "bin");
+    const aliasBin = join(npmHome, "linked-bin");
+    symlinkSync(movedBin, aliasBin);
+    const readlinkBin = join(npmHome, "private-bin");
+    const readlinkLog = join(npmHome, "readlink-used");
+    mkdirSync(readlinkBin);
+    writeFileSync(join(readlinkBin, "readlink"), `#!/bin/sh
+printf '%s\\n' "$1" > "$HOME/readlink-used"
+exec "$FIXTURE_NODE" -e 'console.log(require("node:fs").readlinkSync(process.argv[1]))' -- "$1"
+`, { mode: 0o755 });
+    const readlinkEnv = { ...npmEnv, FIXTURE_NODE: process.execPath };
+    for (const [bin, path] of [[movedBin, toolPath], [aliasBin, readlinkBin]]) {
+      const start = spawnSync(join(bin, "cotal"), ["--version"], { env: { ...readlinkEnv, PATH: path }, encoding: "utf8", timeout: 10_000 });
+      assert.equal(start.status, 0, output(start));
+      assert.equal(start.stdout.trim(), "cotal-ai 0.0.0", `npm launcher starts after relocation through ${bin}`);
+    }
+    const movedLauncher = join(movedBin, "cotal");
+    assert.equal(readFileSync(readlinkLog, "utf8").trim(), join(realpathSync(movedBin), "cotal"), "the pinned Node launch uses readlink from the private PATH first");
+    const movedBootstrap = join(dirname(realpathSync(movedLauncher)), "cotal.js");
+    renameSync(movedBootstrap, `${movedBootstrap}.saved`);
+    const unresolved = spawnSync(movedLauncher, ["--version"], { env: { ...readlinkEnv, PATH: readlinkBin }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(unresolved.status, 1, output(unresolved));
+    assert.equal(unresolved.stdout, "");
+    assert.equal(unresolved.stderr, `cotal: cannot resolve the JavaScript entry from launcher ${movedLauncher}\n`);
+    renameSync(`${movedBootstrap}.saved`, movedBootstrap);
+    renameSync(moved, staging);
+  }
+
   const removeSection = installation.split("## Remove Cotal")[1]?.split("## ")[0];
   const removeSteps = removeSection?.match(/```bash\n([^`]+)```/)?.[1];
   assert(removeSteps, "npm removal instructions include a shell command block");
@@ -488,7 +530,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 141 : 120, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 153 : 132, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

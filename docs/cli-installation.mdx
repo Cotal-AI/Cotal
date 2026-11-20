@@ -286,6 +286,8 @@ continuity claim for that space. A renamed project does not block the software u
 restoring internal identity files. This also applies to a selected prepared space whose project
 folder was deleted before it ever started. Update keeps its saved selection and preparation record.
 Update runs from the surviving project root, or the filesystem root when no project is present.
+It runs npm for the installation and its extensions outside the project, so the project's package
+manager does not affect the update.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -462,6 +464,8 @@ keeps a single attempt. If npm reports a refused connection to the proxy set by 
 `HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
 proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
 without a confirmed proxy refusal remains a no-op.
+If the latest-version check fails for a non-network reason, `cotal update --self` reports npm's
+first diagnostic line and exits with status 1.
 
 Missing release archives wait up to ten minutes before keeping the installed
 version. Invalid metadata, integrity failures and scoped registry access errors refuse before global
@@ -547,6 +551,9 @@ a future follow-up. When `update --self` cannot reach the registry before select
 it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
 custody. It does not create an update recovery record. From 0.167.1, losing registry connectivity during release checks, extension-dependency
 checks or target staging also reports that nothing changed and exits 0 before replacement.
+On Linux and macOS, the updater stops a staging install that stops making progress or reaches
+its five-minute limit. It removes the disposable staging copy and leaves the running installation
+and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
 A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
 Authentication, permission, integrity and target pre-install refusals still exit nonzero.
 Retry `cotal update --self` when connectivity returns. The version read has no retries and a
@@ -574,12 +581,18 @@ directory or notifier stamp. Missing registry data or an unreadable extension in
 unknown or partial, never an empty successful check.
 If the extension manifest is corrupt, the check still reports the running and registry versions,
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
-and the `EXTENSION_INVENTORY_UNREADABLE` warning.
+and the `EXTENSION_INVENTORY_UNREADABLE` warning. The check directs you to `cotal ext seed --repair`
+before running an update.
 
 If an interrupted connector seed needs manual repair, the Reconciliation section gives the same
 diagnosis and `cotal ext seed --repair` guidance as the extension command, even when recorded
 extension versions match. Both text and JSON reports exit 4, and JSON reports partial completeness.
 The check leaves the seed state unchanged.
+
+An update that cannot write a read-only application configuration keeps the verified CLI release and
+reports the file and integration change left undone. `cotal status` checks the registration and
+reports when it still needs a change and the file is protected. Make the named file writable and run
+`cotal update` to finish.
 
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
@@ -724,9 +737,9 @@ change and asks you to check again when the command finishes. If the versions st
 status recommends `cotal update --self`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
-root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
-`cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
-prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
+root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`.
+The Extensions section of `cotal status` shows the recorded pins. `cotal ext root` prints only the
+path, for scripts. The listing's versions are the manifest pins recorded at add time.
 On POSIX, cotal creates a missing Cotal config directory with mode `0700`, even with a
 group-writable umask, whichever command writes there first. The extension writer creates a missing
 install prefix with mode `0755` and its `package.json` with mode `0644`. Its npm children start with 022 added to your umask. The
@@ -741,8 +754,11 @@ prefix and `result.items` holds one row per installed extension with `pkg`, `ver
 without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
 `ext root` stays a raw path for `$(cotal ext root)`.
 
-An installed package whose directory is gone is reported as not installed. One whose `package.json`
-is not JSON or has no `version` is reported as corrupt, naming the package and its `package.json`.
+`ext list` checks package metadata without loading or repairing extensions. It keeps each recorded
+row and reports a missing package directory as not installed. A package with a missing or invalid
+`package.json`, including one with no `version`, is reported as corrupt. When metadata cannot be
+verified, the listing exits 4 with a partial report. The warnings name the package, the affected
+path and a recovery step. JSON includes them in `warnings`, and the text report writes them to stderr.
 
 `add`, `remove` and each built-in seed relink the shared peers of every installed package after npm
 changes the prefix. A package recorded in the manifest whose directory is gone does not fail that

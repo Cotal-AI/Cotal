@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1100,
+    "total": 1103,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 878
+    "non-render/control": 881
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -80,31 +80,31 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "tatus: PresenceStatus = \"idle\";\n  /** The turn relay's",
+      "anchor": "\"idle\"",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "ry {\n      if (prev !== \"working\" && status === \"working\"",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "\"working\" && status === \"working\") await this.ep.setCondi",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "one.\n      if (prev === \"working\" && status === \"idle\") t",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
-      "anchor": "\"working\" && status === \"idle\") this.onTurnBoundary();",
+      "anchor": "\"idle\"",
       "class": "non-render/control"
     },
     {
@@ -1225,21 +1225,21 @@
       "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    } finally {\n      this._status = status;\n    }\n    });\n  }\n\n  p",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim. #2065 wrapped the body in inOrder, which added the closing });."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "tion(null);\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
@@ -3940,7 +3940,7 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.ep.setStatus(status, activity)",
       "class": "non-render/control",
@@ -4162,14 +4162,14 @@
       "rationale": "Turn-yield control flow: returns the manager's refusal to the caller early; the status is a request field, not a rendered presence status."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "ransition at all.\n      this._status = status;\n      this.turnStatus ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.turnStatus = status",
       "class": "non-render/control",
@@ -5493,6 +5493,13 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
+      "anchor": "from ${p.root})`, tone: \"waiting\" } : p.rootMissing ? { t",
+      "class": "non-render/control",
+      "rationale": "Space list root cell: the color tone describes a moved project, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
       "anchor": " longer exists)`, tone: \"waiting\" } : { text: p.root, ton",
       "class": "non-render/control",
       "rationale": "Space list root cell: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
@@ -5514,7 +5521,7 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: displa",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedP",
       "class": "non-render/control",
       "rationale": "Prepared space view: \"waiting\" is the color tone for a stack journal whose folder was moved, not any peer's presence."
     },
@@ -5605,14 +5612,14 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with \\`cotal up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`cotal up\\` again`",
+      "anchor": "`start this stack at another address with \\`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`${displayCmd()} up\\` again`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare \\`cotal up\\` from ${root}; this stack keeps its recorded address`",
+      "anchor": "`${stopHolder}, then run bare \\`${displayCmd()} up\\` from ${root}; this stack keeps its recorded address`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -6004,21 +6011,21 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "tal down\", description: `Stop the stack${where}` });\n  else if (status.m",
+      "anchor": "md} down`, description: `Stop the stack${where}` });\n  else if (status.m",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "ve-state\", description: `Stop the stack${where}` });\n  else items.push({",
+      "anchor": "ve-state`, description: `Stop the stack${where}` });\n  else items.push({",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`cotal up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
+      "anchor": "`${cmd} up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
       "class": "non-render/control",
       "rationale": "Up result recovery command uses the recorded stack root, not agent presence or work progress."
     },
@@ -7795,6 +7802,20 @@
       "anchor": "this.turns.yieldTurn(status, opts)",
       "class": "non-render/control",
       "rationale": "Forwards the caller's yield verdict (done, blocked or handoff) to the turn component; the argument is a turn-control token, not a peer's presence, and nothing is rendered here."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.setStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status to the presence component, which publishes it on the wire; the forwarder renders nothing."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.resetStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status reset to the presence component, which publishes it on the wire; the forwarder renders nothing."
     },
     {
       "path": "implementations/cli/src/commands/ext.ts",

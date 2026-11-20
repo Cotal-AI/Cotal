@@ -110,7 +110,7 @@ try {
   const chmod = /make it writable with `chmod u\+w (.+?)` to change its personas/.exec(readOnly.out)?.[1];
   check("a persona catalog that cannot be written names chmod u+w with the folder quoted", readOnly.status === 2 && shellWords(chmod) === `${agents}\n`, { chmod, out: readOnly.out });
   const away = cliIn(base, "up", "--root", root, "--no-manager", "--server", `nats://127.0.0.1:${PORT}`);
-  const addManager = /^ {2}cotal up --root (.+?) {2,}Add the manager to this stack$/m.exec(away.out)?.[1];
+  const addManager = /^ {2}(?:pnpm )?cotal up --root (.+?) {2,}Add the manager to this stack$/m.exec(away.out)?.[1];
   check("up --root --no-manager from another folder quotes that folder in the up --root its Next offers", away.status === 0 && shellWords(addManager) === `${root}\n`, { addManager, out: away.out });
   const awayDown = cli("down", "--yes");
   check("...and down --yes in that folder stops it", awayDown.status === 0, awayDown.out);

@@ -1,0 +1,2 @@
+# The hook relay holds a marked event past its 2 s, and the control server tells a handler when its hook closes.
+smoke:hook-relay-hold

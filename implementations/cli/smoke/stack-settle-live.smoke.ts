@@ -503,7 +503,7 @@ try {
     check("down --yes prints one receipt: the mesh once, members in stop order with results, and cotal up as the Next",
       finalDown.stdout.startsWith(`Mesh: ${space}\n`) && finalDown.stdout.split("Mesh: ").length === 2 && !/stop plan|stop impact|stop scope/.test(finalDown.stdout)
         && JSON.stringify(rows.map((row) => [row[0], row.slice(2).join(" ")])) === JSON.stringify([["manager", "stopped"], ["delivery", "already stopped"], ["broker", "stopped"]])
-        && finalDown.stdout.trimEnd().endsWith("Next\n  cotal up  Start the stack again from its journal and saved definitions"), finalDown.stdout);
+        && /\nNext\n  (?:pnpm )?cotal up  Start the stack again from its journal and saved definitions$/.test(finalDown.stdout.trimEnd()), finalDown.stdout);
   }
 
   // 2b. A ps while an up is still starting the manager. Delivery is frozen once pinned, so the up
@@ -566,10 +566,39 @@ try {
       check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run \`${clean}\` from that root`)), shown(unregistered));
     }
     const movedPort = await freePort();
-    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
+    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--max-payload", "262144", "--json");
     track(other);
     check("its next up starts at another address", moved.status === 0, shown(moved));
-    check("down --yes stops the moved stack", cli(second, "down", "--yes", "--json").status === 0);
+    const launcher = launcherAt(second);
+    const down = cli(second, "down", "--yes", "--plain");
+    const restart = /^  (.+?) {2}Start the stack again from its journal and saved definitions$/m.exec(down.stdout)?.[1];
+    const expectedRestart = `${launcher} up --no-manager`;
+    check("down --yes tells the operator to restart the broker-only stack without a manager", down.status === 0 && launcher !== undefined && restart === expectedRestart, shown(down));
+    const bare = cli(second, "up", "--plain");
+    check("bare up still refuses to add a manager below its payload floor", bare.status === 1 && bare.stderr.includes("--max-payload 262144 is below 263168 bytes"), shown(bare));
+    if (launcher !== undefined && restart === expectedRestart) {
+      const resumed = cli(second, ...restart.slice(launcher.length + 1).split(" "), "--json");
+      track(other);
+      check("the printed restart starts the same broker without a manager", resumed.status === 0 && pidOf(other, "stack-broker") !== null && pidOf(other, "stack-manager") === null, shown(resumed));
+      check("down --yes stops the restarted stack", cli(second, "down", "--yes", "--json").status === 0);
+    }
+
+    const occupant = createServer();
+    await listenOn(occupant, movedPort);
+    try {
+      const status = cli(second, "status", "--space", other, "--json");
+      const history = cli(second, "history", "--space", other, "general", "--json");
+      const remedy = `stop the process listening on 127.0.0.1:${movedPort}, then run \`${expectedRestart}\` in ${realpathSync(second)}; this stack keeps its recorded address`;
+      const selected = status.env?.result?.selected as { message?: string } | undefined;
+      const hints = status.env?.result?.hints as string[] | undefined;
+      check("status names the stopped stack's occupied address and how to free it", status.status === 0 && selected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true && hints?.includes(remedy) === true && !hints.some((hint) => hint.startsWith("start it again with")), shown(status));
+      check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
+      check("the read commands leave the independent listener and stopped broker alone", occupant.listening && gone(other, "stack-broker"));
+    } finally {
+      await new Promise<void>((done) => occupant.close(() => done()));
+    }
+    const free = cli(second, "history", "--space", other, "general", "--json");
+    check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up` in ") === true, shown(free));
     // Once it ran, it keeps that address, so a broker another space started there must stop first.
     const third = "takenport";
     const taker = prepare(third);
@@ -1164,7 +1193,7 @@ try {
     const readyAfter = readyAt(), journalAfter = readStackJournal(root)?.sha256;
     check("up with a suspended broker refuses within 10s naming its pid and kill -CONT, and records nothing",
       upMs < 10_000 && upHung.status === 2 && upHung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(upHung.env.error.message.includes(`pid ${broker}`))
-        && upHung.env.error.remedy === `resume it with kill -CONT ${broker} and run \`cotal up\` again` && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
+        && ["cotal", "pnpm cotal"].some((prefix) => upHung.env?.error?.remedy === `resume it with kill -CONT ${broker} and run \`${prefix} up\` again`) && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
       { upMs, readyBefore, readyAfter, journalChanged: journalAfter !== journalBefore, ...shown(upHung) });
     check("unconfirmed down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
     check("unconfirmed down leaves its broker suspended and its manager running", hung.status === 1 && broker !== null && processStopped(broker) && manager !== null && alive(manager), shown(hung));

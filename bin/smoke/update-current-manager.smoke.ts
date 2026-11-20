@@ -84,14 +84,21 @@ console.log('LEGACY_READS=' + legacyReads);
     };
     let daemon: ChildProcess | undefined;
     let daemonExit: Promise<number | null> | undefined;
+    let stackStarted = false;
     if (!installerOnly) try {
-      const up = cli("up", "--detach", "--space", "demo", "--server", `nats://127.0.0.1:${await freePort()}`);
+      const create = cli("space", "create", "demo", "--root", ".");
+      assert.equal(create.status, 0, create.stdout + create.stderr);
+      const up = cli("up", "--open", "--detach", "--space", "demo", "--server", `nats://127.0.0.1:${await freePort()}`);
       assert.equal(up.status, 0, up.stdout + up.stderr);
+      stackStarted = true;
+      assert.match(up.stdout, /Controller stack started/);
       const before = cli("update");
       assert.equal(before.status, 0, before.stdout + before.stderr);
       assert.match(before.stdout, /Standalone Manager .* keeps its loaded execution generation/);
       const initial = cli("ps", "--json");
       assert.equal(initial.status, 0, initial.stdout + initial.stderr);
+      const managerBefore = cli("manager", "status", "--json");
+      assert.equal(managerBefore.status, 0, managerBefore.stdout + managerBefore.stderr);
       daemon = spawn(process.execPath, [entry, "daemon", "serve"], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
       daemonExit = new Promise(resolve => daemon!.once("exit", resolve));
       let daemonOutput = "";
@@ -131,32 +138,97 @@ console.log('LEGACY_READS=' + legacyReads);
       seedCurrent(config);
       const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
       await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
+      const updateOther = async (cwd: string, updateEnv: NodeJS.ProcessEnv, ...args: string[]) => {
+        const child = spawn(process.execPath, [join(other, "dist/cotal.js"), "update", ...args], {
+          cwd, stdio: ["ignore", "pipe", "pipe"], timeout: 120_000,
+          env: { ...updateEnv, npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
+        });
+        let output = "";
+        child.stdout.on("data", data => { output += String(data); });
+        child.stderr.on("data", data => { output += String(data); });
+        const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+        assert.equal(code, 0, output);
+        return output;
+      };
       try {
         // Keep the live Manager's launch entry unavailable, as during a concurrent npm replacement.
         renameSync(entry, `${entry}.reinstall`);
         try {
-          const child = spawn(process.execPath, [join(other, "dist/cotal.js"), "update", "--self"], {
-            cwd: otherHome, stdio: ["ignore", "pipe", "pipe"], timeout: 30_000,
-            env: { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"), XDG_CONFIG_HOME: config,
-              XDG_RUNTIME_DIR: join(otherHome, "runtime"), TMPDIR: otherHome,
-              npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
-          });
-          let output = "";
-          child.stdout.on("data", data => { output += String(data); });
-          child.stderr.on("data", data => { output += String(data); });
-          const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-          assert.equal(code, 0, output);
+          const output = await updateOther(otherHome, { ...env, HOME: otherHome, COTAL_HOME: join(otherHome, "state"),
+            XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: join(otherHome, "runtime"), TMPDIR: otherHome }, "--self");
           assert.match(output, /installed package closure is current\. No connector reconciliation was run\./);
         } finally { renameSync(`${entry}.reinstall`, entry); }
+
+        // The installer adds another prefix in the same home, while the selected stack still uses the old one.
+        // No connectors are installed in this prefix. A missing stamp still requires reconciliation.
+        seedCurrent(env.XDG_CONFIG_HOME!);
+        rmSync(join(env.XDG_CONFIG_HOME!, "cotal/seed/stamp.json"));
+        const self = await updateOther(project, env, "--self");
+        assert.match(self, /connectors reconciled/, self);
+        const plain = await updateOther(project, { ...env, COTAL_INSTALL_RECONCILE: "1" });
+        assert.match(plain, /connectors reconciled/, plain);
+        assert.doesNotMatch(self + plain, /legacy manager custody|manual cold update/);
       } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
       const unchanged = cli("ps", "--json");
       assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
-      assert.deepEqual(JSON.parse(unchanged.stdout).result.managers.map((manager: { instanceId: string }) => manager.instanceId), initialManagers.map((manager: { instanceId: string }) => manager.instanceId), "the current self-update leaves the other installation's Manager running");
-      console.log("current self-update: ignores the other installation's live Manager with an unresolved entry");
+      assert.deepEqual(JSON.parse(unchanged.stdout).result.managers.map((manager: { instanceId: string }) => manager.instanceId), initialManagers.map((manager: { instanceId: string }) => manager.instanceId), "updates from the other prefix leave the selected Manager answering");
+      const managerAfter = cli("manager", "status", "--json");
+      assert.equal(managerAfter.status, 0, managerAfter.stdout + managerAfter.stderr);
+      const beforeStatus = JSON.parse(managerBefore.stdout).result, afterStatus = JSON.parse(managerAfter.stdout).result;
+      assert.equal(afterStatus.observedProcess, "running");
+      assert.ok(beforeStatus.pid);
+      assert.equal(afterStatus.pid, beforeStatus.pid, "updates do not replace the selected Manager process");
+      assert.deepEqual(afterStatus.nativeEndpoint, beforeStatus.nativeEndpoint, "updates do not replace its native lifecycle");
+      assert.equal(daemon.exitCode, null, "the other installation's updates leave the foreground daemon running");
+      console.log("separate installation: updates leave the selected Manager and foreground daemon running");
+
+      const sets = join(env.XDG_CONFIG_HOME!, "cotal", "installs", createHash("sha256").update(entry).digest("hex"), "sets");
+      const selection = join(sets, version, "selection.json");
+      const saved = readFileSync(selection);
+      const unknown = '{"v":2,"futureSelection":true}\n';
+      writeFileSync(selection, unknown);
+      try {
+        const shown = cli("--version");
+        assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+        assert.equal(shown.stdout.split("\n", 1)[0], `cotal-ai ${version}`);
+        const status = cli("status");
+        assert.match(status.stdout, /This machine/);
+        assert.match(status.stderr, /connector retention selection.*unreadable/);
+        const connectors = cli("ext", "list");
+        assert.equal(connectors.status, 1, connectors.stdout + connectors.stderr);
+        assert.match(connectors.stderr, /connector retention selection.*unreadable.*cotal ext seed --repair/);
+        const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
+        await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
+        try {
+          const update = spawn(process.execPath, [entry, "update", "--self"], {
+            cwd: project, timeout: 30_000,
+            env: { ...env, npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
+          });
+          let output = "";
+          update.stdout.on("data", data => { output += data; });
+          update.stderr.on("data", data => { output += data; });
+          const code = await new Promise<number | null>((resolve, reject) => { update.once("error", reject); update.once("close", resolve); });
+          assert.equal(code, 0, output);
+          assert.match(output, /No newer CLI version\. No connector reconciliation was run\./);
+          assert.match(output, /Registry latest:/);
+        } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
+        const down = cli("down", "--yes");
+        assert.equal(down.status, 0, down.stdout + down.stderr);
+        stackStarted = false;
+        if (down.stdout.includes("Controller stack stopped")) {
+          for (const name of ["manager", "broker"]) assert.match(down.stdout, new RegExp(`^  ${name}\\s+\\S+\\s+stopped$`, "m"));
+        } else {
+          assert.match(down.stdout, /stopped manager/);
+          assert.match(down.stdout, /stopped delivery daemon/);
+          assert.match(down.stdout, /stopped nats-server/);
+        }
+        assert.equal(readFileSync(selection, "utf8"), unknown);
+        console.log("unknown connector selection: installed version, status, self-update and down remain available");
+      } finally { writeFileSync(selection, saved); }
     } finally {
-      const down = cli("down", "--yes");
+      const down = stackStarted ? cli("down", "--yes") : undefined;
       if (daemon?.exitCode === null) { daemon.kill("SIGTERM"); await daemonExit; }
-      assert.equal(down.status, 0, down.stdout + down.stderr);
+      if (down) assert.equal(down.status, 0, down.stdout + down.stderr);
     }
 
     const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));

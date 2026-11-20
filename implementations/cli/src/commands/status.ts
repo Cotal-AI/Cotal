@@ -8,6 +8,7 @@ import {
   dialerFor,
   EpEnvelopeError,
   formatAge,
+  globalConfigDir,
   isReachable,
   isStreamNotFound,
   mintCreds,
@@ -31,6 +32,7 @@ import {
 } from "@cotal-ai/core";
 import {
   stoppedLoopbackListener,
+  UnreadableConnectorSelection,
   stackRunsUnderOtherHome,
   accountInventory,
   authDir,
@@ -133,6 +135,7 @@ import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, 
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
+import { stoppedStackAddressProblem } from "./stack-up.js";
 import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -491,9 +494,11 @@ export async function status(args: ParsedArgs): Promise<void> {
     const cursor = readCursor();
     if (cursor?.failed !== undefined) seed = cursor;
   } catch (error) {
-    const path = reconcileCursorPath();
     const code = (error as NodeJS.ErrnoException).code;
-    gaps.add("EXTENSIONS_UNREADABLE", `the connector seed cursor at ${path} could not be read${code ? ` (${code})` : ""}`, { path });
+    if (!(error instanceof UnreadableConnectorSelection)) {
+      const path = reconcileCursorPath();
+      gaps.add("EXTENSIONS_UNREADABLE", `the connector seed cursor at ${path} could not be read${code ? ` (${code})` : ""}`, { path });
+    }
   }
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
   const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
@@ -523,8 +528,10 @@ export async function status(args: ParsedArgs): Promise<void> {
     }
   }
   const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
-  const maintenance: StatusResult["maintenance"] = blocked ? { root, space: null, state: "unreadable", attemptId: null, next: null } : readMaintenance(root, gaps);
-  const recovery = backupRecovery(maintenance);
+  const { maintenance, sourceMissing } = blocked
+    ? { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false }
+    : readMaintenance(root, gaps);
+  const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [];
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
@@ -536,10 +543,12 @@ export async function status(args: ParsedArgs): Promise<void> {
       ? `if the stored JetStream state is stale: \`${cmd} reset store ${resetSpace}\`, then \`up\` with your usual flags`
       : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
   }
-  // A held backup must be released before this root can start. Keep the selection's diagnostics,
+  // A held backup or missing preserved store blocks startup. Keep the selection's diagnostics,
   // but replace its ordinary restart advice with the journal's recovery step.
   if (recovery) hints.unshift(recovery);
-  else hints.push(...selectedHints);
+  const recoveringOtherSpace = sourceMissing && maintenance !== null && (target.space !== maintenance.space || target.root !== undefined && !sameDir(target.root, maintenance.root));
+  if (!recovery || recoveringOtherSpace) hints.push(...selectedHints);
+  if (sourceMissing && maintenance?.space) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", maintenance.space);
   if (!blocked) readStackStoreWarnings(root, gaps, hints);
   if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
     readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
@@ -591,6 +600,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
       seed,
+      recovery,
     }),
   );
   if (values.components) await printComponentHealth(selected, store);
@@ -612,15 +622,16 @@ function unreadFolder(root: string, code: string): StatusResult["folder"] {
 }
 
 /** The folder's maintenance journal, read only. An unreadable one is reported, never taken for none. */
-function readMaintenance(root: string, gaps: Gaps): NonNullable<StatusResult["maintenance"]> | null {
+function readMaintenance(root: string, gaps: Gaps): { maintenance: NonNullable<StatusResult["maintenance"]> | null; sourceMissing: boolean } {
   try {
     const journal = readMaintenanceJournal(root);
-    if (!journal) return null;
+    if (!journal) return { maintenance: null, sourceMissing: false };
     const rolledBack = "restore" in journal ? restoreRolledBackRuns(journal) : undefined;
-    return { root, space: journal.space, state: journal.state, ...maintenanceNextStep(root, journal), ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}) };
+    const { attemptId, next, sourceMissing = false } = maintenanceNextStep(root, journal);
+    return { maintenance: { root, space: journal.space, state: journal.state, attemptId, next, ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}) }, sourceMissing };
   } catch {
     gaps.add("MAINTENANCE_JOURNAL_UNREADABLE", "this folder's maintenance journal could not be read; no absent or settled state was inferred", { root });
-    return { root, space: null, state: "unreadable", attemptId: null, next: null };
+    return { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false };
   }
 }
 
@@ -793,9 +804,18 @@ function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
  *  installed", which is ambiguous on a fresh binary before its first seed. Versions are the manifest
  *  pin (add-time), not a live on-disk/host-compat check. */
 function readExtensions(gaps: Gaps): StatusResult["extensions"] {
+  let root: string;
+  try { root = extensionsDir(); }
+  catch (error) {
+    if (!(error instanceof UnreadableConnectorSelection)) throw error;
+    // The existing result requires a path. Use the containing config directory, not an invented
+    // extension prefix, and leave the inventory explicitly unknown.
+    gaps.add("EXTENSIONS_UNREADABLE", error.message);
+    return { root: globalConfigDir(), items: null };
+  }
   const { versions, unreadable } = readExtensionVersions();
   if (unreadable !== undefined) gaps.add("EXTENSIONS_UNREADABLE", `the extensions manifest could not be read: ${unreadable}`);
-  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
+  return { root, items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null };
 }
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
@@ -1500,8 +1520,9 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
+    const held = e.code === "not-started" && d.stopped && !d.unsettled && d.root && d.space ? await stoppedStackAddressProblem(d.root, d.space) : undefined;
     const result: SelectedResult = {
-      resolved: false, code: e.code, message: elsewhere ?? message,
+      resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
@@ -1524,9 +1545,9 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       if (block) {
         result.channelSeedBlocksRestart = true;
         hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
-      } else hints.push(remedy === undefined ? message : displayRemedy(remedy, cmd));
+      } else hints.push(held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
     } else if (!d.unsettled || !servedStack(folder, result)) {
-      hints.push(remedy === undefined ? message : displayRemedy(remedy, cmd));
+      hints.push(held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
     } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with ${codeSpan(`${cmd} up`)} in ${d.root}`);
     return result;
   }
@@ -2213,17 +2234,16 @@ function roleList(roles: readonly StackRole[]): string {
   return roles.length > 1 ? `${roles.slice(0, -1).join(", ")} and ${roles.at(-1)}` : roles[0] ?? "";
 }
 
-/** Pre-commit backup claims block ordinary startup; ready cuts and committed restores do not. */
-function backupRecovery(maintenance: StatusResult["maintenance"]): string | null {
-  return maintenance?.state === "claimed" || maintenance?.state === "restore-ready" ? maintenance.next : null;
+/** Pre-commit backup claims and ready cuts with a missing source block ordinary startup. */
+function backupRecovery(maintenance: StatusResult["maintenance"], sourceMissing = false): string | null {
+  return maintenance && (maintenance.state === "claimed" || maintenance.state === "restore-ready" || sourceMissing) ? maintenance.next : null;
 }
 
-function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, preparedHarness?: string): Section {
+function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string): Section {
   if (seedFailed) return {
     title: "Next",
     blocks: [{ kind: "lines", lines: r.hints.flatMap(hint => hint.split("\n").map(line => cell(line, "hint"))) }],
   };
-  const recovery = backupRecovery(r.maintenance);
   if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
@@ -2422,7 +2442,7 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor> } = {}): Report {
+export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance) }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null } = {}): Report {
   const selected = selectedOverview(r);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder) : [];
@@ -2432,7 +2452,7 @@ export function statusView(r: StatusResult, verbose = false, wide = false, { int
   const maintenance = maintenanceOverview(r.maintenance);
   const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed)), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
-  sections.push(nextActions(r, Boolean(seed), interactive, preparedHarness));
+  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness));
   return { sections };
 }
 

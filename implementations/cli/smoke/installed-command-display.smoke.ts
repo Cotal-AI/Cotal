@@ -24,6 +24,11 @@ for (const name of ["awk", "basename", "cat", "chmod", "cp", "curl", "cut", "dat
   if (!executable) throw new Error(`fixture utility unavailable: ${name}`);
   symlinkSync(executable, join(tools, name));
 }
+// Linux custody checks use the host's account database and ACLs for group-writable ancestors.
+for (const name of ["getent", "getfacl", "python3"]) {
+  const executable = resolveOnPath(name);
+  if (executable) symlinkSync(executable, join(tools, name));
+}
 const installer = readFileSync(join(repo, "install.sh"), "utf8");
 const entry = '{ main "$@"; exit $?; }';
 if (!installer.trimEnd().endsWith(entry)) throw new Error("installer entry guard changed");
@@ -192,17 +197,66 @@ try {
   delete seedEnv.COTAL_SKIP_CONNECTOR_SEED;
   const setupConfig = join(sandbox, "setup-config"), controlConfig = join(sandbox, "setup-control-config");
   for (const dir of [setupConfig, controlConfig]) mkdirSync(dir, { mode: 0o700 });
+  // Each setup reconciles every bundled connector serially.
+  const seedTimeout = 300_000;
   if (setupCommand) {
     // Skills-only setup crosses the same automatic seed boundary without starting a space or app.
-    const seeded = spawnSync("/bin/sh", ["-c", `${setupCommand} --skills`], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: setupConfig }, encoding: "utf8", timeout: 120_000 });
+    const seeded = spawnSync("/bin/sh", ["-c", `${setupCommand} --skills`], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: setupConfig }, encoding: "utf8", timeout: seedTimeout });
     const receipt = { code: seeded.status, output: seeded.stdout + seeded.stderr };
     writeFileSync(join(sandbox, "setup-from-hint.json"), JSON.stringify(receipt, null, 2));
     suite.check("printed setup prefix can seed with npm absent from the parent PATH", seeded.status === 0 && completedSetupSeed(setupConfig), receipt);
   }
-  const control = spawnSync(launcher, ["setup", "--skills"], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: controlConfig }, encoding: "utf8", timeout: 120_000 });
+  const control = spawnSync(launcher, ["setup", "--skills"], { cwd: outside, env: { ...seedEnv, XDG_CONFIG_HOME: controlConfig }, encoding: "utf8", timeout: seedTimeout });
   const controlReceipt = { code: control.status, output: control.stdout + control.stderr };
   writeFileSync(join(sandbox, "setup-launcher-control.json"), JSON.stringify(controlReceipt, null, 2));
   suite.check("fresh launcher control completes the same setup seed", control.status === 0 && completedSetupSeed(controlConfig), controlReceipt);
+  const refresh = run(["up", "--plain"]);
+  suite.check("controller up next steps keep the installed off-PATH prefix", refresh.code === 0 && !/^\s+cotal (?:spawn|down)\b/m.test(refresh.stdout) && refresh.stdout.includes("Launch your default agent"), refresh);
+  const unconfirmed = run(["down"]);
+  const controllerPrefix = unconfirmed.output.match(/`([^`\n]+) down --yes`/)?.[1];
+  suite.check("controller down confirmation remedy keeps the installed prefix", unconfirmed.code === 1 && Boolean(controllerPrefix) && controllerPrefix !== "cotal", unconfirmed);
+  const controllerReap = run(["down", "--with-agents"]);
+  suite.check("controller down keeps the installed prefix and --with-agents in both confirmation commands", controllerReap.code === 1 && Boolean(controllerPrefix) &&
+    ["--yes", "--dry-run"].every((flag) => controllerReap.output.includes(`\`${controllerPrefix} down --with-agents ${flag}\``)), controllerReap);
+
+  const npxEntry = join(sandbox, "_npx", "fixture", "cotal.js");
+  mkdirSync(join(sandbox, "_npx", "fixture"), { recursive: true });
+  symlinkSync(join(env.XDG_DATA_HOME, "cotal/lib/node_modules/cotal-ai/dist/cotal.js"), npxEntry);
+  for (const npx of [false, true]) {
+    const project = join(sandbox, npx ? "npx-project" : "installed-project");
+    mkdirSync(project, { mode: 0o700 });
+    const own = recordSmokeSandbox({ root: project, cotalHome: env.COTAL_HOME, xdgConfigHome: xdg });
+    const command = (args: string[]) => {
+      const options = { cwd: project, env, encoding: "utf8" as const, timeout: 120_000 };
+      assertSmokeSandboxDown(own, args, options);
+      return spawnSync(npx ? process.execPath : launcher, npx ? [npxEntry, ...args] : args, options);
+    };
+    try {
+      const started = command(["up", "--server", `nats://127.0.0.1:${await freePort()}`]);
+      const output = started.stdout + started.stderr;
+      const prefix = npx ? "npx cotal-ai" : output.match(/stop with: `(.+) down`/)?.[1];
+      suite.check("legacy up summary and Next use one runnable invocation prefix", started.status === 0 && Boolean(prefix) && output.includes(`stop with: \`${prefix} down\``) && output.includes(`${prefix} spawn --space`) && !/^\s+cotal (?:spawn|down)\b/m.test(output), output);
+      const refused = command(["down"]);
+      suite.check("legacy down confirmation remedy preserves the invocation", refused.status === 1 && (refused.stdout + refused.stderr).includes(`\`${prefix} down --yes\``), refused.stderr);
+      const reap = command(["down", "--with-agents"]);
+      suite.check("legacy down keeps the invocation and --with-agents in both confirmation commands", reap.status === 1 && Boolean(prefix) &&
+        ["--yes", "--dry-run"].every((flag) => (reap.stdout + reap.stderr).includes(`\`${prefix} down --with-agents ${flag}\``)), reap.stderr);
+      // npx's command prefix is checked above without contacting a package registry. The installed
+      // prefix is followed unchanged, including its shell quoting and pinned runtime environment.
+      if (!npx && prefix) {
+        const options = { cwd: project, env, encoding: "utf8" as const, timeout: 120_000 };
+        assertSmokeSandboxDown(own, ["down", "--yes"], options);
+        const stopped = spawnSync("/bin/sh", ["-c", `${prefix} down --yes`], options);
+        suite.check("the printed off-PATH stop command runs unchanged and suggests the same up", stopped.status === 0 && stopped.stdout.includes(`${prefix} up`), stopped.stdout + stopped.stderr);
+      } else {
+        const stopped = command(["down", "--yes"]);
+        suite.check("npx down Next preserves npx cotal-ai", stopped.status === 0 && stopped.stdout.includes("npx cotal-ai up"), stopped.stdout + stopped.stderr);
+      }
+    } finally {
+      const stopped = command(["down", "--yes"]);
+      suite.check("the invocation-display legacy stack stops cleanly", stopped.status === 0, stopped.stdout + stopped.stderr);
+    }
+  }
 } finally {
   if (attempted) {
     const down = run(["down", "--yes", "--json"]);

@@ -6,6 +6,7 @@
  *  recorded as such under its definition's lock and is not stopped again, so a repeated stop is a
  *  no-op. Shared registry and credential cleanup follow only a complete confirmed stop. Nothing
  *  outside the recorded members is touched. The whole apply holds the root's maintenance lock. */
+import { displayCmd } from "../lib/self-exec.js";
 import { accessSync, constants } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
@@ -56,7 +57,7 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
-  ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+  [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
 
 /** A stop records each member's stop under the space's service instance records, so a folder there this
  *  account cannot write refuses before the plan, naming it, rather than leaving every member running
@@ -232,7 +233,7 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
   const shown = agents ? [...warnings, { code: agents.code, target, message: `the real stop would refuse: ${agents.message}; ${agents.remedy}` }] : warnings;
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(shown.length ? { warnings: shown } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} up`, description: "Start it" }] }] },
   ] }));
 }
 
@@ -475,7 +476,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
   if (!values.yes && !interactive) {
-    const command = withAgents ? "cotal down --with-agents" : "cotal down";
+    const command = `${displayCmd()} down${withAgents ? " --with-agents" : ""}`;
     throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: `run \`${command} --yes\` to stop it. \`${command} --dry-run\` shows what it stops` });
   }
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
@@ -641,5 +642,5 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   ];
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(warnings.length ? { warnings } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: killed.some((k) => k.role === row.role) ? "stopped with SIGKILL" : row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
-  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal up${interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
+  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${stackStartedWithoutManager(previous.journal) || interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
 }

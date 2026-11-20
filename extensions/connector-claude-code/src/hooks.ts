@@ -25,7 +25,6 @@ import {
   type MeshAgent,
   type InboxItem,
   type HookEvent,
-  type HookHandle,
 } from "@cotal-ai/connector-core";
 import type { AguiEmitterHolder } from "@cotal-ai/connector-core";
 import type { ClaudeEntry } from "./agui-map.js";
@@ -207,7 +206,8 @@ export interface ClaudeHooks {
   /** Adopt a native transcript when a personal connection starts mid-session. No synthetic
    * lifecycle event is needed, and the source decides the pre-connection privacy boundary. */
   adoptTranscript(path: string, source: unknown): void;
-  handle: HookHandle;
+  /** A control-server handler that never reads the hook's connection. */
+  handle: (agent: MeshAgent, ev: HookEvent) => Promise<Record<string, unknown>>;
   /** Pass as {@link ControlServerOpts.onReply}. */
   onReply: (ev: HookEvent, delivered: boolean, handoff?: boolean) => void;
   /** Receipt for an empty inbox after a confirmed hook handoff. Contains no peer content. */
@@ -528,7 +528,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     return { hookSpecificOutput: { hookEventName: event, additionalContext: text } };
   };
 
-  const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
+  const handle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
     try {
       // Only the main session's work dates this seat. Notifications and lifecycle resets are not progress.

@@ -13,7 +13,6 @@ import {
   rootPathProblem,
   rootControlProblem,
   clearCurrent,
-  codeSpan,
   discoveryDocumentUrl,
   findMesh,
   findPreparedSpace,
@@ -58,6 +57,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
 import { removeStep } from "../lib/registry-errors.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions, runningStackRoles, stackRootGone } from "../lib/stack-journal.js";
 import { pruneEmptyServiceSpace } from "../lib/service-process.js";
 import {
@@ -435,7 +435,7 @@ export async function spaceCreate(rest: readonly string[], rootFlag: string | un
     let found: ReturnType<typeof journalRecordedElsewhere>;
     try { found = journalRecordedElsewhere(root); } catch { found = undefined; }
     const blocked = found && adoptionRefusal(root, found);
-    if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, blocked.remedy);
+    if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, displayRemedy(blocked.remedy));
   }
   checkLocalSpace(name, root, "--root", false, adopt);
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
@@ -512,7 +512,11 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   try { elsewhere = journalRecordedElsewhere(root); } catch { elsewhere = undefined; }
   if (elsewhere && !adopting && cotalDirLink(root) === undefined) {
     const blocked = adoptionRefusal(root, elsewhere);
-    throw refuse("CONFLICT", `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`, target, blocked?.remedy ?? `adopt it with ${codeSpan(`cotal space create ${elsewhere.journal.space} --adopt --root ${shellWord(canonicalRoot(root))}`)}`);
+    const message = `${root} holds the stack journal of "${elsewhere.journal.space}" that ${elsewhere.recordedRoot} recorded, as a copy or a moved folder keeps it${blocked ? `, and ${blocked.message}` : ""}; nothing was written`;
+    if (blocked) throw refuse("CONFLICT", message, target, displayRemedy(blocked.remedy));
+    throw new CommandFailure("refused", "CONFLICT", message, {
+      target, remedy: `${displayCmd()} space create ${shellWord(elsewhere.journal.space)} --adopt --root ${shellWord(canonicalRoot(root))}`, remedyIsCommand: true,
+    });
   }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.

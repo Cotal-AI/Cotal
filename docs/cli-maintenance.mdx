@@ -17,6 +17,10 @@ including Managers outside the selected space. Each request uses that Manager's 
 identity. `--space`, `--server`, `--creds`, and `--on` narrow the request. Missing or conflicting
 identity records refuse rather than selecting a Manager on another computer.
 
+On Linux, `cotal update` and `cotal update --self` leave a running controller stack's Manager
+alone when its recorded process proves it was launched from a separate installation. This also
+applies when the stack is selected in the current folder.
+
 A local Manager whose launch entry cannot be attributed also refuses the update. The refusal
 reports its start time, working directory, launch entry arguments, and missing paths. Stop that
 process if it is a leftover, or run the update from the installation that owns it. Restore that
@@ -58,8 +62,9 @@ Update never creates or repairs that directory. The user manager still has to an
 recorded systemd service.
 
 Read the receipt and source paths named by the refusal. If the receipt is stale, remove only
-that receipt to forget it, then run `cotal daemon install`. For an owned installation, run
-`cotal daemon uninstall` before reinstalling. Update does not remove receipts automatically.
+that receipt to forget it, then run `cotal daemon install`. To remove the owning installation,
+stop its local spaces and agents and run `cotal daemon uninstall` before removing the CLI.
+Follow [Remove Cotal](installation.mdx#remove-cotal) before reinstalling. Update does not remove receipts automatically.
 These checks do not guarantee that later downloads, connector refreshes, or native restarts succeed.
 
 ## `manager reconcile` [#reconcile-gate]

@@ -9,7 +9,10 @@ const root = mkdtempSync(join(tmpdir(), "cotal-codex-enobufs-"));
 const bin = join(root, "bin");
 mkdirSync(bin);
 const previous = process.env.PATH;
+const previousCodex = process.env.CODEX_HOME;
+process.env.CODEX_HOME = join(root, "codex");
 writeFileSync(join(bin, "codex"), `#!/bin/sh
+if [ "$2" = marketplace ]; then printf '%s\\n' '{"marketplaces":[]}'; exit 0; fi
 python3 -c 'import sys; sys.stdout.write("noise\\n"*700000); sys.stdout.write("cotal@cotal-mesh  installed  0.164.0+fixture\\n"); sys.stdout.write("tail\\n"*100)'
 `);
 chmodSync(join(bin, "codex"), 0o755);
@@ -26,5 +29,7 @@ try {
 } finally {
   if (previous === undefined) delete process.env.PATH;
   else process.env.PATH = previous;
+  if (previousCodex === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodex;
   rmSync(root, { recursive: true, force: true });
 }

@@ -120,6 +120,15 @@ const selectedRefusal = (r: ReturnType<typeof run>) => refusedWith(r, "TARGET_UN
 const before = run(["whoami", "--json"]);
 check("control: with nothing recorded, the root names no space and borrows none", before.status === 2 && before.envelope?.error?.code === "TARGET_NOT_FOUND" && before.envelope.error.message === `no space is registered or prepared here for ${root}`, shown(before));
 
+sandbox(root);
+const missingText = runDown(["down"], root);
+for (const mode of ["--json", "--plain"]) {
+  const missing = runDown(["down", mode], root);
+  check(`down ${mode} keeps the missing-stack diagnosis and next step`, missing.status === 2 && (mode === "--json"
+    ? missing.envelope?.error?.code === "TARGET_NOT_FOUND" && JSON.stringify(missing.envelope.target) === JSON.stringify({ root }) && missingText.stderr.includes(missing.envelope.error.message) && missingText.stderr.includes(missing.envelope.error.remedy ?? "missing remedy")
+    : missing.stderr === missingText.stderr), shown(missing));
+}
+
 const now = new Date().toISOString();
 const member = (role: string, definition: string, state: string) => ({ role, definition, instanceId: null, state });
 writeFileSync(join(root, ".cotal", "stack-controller.json"), JSON.stringify({
@@ -439,7 +448,7 @@ rmSync(linked, { recursive: true, force: true });
   const command = `cotal space create la07 --adopt --root ${brought}`;
   const plain = run(["space", "create", "la07", "--json"], brought);
   check("space create there without --adopt refuses CONFLICT, exit 2, naming the --adopt command",
-    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `adopt it with \`${command}\``, shown(plain));
+    plain.status === 2 && plain.envelope?.error?.code === "CONFLICT" && plain.envelope.error.remedy === `${launcher} space create la07 --adopt --root ${brought}`, shown(plain));
   const status = run(["status", "--json"], brought), up = run(["up", "--json"], brought);
   check("status there names the same step as up, which adopts it",
     up.status === 2 && (up.envelope?.error?.remedy ?? "").startsWith(`adopt it with \`${command}\`;`) && (status.envelope?.result?.hints ?? []).includes(readRemedy(up.envelope?.error?.remedy ?? "-")), { status: shown(status), up: shown(up) });

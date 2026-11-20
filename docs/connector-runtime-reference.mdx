@@ -278,6 +278,8 @@ The states, codes and outcomes are in [SPEC §13.22](../SPEC.md#1322-the-agent-e
 ## Prompt desk [#prompt-desk]
 
 The prompt desk is the `prompts` field of the agent endpoint, where an authorized session reads and answers the prompts the agent's harness raises.
+A connector built on `MeshAgent` reads it as `agent.prompts`. It is undefined until the broker accepted the serve, and on an open or static mesh, and then the adapter leaves each dialog to the harness.
+The Claude Code connector is the shipped adapter; see its [tool permissions](claude-connector-reference.mdx#tool-permissions).
 
 The desk knows no harness. An adapter calls `open({ content, openMs, settleMs }, hooks)` for each native dialog it offers.
 `openMs` bounds how long the prompt is offered, from 1 s to 7 days.

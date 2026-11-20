@@ -18,6 +18,7 @@ import {
   prepareAlternateRestore,
   readMaintenanceJournal,
   releaseMaintenanceLock,
+  resolveOnPath,
   rollbackRestore,
   saveSpaceAuth,
   spaceAccountPath,
@@ -88,6 +89,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
   const server = `nats://127.0.0.1:${port}`;
   const space = `backup_live_${mode}`;
   const { run, env } = sandboxRun(root, home);
+  const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
   const must = (label: string, result: ReturnType<typeof run>) => {
     assert.equal(result.status, 0, `${mode} ${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   };
@@ -385,12 +387,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     // The receipt names the restore attempt and the cleanup that retires it, with --discard-history.
     assert.ok(restored.stdout.includes(`✓ restored the backup ${restoreArtifact === registryArtifact ? "registry" : "in full"} as restore attempt ${active.restore.attemptId}`), `${mode} up --restore names its attempt\n${restored.stdout}`);
     const cleanupNext = restored.stdout.split("\n").find((line) => line.startsWith("next: ")) ?? "";
-    assert.ok(cleanupNext.includes(`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history`) && cleanupNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
+    assert.ok(cleanupNext.includes(`\`${launcher} backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\``) && cleanupNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
     // A registry restore says history starts empty and names the store that holds its only copy.
     if (restoreArtifact === registryArtifact) {
       assert.match(restored.stdout, /channel settings only, so chat and DM history and workflow runs start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
       const previous = active.restore.previousSource?.identity.path;
-      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`cotal backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
+      assert.ok(previous && restored.stdout.includes(`The previous store at ${previous} holds the only copy of them. \`${launcher} backup cleanup-fallback ${active.restore.attemptId}\` deletes it only with --discard-history.`), `${mode} registry restore names the previous store\n${restored.stdout}`);
     } else {
       assert.doesNotMatch(restored.stdout, /history start empty/);
       const previous = active.restore.previousSource?.identity.path;

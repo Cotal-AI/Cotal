@@ -69,15 +69,13 @@ so is a bare `space show` outside a project with nothing selected. Each entry un
 `state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
 whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
-`space show` of a prepared space gives those with the kind `prepared-space`. The listing marks
-a missing folder `(no longer exists)` and names `cotal space forget <space>` for it instead of
-`cotal up`. If you stop a stack and rename its project, run `cotal status` in the renamed folder.
-When the original path is gone and the retained stack is confirmed stopped, `cotal up` and
-`cotal status` show how to move the folder back or keep the new location. To keep the new location,
-run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
-commands, then run `cotal up` from that folder. Forget releases the stopped stack definitions and
-leaves the project data in place. `cotal space show <name>` also shows how to recover a stopped stack
-from its matching moved journal.
+`space show` of a prepared space gives those with the kind `prepared-space`. When the old path is
+gone and the current project holds the matching stack journal, `cotal space` and `cotal space show`
+identify the moved project and give the same recovery steps as `cotal up` and `cotal status`. For a
+confirmed stopped stack, run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
+commands to keep the new location, then run `cotal up` from that folder. Forget releases the stopped
+stack definitions and leaves the project data in place. When no matching journal is found, the
+listing marks the missing folder `(no longer exists)` and names forget and plain create instead.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -298,9 +296,10 @@ registered space, including when its broker does not answer. The refusal gives t
 as `--space` for that registration, including where to restart a stopped local space. Matching
 preserves the URL's transport scheme and TLS intent. If equivalent addresses name several
 registered spaces, pass `--space` to choose one.
-When no space is named or found for the current folder, an unmatched loopback host spelling
-can give a `TARGET_NOT_FOUND` refusal, exit 2, listing registrations with another loopback host
-at the same port and transport. `localhost`, `127.0.0.1` and `[::1]` can reach different listeners.
+When `--server` does not match a registration and the command would fall back to open `main`,
+it refuses with `TARGET_NOT_FOUND`, exit 2, if another loopback host at the same port and
+transport is registered. This also applies inside a named open project's folder.
+`localhost`, `127.0.0.1` and `[::1]` can reach different listeners.
 The command does not connect on the strength of the hint. Use a listed address, or verify the
 requested broker and name its space with `--space <name>`.
 When an overriding `--server` requires auth but the selected space is recorded as open at another
@@ -523,8 +522,9 @@ If the original home's records were removed, the project's `cotal down --dry-run
 If another home still holds the records, use that home instead.
 
 A copied or moved project folder keeps a stack journal that names the folder it was recorded in.
-`space create <name>` there refuses `CONFLICT`, exit 2. `cotal status` lists the applicable recovery
-options. `--adopt` takes the journal over: it rewrites it
+`space create <name>` there refuses `CONFLICT`, exit 2. If the record was already forgotten and the
+journal can be adopted, the refusal prints the exact `space create --adopt` command to run.
+`cotal status` lists the applicable recovery options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
 this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
 with the copied store. When that store directory is present under this folder, it refreshes the recorded store identity from
@@ -632,6 +632,9 @@ state and service replies remain separate observations.
 When Next offers a change of space, it lists `cotal space` to see the choices and `cotal use <name>`
 to select one. Bare `cotal use` reports the current selection without changing it.
 
+If a ready preservation journal's store is missing, Next says to move it back or restore a backup
+with `cotal backup restore <dir> --accept-missing-source` instead of offering to restart that stack.
+
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
 If that persona cannot be read or validated, status reports the application as unresolved
@@ -686,6 +689,8 @@ folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `` `cotal down`, completed ``, and Next names `cotal up` in its root.
+If the recorded broker address is occupied after a completed stop, `status` and `history` name the
+address and explain how to free it before restarting. The stack keeps its address.
 A space that never started still reads as prepared but not started. A recorded file-store cap does not
 change the restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`

@@ -3,7 +3,8 @@
  *  kernel-exit stop. Planning prepares no trust, writes no broker config and starts nothing else. */
 import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { createServer, isIP } from "node:net";
+import { lookup } from "node:dns/promises";
+import { BlockList, createServer, isIP } from "node:net";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { isReachable, registry, writeSecretFileCreateOnly } from "@cotal-ai/core";
@@ -145,10 +146,11 @@ function brokerTarget(context: ServiceAdapterContext, purpose: BrokerPurpose = "
 
 /** Bind a broker address's listener once and release it: the OS error when that fails, "timeout"
  *  when the bind does not finish, or undefined when the address is free. */
-export async function listenerBindError(server: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
+export async function listenerBindError(server: string, bindHost?: string): Promise<NodeJS.ErrnoException | "timeout" | undefined> {
   const target = brokerListenAddress(server);
   // The target host is URL-shaped: an IPv6 literal keeps its brackets there.
-  const host = target.host.startsWith("[") ? target.host.slice(1, -1) : target.host;
+  const requestedHost = bindHost ?? target.host;
+  const host = requestedHost.startsWith("[") ? requestedHost.slice(1, -1) : requestedHost;
   const probe = createServer();
   let timer: NodeJS.Timeout | undefined;
   const error = await new Promise<NodeJS.ErrnoException | "timeout" | undefined>((resolve) => {
@@ -162,19 +164,43 @@ export async function listenerBindError(server: string): Promise<NodeJS.ErrnoExc
   return error;
 }
 
+/** A local address from the kernel's TCP table: one 32-bit word for IPv4 and four for IPv6, each
+ *  printed little-endian on the platforms Cotal ships for. An IPv4-mapped IPv6 address is its IPv4. */
+function tableAddress(hex: string): { address: string; family: "ipv4" | "ipv6" } {
+  const bytes = (hex.match(/.{8}/g) ?? []).flatMap((word) => [6, 4, 2, 0].map((at) => Number.parseInt(word.slice(at, at + 2), 16)));
+  const mapped = bytes.length === 16 && bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 255 && bytes[11] === 255;
+  if (bytes.length === 4 || mapped) return { address: bytes.slice(-4).join("."), family: "ipv4" };
+  const groups: string[] = [];
+  for (let i = 0; i < 16; i += 2) groups.push(((bytes[i]! << 8) | bytes[i + 1]!).toString(16));
+  return { address: groups.join(":"), family: "ipv6" };
+}
+
 /** What a refusal says holds a broker address whose bind failed in use, and what frees it. The
  *  kernel's TCP table (Linux only) can show that nothing listens on the port: then a connection's
  *  local end holds it, and one in TIME-WAIT frees itself within a minute, so the next step is to wait
  *  rather than to stop a process that does not exist. Anywhere else, or with a listener on the port,
- *  it names another process. */
-export function addressHolder(what: string, host: string, port: number): { says: string; frees: string } {
+ *  it names another process. Only sockets on the host's own addresses or a wildcard can hold a
+ *  specific host, so a connection elsewhere on the machine that shares the port number is not
+ *  counted; any local address can hold a wildcard host. */
+export async function addressHolder(what: string, host: string, port: number): Promise<{ says: string; frees: string }> {
+  const bare = host.startsWith("[") ? host.slice(1, -1) : host;
+  const holding = new BlockList();
+  holding.addAddress("0.0.0.0", "ipv4");
+  holding.addAddress("::", "ipv6");
+  if (bare === "0.0.0.0" || bare === "::") {
+    holding.addSubnet("0.0.0.0", 0, "ipv4");
+    holding.addSubnet("::", 0, "ipv6");
+  } else for (const { address, family } of isIP(bare) ? [{ address: bare, family: isIP(bare) }] : await lookup(bare, { all: true }))
+    holding.addAddress(address, family === 6 ? "ipv6" : "ipv4");
   const states: string[] = [];
   for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
     let text: string;
     try { text = readFileSync(table, "utf8"); } catch { continue; }
     for (const row of text.split("\n").slice(1)) {
       const [, local, , state] = row.trim().split(/\s+/);
-      if (local && state && Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16) === port) states.push(state);
+      if (!local || !state || Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16) !== port) continue;
+      const { address, family } = tableAddress(local.slice(0, local.lastIndexOf(":")));
+      if (holding.check(address, family)) states.push(state);
     }
   }
   const address = `${what} ${host}:${port}`;

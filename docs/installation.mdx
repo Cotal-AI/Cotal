@@ -117,6 +117,7 @@ You can also use the shell installer inside WSL.
 
 On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.
 The `bin/cotal` link in the npm prefix points to a shell launcher, which uses that executable when Node is not on PATH.
+The launcher finds the JavaScript entry in the installed package, even when a package manager moves the installation after running the scripts.
 The package's JavaScript entry stays the same for daemon services and per-home connector state.
 If the recorded executable is gone, restore a supported Node to PATH and reinstall Cotal with npm.
 
@@ -182,7 +183,12 @@ Use `--help` for the full list.
 
 ## Remove Cotal
 
-Stop the spaces and agents that use this installation before removing its files.
+For any installation method, stop the local spaces and agents that use this installation first.
+Run `cotal daemon status` to check the machine daemon. A daemon that is not running can still have an installed service.
+If you installed the machine daemon, run `cotal daemon uninstall` from the installation that owns it before removing any CLI files.
+In a script, use `cotal daemon uninstall --yes`. If you installed with `--daemon-home`, pass the same option and directory to both daemon commands.
+If the daemon uninstall fails, resolve the error before continuing.
+
 For an npm installation, remove the package and any generation store created by `cotal update --self`:
 
 ```bash
@@ -196,14 +202,17 @@ For a shell installation with the default locations, remove `~/.local/bin/cotal`
 If you selected custom install locations, remove those locations instead.
 Delete each `# cotal` block the installer added to your shell startup files.
 
-Both uninstall methods leave the [operator configuration directory](config.mdx#configuration-files) in place. It holds settings, installed extensions, and the built-in connector seed store.
+Removal leaves your project files, the [operator configuration directory](config.mdx#configuration-files), and systemd linger in place.
+The configuration directory holds settings, installed extensions, and the built-in connector seed store.
 The directory is `$XDG_CONFIG_HOME/cotal` when `XDG_CONFIG_HOME` is non-empty. Otherwise it is `%APPDATA%\Cotal` on Windows when `APPDATA` is set, or `~/.config/cotal`.
 For complete removal, back up any settings you want to keep, then delete that directory only if no other Cotal installation or running Cotal process uses it.
 
 Deleting `~/.cotal` also deletes machine-local mesh records, agent data, and credentials.
 Keep or back up that data unless you intend to remove it.
-Project folders can hold their own `.cotal` directories.
-Removing the installation does not remove those project files.
+
+If the CLI is already gone on Linux, run `systemctl --user disable --now cotal-daemon.service`, remove `~/.config/systemd/user/cotal-daemon.service`, then run `systemctl --user daemon-reload`.
+If you used a custom daemon home or the user manager uses a custom config directory, use the installed unit's actual name and file path instead.
+This removes the systemd service only. See [Daemon commands](cli-processes.mdx#daemon) for how the CLI removes native services and their daemon records.
 
 ## Next steps
 

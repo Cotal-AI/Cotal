@@ -17,8 +17,8 @@ refuse it rather than grant the allow list alone:
 - An older connector does not know its exclusions. The broker refuses its history reads under an
   excluded wildcard, and a start that backfills such a channel fails.
 
-The Manager cluster advances to revision 52. The read and post lists of `spawn`, `define-persona`
-and `chat-session-open` accept the `{ allow, exclude }` form, which a revision 51 schema refuses.
+The Manager cluster advances to revision 53. The read and post lists of `spawn`, `define-persona`
+and `chat-session-open` accept the `{ allow, exclude }` form, which a revision 52 schema refuses.
 
 Exclusions need nats-server 2.12.7 or later on the 2.12 line, or 2.14.0 or later. A credential
 with exclusions is not signed for an older or unknown server. Update the broker first, then the
@@ -26,6 +26,18 @@ auth service and delivery daemon, then managers and connectors, and only then ad
 
 Quote patterns on the command line, for example `--exclude-subscribe 'team.secret.>'`: an
 unquoted `>` is a shell redirect.
+
+## Tool permissions on the agent endpoint
+
+A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
+own agent endpoint, and Claude's dialog stays open beside them. A running Claude session keeps the
+plugin it already loaded, so reload plugins or reopen the session to register the new
+`PermissionRequest` and `SubagentStop` hooks. A managed seat still launches with `bypassPermissions`
+unless you pass a mode, and then it asks nothing.
+
+The Manager cluster advances to revision 52. Every `status.connectors` row carries `prompts`, and
+the closed status schema of revision 51 rejects such a row. Upgrade Managers and their callers
+together.
 
 ## Participant payload history after 0.168.0
 

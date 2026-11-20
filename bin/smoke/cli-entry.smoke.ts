@@ -378,6 +378,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   writeFileSync(manifest, "{}\n");
   partialVersion("version --json reports a corrupt manifest as partial", ["version", "--json"], /no "extensions" array/);
   partialVersion("leading JSON and the version alias also produce the partial envelope", ["-j", "-V"], /no "extensions" array/);
+  const [damagedReport] = envelopes(versionRun(["version", "--json"]));
+  const damagedText = versionRun(["version"]);
+  check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
+    && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
+    && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
+    && damagedText.status === 1 && damagedText.stderr.includes("cotal ext seed --repair")
+    && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
   check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);
   check("ext list still refuses the corrupt manifest", strict.status === 1 && strict.stdout === "" && /no "extensions" array/.test(strict.stderr), shown(strict));
