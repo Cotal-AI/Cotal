@@ -316,6 +316,31 @@ EOF
   exit 0
 }
 
+version_is_blank() (
+  # npm treats ECMAScript whitespace as an empty range. Match its UTF-8 bytes
+  # independently of the user's locale, before we resolve Node or npm.
+  LC_ALL=C
+  export LC_ALL
+  _rest=$1
+  _nbsp=$(printf '\302\240')            # U+00A0
+  _ogham=$(printf '\341\232\200')       # U+1680
+  # U+2000 through U+200A, U+2028, U+2029, U+202F
+  _space_pattern=$(printf '\342\200[\200-\212\250\251\257]')
+  _medium=$(printf '\342\201\237')      # U+205F
+  _ideographic=$(printf '\343\200\200') # U+3000
+  _bom=$(printf '\357\273\277')         # U+FEFF
+  while [ -n "$_rest" ]; do
+    # shellcheck disable=SC2254  # _space_pattern is a byte pattern, not a literal.
+    case "$_rest" in
+      [[:space:]]*) _rest=${_rest#?} ;;
+      "$_nbsp"*) _rest=${_rest#??} ;;
+      "$_ogham"* | $_space_pattern* | "$_medium"* | "$_ideographic"* | "$_bom"*) _rest=${_rest#???} ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+)
+
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -324,12 +349,19 @@ parse_args() {
       --no-modify-path) OPT_MODIFY_PATH=0 ;;
       --vendor-node) OPT_VENDOR_NODE=1 ;;
       --dry-run) OPT_DRY_RUN=1 ;;
-      --version)
-        [ $# -ge 2 ] || die "--version needs a value" "For example: --version 0.14.2"
-        OPT_VERSION="$2"
-        shift
+      --version | --version=*)
+        case "$1" in
+          --version)
+            shift
+            OPT_VERSION="${1-}"
+            ;;
+          *) OPT_VERSION="${1#--version=}" ;;
+        esac
+        if version_is_blank "$OPT_VERSION"; then
+          die "--version needs a value" \
+            "Provide a version such as --version 0.14.2, or omit --version to install the latest release."
+        fi
         ;;
-      --version=*) OPT_VERSION="${1#--version=}" ;;
       -h | --help) usage ;;
       *)
         die "Unknown option: $1" "Run with --help to see what this installer accepts."
