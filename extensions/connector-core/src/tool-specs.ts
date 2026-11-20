@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInGrant, patternInGrant, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, LANG_PROBLEM_DETAIL_KIND, formatAge, parseDuration, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type ChannelGrantField, type ControlReply, type InlinePersona, type PersonaEndpoint, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem, type InboxScope } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -293,6 +293,14 @@ const managerInstanceArg = z
   }, "instance must be a lifecycle token ([a-z0-9]{26,32})")
   .optional()
   .describe("Optional manager instance id for a multi-manager space. When omitted, a seat a manager launched uses that manager and any other caller lets the mesh select one; on a user-auth mesh with several of your managers live, that selection refuses and lists their ids. A pin that cannot be resolved is refused without falling back to another manager.");
+
+/** A read or post list a spawn or persona hands on: a plain list, or `{ allow, exclude }` when it
+ *  leaves channels or patterns out of what it allows (SPEC §9). Passed to the manager as written. */
+const grantListArg = (what: string) =>
+  z
+    .union([z.array(z.string()), z.object({ allow: z.array(z.string()), exclude: z.array(z.string()).min(1) }).strict()])
+    .optional()
+    .describe(`${what} A list, or { allow, exclude } to leave channels or patterns out of a wildcard, such as { allow: ["review.>"], exclude: ["review.private"] }.`);
 
 /** The endpoint-instance pin of `cotal_describe` and `cotal_invoke`, for any endpoint. */
 const endpointInstanceArg = z
@@ -874,9 +882,15 @@ export function channelMeta(i: InboxItem): Record<string, string> {
  * endpoint resolves it. A wildcard subscription like `team.>` is not a destination. Undefined when
  * no channel qualifies; a send without a channel is then refused.
  */
-export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "creds" | "userAuth">, reading: readonly string[]): string | undefined {
+export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "excludePublish" | "creds" | "userAuth">, reading: readonly string[]): string | undefined {
   const concrete = reading.filter(isConcreteChannel);
-  return isAuthed(config) ? concrete.find((c) => channelInAllow(config.allowPublish, c)) : concrete[0];
+  return isAuthed(config) ? concrete.find((c) => channelInGrant(config.allowPublish, config.excludePublish ?? [], c)) : concrete[0];
+}
+
+/** A read or post grant as the agent reads it: `#a, #b`, then the channels it removes (SPEC §9). */
+export function grantText(allow: readonly string[], exclude: readonly string[] = []): string {
+  if (!allow.length) return "none";
+  return `${allow.map((c) => `#${c}`).join(", ")}${exclude.length ? ` except ${exclude.map((c) => `#${c}`).join(", ")}` : ""}`;
 }
 
 /**
@@ -886,11 +900,11 @@ export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "c
  * channels it may post to none of. `postable` is empty where the ACL grants no concrete post
  * channel the agent could name (an operator widens that; nothing here can).
  */
-export function sendNoDefaultRemedy(config: Pick<AgentConfig, "allowSubscribe" | "allowPublish" | "creds" | "userAuth">, reading: readonly string[]): string {
+export function sendNoDefaultRemedy(config: Pick<AgentConfig, "allowSubscribe" | "allowPublish" | "excludePublish" | "creds" | "userAuth">, reading: readonly string[]): string {
   const concrete = reading.filter(isConcreteChannel);
   const authed = isAuthed(config);
   const named = [...new Set([...config.allowPublish, ...config.allowSubscribe, ...reading].filter(isConcreteChannel))];
-  const postable = authed ? named.filter((c) => channelInAllow(config.allowPublish, c)) : named;
+  const postable = authed ? named.filter((c) => channelInGrant(config.allowPublish, config.excludePublish ?? [], c)) : named;
   const where = concrete.length
     ? `you may post to none of the channels you read (${concrete.map((c) => `#${c}`).join(", ")})`
     : "you are on no channel";
@@ -1464,9 +1478,9 @@ export function cotalToolSpecs(
           if (target === undefined) return err(`Couldn't send: ${sendNoDefaultRemedy(config, joined)}.`);
           // Bound by the post ACL before touching the mesh, as cotal_join is by the read ACL. Only a
           // mesh that enforces ACLs refuses the post, so only there is it refused here.
-          if (isAuthed(config) && !channelInAllow(config.allowPublish, target))
+          if (isAuthed(config) && !channelInGrant(config.allowPublish, config.excludePublish ?? [], target))
             return err(
-              `Can't post to #${target}: it's outside your post ACL (allowPublish: ${config.allowPublish.length ? config.allowPublish.map((c) => `#${c}`).join(", ") : "none"}). Nothing was sent.`,
+              `Can't post to #${target}: it's outside your post ACL (allowPublish: ${grantText(config.allowPublish, config.excludePublish)}). Nothing was sent.`,
             );
           const receipt = await agent.describeSendChannel(target);
           const m = await agent.send(msg, target, mentions);
@@ -1650,7 +1664,7 @@ export function cotalToolSpecs(
           .filter((c) => {
             if (all || c.joined || c.durableUnclosed) return true;
             if (c.event) events++;
-            else if (!channelInAllow(config.allowSubscribe, c.channel)) outside++;
+            else if (!channelInGrant(config.allowSubscribe, config.excludeSubscribe ?? [], c.channel)) outside++;
             else return true;
             return false;
           })
@@ -1755,10 +1769,11 @@ export function cotalToolSpecs(
         if (notName !== undefined) return err(`Couldn't join: ${notName}`);
         // Bound by the read ACL before touching the mesh — a clear refusal beats a broker/manager
         // rejection. (Auth mode also enforces this server-side; this is the friendly client gate.) A
-        // pattern must lie inside one entry, so every channel it matches is readable.
-        if (!(isConcreteChannel(channel) ? channelInAllow : patternInAllow)(config.allowSubscribe, channel))
+        // pattern must lie inside one entry and must not be excluded in full; one that only partly
+        // overlaps the exclusions is joined, and its excluded channels are never delivered.
+        if (!(isConcreteChannel(channel) ? channelInGrant : patternInGrant)(config.allowSubscribe, config.excludeSubscribe ?? [], channel))
           return err(
-            `Can't join #${channel}: it's outside your read ACL (allowSubscribe: ${config.allowSubscribe.map((c) => `#${c}`).join(", ")}).`,
+            `Can't join #${channel}: it's outside your read ACL (allowSubscribe: ${grantText(config.allowSubscribe, config.excludeSubscribe)}).`,
           );
         try {
           const r = await agent.joinChannel(channel);
@@ -1829,8 +1844,8 @@ export function cotalToolSpecs(
             variant: z.string().min(1).optional().describe("The helper's model variant. The top-level `variant` wins."),
             description: z.string().min(1).optional().describe("A one-line description, shown in the catalog when the persona is saved."),
             subscribe: z.array(z.string()).optional().describe("Channels the helper reads at start. Omit every channel field to take your own read and post grants; pass [] for none."),
-            allowSubscribe: z.array(z.string()).optional().describe("Channels the helper may read. Each must be one you may read."),
-            allowPublish: z.array(z.string()).optional().describe("Channels the helper may post to. Each must be one you may post to."),
+            allowSubscribe: grantListArg("Channels the helper may read. Each must be one you may read."),
+            allowPublish: grantListArg("Channels the helper may post to. Each must be one you may post to."),
             capabilities: z.array(z.string()).optional().describe("Capabilities to hand on, such as spawn or run. Each must be one you hold."),
             endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Endpoint commands to hand on, as { endpoint, commands } entries such as { endpoint: \"com.example.orders\", commands: [\"list\"] }. Each must be one you hold. Add instanceId to hand on a command you hold on one instance of the endpoint."),
             save: z.boolean().optional().describe("Also save this persona to the catalog under `name`, for a broad persona worth reusing. A name already in the catalog is refused before anything starts."),
@@ -2180,7 +2195,7 @@ export function cotalToolSpecs(
       description:
         "Save a persona that cotal_spawn can start by name. Most jobs need a persona written for them. For one job, pass persona to cotal_spawn instead, and save one here only when it is worth reusing. Reuse one from cotal_personas only when it really fits, such as a general reviewer. Every persona you save stays in the user's workspace after the helper stops. No cotal_* tool removes one: remove one you own with cotal_invoke, endpoint `manager`, command `remove-persona`, args `{ name }`; the operator removes any with `cotal persona remove <name>`. " +
         "Name it after what it does, such as review-login-page. Write the prompt about the job: what to do, where the brief is, how to report, and when to stop. Point to sources for facts rather than stating them. Set role when others should reach it through a role. " +
-        "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. A wildcard works in all three. For example, review.> covers every channel under review, including ones opened later, and review.* covers one level. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. A persona you pass to cotal_spawn differs here: with no channel field it takes your own read and post grants. " +
+        "List its channels and give it only what the job needs: subscribe for where it starts, allowSubscribe for what it may read, and allowPublish for what it may post to. A wildcard works in all three. For example, review.> covers every channel under review, including ones opened later, and review.* covers one level. To leave channels out of a wildcard, write allowSubscribe or allowPublish as { allow, exclude }, such as { allow: [\"review.>\"], exclude: [\"review.private\"] }. If you list subscribe alone, it may read just those channels and can't post anywhere. Leave all three out and it can read and post nowhere, so list the channels it needs. A persona you pass to cotal_spawn differs here: with no channel field it takes your own read and post grants. " +
         "To give its agent one of your capabilities, list it in capabilities. cotal_orientation shows the ones you hold. To let it call an endpoint command, list it in endpoints, a per-user auth mesh excepted. You can give only capabilities and endpoint commands you hold, and each later spawn of the persona is checked again against its spawner. Only you or an operator can change a persona you saved.\n\n" +
         "Before you write one, check what you can give. cotal_orientation shows your own channels and capabilities, and cotal_channels lists the channels in the space. cotal_endpoints lists the endpoints you can call, and cotal_describe shows what one lets a caller do. The agent-files page in cotal_docs lists every persona field.\n\n" +
         "Example:\n\n" +
@@ -2204,8 +2219,8 @@ export function cotalToolSpecs(
         role: z.string().max(120).optional().describe("Optional role written into the persona file (e.g. reviewer). Wins over a role: in the prompt's frontmatter."),
         agent: z.string().max(120).optional().describe("Optional harness pin written into the persona file (e.g. jcode). Wins over an agent: in the prompt's frontmatter."),
         subscribe: z.array(z.string()).optional().describe("Optional active read set written into the persona file. Wins over subscribe: in the prompt's frontmatter."),
-        allowSubscribe: z.array(z.string()).optional().describe("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
-        allowPublish: z.array(z.string()).optional().describe("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
+        allowSubscribe: grantListArg("Optional read ACL written into the persona file. Wins over allowSubscribe: in the prompt's frontmatter."),
+        allowPublish: grantListArg("Optional post ACL written into the persona file. Wins over allowPublish: in the prompt's frontmatter."),
         capabilities: z.array(z.string()).optional().describe("Optional capabilities written into the persona file, such as spawn or run. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Capabilities in the prompt's frontmatter are dropped."),
         endpoints: z.array(z.object({ endpoint: z.string(), commands: z.array(z.string()).min(1), instanceId: z.string().optional() }).strict()).optional().describe("Optional endpoint commands written into the persona file, as { endpoint, commands } entries, with instanceId for a command held on one instance. Each must be one you hold; the manager refuses anything more and writes nothing. A redefine that omits it keeps the saved list, which is checked the same way; pass [] to clear it. Endpoints in the prompt's frontmatter are dropped."),
         announce: z
@@ -2226,8 +2241,8 @@ export function cotalToolSpecs(
           role?: string;
           agent?: string;
           subscribe?: string[];
-          allowSubscribe?: string[];
-          allowPublish?: string[];
+          allowSubscribe?: ChannelGrantField;
+          allowPublish?: ChannelGrantField;
           capabilities?: string[];
           endpoints?: PersonaEndpoint[];
           announce?: string;

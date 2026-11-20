@@ -600,6 +600,7 @@
     "smoke:orphan-seat-spawn-window": "pnpm --filter @cotal-ai/seat build && tsx implementations/manager/smoke/orphan-seat-spawn-window.smoke.ts",
     "smoke:orphan-seat-rollback": "pnpm --filter @cotal-ai/seat build && tsx implementations/manager/smoke/orphan-seat-rollback.smoke.ts",
     "smoke:spawn-args": "tsx extensions/connector-core/smoke/spawn-args.smoke.ts",
+    "smoke:channel-exclusions-client": "tsx extensions/connector-core/smoke/channel-exclusions-client.smoke.ts",
     "smoke:launch-options": "tsx bin/smoke/launch-options.smoke.ts",
     "smoke:install": "tsx implementations/cli/smoke/install.smoke.ts",
     "smoke:send": "tsx implementations/cli/smoke/send.smoke.ts",

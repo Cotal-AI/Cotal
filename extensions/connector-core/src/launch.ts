@@ -190,18 +190,28 @@ export function launchEnv(
  *  frontmatter — has no channel set to read, so it joins nothing even though its creds authorize
  *  channels. An absent read or post list is omitted, so the connector defers to the persona file or
  *  the join link. An empty one is forwarded as an empty value: the launcher resolved no channels and
- *  minted the creds from that, so the session must not fall back to the persona's list. */
+ *  minted the creds from that, so the session must not fall back to the persona's list. A list's
+ *  exclusions (SPEC §9) ride beside it as `COTAL_EXCLUDE_SUBSCRIBE` / `COTAL_EXCLUDE_PUBLISH`; the
+ *  session reads them only with their list, so an exclusion without its list throws. */
 export function aclEnv(opts: {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  excludeSubscribe?: string[];
+  excludePublish?: string[];
   capabilities?: string[];
   endpoints?: PersonaEndpoint[];
 }): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.subscribe) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
-  if (opts.allowSubscribe) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
-  if (opts.allowPublish) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
+  for (const [allowVar, excludeVar, allow, exclude] of [
+    ["COTAL_ALLOW_SUBSCRIBE", "COTAL_EXCLUDE_SUBSCRIBE", opts.allowSubscribe, opts.excludeSubscribe],
+    ["COTAL_ALLOW_PUBLISH", "COTAL_EXCLUDE_PUBLISH", opts.allowPublish, opts.excludePublish],
+  ] as const) {
+    if (exclude?.length && !allow) throw new Error(`launch: ${excludeVar} needs ${allowVar}, the list it removes channels from`);
+    if (allow) env[allowVar] = allow.join(",");
+    if (exclude?.length) env[excludeVar] = exclude.join(",");
+  }
   // Control-plane capabilities (e.g. `spawn`) gate cotal_spawn/cotal_persona in the connector's tool
   // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
   // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.

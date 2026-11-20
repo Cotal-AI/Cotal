@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { channelInAllow, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
+import { channelInAllow, channelInGrant, isConcreteChannel, partsToText, type AnycastTakeOutcome, type AttentionMode, type ChannelMode, type CotalEndpoint, type CotalMessage, type Delivery, type MessageMeta } from "@cotal-ai/core";
 import type { AgentConfig } from "./config.js";
 import { CHANNEL_CATCHUP_AGE_MS, afterRecallMark, MAX_INBOX, TAKE_WAIT_MS, TAKE_RETRY_MS, MAX_IN_FLIGHT, MAX_AHEAD, CLASSIFICATION_CAP, FOCUS_EXCLUSION_CAP, IDLESS_READS, PROTECTED_DISPOSITION_CAP, handOver, idlessDigest, ingestDedupKey } from "./agent-inbox-model.js";
 import type { AgentInboxDeps, InboxItem, InboxSnapshot, Pending, IdlessTally, IdlessCopy, RecallMark, InboxScope, ExactDrainResult, DeliveryNotice } from "./agent-inbox-model.js";
@@ -1190,8 +1190,9 @@ export class AgentInbox {
   async setChannelMode(channel: string, mode: ChannelMode | "normal"): Promise<void> {
     if (!isConcreteChannel(channel))
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
-    if (!channelInAllow(this.config.allowSubscribe, channel))
-      throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
+    const exclude = this.config.excludeSubscribe ?? [];
+    if (!channelInGrant(this.config.allowSubscribe, exclude, channel))
+      throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]${exclude.length ? ` minus [${exclude.join(", ")}]` : ""}`);
     await this.inOrder(() => {
       if (mode === "normal") this.channelModes.delete(channel);
       else {

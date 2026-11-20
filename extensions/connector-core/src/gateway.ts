@@ -23,7 +23,7 @@ import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
-import { connectionNotReadyWarning, cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { connectionNotReadyWarning, cotalToolSpecs, grantText, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import { briefing } from "./briefing.js";
 import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";
@@ -313,8 +313,7 @@ const refuse = (text: string) => toContent({ text, isError: true });
 /** What a new connection may read and post, from the configuration its grant produced, so the
  *  conversation learns its real access before it tries a channel. */
 function accessLine(config: AgentConfig): string {
-  const list = (cs: readonly string[]) => (cs.length ? cs.map((c) => `#${c}`).join(", ") : "none");
-  return `Reads ${list(config.subscribe)}; may join ${list(config.allowSubscribe)}; may post to ${list(config.allowPublish)}.`;
+  return `Reads ${grantText(config.subscribe)}; may join ${grantText(config.allowSubscribe, config.excludeSubscribe)}; may post to ${grantText(config.allowPublish, config.excludePublish)}.`;
 }
 
 function errorText(e: unknown): string {

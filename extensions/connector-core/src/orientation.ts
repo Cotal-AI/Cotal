@@ -125,6 +125,10 @@ export interface Orientation {
     readAcl: string[];
     /** Post ACL — channels you may broadcast to. Empty ⇒ read-only (default-deny). */
     post: string[];
+    /** Channels or patterns removed from {@link readAcl} and {@link post} (SPEC §9). Present only
+     *  when the list has exclusions. */
+    readExclude?: string[];
+    postExclude?: string[];
     /** Concrete channels in the read ACL you are NOT on yet, each with its registry note when the
      *  registry has one: where to look before the first send, without a second call. */
     joinable: { channel: string; note?: string }[];
@@ -234,6 +238,8 @@ export function buildOrientation(
       read: config.subscribe,
       readAcl: config.allowSubscribe,
       post: config.allowPublish,
+      ...(config.excludeSubscribe?.length ? { readExclude: config.excludeSubscribe } : {}),
+      ...(config.excludePublish?.length ? { postExclude: config.excludePublish } : {}),
       joinable: config.allowSubscribe
         .filter((c) => isConcreteChannel(c) && !config.subscribe.includes(c))
         .map((channel) => {
@@ -283,10 +289,12 @@ export function renderOrientation(o: Orientation): string {
     `  • read: ${fmt(o.access.read)}`,
   ];
   if (aclDiffers) lines.push(`  • may join (read ACL): ${fmt(o.access.readAcl)}`);
+  if (o.access.readExclude) lines.push(`  • excluded from reading: ${fmt(o.access.readExclude)} (never delivered; joining one is refused)`);
   if (o.access.joinable.length)
     lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")} · join one with cotal_join`);
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
+    ...(o.access.postExclude ? [`  • excluded from posting: ${fmt(o.access.postExclude)}`] : []),
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,
     ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")} (cotal_endpoints lists what your credential's grants cover${o.endpoints.some((e) => e.includes("(instance ")) ? "; pass a command's instance to cotal_describe and cotal_invoke as instance" : ""})`] : []),
     "",

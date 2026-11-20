@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, brokerUrlHasUserinfo, discardLaunchMaterial, assertExclusions, assertLifecycleToken, assertValidChannel, assertValidKind, channelInGrant, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadGrant, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -76,6 +76,11 @@ export interface AgentConfig {
    *  **Default-deny** (empty): publishing must be declared. Informational only here; the broker
    *  enforces it under auth. */
   allowPublish: string[];
+  /** Channels or patterns removed from {@link allowSubscribe} (SPEC §9): never delivered, refused on
+   *  a concrete join, and read back from history only through the delivery daemon. Absent ⇒ none. */
+  excludeSubscribe?: string[];
+  /** Channels or patterns removed from {@link allowPublish} (SPEC §9). Absent ⇒ none. */
+  excludePublish?: string[];
   /** A conversation gateway's connection is not a managed seat. Native personal participation may
    *  temporarily arm its turn relay through an exact, expiring host-authorized lease, but this flag
    *  still denies managed-seat custody such as self stop. */
@@ -240,15 +245,28 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // Read set: env > persona file > join link. No implicit channel at the end of that chain — a
   // session whose launcher, persona and link all name none joins none (DM-reachable, not on `general`).
   const resolvedSubscribe = envList(env.COTAL_SUBSCRIBE) ?? def?.subscribe ?? link?.channels ?? [];
+  // Exclusions (SPEC §9) come from where their list came from: a launcher that sets the list sets its
+  // exclusions beside it, unset meaning none, and a session whose list is the persona file's reads
+  // the file's. An exclusion variable without its list variable is a broken launcher.
+  const envAllowSub = envList(env.COTAL_ALLOW_SUBSCRIBE), envAllowPub = envList(env.COTAL_ALLOW_PUBLISH);
+  const exclusions = (list: string[] | undefined, listVar: string, excludeVar: string, fromFile: string[] | undefined): string[] => {
+    if (list !== undefined) return splitList(env[excludeVar]);
+    if (splitList(env[excludeVar]).length)
+      throw new Error(`COTAL config: ${excludeVar} needs ${listVar} beside it, the list it removes channels from (a broken launcher, not a mode)`);
+    return fromFile ?? [];
+  };
+  const excludeSub = exclusions(envAllowSub, "COTAL_ALLOW_SUBSCRIBE", "COTAL_EXCLUDE_SUBSCRIBE", def?.excludeSubscribe);
+  const excludePub = exclusions(envAllowPub, "COTAL_ALLOW_PUBLISH", "COTAL_EXCLUDE_PUBLISH", def?.excludePublish);
   // Resolved against the FINAL read set, not the file's: an env `COTAL_SUBSCRIBE` can replace the
   // persona's list, and the loader only checked the file against itself.
   let resolvedAllowSub: string[];
+  const resolvedAllowPub = envAllowPub ?? def?.allowPublish ?? [];
   try {
-    resolvedAllowSub = resolveReadAcl(resolvedSubscribe, envList(env.COTAL_ALLOW_SUBSCRIBE) ?? def?.allowSubscribe);
+    resolvedAllowSub = resolveReadGrant(resolvedSubscribe, envAllowSub ?? def?.allowSubscribe, excludeSub);
+    assertExclusions(resolvedAllowPub, excludePub, "allowPublish");
   } catch (e) {
     throw new Error(`COTAL config: ${(e as Error).message}`);
   }
-  const resolvedAllowPub = envList(env.COTAL_ALLOW_PUBLISH) ?? def?.allowPublish ?? [];
   // Reject channel names the wire layer would rewrite (env overrides bypass the file loader's check).
   for (const ch of [...resolvedSubscribe, ...resolvedAllowSub, ...resolvedAllowPub]) assertValidChannel(ch);
   // Per-channel attention defaults (env > agent-file). Re-validate here too — the loader checked them
@@ -263,8 +281,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     for (const ch of chans) {
       assertValidChannel(ch);
       if (!isConcreteChannel(ch)) throw new Error(`COTAL config: ${field} channel "${ch}" must be concrete (no wildcard)`);
-      if (!channelInAllow(resolvedAllowSub, ch))
-        throw new Error(`COTAL config: ${field} channel "${ch}" is not within allowSubscribe [${resolvedAllowSub.join(", ")}]`);
+      if (!channelInGrant(resolvedAllowSub, excludeSub, ch))
+        throw new Error(`COTAL config: ${field} channel "${ch}" is not within allowSubscribe [${resolvedAllowSub.join(", ")}]${excludeSub.length ? ` minus [${excludeSub.join(", ")}]` : ""}`);
     }
   // CONNECTION MATERIAL. A launcher-spawned seat gets it as a private file it is pointed at; a
   // hand-driven session (an operator's own `claude` with the plugin, a custom launcher) still sets
@@ -358,7 +376,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     if (!principal.actor)
       throw new Error("COTAL config: this space requires events, but the session has no stable principal to derive its event channel");
     const channel = eventChannel(principal);
-    if (!channelInAllow(resolvedAllowPub, channel))
+    if (!channelInGrant(resolvedAllowPub, excludePub, channel))
       throw new Error(
         `COTAL config: space "${env.COTAL_SPACE?.trim() || link?.space || "demo"}" requires events, but this session's grant does not cover its event channel "${channel}". ` +
           `Widen the whole user-auth actor row with \`cotal actor grant ${principal.actor} --owner ${principal.owner} --scope <current-scope> --allow-subscribe <current-read> --allow-publish '<current-post>,${channel}' --role <current-role> --label <current-label>\`; actor grant replaces the whole row, so preserve every current field.`,
@@ -389,6 +407,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     // Post ACL is default-DENY: only what's explicitly declared (env > agent-file). The broker
     // enforces it under auth; in open mode posting is unrestricted regardless.
     allowPublish: resolvedAllowPub,
+    ...(excludeSub.length ? { excludeSubscribe: excludeSub } : {}),
+    ...(excludePub.length ? { excludePublish: excludePub } : {}),
     eventsRequired,
     eventPayloadsWithheld: material?.eventPayloadsWithheld === true || envFlag(env, "COTAL_EVENT_PAYLOADS") === false,
     quiet: resolvedQuiet,

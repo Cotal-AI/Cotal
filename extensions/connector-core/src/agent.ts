@@ -27,9 +27,10 @@ import {
   type ChannelMode,
   type CotalMessage,
   type InlinePersona,
+  type ChannelGrantField,
   type PersonaEndpoint,
 } from "@cotal-ai/core";
-import { eventPlaneArmed, type AgentConfig } from "./config.js";
+import { eventPlaneArmed, isAuthed, type AgentConfig } from "./config.js";
 import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { claimOnceHandoff } from "./once.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
@@ -291,6 +292,10 @@ export class MeshAgent extends EventEmitter {
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
       channels: config.subscribe, // the endpoint's live filter = the active read set
       allowSubscribe: config.allowSubscribe, // the complete ACL decides whether a DLV durable exists
+      // Read exclusions route history under an entry they overlap through the delivery daemon, since
+      // the mint withholds that entry's direct history row (SPEC §8). Only a credential carries
+      // them: an open or soft-shared session has no mint to withhold a row and no daemon to ask.
+      excludeSubscribe: isAuthed(config) ? config.excludeSubscribe : undefined,
       channelModes: this.channelModeEntries(), // seed presence so file defaults are visible at boot
       // A seat reads the roster when it acts (readRoster) instead of watching it: a watch delivers
       // every member's heartbeat to every member, K² per heartbeat in a space of K (SPEC §6).
@@ -1436,8 +1441,8 @@ export class MeshAgent extends EventEmitter {
     role?: string;
     agent?: string;
     subscribe?: string[];
-    allowSubscribe?: string[];
-    allowPublish?: string[];
+    allowSubscribe?: ChannelGrantField;
+    allowPublish?: ChannelGrantField;
     capabilities?: string[];
     endpoints?: PersonaEndpoint[];
     announce?: string;
