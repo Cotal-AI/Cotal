@@ -71,7 +71,7 @@
     },
     {
       "name": "a daemon whose credential predates the records stops arming Plane-3",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-anycast.ts",
       "find": "if (!isPermissionDenied(e)) throw e;",
       "replace": "throw e;",
       "expectRed": "6e a daemon on a credential from before the records still arms Plane-3",
@@ -88,7 +88,7 @@
     },
     {
       "name": "the endpoint asks an open mesh for request status",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-anycast.ts",
       "find": "if (!this.authed) throw new Error(\"an open mesh runs no delivery daemon",
       "replace": "if (false) throw new Error(\"an open mesh runs no delivery daemon",
       "expectRed": "9a status on an open mesh is refused, naming why",
@@ -105,7 +105,7 @@
     },
     {
       "name": "a take naming its holder by a multi-line name is accepted",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-anycast.ts",
       "find": "    try { assertValidName(req.from.name); } catch (e) {",
       "replace": "    try { } catch (e) {",
       "expectRed": "5f a take naming its holder by a multi-line name is refused",
