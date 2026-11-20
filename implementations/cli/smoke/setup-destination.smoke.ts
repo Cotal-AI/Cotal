@@ -354,6 +354,21 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
 
+if (process.platform !== "win32") {
+  const original = project("workshop's original");
+  const other = project("workshop-other");
+  const setup = ["setup", "--destination", "local", "--harness", "codex", "--space", "workshop", "--yes", "--configure-only", "--plain"];
+  const prepared = await run([...setup, "--project", "."], original);
+  check("configure-only prepares the original project", prepared.status === 0, shown(prepared));
+  const mismatch = await run([...setup, "--project", "."], other);
+  const option = /rerun setup with `(--project [^`]+)`, or choose another --space name/.exec(mismatch.stderr)?.[1];
+  check("configure-only refuses another root without writing or suggesting startup or forget", mismatch.status === 2 && option !== undefined && !existsSync(join(other, ".cotal")) && !/cotal (?:up|space forget)/.test(mismatch.stderr), shown(mismatch));
+  if (option !== undefined) {
+    const retry = spawnSync("sh", ["-c", `exec "$@" ${option}`, "setup-retry", process.execPath, BIN, ...setup], { cwd: other, env, encoding: "utf8", timeout: 180_000 });
+    check("the printed project option works as written from the other directory", retry.status === 0 && /already prepared/.test(retry.stdout), shown(retry));
+  }
+}
+
 // A confirmed scripted local setup creates its explicitly named project folder.
 {
   const dir = join(home, "new-project");
@@ -426,7 +441,7 @@ if (process.platform !== "win32") {
   const notTeam = project("not-team");
   const before = files();
   const elsewhere = await json(hosted("team", notTeam));
-  check("a project other than the registration's root is CONFLICT, naming the root", refused(elsewhere, 2, "CONFLICT") && elsewhere.env?.error?.remedy === `pass --project ${teamRoot}`, shown(elsewhere));
+  check("a project other than the registration's root is CONFLICT, naming the root", refused(elsewhere, 2, "CONFLICT") && elsewhere.env?.error?.remedy === `pass \`--project ${teamRoot}\``, shown(elsewhere));
   const unknown = await json(hosted("nobody", teamRoot));
   check("an unregistered space with no connection file is TARGET_NOT_FOUND", refused(unknown, 2, "TARGET_NOT_FOUND") && /--connection-file/.test(unknown.env?.error?.remedy ?? ""), shown(unknown));
   const local = await json(hosted("research", join(home, "research")));
@@ -464,7 +479,7 @@ if (process.platform !== "win32") {
   const otherCatalogProject = project("catalog-project-other");
   const rebound = await json(hosted("catalog-team", otherCatalogProject));
   check("a discovered space already bound to another project refuses instead of moving again",
-    refused(rebound, 2, "CONFLICT") && rebound.env?.error?.remedy === `pass --project ${catalogProject}` && findMesh("catalog-team")?.root === catalogProject, shown(rebound));
+    refused(rebound, 2, "CONFLICT") && rebound.env?.error?.remedy === `pass \`--project ${catalogProject}\`` && findMesh("catalog-team")?.root === catalogProject, shown(rebound));
   const controlProject = join(process.env.COTAL_HOME!, "catalog-project");
   mkdirSync(controlProject, { recursive: true });
   recordMesh({ ...boundEntry!, space: "catalog-control", root: catalogCustodyRoot, catalogRoot: catalogCustodyRoot, catalogSlug: "catalog-control", userAuth: { ...boundEntry!.userAuth!, sentinelCredsPath } });
