@@ -642,7 +642,6 @@ function parseManagedAgentEnvelope(o: Record<string, unknown>, what: string, kin
   return { ...envelope, serveEpoch: o.serveEpoch };
 }
 
-/** One optional channel/pattern list on an enrollment target: bounded, string-only, in-grammar. */
 /** A read or post list on an enrollment target: either shape (SPEC §9), the same entry bound over
  *  both halves, written back in its canonical shape. */
 function parseEnrollmentGrant(value: unknown, what: string, field: string): ChannelGrantField | undefined {
@@ -655,6 +654,7 @@ function parseEnrollmentGrant(value: unknown, what: string, field: string): Chan
   return channelGrantField(g.allow, g.exclude);
 }
 
+/** One optional channel/pattern list on an enrollment target: bounded, string-only, in-grammar. */
 function parseEnrollmentList(value: unknown, what: string, field: string): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) enrollmentError(what, `target.${field} must be an array of channel patterns when present`);
