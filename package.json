@@ -1116,6 +1116,7 @@
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
     "smoke:claude-presence:live": "tsx bin/smoke/claude-presence-live.smoke.ts",
     "smoke:claude-prompt-argv:live": "tsx bin/smoke/claude-prompt-argv-live.smoke.ts",
+    "smoke:claude-permission-prompts:live": "tsx bin/smoke/claude-permission-prompts-live.smoke.ts",
     "smoke:setup-pure:live": "pnpm --filter @cotal-ai/cli... build && tsx bin/smoke/setup-pure-live.smoke.ts",
     "smoke:up-control-plane-guidance:live": "tsx implementations/cli/smoke/up-control-plane-guidance.smoke.ts",
     "smoke:up-stack:live": "tsx bin/smoke/up-stack-live.smoke.ts",
