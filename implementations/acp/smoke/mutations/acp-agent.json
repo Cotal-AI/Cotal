@@ -3,7 +3,7 @@
     "implementations/acp/smoke/agent.smoke.ts",
     "implementations/acp/smoke/frames.smoke.ts"
   ],
-  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing",
+  "guard": "the ACP agent keeps each protocol promise its docs make: a probe leaves no trace, a turn's updates and closed tool calls reach the client before the prompt answers, sign-in is offered and reported only where it applies, list and load show the right runs, later prompts are typed into the seat, end when it stops working and fail with the manager's reason when it refuses them, a cancel interrupts the seat and answers cancelled, also when the interrupt is refused or the session is deleted, a new session starts on a listed manager when none is on this machine, one silent manager hides only its own agents, and the frame mapping neither repeats nor misreports a seat's events; a person without spawn loads their agent with only its own model, and a seat no manager listed while one was silent is not called missing; a thread opened without spawn offers only its agent's model and cannot start another, and new threads start and agents are read where the auth service's manager list allows",
   "command": "pnpm --filter @cotal-ai/acp test",
   "proveWith": "pnpm mutation-proof --config implementations/acp/smoke/mutations/acp-agent.json",
   "why": [
@@ -258,6 +258,55 @@
       "find": "silent: failed.map((f) => f.instanceId) };",
       "replace": "silent: [] };",
       "expectRed": "and is named as silent, so a miss is not taken for absence"
+    },
+    {
+      "name": "a seat-only thread offers the default model too",
+      "file": "implementations/acp/src/options.ts",
+      "find": "...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` }]),",
+      "replace": "{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` },",
+      "expectRed": "a seat whose launch lists are refused loads with only its own model and nothing to launch with"
+    },
+    {
+      "name": "a seat-only thread tries to spawn after /despawn",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      if (session.offer.seatOnly) throw RequestError.invalidParams(",
+      "replace": "      if (false) throw RequestError.invalidParams(",
+      "expectRed": "a later prompt there is refused with that reason and spawns nothing"
+    },
+    {
+      "name": "/despawn in a seat-only thread promises a new agent",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "await say(session.offer.seatOnly ? ",
+      "replace": "await say(false ? ",
+      "expectRed": "and says that starting another agent there needs a grant that may spawn"
+    },
+    {
+      "name": "a typed prompt goes to the default manager, not the holding one",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "      bind(session, row);",
+      "replace": "      bind(session, { ...row, managerInstanceId: defaultManager(await m.managers())?.instanceId });",
+      "expectRed": "its prompt is typed into the seat through the manager that holds it"
+    },
+    {
+      "name": "new threads may start on the space's manager beside the person's own",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "  const launch = registered.length > 0 ? remote : local;",
+      "replace": "  const launch = [...remote, ...local];",
+      "expectRed": "with managers of their own live, new threads start only on those, in a stable order"
+    },
+    {
+      "name": "agents on the space's manager are not read once the person has their own",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "return { launch, read: [...remote, ...local], ...(why ? { why } : {}) };",
+      "replace": "return { launch, read: launch, ...(why ? { why } : {}) };",
+      "expectRed": "and agents are read from them and from the space's manager"
+    },
+    {
+      "name": "a manager that is not a candidate is read",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "listed.filter((m) => m.placement === placement && m.state === \"candidate\")",
+      "replace": "listed.filter((m) => m.placement === placement)",
+      "expectRed": "a manager that is not a candidate is neither started on nor read"
     }
   ]
 }
