@@ -30,7 +30,7 @@ import { Socket } from "node:net";
 import { join } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
 import { darwinUserCacheDir, localPeerCredentials, windowsDirSecurity, windowsUserSid } from "@cotal-ai/seat";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 
 /** Wire protocol version. A request naming any other version is refused before any effect. */
 export const DAEMON_PROTOCOL_VERSION = 1;
@@ -101,6 +101,31 @@ function host<T>(what: string, call: () => T): T {
   }
 }
 
+function linuxDaemonRuntime(env: NodeJS.ProcessEnv): string {
+  if (env.XDG_RUNTIME_DIR) return env.XDG_RUNTIME_DIR;
+  const runtime = `/run/user/${euid()}`;
+  try { checkDir(runtime); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    throw new EndpointRefusal("NO_RUNTIME_DIR", `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`);
+  }
+  return runtime;
+}
+
+/** Resolve the current Linux runtime for one native command, leaving the caller's env unchanged. */
+export function daemonUserServiceEnv(): NodeJS.ProcessEnv {
+  if (process.platform !== "linux" || process.env.XDG_RUNTIME_DIR) return process.env;
+  try { return { ...process.env, XDG_RUNTIME_DIR: linuxDaemonRuntime(process.env) }; }
+  catch (error) {
+    if (!(error instanceof EndpointRefusal)) throw error;
+    // The native tool may already have a bus address. Do not supply an absent directory.
+    if (error.code === "NO_RUNTIME_DIR") return process.env;
+    throw new CommandFailure("refused", error.code === "UNSUPPORTED_PLATFORM" ? "UNSUPPORTED" : "PERMISSION_DENIED", error.message, {
+      native: { code: error.code, outcome: "not-executed" }, remedy: "inspect the intended user's runtime directory; its ownership and permissions were not changed",
+    });
+  }
+}
+
 /**
  * The fixed endpoint for this user. Linux: `$XDG_RUNTIME_DIR/cotal/daemon.sock`. macOS:
  * `<user cache dir>/cotal/daemon.sock`, the env-independent directory `confstr` names. Windows: the
@@ -117,15 +142,7 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env, home: string =
     runtime = host("the daemon runtime directory", darwinUserCacheDir);
   } else {
     assertSupportedPlatform();
-    runtime = env.XDG_RUNTIME_DIR || `/run/user/${euid()}`;
-    if (!env.XDG_RUNTIME_DIR) {
-      try {
-        checkDir(runtime);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        throw new EndpointRefusal("NO_RUNTIME_DIR", `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`);
-      }
-    }
+    runtime = linuxDaemonRuntime(env);
   }
   const dir = join(runtime, "cotal");
   const socket = join(dir, "daemon.sock");

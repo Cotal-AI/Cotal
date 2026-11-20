@@ -43,7 +43,7 @@ import { randomUUID } from "node:crypto";
 import { acquireLock, acquireLockAsync, inspectLock, mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
-import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
+import { checkDir, daemonUserServiceEnv, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { ClosedPeerRefusal, isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
@@ -438,7 +438,7 @@ function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | un
 
 function assertLinuxRecordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, receipt: UnitReceipt): void {
   const unit = daemonUnitName(daemonHome);
-  if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(systemdUserUnitDirectory(), unit))
+  if (receipt.daemonHome !== daemonHome || receipt.unit !== unit || receipt.unitPath !== join(systemdUserUnitDirectory(daemonUserServiceEnv()), unit))
     throw new CommandFailure("refused", "CONFLICT", "the systemd receipt does not name this daemon home's unit in the user manager's unit directory; nothing was changed", {
       remedy: `inspect ${codeSpan(unitReceiptFile(paths))} and ${codeSpan(receipt.unitPath)}. If this receipt is stale, remove only ${codeSpan(unitReceiptFile(paths))} to forget it, then run ${codeSpan(daemonCommandCopy("install", daemonHome))}. For an owned installation, run ${codeSpan(daemonCommandCopy("uninstall", daemonHome))} before reinstalling`,
     });
@@ -514,12 +514,12 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
     service.start(receipt);
     return { started: true, unit: plan.unit, state: "enabled" };
   }
-  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"]);
+  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"], daemonUserServiceEnv());
   if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
   const state = read.stdout.trim();
   if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} reported an empty UnitFileState; nothing was started`);
   if (state !== "enabled") return { started: false, unit: plan.unit, state };
-  submitSystemdUnitControl("start", plan.unit);
+  submitSystemdUnitControl("start", plan.unit, daemonUserServiceEnv());
   return { started: true, unit: plan.unit, state: "enabled" };
   } finally { lock?.release(); }
 }
@@ -564,7 +564,7 @@ function reconcileShellRuntime(paths: Pick<DaemonPaths, "state">, root: string):
   try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
   catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
   assertSystemdSource(receipt.unitPath, sha256);
-  submitSystemdUnitRegistration("reload", plan.unit);
+  submitSystemdUnitRegistration("reload", plan.unit, daemonUserServiceEnv());
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
@@ -608,7 +608,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
   const systemd = (receipt: UnitReceipt, previous?: string) => {
     const source = readLocalRecordSource(receipt.unitPath, 64 * 1024, true)?.toString("utf8");
     if (!source || sourceDigest(source) !== receipt.unitSha256) throw failure("the recorded unit source changed during repair");
-    return observeSystemdRepairUnit(nativeRun, receipt, source, previous);
+    return observeSystemdRepairUnit((file, args, env, timeout) => nativeRun(file, args, env ?? daemonUserServiceEnv(), timeout), receipt, source, previous);
   };
   const nativePid = (receipt: UnitReceipt) => {
     const job = darwinLaunchdJob(receipt.unit);
@@ -713,7 +713,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     else if (!published && !native!.settled) {
       const fresh = systemd(current);
       if (JSON.stringify(fresh) !== JSON.stringify(native) || (owner?.start && processBirth(owner.pid) !== owner.start)) throw new Error("the systemd unit changed before its native stop");
-      submitSystemdUnitControl("stop", current.unit);
+      submitSystemdUnitControl("stop", current.unit, daemonUserServiceEnv());
     }
     const deadline = Date.now() + 130_000;
     while (owner?.start && processBirth(owner.pid) === owner.start) {
@@ -741,7 +741,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
         catch (error) { writeSecretFileAtomic(receipt.unitPath, previousSource); throw error; }
       }
       writeSecretFileAtomic(serviceRepairFile(paths.state), `${JSON.stringify({ ...intent, phase: "published" })}\n`);
-      if (linux) submitSystemdUnitRegistration("reload", receipt.unit);
+      if (linux) submitSystemdUnitRegistration("reload", receipt.unit, daemonUserServiceEnv());
     } finally { exclusion.release(); }
     const repaired = recordedUnit(paths, daemonHome, nativeRun, false, true).receipt;
     const repairedNative = linux ? systemd(repaired) : undefined;
@@ -750,7 +750,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
       rmSync(serviceRepairFile(paths.state));
       return true;
     }
-    if (linux) submitSystemdUnitControl("start", repaired.unit);
+    if (linux) submitSystemdUnitControl("start", repaired.unit, daemonUserServiceEnv());
     else service!.start(repaired);
     const readyUntil = Date.now() + 60_000;
     for (;;) {
@@ -1061,8 +1061,8 @@ export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, 
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.restart(receipt, reload);
   else {
-    submitSystemdUnitControl("stop", plan.unit);
-    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit]);
+    submitSystemdUnitControl("stop", plan.unit, daemonUserServiceEnv());
+    const result = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "start", plan.unit], daemonUserServiceEnv());
     if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native daemon start did not confirm completion (${result.detail}); it was not retried`, { target: { unit: plan.unit }, remedy: "correct the native service error, then run \`cotal daemon start\`" });
   }
   return plan;

@@ -339,9 +339,9 @@ for (const fail of [false, true]) {
   assert.deepEqual(order, ["poll-stop", "close"], "disabled or foreign stopped service returns without querying the daemon socket");
 }
 
-// A reconcile child exiting 0 never satisfies upgradeAndReconcile or repairReplacement unless the daemon answers at the target version.
-for (const firstReconcileFails of [false, true]) {
-  const cellRoot = join(root, `reconcile-ready-${firstReconcileFails}`);
+// Failed readiness rolls the package back. A deliberately deferred native activation keeps the verified software.
+for (const outcome of ["not-ready", "reconcile-failed", "activation-deferred"] as const) {
+  const cellRoot = join(root, outcome);
   const globalPrefix = join(cellRoot, "global");
   const globalModules = join(globalPrefix, "lib", "node_modules");
   mkdirSync(globalModules, { recursive: true, mode: 0o700 });
@@ -354,7 +354,8 @@ for (const firstReconcileFails of [false, true]) {
   for (const dir of [process.env.HOME, process.env.COTAL_HOME, process.env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
     let reconcileCalls = 0;
-    const waits: string[] = [], errors: string[] = [];
+    const waits: string[] = [], errors: string[] = [], output: string[] = [];
+    const partial = "cotal-ai@0.13.2 reconciled, but the machine daemon still runs Cotal 0.13.1";
     const rt: UpdateRuntime = {
       ...updateRuntime,
       env: {},
@@ -375,19 +376,29 @@ for (const firstReconcileFails of [false, true]) {
         return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
       },
       spawnGlobal: async (_r, op) => {
-        if (op === "reconcile" && ++reconcileCalls === 1 && firstReconcileFails) return { status: 1, stdout: "", stderr: "transient reconcile error" };
+        if (op === "reconcile" && ++reconcileCalls === 1 && outcome === "reconcile-failed") return { status: 1, stdout: "", stderr: "transient reconcile error" };
         return { status: 0, stdout: "", stderr: "" };
       },
       waitForInstalledGeneration: async v => {
         waits.push(v);
+        if (outcome === "activation-deferred") return partial;
         if (v === "0.13.2") throw new Error("installed Cotal 0.13.2 did not become ready");
       },
-      out: () => {},
+      out: line => { output.push(line); },
       err: line => { errors.push(line); },
     };
     assert.equal(await executeUpdate(true, rt), 1);
-    assert.deepEqual(waits, ["0.13.2", "0.13.1"], "parent requires daemon readiness at 0.13.2 and verifies restored 0.13.1");
-    assert.ok(errors.some(line => line.includes("cotal-ai@0.13.1 was restored and reconciled")), errors.join("\n"));
+    if (outcome === "activation-deferred") {
+      assert.equal(reconcileCalls, 1, "a partial result does not roll back verified software");
+      assert.deepEqual(waits, ["0.13.2"]);
+      assert.deepEqual(errors, [partial]);
+      assert.ok(!output.some(line => line.includes("installed globally and reconciled")));
+      assert.equal(JSON.parse(readFileSync(join(process.env.COTAL_HOME, "update-attempt.json"), "utf8")).result, partial);
+      assert.equal(JSON.parse(readFileSync(join(process.env.COTAL_HOME, "update-recovery.json"), "utf8")), null);
+    } else {
+      assert.deepEqual(waits, ["0.13.2", "0.13.1"], "parent requires daemon readiness at 0.13.2 and verifies restored 0.13.1");
+      assert.ok(errors.some(line => line.includes("cotal-ai@0.13.1 was restored and reconciled")), errors.join("\n"));
+    }
   } finally {
     if (priorHome === undefined) delete process.env.HOME; else process.env.HOME = priorHome;
     if (priorCotal === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorCotal;
