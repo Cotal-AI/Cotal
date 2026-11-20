@@ -407,10 +407,10 @@ if (process.platform !== "win32") {
   const override = run(["up", "--space", "custom", ...probe], spaced);
   check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
   for (const space of ["bad space", "café", "a.b"]) {
-    const explicit = run(["up", "--open", "--foreground", "--space", space, ...probe], spaced);
+    const explicit = run(["up", "--open", "--foreground", "--space", space, "--runtime", "nosuch", "--server", "nats://127.0.0.1:1"], spaced);
     check(`up refuses explicit space ${JSON.stringify(space)} before startup or writes`,
-      explicit.status === 1 && explicit.envelope?.error?.code === "USAGE_INVALID" &&
-        explicit.envelope.error.remedy === "choose a name of only letters, digits, underscores and hyphens" && !records(spaced), shown(explicit));
+      explicit.status === 1 && explicit.stdout === "" && /nothing was started or written/.test(explicit.stderr) &&
+        explicit.stderr.includes("choose a name of only letters, digits, underscores and hyphens") && !records(spaced), shown(explicit));
   }
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   process.env.COTAL_HOME = join(home, ".cotal");

@@ -1266,15 +1266,13 @@ if (process.platform === "linux") {
   mkdirSync(longestRoot);
   const sixtyFour = await json(["space", "create", "b".repeat(64)], longestRoot);
   check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
-  // A record an earlier release prepared under a name `up` cannot start stays prepared.
+  // An existing prepared name reaches the same controller startup checks as before.
   const legacy = join(home, "legacy");
   mkdirSync(join(legacy, ".cotal", "agents"), { recursive: true, mode: 0o700 });
   recordPreparedSpace({ space: "sp ace", root: legacy, ts: new Date().toISOString() });
   const legacyUp = await json(["up", "--root", legacy, "--space", "sp ace", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
-  check("up refuses an explicit legacy name before starting or writing anything",
-    refused(legacyUp, 1, "USAGE_INVALID") && /nothing was started or written/.test(legacyUp.env?.error?.message ?? "") &&
-      legacyUp.env?.error?.remedy === "choose a name of only letters, digits, underscores and hyphens" &&
-      findPreparedSpace("sp ace")?.root === legacy && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(legacyUp));
+  check("up of a legacy name that is not a routing token says no member was started and quotes the name in its next step",
+    refused(legacyUp, 1, "SCHEMA_INVALID") && /started no member/.test(legacyUp.env?.error?.message ?? "") && (legacyUp.env?.error?.remedy ?? "").includes("--space 'sp ace'"), shown(legacyUp));
   const human = await run(["space", "--plain"]);
   // Spaces this suite started and stopped above are listed with it, so the heading has a State column.
   check("the listing shows it under its own heading, as not started", /^Prepared spaces$/m.test(human.stdout) && /demo \(selected\) +not started/.test(human.stdout), shown(human));
@@ -1966,6 +1964,52 @@ if (process.platform === "linux") {
     const reused = await json(["space", "create", name, "--root", elsewhere]);
     check("the forgotten name can immediately be prepared in a different folder", reused.status === 0, shown(reused));
     removePreparedSpace(name);
+  }
+}
+
+// An open space registered by an earlier release must still start under its exact old name.
+if (process.platform !== "win32") {
+  const project = join(home, "legacy-open");
+  mkdirSync(join(project, ".cotal"), { recursive: true, mode: 0o700 });
+  const space = "bad space";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const registration = { space, root: project, server, mode: "open", origin: "up", ts: new Date().toISOString() } as const;
+  recordMesh(registration);
+  const sandbox = recordSmokeSandbox({ root: project, cotalHome: runEnv.COTAL_HOME, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const child = spawn(process.execPath, [BIN, "up", "--open", "--foreground", "--no-manager", "--space", space, "--server", server], {
+    cwd: project, env: runEnv, stdio: ["ignore", "pipe", "pipe"],
+  });
+  teardownOnSignal(child);
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  let output = "";
+  child.stdout.on("data", (data) => { output += data; });
+  child.stderr.on("data", (data) => { output += data; });
+  const ready = /up at|wrote default persona|Foreground stack lifetime/;
+  try {
+    for (let i = 0; i < 240 && child.exitCode === null && !ready.test(output); i++)
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    const shownSpace = await json(["space", "show", space], project);
+    check("foreground up of a registered odd name starts its exact open space", ready.test(output) && shownSpace.status === 0 && shownSpace.env?.result?.check === "reachable", { output: output.slice(-1500), show: shown(shownSpace) });
+    const preview = await json(["space", "delete", space, "--dry-run"], project);
+    check("space delete previews the exact odd name and its live streams without changing anything",
+      preview.status === 0 && preview.env?.target?.space === space && preview.env.result.effectAttempted === false &&
+        preview.env.result.streams.some((stream: { name: string; state: string }) => stream.name === "CHAT_bad_space" && stream.state === "present"), shown(preview));
+    recordMesh({ ...registration, space: "-legacy", origin: "manual" });
+    const dashed = await json(["space", "delete", "--dry-run", "--", "-legacy"], project);
+    check("space delete still accepts registered leading-dash tokens after --", dashed.status === 0 && dashed.env?.target?.space === "-legacy", shown(dashed));
+    removeMesh("-legacy");
+    recordMesh({ ...registration, space: "bad_space", origin: "manual" });
+    const ambiguous = await json(["space", "delete", space, "--dry-run"], project);
+    check("space delete refuses ambiguous streams shared by two open-space names",
+      refused(ambiguous, 2, "CONFLICT") && /maps to the same streams/.test(ambiguous.env?.error?.message ?? ""), shown(ambiguous));
+    removeMesh("bad_space");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: project, env: runEnv });
+      const down = await run(["down", "--yes"], {}, project);
+      if (down.status !== 0) child.kill("SIGTERM");
+    }
+    await closed;
   }
 }
 

@@ -240,7 +240,7 @@ import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/r
 import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
-import { checkSpaceName } from "./meshes-add.js";
+import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
 import { checkLocalSpace } from "./space-registration.js";
 import { cleanedManifestStart, interruptedStartBroker, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
@@ -472,8 +472,8 @@ export function validateUpArguments(args: ParsedArgs): void {
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
   if (args.values["dry-run"] === true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: "pass -f <cotal.yaml> to print that manifest's plan; `cotal status` shows what this folder records" });
-  // A space this stack starts must be addressable by the space lifecycle commands.
-  const named = typeof args.values.space === "string" ? checkSpaceName(args.values.space) : undefined;
+  // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.
+  const named = typeof args.values.space === "string" ? checkSpaceFlagValue(args.values.space) : undefined;
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
@@ -941,6 +941,19 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
   let adopted = false;
   try {
     validateUpArguments(args);
+    const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
+    const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
+    const space = typeof args.values.space === "string" ? args.values.space : undefined;
+    if (space !== undefined) {
+      const named = checkSpaceName(space);
+      const resolvedRoot = root ?? fresh ?? cotalRoot();
+      // Only a new space needs the creation grammar. A stopped legacy stack may have lost its
+      // registration while its own journal, broker configuration or account still names it.
+      if (!named.ok && !findMesh(space) && !findPreparedSpace(space) &&
+          readStackJournal(resolvedRoot)?.journal.space !== space && retainedOpenSpace(resolvedRoot) !== space &&
+          !listSpaceAccounts(authDir(resolvedRoot)).includes(space))
+        throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
+    }
     // The broker reads an explicit channels file only once it is being prepared, so a file it would
     // refuse is named here, before the stack journal or anything else is written.
     if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
@@ -948,12 +961,10 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     if (folderNamed) args = { ...args, values: { ...args.values, space: folderNamed, __folderNamed: true } };
     // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
     // every later step uses this folder. A run that stops before writing there removes it again.
-    const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     if (fresh) {
       mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
       for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
-    const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
     // The recursive restore/resume re-entries inherit absolute paths and the same absolute root.
