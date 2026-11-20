@@ -572,6 +572,11 @@ If the extension manifest is corrupt, the check still reports the running and re
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
 and the `EXTENSION_INVENTORY_UNREADABLE` warning.
 
+If an interrupted connector seed needs manual repair, the Reconciliation section gives the same
+diagnosis and `cotal ext seed --repair` guidance as the extension command, even when recorded
+extension versions match. Both text and JSON reports exit 4, and JSON reports partial completeness.
+The check leaves the seed state unchanged.
+
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
 keep the existing guarded update, continuity checks, download verification and current-generation

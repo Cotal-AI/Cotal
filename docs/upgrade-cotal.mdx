@@ -313,7 +313,8 @@ Remote credential exchanges that time out or return HTTP 5xx retry for up to 120
 that check. Credential denials and other HTTP 4xx responses still fail without retry.
 If it refuses, follow the reported remedy instead of removing credentials or reinstalling an unrelated copy.
 
-`cotal update --check` only reports registry availability and recorded extension versions.
+`cotal update --check` reports registry availability, recorded extension versions and whether an
+interrupted connector seed needs manual repair.
 It installs and restarts nothing, so it does not replace this reconciliation step.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
 A machine service restarted during an update answers local status while the updater still owns
