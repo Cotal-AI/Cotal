@@ -188,7 +188,10 @@ the host's registered service records. Discovery and invocation both use that in
 route. This view grants no registry scan or class queue. It adds four reads for an actor that
 holds `spawn`. The view may call `status`, `models` and `resolve-cwd` on that instance, the reads a
 launch needs, subject to the execution-mode limit above. It may also call `ps` there to list the
-caller's own agents. A `run`-only or no-scope view may not, and `slots` stays with `admin`. A user
+caller's own agents. A `run`-only or no-scope agent view may not, and `slots` stays with `admin`. A
+person's own view, minted from their sign-in, calls `inspect` and `ps` there whatever its scope,
+with owner-mode `despawn`, `attach`, `input` and `interrupt`
+([your own agents](identity-user-auth.mdx#delegation)). A user
 mesh's co-located manager answers every owner's view, so its `status` counts and its `ps` lists only
 the caller's own seats, unless the caller holds `admin`. An absent,
 ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the

@@ -353,7 +353,7 @@ check("a person's manager view stops, attaches to, types into and interrupts the
 check("a person's manager view holds no any-mode seat row", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd, "any").length === 0));
 check("a person holds these rows without the spawn capability", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(view("interactive", []), cmd).length === 1));
 const readRows = (perms: { pub: { allow: string[] } }, cmd: string) => perms.pub.allow.filter((r) => r.includes(`.manager.${UID2}.${cmd}.u_alice.web.`));
-check("a person's manager view resolves and lists their agents whatever their scope: inspect and ps on its instance",
+check("a person's manager view carries inspect and ps on its instance whatever their scope",
   ["inspect", "ps"].every((cmd) => readRows(view("interactive", []), cmd).length === 1), view("interactive", []).pub.allow.filter((r) => r.includes(`.manager.${UID2}.`)));
 check("an agent's manager view without spawn reads neither inspect nor ps",
   ["inspect", "ps"].every((cmd) => readRows(view("managed-agent", []), cmd).length === 0 && readRows(view(undefined, []), cmd).length === 0));

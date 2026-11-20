@@ -28,7 +28,7 @@
       "file": "packages/core/src/provision-permission-builders.ts",
       "find": ", ...PERSON_VIEW_READS.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command }))]",
       "replace": "]",
-      "expectRed": "a person's manager view resolves and lists their agents whatever their scope"
+      "expectRed": "a person's manager view carries inspect and ps on its instance whatever their scope"
     },
     {
       "name": "the seat rows reach every owner",

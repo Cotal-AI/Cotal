@@ -310,9 +310,9 @@ concludes nothing.
   them, read-only, with their state, application and host, and exits 0. It says that no manager
   answered, and its Next starts one: bare `cotal up` on the root of the space's own stack, as for a
   static stack above, and `cotal manager start` anywhere else. `--on` keeps refusing
-  `TARGET_UNAVAILABLE`, exit 2, when its manager does not answer, and `--slots` refuses `UNSUPPORTED`, exit 2, because user-auth and open spaces own no durable static slot rows. Your ledger row needs the `admin` scope to
-  reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary). A broker-refused
-  read keeps that refusal and adds the documented scope requirement and `cotal auth grants` remedy.
+  `TARGET_UNAVAILABLE`, exit 2, when its manager does not answer, and `--slots` refuses `UNSUPPORTED`, exit 2, because user-auth and open spaces own no durable static slot rows. Your own sign-in reaches `ps` whatever
+  your ledger row's scope. An agent's own credential needs `spawn` or `admin` for it. A broker-refused
+  read keeps that refusal and adds the documented requirement and `cotal auth grants` remedy.
   The broker does not identify whether the missing permission is for the route, command or target;
   the CLI does not substitute another caller or retry on a different route.
 
@@ -329,8 +329,8 @@ the same press, so a terminal with either protocol enabled detaches too. It does
 mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
 `127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
 drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
-they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent under your
-owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
+they are cross-agent admin operations. On a user-auth mesh, your sign-in stops and attaches to your own agents (any agent under your
+owner) whatever your scope; another owner's agent needs `admin` on your ledger row
 ([identity & auth](identity-and-auth.mdx)). Launch detached agents with [`spawn --detach`](cli-agents.mdx#spawn).
 
 `pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca` or

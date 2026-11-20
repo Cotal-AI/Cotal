@@ -197,8 +197,10 @@ bearer is bound to, the instance, and the Manager's contracts generated from
 that returns the person's own `manager-caller` bearer and the space's sentinel credential; an
 embedding's backend obtains the bearer from the stock exchange with the person's IdP proof. The
 bearer's space, principal, lifecycle and instance are checked before anything is dialled, and the
-describe is pinned to that instance. The view carries only the commands the person's ledger scope
-grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands
+describe is pinned to that instance. The view carries the commands the person's ledger scope
+grants, and their own agents' commands whatever the scope: `inspect`, `ps`, and owner-mode
+`despawn`, `attach`, `input` and `interrupt` ([your own agents](identity-user-auth.mdx#delegation)).
+`spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands
 (`define-persona`, `remove-persona`, `list-personas`, `show-persona`) and
 `goal-result`, plus the reads `status`, `models`, `resolve-cwd` and `ps` on that one instance.
 That `ps` lists only the person's own agents. Operator reads such as `slots` come only with
