@@ -111,6 +111,11 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("an offline row makes a manager neither live nor local, and names no host", b.live === false && b.local === false && b.host === undefined, b);
   const c = managerChoice("c", roster, "here");
   check("a manager with no row is not live", c.live === false && c.local === false && c.host === undefined, c);
+  const theirs = [({ card: { id: "u_other.manager_d", name: "manager_d", meta: { host: "here" } }, status: "idle" }) as unknown as Presence];
+  const d = managerChoice("d", theirs, "here", "u_p");
+  check("on a signed-in space another owner's agent named after the manager does not describe it", d.live === false && d.local === false && d.host === undefined, d);
+  const mine = managerChoice("a", roster, "here", "u_p");
+  check("and the person's own manager row still does", mine.live === true && mine.host === "here" && mine.local === true, mine);
 }
 
 // Which unanswered replies name the deregister command.

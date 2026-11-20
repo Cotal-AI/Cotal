@@ -402,8 +402,8 @@
     {
       "name": "an offline row still describes a manager",
       "file": "implementations/acp/src/live-mesh.ts",
-      "find": "?.actor === `manager_${instanceId}` && p.status !== \"offline\");",
-      "replace": "?.actor === `manager_${instanceId}`);",
+      "find": " && p.status !== \"offline\");",
+      "replace": ");",
       "expectRed": "an offline row makes a manager neither live nor local, and names no host"
     },
     {
@@ -419,6 +419,13 @@
       "find": "return instanceId !== undefined && own.has(instanceId) && READS.has(op)",
       "replace": "return instanceId !== undefined && READS.has(op)",
       "expectRed": "the space's own manager does not, since it is not the person's registration"
+    },
+    {
+      "name": "another owner's row describes a person's manager",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "(owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`)",
+      "replace": "parsePrincipalKey(p.card.id)?.actor === actor",
+      "expectRed": "on a signed-in space another owner's agent named after the manager does not describe it"
     }
   ]
 }

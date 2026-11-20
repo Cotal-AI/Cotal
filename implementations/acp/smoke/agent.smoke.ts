@@ -53,7 +53,6 @@ const CATALOGS: AgentCatalog[] = [
 /** A space held in memory. A test scripts what a seat publishes with `script`. */
 class FakeMesh implements Mesh {
   readonly space = "fake";
-  userMode = false;
   readonly defaultAgent = "claude";
   spawned: SpawnRequest[] = [];
   despawned: string[] = [];
@@ -97,7 +96,13 @@ class FakeMesh implements Mesh {
   managerList: ManagerChoice[] = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m2", host: "there", local: false }];
   /** The managers described one at a time, in order. */
   described: string[] = [];
-  async manager(instanceId: string): Promise<ManagerChoice> { this.described.push(instanceId); return { instanceId, host: `host-${instanceId}`, local: false }; }
+  /** Managers that refuse to be described, as one that stopped. */
+  gone = new Set<string>();
+  async manager(instanceId: string): Promise<ManagerChoice> {
+    this.described.push(instanceId);
+    if (this.gone.has(instanceId)) throw new Error(`manager instance ${instanceId} is not registered`);
+    return { instanceId, host: `host-${instanceId}`, local: false };
+  }
   /** Why no manager may start a new agent, when none may. */
   noLaunch: string | undefined;
   async managers() {
@@ -433,6 +438,18 @@ const spawnsAlone = mesh.spawned.length;
 const aloneTurn = await within(agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "again" }] }));
 mesh.script = { before: [], after: [] };
 check("and its next agent starts on that manager", aloneTurn?.stopReason === "end_turn" && mesh.spawned.length === spawnsAlone + 1 && mesh.spawned.at(-1)?.name === "held" && mesh.spawned.at(-1)?.managerInstanceId === "m3", { aloneTurn, spawned: mesh.spawned.at(-1) });
+// The held manager was in the launch list at the load, then stopped: it leaves the list and refuses to
+// be described. After /despawn the thread still switches to the other manager and keeps the held one.
+mesh.managerList = [{ instanceId: "m1", host: "here", local: true }, { instanceId: "m3", host: "elsewhere", local: false }];
+await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
+await agent.request(methods.agent.session.prompt, { sessionId: "held", prompt: [{ type: "text", text: "/despawn" }] });
+mesh.managerList = [{ instanceId: "m1", host: "here", local: true }];
+mesh.gone.add("m3");
+const askedGone = mesh.catalogsAsked.length;
+let goneFailed: unknown;
+const awayFromGone = await agent.request(methods.agent.session.setConfigOption, { sessionId: "held", configId: "machine", value: "m1" }).catch((e: unknown) => { goneFailed = e; return undefined; });
+check("after the held manager stops, choosing the other machine reads its lists and keeps the held one as described at the load", goneFailed === undefined && machineOf(awayFromGone).current === "m1" && JSON.stringify(labels(awayFromGone)) === JSON.stringify(["here (this machine)", "elsewhere"]) && mesh.catalogsAsked.slice(askedGone).every((m) => m === "m1"), goneFailed ?? { machine: machineOf(awayFromGone), labels: labels(awayFromGone) });
+mesh.gone.clear();
 // A registration whose computer is gone stays listed, so a new thread prefers a manager whose presence is current.
 mesh.managerList = [{ instanceId: "m1", host: "gone", local: false, live: false }, { instanceId: "m2", host: "there", local: false, live: true }];
 const preferLive = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
