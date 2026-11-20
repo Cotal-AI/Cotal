@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
@@ -155,7 +156,16 @@ async function createSource(name: string, path: string, values: Values): Promise
     try { assertValidRole(values.role); }
     catch (error) { throw usage(`--role: ${oneLine((error as Error).message)}`); }
   }
-  const body = values.prompt ?? readInput(values.from!).toString("utf8");
+  let body = values.prompt;
+  if (body === undefined) {
+    const from = values.from!;
+    const bytes = readInput(from);
+    if (!isUtf8(bytes)) {
+      const source = from === "-" ? "standard input" : oneLine(from);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
+    }
+    body = bytes.toString("utf8");
+  }
   if (!body.trim()) throw usage("persona body is empty");
   // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
   // the private draft the flags are written to.
