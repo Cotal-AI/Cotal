@@ -303,8 +303,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     isCommandFailure(invalidList) && scriptRefusal(invalidList, `in ${handler}: status must be "resolved" or "expired"`)
     && (invalidList.target as { file?: string })?.file === handler
     && invalidList.remedy === `set checkpoints.go[1].status in ${handler} to "resolved" or "expired", then rerun the simulation`, invalidList);
-  // A scripted turn result goes to the program as written, so a status no live turn yields is
-  // refused like a malformed checkpoint, in any entry of a list, and a documented one still runs.
+  // Scripted turn results go to the program as written, so invalid results are refused even
+  // when unused. A valid handoff still delivers the handle.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
   c("a scripted turn status other than done, blocked or handoff is refused SCHEMA_INVALID, exit 1",
     scriptRefusal(fertig, `invalid scripted turn 'build': status must be "done", "blocked" or "handoff"`), fertig);
@@ -318,6 +318,15 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     const missing = await simulate({ checkpoints: { go: { status: "resolved" } }, turns: { build } });
     c(`a scripted handoff without a destination names ${path} even when unused`,
       scriptRefusal(missing, `${path} is required when status is "handoff"`), missing);
+  }
+  const destination = { agent: "sim.ana", persona: "ana" };
+  for (const [build, path] of [
+    [{ status: "done", to: destination }, "turns.build.to"],
+    [[{ status: "done" }, { status: "blocked", to: destination }], "turns.build[1].to"],
+  ] as const) {
+    const unexpected = await simulate({ checkpoints: { go: { status: "resolved" } }, turns: { build } });
+    c(`a scripted non-handoff rejects the destination at ${path}`,
+      scriptRefusal(unexpected, `${path} is only allowed when status is "handoff"`), unexpected);
   }
   for (const to of [42, "ana", null, { agent: "sim.ana" }, { agent: "sim.ana", persona: "ana", worktree: 1 }]) {
     const invalid = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to }] } });

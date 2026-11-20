@@ -2,4 +2,4 @@
 "@cotal-ai/runtime": patch
 ---
 
-Workflow simulations now reject scripted handoffs that omit the destination agent handle.
+Workflow simulations now require a destination agent handle on scripted handoffs and reject destinations on other scripted turn outcomes.

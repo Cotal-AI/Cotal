@@ -139,6 +139,7 @@ function turnResultProblem(result: unknown, path: string): string | undefined {
   if (unknown !== undefined) return `unknown field '${unknown}'`;
   if (fields.status === "handoff" && fields.to === undefined) return `${path}.to is required when status is "handoff"`;
   if (fields.to !== undefined) {
+    if (fields.status !== "handoff") return `${path}.to is only allowed when status is "handoff"`;
     const to = fields.to as Record<string, unknown> | null;
     if (!to || typeof to !== "object" || Array.isArray(to) || typeof to.agent !== "string" || !to.agent.length || typeof to.persona !== "string"
       || (to.kind !== undefined && to.kind !== "spawned" && to.kind !== "participant")
