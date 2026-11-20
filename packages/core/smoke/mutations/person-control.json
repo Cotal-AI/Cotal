@@ -1,0 +1,69 @@
+{
+  "suite": [
+    "packages/core/smoke/principal-route.smoke.ts"
+  ],
+  "guard": "a person's manager view controls only the agents under their own owner, and their sign-in reads only those agents' event channels, both keyed on the ledger row being interactive and never on a scope token",
+  "command": "pnpm smoke:principal-route",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/person-control.json",
+  "why": [
+    "Each mutation is a plausible one-line regression in the grant builders. The smoke imports core's src directly, so no build runs between the mutation and the suite."
+  ],
+  "mutations": [
+    {
+      "name": "a person's manager view loses its seat rows",
+      "file": "packages/core/src/provision-permission-builders.ts",
+      "find": "    ...(opts.ledgerKind === \"interactive\" ? personSeatCapabilities(pr.owner) : []),",
+      "replace": "    ...([] as EpCapability[]),",
+      "expectRed": "a person's manager view stops, attaches to, types into and interrupts their own agents"
+    },
+    {
+      "name": "the seat rows key on the spawn scope instead of the row kind",
+      "file": "packages/core/src/provision-permission-builders.ts",
+      "find": "    ...(opts.ledgerKind === \"interactive\" ? personSeatCapabilities(pr.owner) : []),",
+      "replace": "    ...(caps.includes(\"spawn\") ? personSeatCapabilities(pr.owner) : []),",
+      "expectRed": "an agent's manager view gets no input or interrupt row"
+    },
+    {
+      "name": "the seat rows reach every owner",
+      "file": "packages/core/src/endpoint-grants.ts",
+      "find": "    target: { mode: \"owner\", tOwner: owner } as EpTarget,",
+      "replace": "    target: { mode: \"any\", tOwner: \"*\" } as EpTarget,",
+      "expectRed": "a person's manager view holds no any-mode seat row"
+    },
+    {
+      "name": "overlapping sets mint a subject twice",
+      "file": "packages/core/src/provision-permission-builders.ts",
+      "find": "  rows.pub = [...new Set(rows.pub)];",
+      "replace": "  void rows;",
+      "expectRed": "no row is minted twice"
+    },
+    {
+      "name": "the live event read takes any sender",
+      "file": "packages/core/src/provision-permissions.ts",
+      "find": "    const ownEvents = chatSubject(space, pr.owner, \"*\", `${EVENT_CHANNEL_PREFIX}${pr.owner}.*`);",
+      "replace": "    const ownEvents = chatSubject(space, \"*\", \"*\", `${EVENT_CHANNEL_PREFIX}${pr.owner}.*`);",
+      "expectRed": "a person's sign-in subscribes the event channels of every agent under their own owner"
+    },
+    {
+      "name": "the event history read is not granted",
+      "file": "packages/core/src/provision-permissions.ts",
+      "find": "    pubAllow.push(`$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${ownEvents}`);",
+      "replace": "    void chatHistD;",
+      "expectRed": "a person reads those channels' history through its own lifecycle's reader"
+    },
+    {
+      "name": "every ledger row reads its owner's event channels",
+      "file": "packages/core/src/provision-permissions.ts",
+      "find": "  // read above.\n  if (opts.ledgerKind === \"interactive\") {",
+      "replace": "  // read above.\n  if (opts.ledgerKind !== undefined) {",
+      "expectRed": "an agent's credential and a chat session read no event channel they were not granted"
+    },
+    {
+      "name": "any profile takes a ledger kind",
+      "file": "packages/core/src/provision-permissions.ts",
+      "find": "    if (profile !== \"agent\" && profile !== \"manager-caller\")",
+      "replace": "    if (false)",
+      "expectRed": "ledgerKind on any other profile is refused"
+    }
+  ]
+}

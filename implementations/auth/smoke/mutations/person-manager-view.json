@@ -1,0 +1,27 @@
+{
+  "suite": [
+    "implementations/auth/smoke/principal-route-auth.smoke.ts"
+  ],
+  "guard": "the auth callout mints a person's manager view with owner-mode seat control from the ledger row's kind, and an agent's with none",
+  "command": "pnpm smoke:principal-route:auth",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/person-manager-view.json",
+  "why": [
+    "The kind reaches the manager-caller mint only through this one argument. The smoke imports the auth src directly."
+  ],
+  "mutations": [
+    {
+      "name": "the manager-caller mint drops the row kind",
+      "file": "implementations/auth/src/permissions.ts",
+      "find": "          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding, ...(acl.kind !== undefined ? { ledgerKind: acl.kind } : {}) },",
+      "replace": "          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding },",
+      "expectRed": "the callout mints a person's manager view with owner-mode input"
+    },
+    {
+      "name": "every manager-caller mint is a person's",
+      "file": "implementations/auth/src/permissions.ts",
+      "find": "          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding, ...(acl.kind !== undefined ? { ledgerKind: acl.kind } : {}) },",
+      "replace": "          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding, ledgerKind: \"interactive\" as const },",
+      "expectRed": "the callout mints an agent's manager view with no input or interrupt row"
+    }
+  ]
+}

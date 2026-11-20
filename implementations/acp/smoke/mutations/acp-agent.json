@@ -201,6 +201,20 @@
       "find": "        if (sessions.get(session.id) !== session) return;",
       "replace": "        void sessions;",
       "expectRed": "a delete during the first spawn answers once its seat is hidden, and sends that seat nowhere"
+    },
+    {
+      "name": "a frame from another sender is taken as the agent's",
+      "file": "implementations/acp/src/live-mesh.ts",
+      "find": "  if (!seat || msg.from?.id !== principalKey(seat.owner, seat.actor).key) return undefined;",
+      "replace": "  if (!seat) return undefined;",
+      "expectRed": "frameOf ignores a frame that another sender put on an agent's event channel"
+    },
+    {
+      "name": "a thread's agent name is not a user-mode actor token",
+      "file": "implementations/acp/src/agent.ts",
+      "find": "  return `acp_${Array.from(randomBytes(10)",
+      "replace": "  return `acp-${Array.from(randomBytes(10)",
+      "expectRed": "a thread's agent name is a valid user-mode actor token"
     }
   ]
 }
