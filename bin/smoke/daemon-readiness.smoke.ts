@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { SignJWT, generateKeyPair } from "jose";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
+import { findMesh, recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox, skipSuite } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 
@@ -86,6 +86,33 @@ const daemon = spawn(process.execPath, [cliEntry, "daemon", "serve"], { cwd: par
 try {
   for (let i = 0; i < 100 && !existsSync(paths.socket) && daemon.exitCode === null; i++) await sleep(100);
   assert.ok(existsSync(paths.socket), "shipped foreground daemon must bind");
+  const openSpace = "local-open", openProject = join(parent, openSpace);
+  mkdirSync(join(openProject, ".cotal"), { recursive: true, mode: 0o700 });
+  const openStack = spawn(process.execPath, [cliEntry, "up", "--foreground", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--space", openSpace],
+    { cwd: openProject, env, stdio: ["ignore", "pipe", "pipe"] });
+  let openOutput = "";
+  openStack.stdout.on("data", (chunk) => { openOutput += String(chunk); });
+  openStack.stderr.on("data", (chunk) => { openOutput += String(chunk); });
+  try {
+    for (let i = 0; i < 100 && !findMesh(openSpace) && openStack.exitCode === null && openStack.signalCode === null; i++) await sleep(100);
+    assert.equal(findMesh(openSpace)?.mode, "open", openOutput);
+    let manager = await cli(openProject, "ps", "--space", openSpace);
+    for (let i = 0; i < 10 && manager.code !== 0 && openStack.exitCode === null; i++) {
+      await sleep(100);
+      manager = await cli(openProject, "ps", "--space", openSpace);
+    }
+    assert.equal(manager.code, 0, JSON.stringify(manager));
+    const reply = await run("service-connect", "--space", openSpace);
+    assert.equal(reply.code, 2, JSON.stringify(reply));
+    assert.equal(reply.doc.error?.code, "UNSUPPORTED", JSON.stringify(reply));
+    assert.match(reply.doc.error?.message, /this space does not use user sign-in/);
+    assert.equal(reply.doc.error?.remedy, "run `cotal up` in the folder that hosts the local space. Its stack runs the Manager");
+    console.log("PASS running open space directs service-connect to cotal up instead of registration");
+  } finally {
+    await killAndAwaitExit(openStack, "SIGTERM");
+    openStack.stdout.destroy();
+    openStack.stderr.destroy();
+  }
   const localSpace = "local-static", project = join(parent, localSpace);
   mkdirSync(project, { mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: project, cotalHome: home, xdgConfigHome: config });
