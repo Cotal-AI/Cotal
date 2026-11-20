@@ -55,6 +55,7 @@ import {
   extensionsDir,
   findCotalRoot,
   folderSpaceOverSelection,
+  isGenuineSpace,
   meshesForRoot,
   resolveReadsLiveness,
   stoppedStack,
@@ -240,6 +241,17 @@ async function folderSpacesOffline(cwd: string, values: FlagValues<typeof status
   } catch { return []; }
   const probed = await Promise.all(entries.map(async (m) => ((await isReachable(m.server, m.tlsRequired ? { tls: true } : {})) ? undefined : m.space)));
   return probed.filter((space): space is string => space !== undefined);
+}
+
+/** Outside a project, only the all-broker report has liveness evidence for the registry fallback. */
+async function registryFallbackChecks(root: string, values: FlagValues<typeof statusFlags>) {
+  if (!values.all || values.space !== undefined || values.server !== undefined || isGenuineSpace(root)) return undefined;
+  let entries: MeshEntry[];
+  try {
+    if (readCurrent() !== undefined) return undefined;
+    entries = readMeshRegistry().entries;
+  } catch { return undefined; } // The reporting pass names unreadable records.
+  return new Map(await Promise.all(entries.map(async entry => [entry.space, { entry, check: await brokerCheck(entry.server, entry.tlsRequired) }] as const)));
 }
 
 /** What a persona catalog holds: whether its `default` passes the loader spawn uses, and how many of
@@ -472,7 +484,9 @@ export async function status(args: ParsedArgs): Promise<void> {
     });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
-  const offline = await folderSpacesOffline(cwd, values);
+  const checks = await registryFallbackChecks(root, values);
+  const offline = checks === undefined ? await folderSpacesOffline(cwd, values)
+    : [...checks.values()].flatMap(({ entry, check }) => check === "reachable" ? [] : [entry.space]);
   const selected = resolveSelected(cwd, values, offline);
   const gaps = new Gaps();
   const hints: string[] = [];
@@ -526,13 +540,13 @@ export async function status(args: ParsedArgs): Promise<void> {
       if (isCommandFailure(error) && error.remedy) hints.push(error.remedy);
     }
   }
-  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight);
+  const meshes = await readMeshes(cwd, selected, Boolean(values.all), gaps, offline, preflight, checks);
   const { maintenance, sourceMissing } = blocked
     ? { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false }
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [];
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight);
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
   // while a maintenance journal holds the store, or if the store is unwritable.
   if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -1359,7 +1373,7 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  with its own recorded TLS requirement. A bare TCP/INFO probe would green-light a plaintext broker
  *  that has substituted for a TLS-required mesh — the FAIL1 attack — so a list that only asks "is
  *  anything listening" cannot report on the one property the record claims. */
-async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight): Promise<StatusResult["meshes"]> {
+async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: Gaps, offline: readonly string[], preflight: SelectedPreflight, checks: Awaited<ReturnType<typeof registryFallbackChecks>>): Promise<StatusResult["meshes"]> {
   // A registry file that cannot be read is named, and the readable records are still listed and
   // checked. Only an absent directory or pointer is an empty registry or no current mesh.
   const unreadable: StatusResult["meshes"]["unreadable"] = [];
@@ -1397,6 +1411,8 @@ async function readMeshes(cwd: string, selected: Selected, all: boolean, gaps: G
       if (preflight.kind === "slow-link" || preflight.kind === "broker-stopped" || preflight.kind === "unreachable") return preflight.kind;
       return preflight.kind === "tls-trust" || preflight.kind === "tls-unsupported" || preflight.kind === "auth-unsupported" || preflight.kind === "jetstream-unsupported" || preflight.kind === "non-nats-listener" ? "unreachable" : "reachable";
     }
+    const prior = checks?.get(m.space);
+    if (prior?.entry.server === m.server && prior.entry.tlsRequired === m.tlsRequired) return prior.check;
     return brokerCheck(m.server, m.tlsRequired);
   };
   const items = await Promise.all(
@@ -1474,7 +1490,7 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
-async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight): Promise<SelectedResult> {
+async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -1499,6 +1515,10 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;
+    if (!all && e.code === "ambiguous-target" && e.details.spaces && !isGenuineSpace(folder.root)) {
+      hints.push(`check the registered spaces with \`${cmd} status --all\``);
+      return { resolved: false, code: e.code, message: `multiple spaces are registered but unchecked: ${(e.details.available ?? []).join(", ")}` };
+    }
     // The canonical parts name the ACTUAL repair per code (`cotal meshes rm`, `--space
     // <name>`, `cotal up --user-auth`, …). A fixed `up --detach` hint would be right for at most one
     // of the codes and point the others at a command that does not fix them. The section states the
@@ -2264,8 +2284,11 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   }
   if (r.selected.resolved || !noApplication) {
     items.push({ command: `${cmd} space`, description: "List the spaces on this machine" });
-    items.push({ command: `${cmd} use <name>`, description: "Select the default space" });
-    if (r.meshes.items.length > 1) items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
+    const unchecked = r.meshes.items.some(m => m.check === "not-checked");
+    if (!r.selected.resolved || r.selected.source !== "registry" || unchecked)
+      items.push({ command: `${cmd} use <name>`, description: "Select the default space" });
+    if (r.meshes.items.length > 1 && unchecked)
+      items.push({ command: `${cmd} status --all`, description: "Check every registered space" });
   }
   // A stopped broker is resumed, not restarted. A local controller stack that does not answer,
   // or one with a member whose process is gone, otherwise restarts its stopped members from its

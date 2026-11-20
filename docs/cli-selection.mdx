@@ -1021,6 +1021,11 @@ selected mesh's row carries no state either. In `--json` each of those rows is `
 recorded TLS requirement. Each row then shows the check of its own address, the selected mesh's
 row included when `--server` names another.
 
+Outside a project, without a default selection, `--space` or `--server`, `status --all` reports on
+the sole reachable registration. It does not change the default
+selection. Without `--all`, status lists multiple registrations as unchecked rather than assuming
+their brokers are running.
+
 
 ### JSON report
 
