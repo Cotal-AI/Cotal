@@ -547,6 +547,9 @@ a future follow-up. When `update --self` cannot reach the registry before select
 it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
 custody. It does not create an update recovery record. From 0.167.1, losing registry connectivity during release checks, extension-dependency
 checks or target staging also reports that nothing changed and exits 0 before replacement.
+On Linux and macOS, the updater stops a staging install that stops making progress or reaches
+its five-minute limit. It removes the disposable staging copy and leaves the running installation
+and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
 A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
 Authentication, permission, integrity and target pre-install refusals still exit nonzero.
 Retry `cotal update --self` when connectivity returns. The version read has no retries and a
