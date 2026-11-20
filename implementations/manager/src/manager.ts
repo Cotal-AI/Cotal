@@ -2281,7 +2281,7 @@ export class Manager {
 
   /** {@link StartDoors.opStart}. */
   protected opStart(...args: Parameters<StartDoors["opStart"]>): ReturnType<StartDoors["opStart"]> { return this.startDoorsComponent.opStart(...args); }
-  protected listSpawnDirectory(args: Record<string, unknown>) { return this.seatLaunch.listSpawnDirectory(args); }
+  protected listSpawnDirectory(args: Record<string, unknown>): ReturnType<SeatLaunch["listSpawnDirectory"]> { return this.seatLaunch.listSpawnDirectory(args); }
   /** {@link SeatLaunch.resolveSpawnCwd}. */
   protected resolveSpawnCwd(value: unknown): { cwd: string; host: string } { return this.seatLaunch.resolveSpawnCwd(value); }
 
