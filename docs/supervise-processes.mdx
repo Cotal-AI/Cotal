@@ -109,7 +109,7 @@ An active unit on one machine says nothing about another machine's processes.
 
 ## Stop the intended service
 
-Spaces prepared by this release with `cotal setup` or `cotal space create` use the service controller.
+Spaces that `up` started with the service controller list their members under Owned services in `cotal status`.
 Stop one saved service with `cotal service stop <name> --space <s> --yes`.
 A named `cotal down <name>` also stops a saved service definition, such as `stack-manager` or `web`.
 

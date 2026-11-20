@@ -13,7 +13,7 @@ For normal startup and shutdown, use [Run a mesh](run-a-mesh.mdx).
 ## Find the failure [#when-something-looks-absent]
 
 Run `cotal status` to see which local components are running.
-For a space prepared with `cotal space create` or started with `cotal team boot`, read the controller-owned service logs:
+If `cotal status` lists the `stack-*` members under Owned services, read the controller-owned service logs:
 
 ```sh
 cotal service logs stack-manager --space main --tail 30

@@ -70,7 +70,7 @@ import { prepareKernelServiceStop, prepareProcessService, readOwnedLogTail, read
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
-import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { foreignLocalProcesses, knownStackRecoveryHost, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { readStoreIdentity, stackStoreWarnings } from "../lib/store-identity.js";
@@ -292,15 +292,15 @@ export function requestedStackMode(values: ParsedArgs["values"]): StackMode | un
 }
 
 /** A root takes the controller route when it already has a stack journal, or when it is a fresh
- *  root prepared here with nothing legacy, maintenance or team-owned retained under it. A root with
- *  neither, its space registered by `up` included, keeps the retained path. On either, an input the
+ *  root prepared here with a recovery host identity and nothing legacy, maintenance or team-owned
+ *  retained under it. A root with neither, its space registered by `up` included, keeps the retained path. On either, an input the
  *  controller has no route for refuses `UNSUPPORTED`; a prepared root the retained launcher already
  *  started keeps that launcher for such an input. A recorded stack that launched a
  *  member keeps its auth mode. A static-auth request needs an `up`
  *  registration in auth mode or none. An `--open` request needs an open registration or none, and
  *  a root that holds no broker account. A prepared user-auth root uses the same controller with
  *  its native auth service. Anything else keeps the retained path. */
-export function controllerStackApplies(root: string, space: string, values: ParsedArgs["values"]): boolean {
+export function controllerStackApplies(root: string, space: string, values: ParsedArgs["values"], onMissingHost?: () => void): boolean {
   const canonical = canonicalRoot(root);
   const recorded = readStackJournal(canonical);
   const requested = requestedStackMode(values);
@@ -334,9 +334,14 @@ export function controllerStackApplies(root: string, space: string, values: Pars
     // A prepared root the retained launcher already started holds the user-auth state it wrote, and
     // keeps that launcher for an option only it takes.
     if (wanted === "user" && hasUserAuthState(canonical, space, { readOnly: true })) return false;
-    // A fresh prepared root never falls through to the legacy launcher, so an option the controller
-    // stack has no route for refuses here as it does on a root whose stack the controller owns.
+    // Refuse options the controller does not take before choosing the launcher for a fresh root.
     throw controllerUnsupported(canonical, unsupported, true);
+  }
+  if (knownStackRecoveryHost() === undefined) {
+    // Keep the fresh-root ownership checks. The native launcher does not need the recovery host pin.
+    stackPreflight(canonical, space, undefined);
+    onMissingHost?.();
+    return false;
   }
   return true;
 }

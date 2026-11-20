@@ -1552,10 +1552,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // `TLS: serving <subject> at nats://…` over it.
   if (!values.file && values.server !== undefined) assertTlsAddressServed(values.server, transport, meshRoot);
 
-  // CONTROLLER-OWNED STACK. A root whose stack the service controller owns, or a fresh prepared
-  // static-auth, open or user-auth root with nothing legacy retained, starts as exact controller members instead
-  // of the pidfile launcher. The decision is made once here; neither route falls back to the other.
-  if (!values.file && controllerStackApplies(meshRoot, values.space ?? folderSpace(), values)) {
+  // Decide before launch. A fresh prepared root without a recovery host identity uses the same
+  // launcher as an unprepared root. A recorded controller stack never changes launcher.
+  let preparedWithoutRecoveryHost = false;
+  if (!values.file && controllerStackApplies(meshRoot, values.space ?? folderSpace(), values, () => { preparedWithoutRecoveryHost = true; })) {
     const stackSpace = values.space ?? folderSpace();
     recordOperationSpace(stackSpace);
     const stackMode = requestedStackMode(values);
@@ -1609,7 +1609,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
       throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
     }
-    throw new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
+    throw new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot }, remedy: preparedWithoutRecoveryHost ? "omit --json/--plain; controller startup needs a stable machine and boot identity" : "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
   }
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; the additive team deploy route is separate.
@@ -1717,6 +1717,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     startupLock = undefined;
   };
   try {
+    if (preparedWithoutRecoveryHost) {
+      if (readStackJournal(meshRoot)) throw new CommandFailure("refused", "CONFLICT", "this root acquired a controller stack while startup was being prepared; nothing was started through the native launcher", { target: { root: meshRoot }, remedy: "run `cotal up` again to use the recorded controller stack" });
+      for (const line of hang("", "This host has no stable machine and boot identity. Using the native launcher without stack recovery pins.", terminalWidth(process.stdout), c.dim)) console.log(line);
+    }
     // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
     // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
     // it on the lock would refuse the very resume the lock is here to protect.
