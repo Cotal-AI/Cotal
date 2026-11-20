@@ -260,7 +260,7 @@ recorded `deadlineAt`, passes. The relay is one goal per attempt and is never su
 write the seat makes in that turn is the first dispatch's one write, and the hold is its only
 settle. The seat answers that turn with the command the relay renders,
 `cotal run answer <run> <step-key>` (`renderAskRequest` in
-`extensions/connector-core/src/agent.ts`), which reads the step's pause as every answer does
+`extensions/connector-core/src/agent-turns.ts`), which reads the step's pause as every answer does
 (§6.1). Before the hold's first bind that is the claimed attempt pause, which refuses it. After the
 bind it is the hold, and the manager refuses the answer of a baseline seat: a baseline seat may
 answer only the pause its pending relay names, and this relay names the attempt's token
