@@ -295,7 +295,7 @@ try {
     const five = await registeredWitness(ep);
     const s = source(five.witness);
     tokensSeen.push(await s.bearer());
-    // A non-owner cause takes an operator granter (stock rule, service-host-ops.ts revoke V0).
+    // A non-owner cause takes an operator granter (stock rule, service-host-decisions.ts revoke V0).
     const r = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: operator,
       input: { endpoint: ep, instanceId: five.instanceId, expectedAssignmentDigest: five.assignmentDigest, cause: "restore-quarantine" } });
     for (let i = 0; i < 20 && s.state().state !== "ended"; i++) {
