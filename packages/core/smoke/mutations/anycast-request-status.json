@@ -123,7 +123,7 @@
     },
     {
       "name": "a take carries the endpoint's newest epoch instead of the one its copy was read under",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-consumers.ts",
       "find": "m.info.deliveryCount, epoch, () => m.nak())",
       "replace": "m.info.deliveryCount, this.taskEpoch!, () => m.nak())",
       "expectRed": "10k a second copy from the old stream is refused as a mismatch",
