@@ -1,4 +1,4 @@
-/** Real npm removal and failed-add cleanup must preserve copied file-based extensions.
+/** Real npm removal and failed seed cleanup must preserve copied file-based extensions.
  * Exercises both paths offline with an empty npm cache, using the built CLI and Claude connector
  * in private prefixes. Never starts a connector or broker.
  * Build the workspace first. Run: pnpm smoke:ext-install-copies
@@ -9,22 +9,17 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
-// The pinned-name helper is used by setup/update. A new failed candidate takes its
-// npm-remove restore arm, rather than the staged ordinary-add or existing-package snapshot arm.
-if (process.argv[2] === "--restore") {
-  const { addExtension } = await import("../dist/commands/ext.js");
-  await addExtension(process.argv[3]!, process.argv[4]!);
-} else {
+function main(): void {
   const repo = resolve(import.meta.dirname, "../../..");
   const binary = join(repo, "bin", "dist", "cotal.js");
-  const tsx = join(repo, "node_modules", "tsx", "dist", "cli.mjs");
   const source = join(repo, "extensions", "connector-claude-code");
   const keptName = "@cotal-ai/connector-claude-code";
   const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
-  const sourceDigest = digest(join(source, "dist", "index.js"));
+  const sourceEntry = join(source, "dist", "index.js");
+  const sourceDigest = digest(sourceEntry);
+  const hostCore = realpathSync(join(repo, "packages", "core"));
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ext-copies-")));
   let passed = 0, failed = 0;
   const check = (name: string, value: boolean): void => {
@@ -41,13 +36,15 @@ if (process.argv[2] === "--restore") {
     for (const file of ["user.npmrc", "global.npmrc"]) writeFileSync(join(dir, file), "");
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
-      HOME: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"),
+      HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"),
       TMPDIR: dir, TMP: dir, TEMP: dir, DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
       npm_config_cache: join(dir, "npm-cache"), npm_config_userconfig: join(dir, "user.npmrc"),
       npm_config_globalconfig: join(dir, "global.npmrc"), npm_config_update_notifier: "false",
     };
-    const child = (args: string[]) => spawnSync(process.execPath, args, { cwd: dir, env, encoding: "utf8", timeout: 180_000 });
-    return { prefix: join(xdg, "cotal", "extensions"), env, child, cli: (args: string[]) => child([binary, ...args]) };
+    const child = (args: string[], extra?: NodeJS.ProcessEnv) =>
+      spawnSync(process.execPath, args, { cwd: dir, env: { ...env, ...extra }, encoding: "utf8", timeout: 180_000 });
+    const offline = { npm_config_cache: join(dir, "empty-npm-cache"), npm_config_offline: "true" };
+    return { prefix: join(xdg, "cotal", "extensions"), env, child, offline, cli: (args: string[], extra?: NodeJS.ProcessEnv) => child([binary, ...args], extra) };
   };
   try {
     if (process.platform === "linux" || process.platform === "darwin") {
@@ -70,51 +67,73 @@ if (process.argv[2] === "--restore") {
       const after = child([entry, "ext", "root"]);
       check("initial seeding keeps the advertised installed root", after.status === 0 && after.stdout === before.stdout && existsSync(expected));
     }
-    for (const arm of ["remove", "restore"] as const) {
-      const dir = join(root, arm);
-      const { prefix, env, child, cli } = sandbox(dir);
+    {
+      const dir = join(root, "remove");
+      const { prefix, cli, offline } = sandbox(dir);
       const invalidAdd = cli(["ext", "add", source, "unexpected-extra-argument"]);
-      check(`${arm}: surplus add operand refuses with usage`, invalidAdd.status === 1 && invalidAdd.stderr.includes("ext add <npm-package>"));
-      check(`${arm}: invalid add leaves the prefix absent`, !existsSync(prefix));
+      check("remove: surplus add operand refuses with usage", invalidAdd.status === 1 && invalidAdd.stderr.includes("ext add <npm-package>"));
+      check("remove: invalid add leaves the prefix absent", !existsSync(prefix));
       const added = cli(["ext", "add", source]);
-      assert.equal(added.status, 0, `${arm}: stock connector install failed: ${added.stderr.slice(-800)}`);
-      const kept = join(prefix, "node_modules", "@cotal-ai", "connector-claude-code");
-      check(`${arm}: built-in starts as a copy`, !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
+      assert.equal(added.status, 0, `stock connector install failed: ${added.stderr.slice(-800)}`);
+      const kept = join(prefix, "node_modules", keptName);
+      check("remove: built-in starts as a copy", !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
       const manifestBefore = readFileSync(join(prefix, "extensions.json"), "utf8");
       const invalidRemove = cli(["ext", "remove", keptName, "unexpected-extra-argument"]);
-      check(`${arm}: surplus remove operand refuses with usage`, invalidRemove.status === 1 && invalidRemove.stderr.includes("ext remove <name>"));
-      check(`${arm}: invalid remove keeps the manifest and installed package`, readFileSync(join(prefix, "extensions.json"), "utf8") === manifestBefore && existsSync(join(kept, "dist", "index.js")));
+      check("remove: surplus remove operand refuses with usage", invalidRemove.status === 1 && invalidRemove.stderr.includes("ext remove <name>"));
+      check("remove: invalid remove keeps the manifest and installed package", readFileSync(join(prefix, "extensions.json"), "utf8") === manifestBefore && existsSync(join(kept, "dist", "index.js")));
       const before = digest(join(kept, "dist", "index.js"));
-      check(`${arm}: installed bytes match built source`, before === sourceDigest);
-      const siblingName = `cotal-ext-copy-${arm}`;
+      check("remove: installed bytes match built source", before === sourceDigest);
+      const siblingName = "cotal-ext-copy-remove";
       const sibling = join(dir, siblingName);
       mkdirSync(sibling);
       writeFileSync(join(sibling, "package.json"), JSON.stringify({ name: siblingName, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-      writeFileSync(join(sibling, "index.js"), arm === "remove"
-        ? `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "copy-sibling", summary: "fixture", run: async () => {} });\n`
-        : "export {};\n");
-      if (arm === "remove") {
-        const installed = cli(["ext", "add", sibling]);
-        assert.equal(installed.status, 0, installed.stderr.slice(-800));
-        check("remove: adding a sibling preserves the built-in copy", !lstatSync(kept).isSymbolicLink());
-      }
-      env.npm_config_cache = join(dir, "empty-npm-cache");
-      env.npm_config_offline = "true";
-      if (arm === "remove") {
-        const removed = cli(["ext", "remove", siblingName]);
-        if (removed.status !== 0) console.error(removed.stderr.trim());
-        check("remove: the real command succeeds offline with an empty npm cache", removed.status === 0);
-      } else {
-        const refused = child([tsx, fileURLToPath(import.meta.url), "--restore", sibling, siblingName]);
-        check("restore: failure reaches the no-registration refusal", refused.status === 1 && /registered no extensions/.test(refused.stderr));
-      }
-      check(`${arm}: unrelated built-in remains a copy`, !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
-      check(`${arm}: unrelated built-in bytes are unchanged`, digest(join(kept, "dist", "index.js")) === before);
-      check(`${arm}: operated package is absent`, !existsSync(join(prefix, "node_modules", siblingName)));
+      writeFileSync(join(sibling, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "copy-sibling", summary: "fixture", run: async () => {} });\n`);
+      const installed = cli(["ext", "add", sibling]);
+      assert.equal(installed.status, 0, installed.stderr.slice(-800));
+      check("remove: adding a sibling preserves the built-in copy", !lstatSync(kept).isSymbolicLink());
+      const removed = cli(["ext", "remove", siblingName], offline);
+      if (removed.status !== 0) console.error(removed.stderr.trim());
+      check("remove: the real command succeeds offline with an empty npm cache", removed.status === 0);
+      check("remove: unrelated built-in remains a copy", !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
+      check("remove: unrelated built-in bytes are unchanged", digest(join(kept, "dist", "index.js")) === before);
+      check("remove: operated package is absent", !existsSync(join(prefix, "node_modules", siblingName)));
       const manifest = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8")) as { extensions: { pkg: string }[] };
-      check(`${arm}: manifest keeps only the built-in`, manifest.extensions.length === 1 && manifest.extensions[0]?.pkg === keptName);
-      check(`${arm}: source package remains unchanged`, digest(join(source, "dist", "index.js")) === sourceDigest);
-      check(`${arm}: retained core peer matches the running CLI`, realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === realpathSync(join(repo, "packages", "core")));
+      check("remove: manifest keeps only the built-in", manifest.extensions.length === 1 && manifest.extensions[0]?.pkg === keptName);
+      check("remove: source package remains unchanged", digest(sourceEntry) === sourceDigest);
+      check("remove: retained core peer matches the running CLI", realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === hostCore);
+    }
+    // A fresh seed child installs in place. The renamed Claude bundle already owns the same
+    // providers, so the real seed refuses after npm installs the candidate and must remove it.
+    {
+      const dir = join(root, "seed-refusal");
+      const { prefix, cli, offline } = sandbox(dir);
+      const alternateName = "cotal-ext-copy-claude";
+      const alternate = join(dir, alternateName);
+      mkdirSync(alternate);
+      writeFileSync(join(alternate, "package.json"), JSON.stringify({ name: alternateName, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
+      cpSync(sourceEntry, join(alternate, "index.js"));
+      const added = cli(["ext", "add", alternate]);
+      assert.equal(added.status, 0, added.stderr);
+      const manifestPath = join(prefix, "extensions.json");
+      const manifestBefore = readFileSync(manifestPath, "utf8");
+      const refused = cli(["ext", "seed", "--force"], { ...offline, COTAL_ALLOW_CHECKOUT_SEED: "1" });
+      const collision = refused.status === 1 && refused.stderr.includes('failed to seed connector "claude"')
+        && refused.stderr.includes(`already provided by installed extension ${alternateName}@1.0.0`);
+      if (!collision) console.error(refused.stdout + refused.stderr);
+      check("seed: the offline seed child refuses on the installed provider collision", collision);
+      const modules = join(prefix, "node_modules");
+      check("seed: the refused candidate is removed from disk", !existsSync(join(modules, keptName)));
+      type Dependencies = Record<string, string>;
+      const pkg = JSON.parse(readFileSync(join(prefix, "package.json"), "utf8")) as { dependencies: Dependencies };
+      const lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8")) as { packages: Record<string, { dependencies?: Dependencies }> };
+      check("seed: npm metadata records only the survivor as a direct dependency",
+        Object.keys(pkg.dependencies).join(",") === alternateName && Object.keys(lock.packages[""]?.dependencies ?? {}).join(",") === alternateName
+        && !Object.hasOwn(lock.packages, `node_modules/${keptName}`));
+      check("seed: the extension manifest is unchanged", readFileSync(manifestPath, "utf8") === manifestBefore);
+      const kept = join(modules, alternateName);
+      check("seed: the installed connector stays a copy with unchanged bytes",
+        !lstatSync(kept).isSymbolicLink() && digest(join(kept, "index.js")) === sourceDigest);
+      check("seed: the surviving core peer matches the running CLI", realpathSync(join(kept, "node_modules", "@cotal-ai", "core")) === hostCore);
     }
     // Two extensions that depend on one package with a bin. The second add's stage carries the bin
     // link the prefix already holds, so its promotion copies a link onto an existing one (#5669).
@@ -163,8 +182,10 @@ if (process.argv[2] === "--restore") {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 40 : 37, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 33 : 30, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
 }
+
+main();
