@@ -1614,12 +1614,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user
   // mode the owner is resolved inside the provisioning call below.
   // Default events on only where supported. An explicit request or registration policy still refuses below.
-  const defaultEventsAllowed = !defaultOwner || !defaultGrant || patternInAllow(defaultGrant.allowPublish, eventChannel({ owner: defaultOwner, actor: CLI_USER_ACTOR }));
-  const launchEvents = eventsRequired || events === true || (events !== false && !!connector.eventChannel && defaultEventsAllowed);
-  if (!launchEvents && events === undefined && connector.eventChannel && !defaultEventsAllowed) {
-    const message = "event plane not armed: the launching member cannot delegate it";
-    recordOperationWarning({ code: "EVENT_PLANE_NOTICE", target: { space }, message });
-  }
+  const eventsFor = (actor: string) => eventsRequired || events === true || (events !== false && !!connector.eventChannel &&
+    (!defaultOwner || !defaultGrant || patternInAllow(defaultGrant.allowPublish, eventChannel({ owner: defaultOwner, actor: CLI_USER_ACTOR })) ||
+      patternInAllow(defaultGrant.allowPublish, connector.eventChannel({ owner: defaultOwner, actor }))));
+  let launchEvents = eventsFor(requested);
   const eventPayloads = policy?.eventPayloads !== "withheld" && !values["no-event-payloads"] && def.eventPayloads !== false;
   if (launchEvents && !connector.eventChannel) {
     console.error(c.red(eventsRequired
@@ -1748,6 +1746,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (remote.material.subscribe) subscribe = remote.material.subscribe;
     if (remote.material.allowSubscribe) allowSubscribe = remote.material.allowSubscribe;
     if (remote.material.allowPublish) allowPublish = remote.material.allowPublish;
+    if (seededDefault && ref === "default" && values.config === undefined && values.file === undefined && events === undefined && !eventsRequired &&
+        launchEvents && connector.eventChannel && remote.material.allowPublish &&
+        !patternInAllow(remote.material.allowPublish, connector.eventChannel({ owner: remote.material.owner, actor: name }))) {
+      launchEvents = false;
+      recordOperationWarning({ code: "EVENT_PLANE_NOTICE", target: { space }, message: "event plane not armed: the launching member cannot delegate it" });
+    }
     // Same authority rule for the incarnation uid: the mesh provisioned the durables and wrote the
     // ledger row keyed on THIS uid, and the auth callout mints the agent's dm/dlv/chathist grants
     // from the row. Launching with the locally minted uid instead leaves the agent asking for
@@ -1769,14 +1773,17 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         capabilities: def.capabilities,
         lifecycleUid,
         liveOnly: values["live-only"] as boolean | undefined,
-        ...(launchEvents ? { eventChannel: connector.eventChannel! } : {}),
+        ...(eventsFor(candidate) ? { eventChannel: connector.eventChannel! } : {}),
       }));
     name = selected.name;
+    launchEvents = eventsFor(name);
+    if (!launchEvents && events === undefined && connector.eventChannel && defaultGrant)
+      recordOperationWarning({ code: "EVENT_PLANE_NOTICE", target: { space }, message: "event plane not armed: the launching member cannot delegate it" });
     ({ userAuth, cleanup: userCleanup, eventChannel: eventGrant } = selected.provisioned);
     // The launch's post-set is forwarded to the session as COTAL_ALLOW_PUBLISH, so it has to carry
     // whatever was actually minted. Letting the two diverge is how an agent ends up holding a right
     // its own runtime does not know it has.
-    if (eventGrant) allowPublish = [...(allowPublish ?? []), eventGrant];
+    if (eventGrant && !allowPublish?.includes(eventGrant)) allowPublish = [...(allowPublish ?? []), eventGrant];
   } else if (auth) {
     const identity = newIdentity();
     // What the retirement needs is recorded before the first durable exists, so a throw anywhere from
@@ -1855,6 +1862,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     try {
       spec = connector.buildLaunch({
         ...launchOpts,
+        events: launchEvents,
         name,
         id,
         creds: credsPath,
@@ -2208,7 +2216,7 @@ async function provisionUserForeground(
   // user mode the principal is (resolved owner, actor name), and neither half is known to the
   // caller before `ownerForLogin` answers.
   const eventGrant = opts.eventChannel?.({ owner, actor: name });
-  const publish = eventGrant ? [...(opts.allowPublish ?? []), eventGrant] : (opts.allowPublish ?? []);
+  const publish = eventGrant && !opts.allowPublish?.includes(eventGrant) ? [...(opts.allowPublish ?? []), eventGrant] : (opts.allowPublish ?? []);
   const infra = await getSpaceAuth(store, space); // cross-check the bundle names the space we resolved this root for
   if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
   const paths = agentSecretFilePaths(target.root, space, name);

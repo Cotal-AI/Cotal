@@ -1932,11 +1932,21 @@ try {
   await participant.start();
 
   writeFileSync(join(participantRoot, ".cotal", "agents", "default.md"), DEFAULT_AGENT);
+  const defaultEvent = eventChannel({ owner: OWNER, actor: "default_agent" });
+  const participantCli = { ...cliRow0, scope: ["spawn", "run", "role:default", "supervise"] };
+  grantActor(dir, { ...participantCli, allowPublish: ["general", defaultEvent] });
+  const participantEvents = participant as unknown as { eventsRequired: boolean };
+  const registryEntry = (await import("@cotal-ai/workspace")).findMesh(SPACE)!;
+  participantEvents.eventsRequired = false;
+  recordMesh({ ...registryEntry, policy: undefined });
   const defaultLaunch = await cotal(["spawn", "--detach", "--space", SPACE, "--on", state.instanceId, "--agent", "e2e"], 45_000);
+  participantEvents.eventsRequired = true;
+  recordMesh(registryEntry);
   const defaultTarget = enrollmentRequests.find((r) => r.target.actor === "default_agent")?.target;
   check("the signed-in CLI launches the seeded default through its hosted manager with explicit narrow lists",
     defaultLaunch.status === 0 && defaultTarget?.allowSubscribe?.join() === "general" &&
-      defaultTarget.allowPublish?.includes("general") === true && !defaultTarget.allowPublish.includes(">") && !defaultTarget.subscribe?.length, defaultLaunch.out);
+      defaultTarget.allowPublish?.join() === `general,${defaultEvent}` && !defaultTarget.subscribe?.length, defaultLaunch.out);
+  grantActor(dir, { ...participantCli, allowPublish: ["general", `events.${OWNER}.>`] });
 
   // Owner-equal event-plane admission through the real typed door, over a non-admin bearer.
   const ownerUid = mintLifecycleUid();

@@ -373,6 +373,16 @@ try {
   } finally {
     writeFileSync(defaultPath, seededSource);
   }
+  const childEvent = `events.${loadActorLedger(stateDir).find((row) => row.actor === "cli")!.owner}.event_default`;
+  const eventGrant = ["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general", "--label", "smoke human"];
+  try {
+    const granted = await cotal([...eventGrant, "--allow-publish", `general,${childEvent}`]);
+    const childEvents = await cotal(["spawn", "--foreground", "--name", "event_default", "--space", SPACE], { env: defaultEnv });
+    check("the seeded default arms events with a concrete grant for its own channel only",
+      granted.status === 0 && childEvents.status === 0 && childEvents.out.includes(childEvent) && !childEvents.out.includes("event plane not armed"), childEvents.out);
+  } finally {
+    await cotal([...eventGrant, "--allow-publish", "general"]);
+  }
   // The read list keeps the persona's own `general` (a spawn whose list omits a channel its persona
   // subscribes to is refused on that alone), so `ops.wide` is the only ask beyond the cli grant.
   // `--foreground`: a bare spawn is a managed launch, which needs a terminal to attach and refuses
@@ -967,7 +977,20 @@ try {
     for (const key of [caKey, srvKey]) chmodSync(key, 0o600);
     // The HTTPS reverse proxy an operator puts in front of the public exchange face.
     const exchangePort = await pickFreePort();
+    let provision: ((actor: string, token: string) => Promise<unknown>) | undefined;
     const proxy = createHttpsServer({ key: readFileSync(srvKey), cert: readFileSync(srvCert) }, (req, res) => {
+      if (req.method === "POST" && req.url === "/fixture-provision" && provision) {
+        const run = provision;
+        void (async () => {
+          let raw = "";
+          for await (const chunk of req) raw += String(chunk);
+          const body = JSON.parse(raw);
+          if (Object.keys(body).join() !== "actor" || body.actor !== "default_agent") throw new Error("unexpected provisioning request");
+          const material = await run(body.actor, req.headers.authorization ?? "");
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(material));
+        })().catch(() => res.writeHead(403, { "content-type": "application/json" }).end('{"error":"fixture provisioning refused"}'));
+        return;
+      }
       req.pipe(httpRequest({ host: "127.0.0.1", port: exchangePort, path: req.url, method: req.method, headers: req.headers }, (answer) => {
         res.writeHead(answer.statusCode ?? 502, answer.headers);
         answer.pipe(res);
@@ -981,13 +1004,32 @@ try {
     caRig = { hostRoot, hostHome, hostEnv, sandbox: hostSandbox, joinRoot, joinHome, joinEnv, proxy };
     const CA_SPACE = `${SPACE}-ca`;
     const hostUp = await cotal(["up", "-d", "--user-auth", "--idp", base, "--space", CA_SPACE, "--server", `tls://127.0.0.1:${await pickFreePort()}`,
-      "--tls-cert", srvCert, "--tls-key", srvKey, "--exchange-public-port", String(exchangePort), "--exchange-public-url", proxyUrl], { cwd: hostRoot, env: hostEnv });
+      "--tls-cert", srvCert, "--tls-key", srvKey, "--exchange-public-port", String(exchangePort), "--exchange-public-url", proxyUrl,
+      "--agent-provisioning-url", `${proxyUrl}/fixture-provision`], { cwd: hostRoot, env: hostEnv });
     check("a TLS user-auth space behind a local CA starts, its public exchange behind an HTTPS proxy", hostUp.status === 0, hostUp.out);
     const bundleFile = join(hostHome, "bundle.json");
     writeFileSync(bundleFile, await (await fetch(`http://127.0.0.1:${exchangePort}/.well-known/cotal-mesh`)).text());
     const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
     check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
-    const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+    const { sub: joinSub, session: joinSession } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+    const hostDir = userAuthStateDir(hostRoot, CA_SPACE);
+    const narrowRemote = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--allow-subscribe", "general", "--allow-publish", "general"], { cwd: hostRoot, env: hostEnv });
+    provision = async (actor, token) => {
+      if (token !== `Bearer ${joinSession.token}`) throw new Error("fixture login did not match");
+      const row = loadActorLedger(hostDir).find((entry) => entry.actor === "cli");
+      if (!row) throw new Error("fixture grant missing");
+      const { owner, allowSubscribe, allowPublish } = row;
+      const lifecycleUid = mintLifecycleUid();
+      const material = await cotalAuthProvider.grantAgent({ store: workspaceSecretStore(hostRoot), dir: hostDir, space: CA_SPACE, owner, actor, lifecycleUid,
+        parent: `${owner}.cli`, scope: [], allowSubscribe, allowPublish, custody: { kind: "foreground" }, fresh: true });
+      return { ...material, actor, owner, lifecycleUid, subscribe: [], allowSubscribe, allowPublish };
+    };
+    const remoteExt = await cotal(["ext", "add", CLAUDE], { cwd: joinRoot, env: joinEnv });
+    const remoteDefault = await cotal(["spawn", "--foreground", "--space", CA_SPACE], { cwd: joinRoot, env: { ...joinEnv, ...defaultEnv } });
+    check("the signerless foreground default launches with the hosted provisioner's narrow grant",
+      narrowRemote.status === 0 && remoteExt.status === 0 && remoteDefault.status === 0 &&
+      remoteDefault.out.includes("DEFAULT_NATIVE_REACHED read=general post=general subscriptions=;") && remoteDefault.out.includes("event plane not armed"), remoteDefault.out);
+    provision = undefined;
     const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,run,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
     check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
     const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });

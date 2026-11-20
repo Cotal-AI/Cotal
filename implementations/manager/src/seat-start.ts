@@ -372,10 +372,8 @@ export class SeatStart {
       return { ok: false, error: opts.resolved ? `launch agent: ${rejectionText(e)}` : `persona ${where}: ${rejectionText(e)}` };
     }
     // Default events on where the connector supports them, unless the launch explicitly opts out.
-    const defaultEventsAllowed = !relativeDefault || !parent || !opts.callerAcl || patternInAllow(opts.callerAcl.allowPublish, eventChannel(parent));
-    const events = this.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel && defaultEventsAllowed);
-    if (!events && opts.events === undefined && connector.eventChannel && !defaultEventsAllowed)
-      opts = { ...opts, eventsNotice: "event plane not armed: the launching member cannot delegate it" };
+    const wantsEvents = this.eventsRequired || opts.events === true || (opts.events !== false && !!connector.eventChannel);
+    let events = wantsEvents;
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
@@ -545,6 +543,9 @@ export class SeatStart {
       // In user mode the name is the principal's actor. A fresh nkey in static/open mode
       // cannot collide with an earlier transcript. Use the connector's own startup proof.
       const eventOwner = opts.owner ?? (spawner === undefined ? undefined : parsePrincipalKey(spawner)?.owner);
+      events = wantsEvents && (this.eventsRequired || opts.events === true || !relativeDefault || !parent || !opts.callerAcl || !eventOwner ||
+        patternInAllow(opts.callerAcl.allowPublish, eventChannel(parent)) ||
+        patternInAllow(opts.callerAcl.allowPublish, connector.eventChannel!({ owner: eventOwner, actor: name })));
       if (events && this.userMode && !runtime.spawnDelegated && eventOwner?.startsWith("u_")) {
         try {
           await checkEventStartup({
@@ -581,6 +582,8 @@ export class SeatStart {
       }
       break;
     }
+    if (wantsEvents && !events)
+      opts = { ...opts, eventsNotice: "event plane not armed: the launching member cannot delegate it" };
     // The `chat_` prefix belongs to static chat sessions, whose aliases only `chat-session-open`
     // draws. Checked once the name is fixed by either branch above, so a persona name, a numbered
     // collision, a manifest name and a `--name` override all meet it, and before the reservation.
