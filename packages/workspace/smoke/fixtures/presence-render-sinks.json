@@ -7294,7 +7294,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "ecuted\");\n      }\n      return reply;\n    } catch (error) {\n ",
+      "anchor": "return reply;",
       "class": "non-render/control"
     },
     {
