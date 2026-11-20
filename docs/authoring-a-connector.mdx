@@ -114,7 +114,8 @@ A refusal before any process starts permits immediate removal.
 On POSIX systems, managed runtimes and direct foreground launches use `reclaimWithChild`.
 It starts a watcher and replaces the shell with the child process.
 The watcher removes the files after the child exits, even if the launcher was killed.
-It retries failed removal every five seconds.
+It looks up `sleep` and `rm` on the system's default utility path and leaves the child's `PATH` unchanged.
+It retries failed removal every five seconds, but exits if it cannot run a utility or sleep fails.
 
 The in-process PTY runtime reports exit to the manager.
 For runtimes without streamed exit events, including tmux, cmux, Orca, and Herdr, the manager also polls for exit proof.
