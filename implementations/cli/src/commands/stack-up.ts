@@ -571,7 +571,7 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return undefined;
   const { host: dialHost, port } = brokerListenAddress(server);
   const host = bindHost ?? dialHost;
-  const held = addressHolder("that address", host, port);
+  const held = await addressHolder("that address", host, port);
   const holders = loopbackListeners(server).map((pid) => {
     const command = readProcessCommand(pid);
     return command.kind === "command" ? `${pid} (${basename(command.command.split(" ")[0]!)})` : String(pid);
@@ -954,7 +954,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
       const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
       const host = brokerHost ?? dialHost;
-      const { says, frees } = addressHolder("the stack's broker address", host, port);
+      const { says, frees } = await addressHolder("the stack's broker address", host, port);
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined

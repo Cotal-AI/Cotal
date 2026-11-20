@@ -4456,7 +4456,7 @@ async function assertBrokerAddressFree(server: string, command: string, bindHost
   if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
   const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
   const host = bindHost ?? dialHost;
-  const { says, frees } = addressHolder("the broker address", host, port);
+  const { says, frees } = await addressHolder("the broker address", host, port);
   throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: bindError.code },
     remedy: `start it at another address with ${codeSpan(`${command} --server ${address.protocol}//${address.hostname}:<port>`)}, or ${frees} and run ${codeSpan(command)} again`,
