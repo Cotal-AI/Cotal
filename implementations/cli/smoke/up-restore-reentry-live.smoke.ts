@@ -197,6 +197,12 @@ try {
     const next = missing.stdout.split("\nNext\n")[1] ?? "";
     ok("status gives missing-store recovery in Next instead of ordinary restart advice",
       missing.status === 0 && launcher !== undefined && next.includes(`the preserved store recorded at ${store} is missing`) && next.includes(`\`${launcher} backup restore <dir> --accept-missing-source\``) && !next.includes(`${launcher} up`), tail(missing).slice(-1800));
+    const json = runSync(["status", "--space", space, "--json"]);
+    const { result } = JSON.parse(json.stdout) as { result?: { maintenance?: { state?: string; next?: string }; hints?: string[] } };
+    const maintenance = result?.maintenance;
+    ok("status JSON keeps the existing maintenance report and recovery hint without a sourceMissing key",
+      json.status === 0 && maintenance?.state === "ready" && maintenance.next?.includes(`the preserved store recorded at ${store} is missing`) === true
+        && result?.hints?.[0] === maintenance.next && !/"sourceMissing"\s*:/.test(json.stdout), tail(json).slice(-2400));
     const blocked = runSync(["up"]);
     ok("up refuses to resume the missing store without starting anything", blocked.status === 2 && tail(blocked).includes("TARGET_NOT_FOUND") && tail(blocked).includes("nothing was started"), tail(blocked).slice(-1200));
   } finally { renameSync(savedStore, store); }
