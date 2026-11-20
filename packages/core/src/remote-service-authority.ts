@@ -4,7 +4,7 @@ import { CONTRACT_CLOSURE_MAX_ARTIFACTS } from "./contract-manifest.js";
 import { CONTRACT_ARTIFACT_MAX_BYTES } from "./endpoint-contract-store.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { endpointToken, assertBoundedOwner, assertCommandToken, parseEpSubject, MAX_EP_SUBJECT_BYTES } from "./endpoint-subjects.js";
-import { parseServiceSpec, type ServiceSpec } from "./endpoint-service.js";
+import { parseServiceSpec, type ServiceSpec } from "./endpoint-service-spec.js";
 import { isAccountNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, spacePrefix } from "./subjects.js";
 
