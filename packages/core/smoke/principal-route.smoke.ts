@@ -19,7 +19,7 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
-  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError,
+  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
 import * as coreRoot from "../src/index.js";
@@ -339,7 +339,38 @@ for (const [name, build] of profiles) {
   if (prinRows(perms).length > 0) holders.push(name);
 }
 check(`no view, infrastructure profile or service credential holds a principal-route row (${profiles.length} checked)`, holders.length === 0, holders);
-throws("ledgerKind on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, { ledgerKind: "interactive" }), "agent-profile");
+throws("ledgerKind on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, { ledgerKind: "interactive" }), "agent or manager-caller");
+
+// ── a person controls the agents under their own owner, keyed on the row kind (SPEC 13.21) ──
+const view = (kind?: "interactive" | "managed-agent", capabilities: string[] = ["spawn"], readerId: string | null = callout.readerId) =>
+  permissionsFor("manager-caller", SPACE, { owner: "u_alice", actor: "web", connId: callout.connId, lifecycleUid: CUID, ...(readerId !== null ? { readerId } : {}) },
+    { capabilities, lifecycleUid: CUID, managerInstanceId: UID2, ...(kind ? { ledgerKind: kind } : {}) }) as { pub: { allow: string[] } };
+const seatRows = (perms: { pub: { allow: string[] } }, cmd: string, mode = "owner") => perms.pub.allow.filter((r) => r.includes(`.manager.${UID2}.${cmd}.${mode}.`));
+const person = view("interactive");
+check("a person's manager view stops, attaches to, types into and interrupts their own agents, the owner pinned to their own",
+  ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd).length === 1 && seatRows(person, cmd)[0]!.includes(`.${cmd}.owner.u_alice.u_alice.web.`)),
+  person.pub.allow.filter((r) => r.includes(`.manager.${UID2}.`)));
+check("a person's manager view holds no any-mode seat row", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd, "any").length === 0));
+check("a person holds these rows without the spawn capability", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(view("interactive", []), cmd).length === 1));
+check("an agent's manager view gets no input or interrupt row: the rows key on the row kind, never on scope",
+  ["input", "interrupt"].every((cmd) => seatRows(view("managed-agent"), cmd).length === 0 && seatRows(view(undefined), cmd).length === 0));
+check("an agent keeps the owner-mode despawn and attach its spawn capability gives", ["despawn", "attach"].every((cmd) => seatRows(view("managed-agent"), cmd).length === 1));
+check("no row is minted twice when the spawn or admin set holds it too",
+  [person, view("interactive", ["spawn", "admin"])].every((perms) => new Set(perms.pub.allow).size === perms.pub.allow.length));
+throws("a static manager-caller mint carries no ledger kind", () => view("interactive", ["spawn"], null), "static mint");
+
+// ── a person reads the event channels of the agents under their own owner (SPEC 13.21) ──
+const allowOf = (perms: Record<string, unknown>) => perms as { pub: { allow: string[] }; sub: { allow: string[] } };
+const ownEvents = `${P}.chat.u_alice.*.events.u_alice.*`;
+const reads = (perms: Record<string, unknown>) => [...allowOf(perms).pub.allow, ...allowOf(perms).sub.allow].filter((r) => r.includes(".events."));
+const personAgent = allowOf(mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID));
+check("a person's sign-in subscribes the event channels of every agent under their own owner, sent by that owner's agents",
+  personAgent.sub.allow.includes(ownEvents));
+check("a person reads those channels' history through its own lifecycle's reader, and reads no other event channel",
+  reads(personAgent).length === 2 && personAgent.pub.allow.includes(`$JS.API.CONSUMER.CREATE.CHAT_${SPACE}.${chatHistDurable("u_alice", "web", CUID)}.${ownEvents}`)
+    && personAgent.pub.allow.includes(`$JS.API.CONSUMER.MSG.NEXT.CHAT_${SPACE}.${chatHistDurable("u_alice", "web", CUID)}`), reads(personAgent));
+check("an agent's credential and a chat session read no event channel they were not granted",
+  reads(mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "managed-agent" }, UID)).length === 0 && reads(mint({ owner: "u_alice", actor: "chat" })).length === 0);
 
 // ── the maximum-capability credential (SPEC 13.9 fixture) with the new rows ──
 // The fixture as SPEC 13.9 defines it: every baseline grant plus capabilities on 3 endpoints x 12
@@ -357,8 +388,8 @@ const account = createAccount();
 const jwtBytes = async (perms: Record<string, unknown>) => Buffer.byteLength(await encodeUser(ACTOR, createUser(), account, perms as never, { exp: Math.floor(Date.now() / 1000) + 600 }), "utf8");
 const without = await jwtBytes(fixture());
 const withRows = await jwtBytes(fixture("interactive"));
-console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the principal-route rows (mint bound ${MAX_MINTED_JWT_BYTES})`);
-check("the maximum-capability fixture with the principal-route rows stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
+console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the rows an interactive row adds (mint bound ${MAX_MINTED_JWT_BYTES})`);
+check("the maximum-capability fixture with the rows an interactive row adds stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
 check("the interactive rows add 2 serve rows, 8 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 11,
   prinRows(fixture("interactive")).length - prinRows(fixture()).length);
 

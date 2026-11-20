@@ -65,6 +65,8 @@ const read = frameOf(message("events.local.a1", [{ kind: "text", text: "x" }, { 
 check("frameOf reads the frame part and the channel's principal", read?.owner === "local" && read.actor === "a1" && read.seq === 3 && read.events.length === 1 && read.ts === 5, read);
 check("frameOf ignores a message off an event channel", frameOf(message("general", [{ kind: "ag-ui.frame", threadId: "t", runId: "r", seq: 1, events: [] }])) === undefined);
 check("frameOf ignores a message with no frame part", frameOf(message("events.local.a1", [{ kind: "text", text: "x" }])) === undefined);
+const forged = { ...message("events.local.a1", [{ kind: "ag-ui.frame", threadId: "t", runId: "r", seq: 1, events: [] }]), from: { id: "local.a2", name: "a2" } } as unknown as CotalMessage;
+check("frameOf ignores a frame that another sender put on an agent's event channel", frameOf(forged) === undefined);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

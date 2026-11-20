@@ -1,5 +1,6 @@
 import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
+import { EVENT_CHANNEL_PREFIX } from "./event-channel.js";
 import { spacePrefix, chatSubject, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
@@ -182,8 +183,8 @@ export function permissionsFor(
   if (opts.listing && opts.issued)
     throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
   if (opts.ledgerKind !== undefined) {
-    if (profile !== "agent")
-      throw new Error(`permissionsFor: ledgerKind marks an agent-profile mint of a ledger row, not "${profile}" (SPEC 13.21)`);
+    if (profile !== "agent" && profile !== "manager-caller")
+      throw new Error(`permissionsFor: ledgerKind marks an agent or manager-caller mint of a ledger row, not "${profile}" (SPEC 13.21)`);
     // Only the auth callout reads a row's kind from the ledger, and only the callout sets a
     // connection's reader id. A static mint, whose connection is its own nkey, carries no kind.
     if (pr.readerId === undefined)
@@ -719,6 +720,16 @@ export function permissionsFor(
       `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${name}`,
     ]),
   );
+  // A person reads the event channels of every agent under their own owner (SPEC 13.21), keyed on
+  // the ledger row's kind: live, and from history through this lifecycle's own `chathist_` reader,
+  // whose info, fetch and delete rows are above. Only an agent publishes on its own event channel,
+  // so the sender's owner is pinned to the person's too. Their payloads already ride the own-owner
+  // read above.
+  if (opts.ledgerKind === "interactive") {
+    const ownEvents = chatSubject(space, pr.owner, "*", `${EVENT_CHANNEL_PREFIX}${pr.owner}.*`);
+    subChat.push(ownEvents);
+    pubAllow.push(`$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${ownEvents}`);
+  }
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;

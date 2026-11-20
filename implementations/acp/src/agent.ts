@@ -125,7 +125,7 @@ export function promptText(blocks: readonly ContentBlock[]): string {
 export function defaultName(): string {
   // Lowercase base32 keeps the name a valid user-mode actor token.
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-  return `acp-${Array.from(randomBytes(10), (b) => alphabet[b & 31]).join("")}`;
+  return `acp_${Array.from(randomBytes(10), (b) => alphabet[b & 31]).join("")}`;
 }
 
 export function cotalAgent(options: CotalAgentOptions): AgentApp {
