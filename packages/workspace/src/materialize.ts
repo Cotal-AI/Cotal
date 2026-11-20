@@ -85,8 +85,8 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-/** Resolve the same installed entry for on-disk checks and import, using the caller's metadata. */
-export function extensionEntryPath(dir: string, meta: InstalledExtensionPackage): string {
+/** Select the same package-relative entry for on-disk checks and import. */
+export function extensionEntry(meta: InstalledExtensionPackage): string {
   let entry = meta.main ?? "index.js";
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
   if (typeof dot === "string") entry = dot;
@@ -94,7 +94,7 @@ export function extensionEntryPath(dir: string, meta: InstalledExtensionPackage)
     const d = dot as Record<string, string>;
     entry = d.import ?? d.default ?? entry;
   } else if (typeof meta.exports === "string") entry = meta.exports;
-  return join(dir, entry);
+  return entry;
 }
 
 /**
@@ -109,7 +109,8 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   try {
-    await import(pathToFileURL(extensionEntryPath(dir, meta)).href);
+    const entry = extensionEntry(meta);
+    await import(pathToFileURL(join(dir, entry)).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }

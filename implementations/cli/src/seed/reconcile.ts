@@ -1,6 +1,7 @@
 import { existsSync, renameSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import {
   CommandFailure,
   claimUpdateClosureAccess,
@@ -10,7 +11,7 @@ import {
   bindExtensionPeers,
   connectorConfigDir,
   connectorMetadataStale,
-  extensionEntryPath,
+  extensionEntry,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
@@ -871,7 +872,7 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
 /** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
-  return existsSync(extensionEntryPath(extensionPackageDir(pkg), installed));
+  return existsSync(join(extensionPackageDir(pkg), extensionEntry(installed)));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND

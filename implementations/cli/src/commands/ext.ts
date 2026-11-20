@@ -13,7 +13,7 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { connectorConfigDir, extensionEntryPath } from "@cotal-ai/workspace";
+import { connectorConfigDir, extensionEntry } from "@cotal-ai/workspace";
 import { codeSpan, CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
@@ -316,7 +316,7 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = extensionEntryPath(extensionPackageDir(request.pkg), meta);
+      const entry = join(extensionPackageDir(request.pkg), extensionEntry(meta));
       if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
