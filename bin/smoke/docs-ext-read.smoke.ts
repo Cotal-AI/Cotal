@@ -8,7 +8,7 @@
  * Run: pnpm smoke:docs-ext-read
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -31,7 +31,7 @@ type Envelope = {
   command: string;
   target: unknown;
   result: Record<string, unknown> | null;
-  warnings: unknown[];
+  warnings: { code: string; target: { pkg?: string } | null; message: string }[];
   error?: { code: string; message: string };
 };
 function run(args: string[], extraEnv: Record<string, string> = {}) {
@@ -200,7 +200,18 @@ for (const [args, why] of [
   mkdirSync(root, { recursive: true });
   const added = { pkg: "@acme/fake-runtime", version: "1.2.3", spec: "@acme/fake-runtime@1.2.3", provides: [{ kind: "runtime", name: "fakert" }], commands: [] };
   const seeded = { pkg: "@cotal-ai/connector-pi", version: VERSION, spec: "/seed/connector-pi", source: "seeded", provides: [{ kind: "connector", name: "pi" }], commands: [] };
-  writeFileSync(join(root, "extensions.json"), JSON.stringify({ extensions: [added, seeded] }));
+  const manifestPath = join(root, "extensions.json");
+  const manifest = JSON.stringify({ extensions: [added, seeded] });
+  writeFileSync(manifestPath, manifest);
+  const addedDir = join(root, "node_modules", added.pkg);
+  const seededDir = join(root, "node_modules", seeded.pkg);
+  const imported = join(home, "extension-was-imported");
+  for (const entry of [added, seeded]) {
+    const dir = join(root, "node_modules", entry.pkg);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: entry.pkg, version: entry.version, type: "module", main: "./index.js" }));
+    writeFileSync(join(dir, "index.js"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(imported)}, "loaded");`);
+  }
   const json = run(["ext", "list", "--json"]);
   const items = (json.envelope?.result as { items: unknown[] } | undefined)?.items;
   check(
@@ -215,6 +226,28 @@ for (const [args, why] of [
   );
   const plain = run(["ext", "--plain"]);
   check("the plain listing is a table with the source of each", plain.status === 0 && /^\s*Package\s+Version\s+Source\s+Provides$/m.test(plain.stdout) && /@acme\/fake-runtime\s+1\.2\.3\s+added\s+runtime:fakert/.test(plain.stdout) && /@cotal-ai\/connector-pi\s+\S+\s+included\s+connector:pi/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+
+  renameSync(addedDir, `${addedDir}.saved`);
+  const seededMetadata = join(seededDir, "package.json");
+  for (const content of ["{", "{}"]) {
+    writeFileSync(seededMetadata, content);
+    const broken = run(["ext", "list", "--json"]);
+    const [missing, corrupt] = broken.envelope?.warnings ?? [];
+    check(`ext list reports missing and corrupt (${content}) packages without dropping recorded rows`,
+      broken.status === 4 && broken.stderr === "" && broken.envelope?.outcome === "partial" && broken.envelope.completeness === "partial" &&
+      JSON.stringify(broken.envelope.result?.items) === JSON.stringify(items) && broken.envelope.warnings.length === 2 &&
+      missing?.target?.pkg === added.pkg && missing.message.includes(`not installed at ${addedDir}`) &&
+      missing.message.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") &&
+      corrupt?.target?.pkg === seeded.pkg && corrupt.message.includes(`corrupt package.json at ${seededMetadata}`) &&
+      corrupt.message.includes("`cotal ext seed --repair`"), shown(broken));
+  }
+  const brokenPlain = run(["ext", "list", "--plain"]);
+  check("plain extension inventory keeps the row and reports both problems and their recovery commands",
+    brokenPlain.status === 4 && brokenPlain.stdout.includes(added.pkg) && brokenPlain.stdout.includes(seeded.pkg) &&
+    brokenPlain.stderr.includes(`not installed at ${addedDir}`) && brokenPlain.stderr.includes("`cotal ext add '@acme/fake-runtime@1.2.3'`") &&
+    brokenPlain.stderr.includes(`corrupt package.json at ${seededMetadata}`) && brokenPlain.stderr.includes("`cotal ext seed --repair`"), shown(brokenPlain));
+  check("listing does not import, install, or repair packages", !existsSync(imported) && !existsSync(addedDir) &&
+    readFileSync(seededMetadata, "utf8") === "{}" && readFileSync(manifestPath, "utf8") === manifest);
 }
 
 // ── ext: root stays raw; the other subcommands refuse the listing's flags ────────────────────────
