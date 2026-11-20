@@ -1,5 +1,27 @@
 # @cotal-ai/manager
 
+## 0.171.4
+
+### Patch Changes
+
+- a4c17c8: Move the manager's broker dials, connection tracking and scoped executor connections into their own component without changing the manager API.
+- 930d522: Move the connector inventory the manager takes at boot into its own component without changing the manager API.
+- 4dd2f49: Move connector and harness resolution for a launch into its own component without changing the manager API.
+- 1c6566a: Move manager preservation (prepare, commit, abort, the cut over each seat, and adoption of released seats) into its own component without changing the manager API.
+- 28853bf: Move the launch readiness race, the exit watch and the exit transcript tail into their own component without changing the manager API.
+- 32f3687: Move the `start` and `launch` control doors into their own component without changing the manager API.
+- 79cc63c: Move the manager's status, seat list and model catalog reads into their own component without changing the manager API.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/seat@0.171.4
+
 ## 0.171.3
 
 ### Patch Changes

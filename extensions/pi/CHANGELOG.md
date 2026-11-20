@@ -1,5 +1,11 @@
 # @cotal-ai/pi
 
+## 0.171.4
+
+### Patch Changes
+
+- cb8692a: Cotal update explains how to refresh the standalone pi extension without overwriting your copy.
+
 ## 0.171.3
 
 No changes in this release.

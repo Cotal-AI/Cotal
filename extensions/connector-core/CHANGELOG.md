@@ -1,5 +1,11 @@
 # @cotal-ai/connector-core
 
+## 0.171.4
+
+### Patch Changes
+
+- 06a66f2: Local MCP clients get direct connection instructions, `input --json` reports an unregistered space as a structured refusal, and removing an absent extension succeeds without changing the installation.
+
 ## 0.171.3
 
 ### Patch Changes
