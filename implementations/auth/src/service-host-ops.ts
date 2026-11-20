@@ -505,7 +505,7 @@ export async function openServiceHostOperations(opts: ServiceHostOperationsOptio
 
   const { decide, revoke, denyNewOf, view } = serviceHostDecisions({ space, accountPublicKey, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx, coverCustody });
 
-  const { callerGrant, callerRevoke, callerPolicyRead, callerPolicyList } = serviceHostCaller({ space, accountPublicKey, opts, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx, interactive, view });
+  const { callerGrant, callerRevoke, callerPolicyRead, callerPolicyList } = serviceHostCaller({ space, accountPublicKey, opts, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx });
 
   // ---- reads (never write) ------------------------------------------------------------------------
 

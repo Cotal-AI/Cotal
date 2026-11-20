@@ -14,7 +14,7 @@ import { Held, S1_REQUEST_TIMEOUT_MS, bounded, endpoint, held, leader, type Ctx 
 import { withStatus, parseServiceHostOperationRecord, parseServiceCallerIndexRecord, byEntry, parseServiceCutoffMarkerRecord, serviceMarkerCeilSeconds, SERVICE_CUTOFF_MARGIN_S, requestDigestOf, S3_MAX_CALLER_GRANTS_PER_INSTANCE, type Rec, type GrantBody, type CallerGrantPlan, type CallerRevokePlan, type GrantResult, type OpResult, type Final, type Progress, type OpLive, type Op, type CallerIndex, type CutoffMarker } from "./service-host-records.js";
 import { S2A_OPERATION_TTL_MS, S2A_INVOCATION_MS, S2A_MAX_REDECIDE, opKey, callerIndexKey, cutoffKey, seconds, serviceHostOperationId, callerGrantId, type Read, read, readOp, readAssignment, readAdmission, put, nameOf, isFinal, updateOp, settle, outcomeOf, debtOf, type Arms, type Inv, denied, finalArm, type Live, badRequest } from "./service-host-kernel.js";
 import type { ServiceHostOperationsOptions, ServiceHostScopeTarget } from "./service-host-ops.js";
-import type { ServiceHostDecisionsDeps, serviceHostDecisions } from "./service-host-decisions.js";
+import type { ServiceHostDecisionsDeps } from "./service-host-decisions.js";
 
 /** What serviceHostCaller reads from the service host closure. Each is a closure constant
  *  bound once at construction, never reassigned, so a destructured copy is the same binding's value. */
@@ -29,13 +29,11 @@ export interface ServiceHostCallerDeps {
   discoveryCtx: ServiceHostDecisionsDeps["discoveryCtx"];
   discoveryHeld: ServiceHostDecisionsDeps["discoveryHeld"];
   authorityCtx: ServiceHostDecisionsDeps["authorityCtx"];
-  interactive: (o: string) => boolean;
-  view: ReturnType<typeof serviceHostDecisions>["view"];
 }
 
 /** The caller policy over one service host's closure. Bodies read their deps by the closure's names. */
 export function serviceHostCaller(deps: ServiceHostCallerDeps) {
-  const { space, accountPublicKey, opts, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx, interactive, view } = deps;
+  const { space, accountPublicKey, opts, invoke, readCtx, heldArm, unread, discoveryCtx, discoveryHeld, authorityCtx } = deps;
 
   // ---- caller policy: grant, revoke and the policy reads ------------------------------------------
 
