@@ -237,6 +237,25 @@ try {
   assert(output(blocked).includes(`${quote(occupiedLauncher)} is a directory.`), "refusal names the obstructing path");
   assert.match(output(blocked), /Move the directory aside or set COTAL_BIN_DIR/);
 
+  const foreign = fixture("foreign-launcher");
+  const foreignLauncher = join(foreign.newBin, "cotal");
+  const foreignBody = readFileSync(join(foreign.oldBin, "cotal"));
+  writeFileSync(foreignLauncher, foreignBody, { mode: 0o700 });
+  const foreignEnv = { ...foreign.env, PATH: toolPath, FIXTURE_MODIFY_PATH: "1" };
+  const foreignRefusal = spawnSync("/bin/sh", [driver, library], { env: foreignEnv, encoding: "utf8" });
+  assert.equal(foreignRefusal.status, 1, output(foreignRefusal));
+  assert(output(foreignRefusal).includes(`${quote(foreignLauncher)} is not a Cotal launcher.`));
+  assert.match(output(foreignRefusal), /Move the file aside or set COTAL_BIN_DIR/);
+  assert.deepEqual(readFileSync(foreignLauncher), foreignBody, "refusal keeps the wrapper byte for byte");
+  assert(!existsSync(foreign.marker), "installer does not execute even a wrapper that reports a Cotal version");
+  for (const path of [".local/share/cotal", ".bashrc", ".profile"])
+    assert(!existsSync(join(foreign.home, path)), `refusal does not create ${path}`);
+  const alternate = join(foreign.home, "alternate-bin");
+  const relocated = spawnSync("/bin/sh", [driver, library], { env: { ...foreignEnv, COTAL_BIN_DIR: alternate }, encoding: "utf8" });
+  assert.equal(relocated.status, 0, output(relocated));
+  assert(existsSync(join(alternate, "cotal")), "alternate directory gets the launcher");
+  assert.deepEqual(readFileSync(foreignLauncher), foreignBody, "alternate install still keeps the wrapper");
+
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
   assert.equal(direct.status, 0, output(direct));
@@ -488,7 +507,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 141 : 120, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 152 : 131, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

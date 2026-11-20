@@ -1460,22 +1460,34 @@ main() {
       "Move the directory aside or set COTAL_BIN_DIR to a different launcher directory."
   fi
 
-  # A recorded service may still run the npm installation after the shell install. Do not
-  # replace its visible command with a launcher for a different package before reconciliation.
-  _daemon_receipt="${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json"
-  if [ -L "$BIN_DIR/cotal" ] && { [ -e "$_daemon_receipt" ] || [ -L "$_daemon_receipt" ]; }; then
+  _current_entry=""
+  if [ -L "$BIN_DIR/cotal" ]; then
     _current_entry=$(resolved_target "$BIN_DIR/cotal") || _current_entry=""
-    _shell_entry=$(resolved_target "$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js") || _shell_entry=""
-    case "$_current_entry" in
-      */lib/node_modules/"$COTAL_PKG"/dist/cotal.js|*/lib/node_modules/"$COTAL_PKG"/dist/cotal-npm)
+  fi
+  _daemon_receipt="${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json"
+  case "$_current_entry" in
+    */lib/node_modules/"$COTAL_PKG"/dist/cotal.js|*/lib/node_modules/"$COTAL_PKG"/dist/cotal-npm)
+      # A recorded service may still run the npm installation after the shell install. Do not
+      # replace its visible command with a launcher for a different package before reconciliation.
+      if [ -e "$_daemon_receipt" ] || [ -L "$_daemon_receipt" ]; then
+        _shell_entry=$(resolved_target "$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js") || _shell_entry=""
         if [ "${_current_entry%/*}" != "${_shell_entry%/*}" ]; then
           die "$(shquote "$BIN_DIR/cotal") belongs to an npm installation and a Cotal daemon service is recorded. The launcher was not changed." \
             "Keep this installation and run $(shquote "$BIN_DIR/cotal") update --self." \
             "To switch installers, stop your Cotal spaces and uninstall the recorded daemon from its owning installation before running this installer again."
         fi
-        ;;
-    esac
-  fi
+      fi
+      ;;
+    *)
+      # The shell launcher has carried this header since the first installer. Do not run it
+      # to find out what it is: a manual wrapper can also report a Cotal version.
+      if { [ -e "$BIN_DIR/cotal" ] || [ -L "$BIN_DIR/cotal" ]; } &&
+        ! { [ -f "$BIN_DIR/cotal" ] && head -n 2 "$BIN_DIR/cotal" 2>/dev/null | grep -Fqx '# Cotal launcher, written by https://get.cotal.ai'; }; then
+        die "$(shquote "$BIN_DIR/cotal") is not a Cotal launcher. The launcher was not changed." \
+          "Move the file aside or set COTAL_BIN_DIR to a different launcher directory."
+      fi
+      ;;
+  esac
 
   # First write of the run. A read-only or unwritable home is common enough (locked-down
   # images, a misowned $HOME) that it deserves a real message rather than a raw mkdir error.
