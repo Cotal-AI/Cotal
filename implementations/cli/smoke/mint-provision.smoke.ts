@@ -916,6 +916,21 @@ try {
       const stopped = await down();
       check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
 
+      const issued = await runMint(["example", "--json"]);
+      const success = JSON.parse(issued.out.trim()) as { command: string; outcome: string };
+      check("auth mint success names the operation in its JSON envelope",
+        issued.code === 0 && success.command === "auth mint" && success.outcome === "ok", issued.out);
+      for (const [args, status, code] of [
+        [["--json"], 1, "USAGE_INVALID"],
+        [["example", "--json"], 2, "CONFLICT"],
+        [["example", "--json", "--out"], 1, "USAGE_INVALID"],
+      ] as const) {
+        const refused = await runMint([...args]);
+        const failure = JSON.parse(refused.out.trim()) as { command: string; outcome: string; error?: { code: string } };
+        check(`auth mint ${args.join(" ")} names the operation on refusal`,
+          refused.code === status && failure.command === "auth mint" && failure.outcome === "refused" && failure.error?.code === code, refused.out);
+      }
+
       for (const profile of ["agent", "observer", "admin"]) {
         const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
         const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;
