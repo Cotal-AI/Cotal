@@ -576,6 +576,34 @@ process.report.getReport = () => {
   for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
   ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
 
+  const homeRecord = openRecord("stack-home.json");
+  const intactHome = readFileSync(homeRecord);
+  const restoreHome = "restore the intact stack-home record before retrying";
+  // Earlier starts leave registrations and a current selection. Reproduce the unregistered path.
+  const reportHome = mkdtempSync(join(home, "stack-home-report-"));
+  const readOpenStack = (...args: string[]) => cliInEnv(openRoot, { COTAL_HOME: reportHome }, ...args);
+  try {
+    writeFileSync(homeRecord, '{"home":\n');
+    for (const args of [["status"], ["status", "--components"], ["ps", "--plain"]]) {
+      const r = readOpenStack(...args);
+      const text = plain(r.stdout + r.stderr);
+      ok(`${args.join(" ")} names the malformed stack-home record and its recovery`,
+        r.status !== 0 && text.includes(homeRecord) && text.includes("malformed") && text.includes(restoreHome) && !text.includes("OPERATION_UNKNOWN"), text);
+      if (args[0] === "status") ok("status still reports the machine", text.includes("This machine"), text);
+    }
+    const r = readOpenStack("status", "--json");
+    const report = JSON.parse(r.stdout);
+    ok("JSON status retains machine data but does not resolve the damaged stack", r.status === 4 &&
+      report.completeness === "partial" && report.result?.machine && report.result.selected?.resolved === false &&
+      report.result.selected.code === "SCHEMA_INVALID" && report.result.hints.includes(restoreHome) &&
+      report.warnings.some((w: { code: string; target?: { path?: string } }) => w.code === "SCHEMA_INVALID" && w.target?.path === homeRecord), report);
+    ok("inspection leaves the malformed record untouched", readFileSync(homeRecord, "utf8") === '{"home":\n');
+  } finally {
+    writeFileSync(homeRecord, intactHome);
+  }
+  const openRestored = readOpenStack("status");
+  ok("after restoration status names the last-run broker again", openRestored.status === 0 && openRestored.stdout.includes(openServer), openRestored.stdout + openRestored.stderr);
+
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
   // The mode also decides what starts: no delivery daemon, so the next down has none to stop.
