@@ -1,5 +1,21 @@
 # @cotal-ai/auth
 
+## 0.174.0
+
+### Patch Changes
+
+- f670fe9: Watch and status now recommend `cotal up --no-manager` to restart a stopped broker-only controller stack.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+- Updated dependencies [9cc5f7a]
+- Updated dependencies [f670fe9]
+- Updated dependencies [5faf2c8]
+- Updated dependencies [f3e469a]
+  - @cotal-ai/core@0.174.0
+  - @cotal-ai/workspace@0.174.0
+  - @cotal-ai/lang@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes
