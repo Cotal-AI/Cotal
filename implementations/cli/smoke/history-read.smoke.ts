@@ -20,6 +20,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -51,7 +52,7 @@ import {
   unicastSubject,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent, type StreamRecord } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
@@ -121,6 +122,37 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+
+async function checkFollowUsage(): Promise<void> {
+  let connections = 0;
+  const probe = createServer((socket) => { connections++; socket.destroy(); });
+  try {
+    await new Promise<void>((resolve, reject) => probe.once("error", reject).listen(0, "127.0.0.1", resolve));
+    const server = `nats://127.0.0.1:${(probe.address() as AddressInfo).port}`;
+    const cases = [
+      { args: ["--limit", "0"], output: ["--json"], channel: null },
+      { args: ["--limit", "0"], output: ["-j", "--server", server], channel: null },
+      { args: ["#general", "--since", "yesterday-ish"], output: ["--json", "--server", server], channel: "general" },
+    ];
+    for (const { args, output, channel } of cases) {
+      const finite = await run(["history", ...args, "--json"]);
+      const followed = await run(["history", "--follow", ...output, ...args]);
+      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as StreamRecord<{ code?: string; message?: string; reason?: string }>);
+      check(`history ${args.join(" ")} follow writes a usage error and setup-failed end ${output.length > 1 ? "without dialing the probe" : "in the running space"}`,
+        finite.status === 1 && finite.envelope?.error?.code === "USAGE_INVALID"
+          && followed.status === 1 && followed.stderr === "" && followed.stdout.endsWith("\n") && connections === 0
+          && records.map((record) => record.type).join() === "error,end"
+          && records.every(({ schemaVersion, stream, target }) => {
+            const readTarget = target as { space?: string | null; channel?: string | null; dms?: boolean } | null | undefined;
+            return schemaVersion === 1 && stream === "history" && readTarget?.space === null && readTarget.channel === channel && readTarget.dms === false;
+          })
+          && records[0]?.data.code === finite.envelope.error.code && records[0].data.message === finite.envelope.error.message
+          && records[1]?.data.reason === "setup-failed", { finite: shown(finite), follow: shown(followed), connections });
+    }
+  } finally {
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+  }
+}
 
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
@@ -294,6 +326,7 @@ try {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  await checkFollowUsage();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);

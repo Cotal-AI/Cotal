@@ -43,6 +43,7 @@ import {
   userCotalDir,
   type OperationScope,
   type OutputWarning,
+  type StreamRecord,
   staleStoreHint,
   UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
@@ -61,6 +62,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { historyFollowUsageRecords } from "./commands/history.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
@@ -156,18 +158,17 @@ function debugStacks(failure: Error): void {
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
 
-/** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
- *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
- *  or subcommand `words` name. The envelope is written synchronously, because stdout to a pipe is
- *  asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = []): never {
+/** Write a classified failure and exit. Structured output is synchronous because a pipe may
+ *  otherwise still be flushing when the process exits. */
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], records?: readonly StreamRecord[]): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
+  const structuredOutput = json || records !== undefined;
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes, a missing scripted input or a removed working folder is not a grammar mistake,
   // and its remedy says the whole fix. A file the command cannot use is reported like one that does
   // not exist, and a refused flag value names its corrected value, so it gets the classified report.
-  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
+  if (failure.code === "USAGE_INVALID" && !structuredOutput && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
     usageRefusal(failure, plain, failure.selfContained ? undefined : cmd, words);
     debugStacks(failure);
     process.exit(1);
@@ -176,14 +177,15 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
-  // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
-  // envelope cannot be written, and the exit status below stands either way.
-  if (!json) writeReport();
+  // Under --json, report the failure on stderr only if writing to stdout fails.
+  if (!structuredOutput) writeReport();
   else try {
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    writeSync(1, envelopeLine(failureEnvelope(command, failure, warnings, scope)));
+    const output = records ? records.map((record) => JSON.stringify(record)).join("\n") + "\n"
+      : envelopeLine(failureEnvelope(command, failure, warnings, scope));
+    writeSync(1, output);
   } catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
@@ -509,7 +511,10 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     cmd.validate?.(canonical);
   } catch (error) {
-    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest);
+    if (isCommandFailure(error)) {
+      const records = cmd.name === "history" && error.code === "USAGE_INVALID" ? historyFollowUsageRecords(canonical, error) : undefined;
+      failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest, records);
+    }
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
