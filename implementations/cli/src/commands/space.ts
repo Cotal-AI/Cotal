@@ -146,6 +146,8 @@ export function validateSpaceArguments(args: ParsedArgs): void {
     throw usage(`space ${sub} takes a nonempty space name`);
   if ((sub === "add" || sub === "create") && values.root !== undefined && !values.root.trim())
     throw usage("--root cannot be empty");
+  if (sub === "create" && (args.positionals.length !== 2 || !name?.trim()))
+    throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
 }
 
 /**
@@ -177,7 +179,7 @@ export async function space(args: ParsedArgs): Promise<void> {
   const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined && !(sub === "create" && flag === "root"));
   if (addOnly) throw usage(addOnly === "yes" ? "--yes is taken by `cotal space add` and `cotal space delete` only" : `--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
-  if (sub === "create") return spaceCreate(rest, values.root, values.adopt === true, presentation);
+  if (sub === "create") return spaceCreate(rest[0]!, values.root, values.adopt === true, presentation);
   if (sub !== undefined && sub !== "show") throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
   // Listing and show read the registry before anything else and write nothing, so a record that
   // cannot be read refuses them.
