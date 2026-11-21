@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.172.2
+
+### Patch Changes
+
+- 801c561: Show the attach keyboard shortcut only when standard input is a terminal.
+- ed5599e: Self-update sets aside an unreadable connector selection and continues to the newer release.
+- 731d13e: Use the space registered at the broker URL when sending with `--server` and `--creds` without `--space`.
+- 6b69068: Let `cotal telemetry off` and status reports of `off` work even when the telemetry intake URL is invalid.
+- ef90254: Status explains how to recover an unreachable manually registered broker and no longer suggests live commands when the broker does not answer.
+- e09d43d: Name a malformed stack-home record and how to recover in `status` and `ps`, while keeping the machine information `status` can read.
+- @cotal-ai/core@0.172.2
+
 ## 0.172.1
 
 ### Patch Changes
