@@ -331,3 +331,33 @@ A file-based source requires atomic replacement before the 75% read.
 A remote secret backend changes where keys are stored.
 `SecretStore.get` still returns raw signing material into the Manager process.
 Agent isolation or a separate signing service remains necessary when those processes are not equally trusted.
+
+
+## Read-only idle-work observation
+
+`observeSpaceQuiescence` from `@cotal-ai/auth` reports whether a space has runnable work.
+Pass its server address, space, provisioned account public key, explicit TLS policy and a credential
+minted with the host-only `space-quiescence-reader` profile. `timeoutMs` defaults to 10 seconds.
+The five-minute credential can read native metadata, leader-served auth, records and anycast tracking
+state, and its own broker identity. These reads are stream-wide within one space; keep it in trusted
+infrastructure. It has no writes, consumer creation, pulls, ACKs or Direct Get.
+
+The result is `quiescent`, `active` or `unknown`, with source reasons and counts of the streams,
+consumers and records inspected. Queued work, armed timers, unfinished workflows/checkpoints,
+live authority, owed anycast notices and pending cancellations prevent a quiescent result.
+Retained DM/DLV mail and completed tracking do not. Root credentials are counted separately, but
+still make the observer's default result active. Observation never settles work or deletes history.
+
+Missing or unsupported resources, malformed rows, denied reads, mismatched account identity or
+credentials, and changing native state return unknown. This observer supports the current eagerly
+provisioned stream layout; it does not convert storage or accept absent stores as empty.
+The tracking and authority scans use leader reads, one per row plus the ending read.
+Their cost grows with retained state; this API makes no capacity or wake-latency promise.
+
+Each call owns a Node worker. The deadline includes startup, and the call waits for worker termination
+before returning, including when a native connection stalls before INFO. Credentials travel through
+the private message channel, never argv or forwarded worker output.
+
+A complete quiescent result is a point-in-time observation. The host must fence issuance and
+connections, drain serving lanes and observe again before unloading an account. An unknown result
+never permits sleep. This API does not activate hibernation or authorize a migration.
