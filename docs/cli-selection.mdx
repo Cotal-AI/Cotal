@@ -116,7 +116,7 @@ remedy. For `--server`, the `--force` route follows either one.
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
 its mode was not checked: `space` and `space show` show the mode as not checked, with
-`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact.
+`modeChecked: false` in `--json`. `whoami` reports conditional access and points to `cotal space show <name>`.
 If its broker does not answer, `space show` tells you to wait and check again. Once the broker
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
 root, mode and transport settings in place. It quotes the root when the shell would otherwise split
