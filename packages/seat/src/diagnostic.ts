@@ -1,7 +1,7 @@
-/** The normal limit for a connector diagnostic line. */
-const DIAGNOSTIC_MAX = 240;
-/** Allow a full filesystem path plus the Jcode startup message that names it. */
-const JCODE_LOG_DIAGNOSTIC_MAX = 4352;
+/** Allow a full filesystem path plus the message that names it. */
+const DIAGNOSTIC_MAX = 4352;
+/** Hold enough UTF-16 units for the diagnostic and the code point that signals truncation. */
+const LINE_HEAD_MAX = (DIAGNOSTIC_MAX + 1) * 2;
 
 /** The last line in `text` that starts with a `[cotal-<name>]` or `[cotal-<name>/<part>]` prefix,
  *  with terminal escapes and control bytes removed. Connectors print their own diagnostics under
@@ -16,11 +16,9 @@ function lastConnectorDiagnostic(text: string): string | undefined {
     .replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
   const line = plain.match(/^ *\[cotal-[a-z0-9-]+(?:\/[a-z0-9-]+)?\][^\n]*/gm)?.at(-1)?.trim();
   if (!line) return undefined;
-  const limit = line.startsWith("[cotal-jcode] fatal: Jcode startup failed (") && line.includes("); workspace log: ")
-    ? JCODE_LOG_DIAGNOSTIC_MAX : DIAGNOSTIC_MAX;
   // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
   const chars = [...line];
-  return chars.length > limit ? `${chars.slice(0, limit).join("")}…` : line;
+  return chars.length > DIAGNOSTIC_MAX ? `${chars.slice(0, DIAGNOSTIC_MAX).join("")}…` : line;
 }
 
 /**
@@ -41,7 +39,7 @@ export class ConnectorDiagnosticReader {
     const text = this.lineHead + chunk;
     const cut = Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r"));
     if (cut >= 0 && text.lastIndexOf("[cotal-", cut) >= 0) this.last = lastConnectorDiagnostic(text.slice(0, cut)) ?? this.last;
-    this.lineHead = text.slice(cut + 1, cut + 1 + JCODE_LOG_DIAGNOSTIC_MAX);
+    this.lineHead = text.slice(cut + 1, cut + 1 + LINE_HEAD_MAX);
   }
 
   /** Records why the runtime is stopping the child. A TUI may never display it where an operator
