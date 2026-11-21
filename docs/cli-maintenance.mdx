@@ -316,7 +316,7 @@ cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]
 cotal manager status [--instance <full-id>] [--space <s>]
 cotal manager logs [--tail <n>] [--follow] [--space <s>]
-cotal manager install [--dry-run] [--space <s>]
+cotal manager install [--space <s>]
 cotal manager uninstall [--yes|--dry-run] [--space <s>]
 cotal manager reconcile ...
 cotal manager seats [--drain]
@@ -394,7 +394,7 @@ broker and agents. Revoke a run before the stop if it must not resume when the s
 
 `--foreground` keeps the manager in this terminal until Ctrl-C, which stops it through its native
 stop. A unit or container you write that runs a manager uses `cotal manager start --foreground`.
-`cotal manager install` refuses `UNSUPPORTED` in this release, because a Cotal-written unit runs
+`cotal manager install` refuses `UNSUPPORTED` even with `--dry-run`, because a Cotal-written unit runs
 only a direct-process service. It names the `ExecStart=` line for a unit of your own instead, whether
 or not a manager was started, with one exception: while a manager that `cotal up` started with no
 saved service runs, `install` refuses it as `stop` does and names `cotal down`.

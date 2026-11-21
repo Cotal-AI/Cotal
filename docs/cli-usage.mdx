@@ -411,7 +411,8 @@ directory. A failed atomic save leaves the destination unchanged. A persona
 draft write failure is not invalid input. If `space create` saved its prepared record before
 the default persona failed, including creation of its `agents` directory, it reports
 `OPERATION_PARTIAL`, exit 4, names what was saved and
-warns that the persona file may be incomplete. Repair that file before starting the space.
+warns that the persona file may be incomplete. After fixing the write problem, check the persona
+file and run the same `space create` again to finish preparing the space.
 On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
 Directory creation preserves that native cause without treating a missing parent or a dangling
 symlink as a quota failure.

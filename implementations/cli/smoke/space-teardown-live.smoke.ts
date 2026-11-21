@@ -99,6 +99,7 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
+const { shellWord } = await import("../src/lib/endpoint-errors.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -426,7 +427,7 @@ try {
   // 8. A registration an older `meshes rm --force` dropped, or `meshes add --force` replaced.
   {
     const space = "tear6";
-    const root = folder(space);
+    const root = folder(`${space} project`);
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     anchor(root);
     const server = `nats://127.0.0.1:${await freePort()}`;
@@ -447,6 +448,9 @@ try {
     check("with no registration and a broker receipt for another address, down refuses CONFLICT, exit 2",
       mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")), shown(mismatched));
     check("...stopping nothing and writing no registration", live() === running && running > 0 && findMesh(space) === undefined, { running, now: live() });
+    const noStop = cli(home, "space", "forget", space, "--json");
+    check("forget tells the user to restore the registration when the broker receipt does not match",
+      noStop.status === 2 && noStop.env?.error?.code === "LIFECYCLE_BLOCKED" && noStop.env.error.remedy?.startsWith("restore the stack's registration") === true && live() === running, shown(noStop));
     writeFileSync(receipt, original, { mode: 0o600 });
 
     recordMesh({ ...registered!, origin: "manual", server: "nats://127.0.0.1:2" });
@@ -464,9 +468,18 @@ try {
 
     const again = cli(root, "up", "--json");
     removeMesh(space);
+    const journal = readFileSync(journalOf(root), "utf8");
+    const runningAgain = live();
+    const forgot = cli(home, "space", "forget", space, "--json");
+    check("forget of a running stack with no registration keeps its journal and names a quoted stop in its root",
+      forgot.status === 2 && forgot.env?.error?.code === "LIFECYCLE_BLOCKED" &&
+      forgot.env.error.remedy?.includes(`\`cd ${shellWord(root)} && `) === true && forgot.env.error.remedy.includes(" down --yes`") &&
+      !forgot.env.error.remedy.includes("down --space") && findMesh(space) === undefined && runningAgain > 0 && live() === runningAgain && readFileSync(journalOf(root), "utf8") === journal, shown(forgot));
     const dropped = cli(root, "down", "--yes", "--json");
     check("a stack restarted and then left with no registration stops through its journal",
       again.status === 0 && dropped.status === 0 && Boolean(dropped.env?.warnings?.some((row) => row.code === "REGISTRATION_REBUILT" && row.message.includes("had no registration"))) && live() === 0, { up: shown(again), down: shown(dropped) });
+    const after = cli(home, "space", "forget", space, "--json");
+    check("forget succeeds after the stop it named", after.status === 0 && findPreparedSpace(space) === undefined, shown(after));
   }
 
   // 9. A controller stack whose --store-dir also holds the user's files: the reset keeps them.

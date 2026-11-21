@@ -24,12 +24,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   channelBucket,
   chatStream,
+  chatSubject,
   createSpaceAuth,
   dialerFor,
   dmStream,
@@ -43,6 +44,7 @@ import {
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  unicastSubject,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
@@ -546,6 +548,43 @@ try {
     longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
       && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
+
+  // Payload times can disagree with broker arrival order across publishers.
+  {
+    const nc = await connect({ servers: openServers });
+    const js = jetstream(nc);
+    const now = Date.now();
+    const publish = (subject: string, actor: string, id: string, ts: number, target: { channel: string } | { to: string }) =>
+      js.publish(subject, JSON.stringify({ id, ts, space: openSpace, from: { id: `local.${actor}`, name: actor }, ...target, parts: [{ kind: "text", text: id }] }));
+    try {
+      const first = await publish(chatSubject(openSpace, "local", "alice", "volume"), "alice", "arrived-first", now, { channel: "volume" });
+      const second = await publish(chatSubject(openSpace, "local", "bob", "volume"), "bob", "arrived-second", now - 2_000, { channel: "volume" });
+      const args = ["--space", openSpace, "--json"];
+      const channel = await run(["history", "volume", ...args]);
+      const emptyDms = await run(["history", "--dms", ...args]);
+      const sequences = (r: typeof channel) => r.envelope?.result?.items.filter((item) => item.channel === "volume").map((item) => item.seq).join();
+      const expected = [first.seq, second.seq].join();
+      check("--dms with no DMs keeps the same broker sequence as channel history",
+        channel.status === 0 && emptyDms.status === 0 && sequences(channel) === expected && sequences(emptyDms) === expected,
+        { channel: shown(channel), mixed: shown(emptyDms) });
+
+      const dmSubject = unicastSubject(openSpace, "local", "bob", "local", "alice");
+      await publish(dmSubject, "alice", "older-direct", now - 3_000, { to: "local.bob" });
+      await publish(dmSubject, "alice", "direct", now - 1_000, { to: "local.bob" });
+      const mixed = await run(["history", "--dms", ...args]);
+      const narrow = await run(["history", "--dms", "--limit", "2", ...args]);
+      check("--dms preserves channel sequence with a DM present and retains the newest channel post in a two-row window",
+        mixed.status === 0 && texts(mixed).includes("direct") && sequences(mixed) === expected && narrow.status === 0
+          && texts(narrow).includes("direct") && sequences(narrow) === String(second.seq) && narrow.envelope?.result?.window.olderRetained === true,
+        { mixed: shown(mixed), narrow: shown(narrow) });
+      const byTime = await run(["history", "--dms", "--limit", "3", "--since", new Date(now - 1_500).toISOString(), ...args]);
+      check("a mixed window reaches a time cutoff even if its first row is newer than the cutoff",
+        byTime.status === 0 && byTime.envelope?.result?.window.reachesSince === true && texts(byTime).join() === "arrived-first,direct",
+        shown(byTime));
+    } finally {
+      await nc.close();
+    }
+  }
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {

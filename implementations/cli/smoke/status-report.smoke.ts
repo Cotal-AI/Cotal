@@ -300,9 +300,9 @@ if (!brokerDisplayOnly) {
     // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
     const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
     const [command, description] = firstCommand(next);
-    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of who and the store reset",
+    check("a cleanly stopped legacy stack puts a bare up first under Next without offering a live roster",
       /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
-        && next.includes("cotal who") && next.indexOf("cotal up") < next.indexOf("cotal who") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+        && !next.includes("cotal who") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
   }
   for (const [label, next] of [
     ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
@@ -316,6 +316,9 @@ if (!brokerDisplayOnly) {
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   // The rig registers its spaces with `meshes add --force`, so each mode is recorded and shown as not checked.
   const plain = run(["status", "--space", "alpha", "--plain"]);
+  const next = plain.stdout.split("\nNext\n")[1] ?? "";
+  check("an unreachable manual registration names its broker recovery instead of a live roster",
+    plain.status === 0 && next.includes(`start it where it runs, or \`${displayCmd()} space forget alpha\` to unregister it`) && !next.includes("See the live roster"), { status: plain.status, next, stderr: plain.stderr });
   const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
     /^ {2}beta +open, not checked$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
