@@ -60,7 +60,7 @@ process.on("exit", () => {
 });
 async function broker(jetstream = true): Promise<string> {
   const port = await freePort();
-  const b = spawn("nats-server", [...(jetstream ? ["-js", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))] : []), "-a", "127.0.0.1", "-p", String(port)], { stdio: "ignore" });
+  const b = spawn("nats-server", [...(jetstream ? ["-js"] : []), "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
   teardownOnSignal(b);
   brokers.push(b);
   return `nats://127.0.0.1:${port}`;
