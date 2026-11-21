@@ -560,8 +560,8 @@ try {
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
     check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
     // A space with neither a registration nor a stopped stack, as a legacy root's down leaves one, is
-    // cleared with clean from its root, and each reset names its own clean route.
-    for (const [kind, clean] of [["space", "cotal clean all --force"], ["store", "cotal clean store --force"]] as const) {
+    // cleared with clean from its root, and each reset preview names its own clean preview.
+    for (const [kind, clean] of [["space", "cotal clean all --dry-run"], ["store", "cotal clean store --dry-run"]] as const) {
       const unregistered = cli(second, "reset", kind, "neverregistered", "--dry-run", "--json");
       check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run \`${clean}\` from that root`)), shown(unregistered));
     }

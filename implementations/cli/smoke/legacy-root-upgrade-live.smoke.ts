@@ -15,7 +15,8 @@
  *     start of another space there names that one, and the next plain `up` starts it.
  *  4. Open legacy root started with `up --open --space`. After `down` its plain `up` starts it again
  *     as that space, at its own address, and starts no `main`, and so does a restart that names that
- *     address with `--server`, which says the mode it started in.
+ *     address with `--server`, which says the mode it started in. The named reset previews that
+ *     cannot select the stopped root point to the matching cleanup previews, not deletion.
  *
  * Sandboxes COTAL_HOME and the project roots. Run: pnpm smoke:legacy-root-upgrade:live
  */
@@ -60,6 +61,8 @@ const accountFiles = (root: string) => readdirSync(join(root, ".cotal", "auth"))
 // Project roots sit beside COTAL_HOME, never inside it.
 const folder = (name: string) => {
   const root = mkdtempSync(join(tmpdir(), `cotal-legacy-root-${name}-`));
+  // An empty marker keeps root discovery inside the fixture without preparing a space.
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
   roots.push(root);
   return root;
 };
@@ -166,6 +169,25 @@ try {
     check("an unprepared folder starts an open space on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
     const stopped = cli(root, "down", "--yes");
     check("down stops it and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const store = join(root, ".cotal", "nats", "jetstream");
+    for (const [kind, target] of [["store", "store"], ["space", "all"]] as const) {
+      const preview = cli(root, "reset", kind, space, "--dry-run", "--plain");
+      const command = `cotal clean ${target} --dry-run`;
+      const text = preview.stdout + preview.stderr;
+      const suggested = /run `([^`]+)` from that root/.exec(text)?.[1];
+      check(`reset ${kind} preview refuses and names ${command} from the legacy root`,
+        preview.status === 2 && text.includes("TARGET_NOT_FOUND") && suggested === command
+          && text.includes("adding --store-dir <dir> if it used a custom store") && !text.includes("--force") && existsSync(store), shown(preview));
+      if (suggested === command) {
+        const clean = cli(root, ...suggested.split(" ").slice(1));
+        check(`${command} lists the store and leaves it intact`,
+          clean.status === 0 && /would remove \.cotal\/nats \(JetStream store: .*\bjetstream\b/.test(clean.stdout) && existsSync(store), shown(clean));
+      }
+      const apply = cli(root, "reset", kind, space, "--yes", "--json");
+      check(`reset ${kind} apply still refuses with the force cleanup for the legacy root`,
+        apply.status === 2 && apply.env?.error?.code === "TARGET_NOT_FOUND"
+          && Boolean(apply.env.error.remedy?.includes(`run \`cotal clean ${target} --force\` from that root`)) && existsSync(store), shown(apply));
+    }
     const again = cli(root, "up", "--no-manager");
     check("plain up starts that space again, open, at its own address, and starts no main",
       again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
@@ -185,7 +207,7 @@ try {
     const parent = folder("retained");
     const space = "gamma";
     const root = join(parent, space);
-    mkdirSync(root, { mode: 0o700 });
+    mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
     roots.push(root);
     const server = `nats://127.0.0.1:${await freePort()}`;
     anchor(root);

@@ -863,13 +863,12 @@ with the record's pid. A member that exited without a recorded stop, as after a 
 settled by `cotal down --yes`: it finds the member gone and records it as already stopped, and the
 reset then accepts it. Only a member that no completed `down` recorded that way needs `cotal up` and
 then `cotal down --yes`. A legacy root has no stack journal, and its `down` drops the registration
-a reset selects, so no reset reaches it once stopped. A space named after its folder keeps that
-registration, so a reset reaches it stopped. For any other legacy root, the step after `cotal down` is
-`cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
-`reset space`, with `--store-dir <dir>` when the registration records a custom store. Once stopped,
-such a space has no record here, like a mistyped name, so a reset of either refuses
-`TARGET_NOT_FOUND`, says no registered or prepared space has that exact name, and names `cotal space`
-and then that step.
+a reset selects. A space named after its folder keeps that registration, so a reset reaches it
+stopped. For any other legacy root, run `cotal clean store --dry-run` or `cotal clean all --dry-run`
+from that root after `cotal down` to preview what would be removed. A reset preview that cannot find
+the space refuses `TARGET_NOT_FOUND`, names `cotal space`, and suggests the matching cleanup preview.
+An apply that refuses there names `cotal clean store --force` or `cotal clean all --force` instead.
+Add `--store-dir <dir>` when the stack used a custom store.
 
 Removing the store removes what the broker kept in it: workflow runs and their journals, channel
 history, stored messages and every other record. A run still waiting for an answer goes with it and

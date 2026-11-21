@@ -5276,7 +5276,7 @@
     {
       "path": "implementations/cli/src/commands/reset.ts",
       "kind": "derived-output",
-      "anchor": "assertResetEligible(mesh, \"reset store\")",
+      "anchor": "assertResetEligible(mesh, \"reset store\", true)",
       "class": "non-render/control",
       "rationale": "Reset preview control flow: checks the registration record is eligible for a store reset; no presence is rendered."
     },

@@ -6,7 +6,7 @@ import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
-  canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
+  canonicalRoot, codeSpan, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
   presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, STORE_CONTENTS, storeContentsText, writeResult, type Block, type Report, type Section,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
@@ -21,6 +21,7 @@ import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 /** What a named reset acts on. A running or crashed space is selected by its locally started
  *  registration. A controller stack that a completed `down` stopped has none: its prepared record
@@ -85,7 +86,7 @@ function refuseLinkedRoot(root: string, command: ResetCommand): void {
   if (linked) throw linked;
 }
 
-export function selectResetTarget(space: string, command: ResetCommand): ResetTarget {
+export function selectResetTarget(space: string, command: ResetCommand, dryRun = false): ResetTarget {
   let entry: ReturnType<typeof findMesh>, prepared: ReturnType<typeof findPreparedSpace>;
   try { entry = findMesh(space); prepared = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registration could not be read; no reset target was inferred", { target: { space } }); }
@@ -105,7 +106,7 @@ export function selectResetTarget(space: string, command: ResetCommand): ResetTa
   }
   // A legacy root has no stack journal, and its down removes the registration a reset selects, so a
   // name with no record may be one; it is cleared with clean from that root instead.
-  const legacy = `if it ran from a legacy root, whose down removes the registration a reset selects, run \`cotal clean ${command === "reset space" ? "all" : "store"} --force\` from that root, adding --store-dir <dir> if it used a custom store`;
+  const legacy = `if it ran from a legacy root, whose down removes the registration a reset selects, run \`cotal clean ${command === "reset space" ? "all" : "store"} ${dryRun ? "--dry-run" : "--force"}\` from that root, adding --store-dir <dir> if it used a custom store`;
   if (!root)
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space this machine registered or prepared has this exact name; nothing was removed", { target: { space }, remedy: `see the spaces with \`cotal space\`; ${legacy}` });
   // A prepared space no stack has run for has no store, as one whose members never started.
@@ -181,7 +182,7 @@ export function resetStorePath(root: string, storeDir: string | undefined, where
 /** Every check a stopped-store or identity reset runs before it is offered, and again under the
  *  maintenance lock. Each refusal names one reason and the command that clears it. Returns the
  *  store path, with its directory identity pinned when it exists. */
-export async function assertResetEligible(target: ResetTarget, command: ResetCommand): Promise<ReturnType<typeof safeStoreCleanupPath>> {
+export async function assertResetEligible(target: ResetTarget, command: ResetCommand, dryRun = false): Promise<ReturnType<typeof safeStoreCleanupPath>> {
   const { space, root } = target, where = { space, root }, review = `cotal ${command} ${space} --dry-run`;
   let current: ResetTarget | undefined;
   try { current = selectResetTarget(space, command); } catch { current = undefined; }
@@ -204,10 +205,12 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's maintenance journal or process records could not be read; nothing was removed", { target: where }); }
   // A legacy root's `down` drops its registration, so no reset can select it afterwards. The step
   // after that stop is the clean the reset runs, from the root, naming only a custom store.
-  const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${target.storeDir}` : "";
+  const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${shellWord(target.storeDir)}` : "";
+  const clean = codeSpan(`cotal clean ${command === "reset store" ? "store" : "all"}${storeFlag} ${dryRun ? "--dry-run" : "--force"}`);
   const afterStop = !legacy ? `run \`${review}\``
-    : command === "reset store" ? `remove its stored streams with \`cotal clean store${storeFlag} --force\` there`
-    : `remove its store and identity with \`cotal clean all${storeFlag} --force\` there`;
+    : dryRun ? `preview cleanup with ${clean} there`
+    : command === "reset store" ? `remove its stored streams with ${clean} there`
+    : `remove its store and identity with ${clean} there`;
   if (maintenance)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; a reset does not override it`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, before a reset" });
   // A `down` records a member that exited without a stop as already stopped, which settles it for a
