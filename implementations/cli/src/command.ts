@@ -480,10 +480,17 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const first = metadataPositionals(cmd, rest).positionals[0]?.value;
+      const { positionals } = metadataPositionals(cmd, rest);
+      const first = positionals[0]?.value;
+      let selected: Command | Subcommand = cmd;
+      for (const { value } of positionals) {
+        const sub = findSubcommand(selected, value);
+        if (!sub) break;
+        selected = sub;
+      }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, flagNames, takesOperands);
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;

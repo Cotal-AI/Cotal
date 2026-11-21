@@ -227,6 +227,16 @@ check("following that printed command removes the store that was named and leave
 const helpPath = run(["help", "service", "nosuch"]);
 check("help with an unknown subcommand names it and lists the command's subcommands", usageShape(helpPath, /cotal service has no subcommand "nosuch"/) && /\bstart\b/.test(helpPath.stderr) && /\bstop\b/.test(helpPath.stderr), shown(helpPath));
 
+const explicitStatus = run(["help", "service", "status", "manager"]);
+const flagStatus = run(["service", "status", "manager", "--help"]);
+check("both help forms show service status usage with a service name",
+  explicitStatus.status === 0 && flagStatus.status === 0 && explicitStatus.stderr === "" && flagStatus.stderr === ""
+  && explicitStatus.stdout === flagStatus.stdout && /^  cotal service status <name>/m.test(explicitStatus.stdout),
+  { explicit: shown(explicitStatus), flag: shown(flagStatus) });
+const misspelledStatus = run(["help", "service", "sttaus", "manager"]);
+check("explicit help still refuses a misspelled service subcommand before its operand",
+  usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
+
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
@@ -497,7 +507,7 @@ for (const [args, usage, foreign] of [
   });
   const helps: [ReturnType<typeof run>, ReturnType<typeof run>][] = [];
   let next = 0;
-  await Promise.all(Array.from({ length: 6 }, async () => {
+  await Promise.all(Array.from({ length: 3 }, async () => {
     for (let i = next++; i < paths.length; i = next++) helps[i] = await Promise.all([binary([...paths[i]!, "--help"]), binary(["help", ...paths[i]!])]);
   }));
   paths.forEach((path, i) => {
@@ -607,10 +617,17 @@ for (const [args, message] of [
   [["status", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
   [["version", "--js.on"], /Unknown option '--js\.on' - did you mean --json\?/],
   [["history", "general", "--gr.ep"], /Unknown option '--gr\.ep' - did you mean --grep\?/],
+  [["config", "get", "harness", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
 }
+const configTypo = run(["config", "get", "harness", "--verbsoe", "--json"]);
+check("config get does not suggest a flag only bare config takes",
+  configTypo.status === 1 && configTypo.stderr === "" && JSON.parse(configTypo.stdout).error.message === "Unknown option '--verbsoe'", shown(configTypo));
+const clearTypo = run(["history", "clear", "--folow"]);
+check("history clear does not suggest a flag only history reads take",
+  usageShape(clearTypo, /Unknown option '--folow'/) && !/did you mean/.test(clearTypo.stderr), shown(clearTypo));
 const far = run(["frobnicate"]);
 check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 
