@@ -311,13 +311,8 @@ export async function team(args: ParsedArgs): Promise<void> {
 
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) {
-    let resolved: ReturnType<typeof loadManifest>;
-    try { resolved = loadManifest(resolve(file)); }
-    catch (e) {
-      if (e instanceof ManifestError) throw manifestRefusal(e, resolve(file));
-      throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no native effect was submitted");
-    }
-    if (resolved.agents.length) {
+    const { prepared } = resolveTeamFile(file);
+    if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
       return applyAgentTeam(file, values);
     }
@@ -522,10 +517,9 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function readTeamFile(file: string, values: TeamValues): { path: string; prepared: PreparedManifest } {
+function resolveTeamFile(file: string): { path: string; prepared: PreparedManifest } {
   const path = resolve(file);
-  let prepared: PreparedManifest;
-  try { prepared = loadManifest(path); }
+  try { return { path, prepared: loadManifest(path) }; }
   catch (e) {
     if (e instanceof ManifestError) throw manifestRefusal(e, path);
     // A folder given as the manifest gets the refusal `up -f` and `topology view` give, naming it.
@@ -534,6 +528,10 @@ function readTeamFile(file: string, values: TeamValues): { path: string; prepare
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
   }
+}
+
+function readTeamFile(file: string, values: TeamValues): { path: string; prepared: PreparedManifest } {
+  const { path, prepared } = resolveTeamFile(file);
   if (values.space !== undefined && values.space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
 }

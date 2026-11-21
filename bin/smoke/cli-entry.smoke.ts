@@ -17,8 +17,8 @@
  * before the CLI loads, so a refused command starts almost no Maglev compile. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  * A folder given to `topology view -f`, `up -f`, `down -f`, `team check`, `team boot --dry-run` or
- * `team deploy --dry-run` is refused by its path as a directory, and `team check --json` names it as
- * `target.file`.
+ * `team deploy` (preview or apply) is refused by its path as a directory. Team deploy reports a
+ * missing manifest with its resolved path and a remedy in both preview and apply.
  * A signal while the CLI loads prints that the command did not begin and exits with that signal's
  * code, and an internal entry keeps Node's default signal exit.
  *
@@ -1085,16 +1085,36 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
         && r.stderr.includes("↳ name the manifest file in it") && !r.stderr.includes("EISDIR"), shown(r));
   }
   // The team commands report it through their classified refusal, with the same reason and Next.
-  for (const [what, args] of [["team check", ["team", "check", dir]], ["team boot --dry-run", ["team", "boot", dir, "--dry-run"]], ["team deploy --dry-run", ["team", "deploy", dir, "--dry-run"]]] as const) {
-    const r = cotal([...args], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+  function readRefusal(r: Run) {
+    try { return JSON.parse(r.stdout) as { target?: { file?: string; path?: string }; error?: { code?: string; remedy?: string } }; }
+    catch { return undefined; }
+  }
+  const env = { ...noSeed, LC_ALL: "C.UTF-8" };
+  const directoryRemedy = "name the manifest file in it, such as its cotal.yaml";
+  for (const [what, args] of [["team check", ["team", "check", dir]], ["team boot --dry-run", ["team", "boot", dir, "--dry-run"]], ["team deploy --dry-run", ["team", "deploy", dir, "--dry-run"]], ["team deploy", ["team", "deploy", dir]]] as const) {
+    const r = cotal([...args], undefined, env);
     check(`${what} of a folder is refused with exit 1, naming the path and that it is a directory`,
       r.status === 1 && r.stdout === "" && r.stderr.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)
-        && r.stderr.includes("name the manifest file in it, such as its cotal.yaml") && !r.stderr.includes("could not be read and resolved") && !r.stderr.includes("EISDIR"), shown(r));
+        && r.stderr.includes(directoryRemedy) && !r.stderr.includes("could not be read and resolved") && !r.stderr.includes("EISDIR"), shown(r));
+    const json = cotal([...args, "--json"], undefined, env);
+    const envelope = readRefusal(json);
+    check(`${what} --json of a folder gives USAGE_INVALID with the folder as target.file and the Next`,
+      json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === directoryRemedy, shown(json));
   }
-  const json = cotal(["team", "check", dir, "--json"], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
-  const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
-  check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
-    json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+  const missing = join(dir, "nonexistent.yaml");
+  const missingRemedy = "check the file path and run the command again";
+  for (const mode of [[], ["--dry-run"]]) {
+    const args = ["team", "deploy", missing, ...mode];
+    const what = ["team deploy", ...mode].join(" ");
+    const r = cotal(args, undefined, env);
+    check(`${what} of an absent manifest is refused with exit 2, naming its path and the Next`,
+      r.status === 2 && r.stdout === "" && r.stderr.includes(`the team manifest ${missing} was not found; no broker was contacted`)
+        && r.stderr.includes("TARGET_NOT_FOUND") && r.stderr.includes(missingRemedy), shown(r));
+    const json = cotal([...args, "--json"], undefined, env);
+    const envelope = readRefusal(json);
+    check(`${what} --json of an absent manifest gives TARGET_NOT_FOUND with the path and remedy`,
+      json.status === 2 && envelope?.error?.code === "TARGET_NOT_FOUND" && envelope.target?.path === missing && envelope.error.remedy === missingRemedy, shown(json));
+  }
 }
 
 // A retained teardown ledger uses the manifest source hash, without reading launch-time personas.
