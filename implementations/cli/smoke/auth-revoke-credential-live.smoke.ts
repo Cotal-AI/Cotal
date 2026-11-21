@@ -189,6 +189,8 @@ try {
       labelRow?.state === "revoked" && typeof labelRow.revokedAt === "number" && labelRow.problem?.startsWith(`REVOKED - its key ${labelKey} was revoked at `) === true && labelDoctor.env?.outcome === "failed", { labelRow, doctor: shown(labelDoctor) });
     check("  and its repair is --replace with a new key and the file's grants",
       labelRow?.repair?.includes(`auth mint standing --replace --space ${space} --allow-subscribe general --allow-publish general --no-persona\``) === true && labelRow.repair.startsWith("a revoked key is not signed again"), labelRow);
+    check("  the standing replacement can stay file-only or use --provision before joining",
+      /file-only replacement.*join-ready replacement.*`--provision`/.test(labelRow?.repair ?? ""), labelRow);
     const replaced = cli(root, "auth", "mint", "standing", "--replace", "--allow-subscribe", "general", "--allow-publish", "general", "--json");
     const replacedBy = replaced.env?.result as { identity?: string; replaced?: { state?: string; publicKey?: string; revokedAt?: number } } | undefined;
     check("auth mint --replace replaces the revoked label credential under a new key, naming the revocation",

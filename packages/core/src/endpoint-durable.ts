@@ -17,7 +17,6 @@ export interface EndpointDurableDeps {
   js: () => JetStreamClient | undefined;
   jsm: () => JetStreamManager | undefined;
   space: () => string;
-  pendingDurableLeave: () => Map<string, number>;
   stopped: () => boolean;
   plane3Channels: () => Map<string, number>;
   aclRegistry: () => Promise<KV>;
@@ -30,14 +29,20 @@ export interface EndpointDurableDeps {
   membershipPause: (attempt: number) => Promise<void>;
 }
 
-/** One endpoint's durable membership. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
+/** One endpoint's durable membership. Internal: it owns its pending leaves, and `CotalEndpoint` keeps the shared fields and forwards to it. */
 export class EndpointDurable {
+  /** Channels whose live sub was REFUSED while they held a Plane-3 durable membership, whose §7
+   *  tombstone has not yet confirmed (channel → join generation). {@link closeRefusedMembership} retries
+   *  the tombstone until it lands; until then this is a `durable-unclosed` state surfaced via
+   *  {@link pendingDurableLeaves} (the connector shows it in `cotal_channels`, never as ordinary
+   *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
+  private readonly pendingDurableLeave = new Map<string, number>();
+
   constructor(private readonly deps: EndpointDurableDeps) {}
 
   private get js() { return this.deps.js(); }
   private get jsm() { return this.deps.jsm(); }
   private get space() { return this.deps.space(); }
-  private get pendingDurableLeave() { return this.deps.pendingDurableLeave(); }
   private get stopped() { return this.deps.stopped(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
   private aclRegistry(): Promise<KV> { return this.deps.aclRegistry(); }

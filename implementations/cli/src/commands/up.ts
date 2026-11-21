@@ -249,7 +249,7 @@ import {
   canonicalServer,
   controllerStackApplies,
   recheckExistingStore,
-  requestedStackMode,
+  requestedStackMode, refuseForegroundStackHolder,
   requestsTls,
   stackUp,
   stackUpForegroundNotice,
@@ -1593,7 +1593,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // one, it takes that stack's lifetime over and says so before it blocks.
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holder} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, { target: { root: meshRoot, space: stackSpace, holderPid: holder }, remedy: `use the terminal that runs process ${holder}, where Ctrl-C stops the stack, or stop it with \`cotal down --yes\` from ${meshRoot} and run \`cotal up --foreground\` again` });
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder);
     const takeover = values.foreground === true && STACK_ROLES.some((role) => serviceInstances(stackSpace, STACK_DEFINITION[role]).some((row) => observeServiceProcess(row.record.value) === "running"));
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no

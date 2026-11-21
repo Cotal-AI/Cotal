@@ -68,6 +68,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
 const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, resolveOnPath, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, shellPath, spaceSegment } = await import("@cotal-ai/workspace");
+const { shellWord } = await import("../src/lib/endpoint-errors.js");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -371,6 +372,14 @@ setCurrent("keep");
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
+  check("whoami remedy quotes registration retry root and space",
+    whoUnchecked.env?.error?.remedy === `check it by adding it again without --force: \`cotal space forget dead1\`, then \`cotal space add dead1 --server ${shellWord(DEAD)} --root ${shellWord(root)}\``, shown(whoUnchecked));
+  const spacedRoot = projectRoot("spaced proj");
+  await json(["space", "add", "dead-spaced", "--server", DEAD, "--root", spacedRoot, "--force"]);
+  const whoSpaced = await json(["whoami", "--space", "dead-spaced"]);
+  check("whoami remedy quotes root path containing spaces in registration retry",
+    whoSpaced.env?.error?.remedy === `check it by adding it again without --force: \`cotal space forget dead-spaced\`, then \`cotal space add dead-spaced --server ${shellWord(DEAD)} --root ${shellWord(spacedRoot)}\`` &&
+    whoSpaced.env?.error?.remedy.includes(`--root '${spacedRoot}'`), shown(whoSpaced));
   const legacyForced = await run(["meshes", "add", "legacy-unchecked", "--server", DEAD, "--root", root, "--mode", "open", "--force"]);
   check("legacy meshes add also records the mode as unchecked when forced",
     legacyForced.status === 0 && legacyForced.stdout.includes("recorded without verifying") && findMesh("legacy-unchecked")?.unchecked === true, shown(legacyForced));
