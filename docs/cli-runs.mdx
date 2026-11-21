@@ -319,13 +319,16 @@ status, a non-string note, an unknown field, a scripted `at`, and a missing, mal
 unexpected destination. A destination refusal names the `to` field, including the array index
 for a list entry.
 
-When the script has no result for an effect, the simulation exits 5 with `OPERATION_FAILED`. The
-message names the step and the entry to add, and `target.step` carries the step. When the program
-itself fails under the script, as a checkpoint scripted `expired` under the default `onExpiry: "fail"`
-does with L4007, the simulation completes and exits 0. Its program outcome is failed, with the step
-and that step's outcome, or the last step the program settled before its own code failed, and the
-language's error. A simulation does not establish live authority, installed applications or
-readiness. All three support JSON and plain output and contact no broker.
+A missing script entry or an exhausted list raises L6001. If the program does not catch it, the
+simulation exits 5 with `OPERATION_FAILED`. The error names the table, the step and the entry to
+add, and `target.step` carries the step key. For an exhausted list the error names the needed result,
+counted from 1, while the step key counts occurrences from 0.
+
+When the program itself fails under the script, as a checkpoint scripted `expired` under the default
+`onExpiry: "fail"` does with L4007, the simulation completes and exits 0. It reports a failed program
+outcome and the language error, with the step and its outcome or the last step the program settled
+before its own code failed. A simulation does not establish live authority, installed applications
+or readiness. All three support JSON and plain output and contact no broker.
 
 The `--handler` file is one JSON object in UTF-8, with an optional leading byte-order mark.
 It must be a regular file or a symlink to one, as the program file must be.
@@ -364,11 +367,6 @@ and advances virtual time only to that timeout.
 A checkpoint scripted as `expired` expires at the step's `timeout`, as a live deadline does. A
 resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
 
-A step with no entry, or a list shorter than the step's occurrences, stops the simulation with L6001
-and exit 5. The failure names the table, the step's name and its step key, and the remedy names the
-entry to add. For a list that is too short, it also says which result the step needs, counted from 1,
-while the step key counts occurrences from 0.
-
 When the simulation returns a report, `cotal run simulate <file> --json` puts these fields in the
 `result` object, including when the program fails under the script:
 
@@ -383,7 +381,7 @@ When the simulation returns a report, `cotal run simulate <file> --json` puts th
 | `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
 | `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
 | `result.checkpoints` | Reached checkpoints with `step`, `name` and `prompt`, plus `timeout`, `onExpiry` and `to` if supplied. |
-| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` for which no result was consumed, in `table.name` form (for example, `checkpoints.approve-plan`). A list is considered used once any result at its key is consumed. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that the simulator never matched to an effect, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even if it is empty or has no result for that occurrence. |
 | `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
 
 `result.elapsedMs` does not measure how long the CLI process ran. For example, `await sleep("1h")`
