@@ -851,7 +851,7 @@ if (process.platform === "linux") {
     const brokerOnly = await run(["status", "--plain"], {}, pinned);
     const absent = await json(["ps"], pinned);
     check("broker-only status points to the live roster, not the unavailable managed-agent list",
-      brokerOnly.status === 0 && /cotal who\s+See the live roster/.test(brokerOnly.stdout) && !/^\s*(?:pnpm )?cotal ps\s/m.test(brokerOnly.stdout)
+      brokerOnly.status === 0 && /cotal who --space pinned\s+See the live roster/.test(brokerOnly.stdout) && !/^\s*(?:pnpm )?cotal ps\s/m.test(brokerOnly.stdout)
         && roster.status === 0 && /^\s*roster-peer.*\bno\b/m.test(roster.stdout) && refused(absent, 2, "TARGET_UNAVAILABLE"),
       { status: brokerOnly, who: roster, ps: shown(absent) });
 
@@ -864,7 +864,7 @@ if (process.platform === "linux") {
     check("status identifies the answering manager outside a broker-only stack",
       ps.status === 0 && instanceId !== undefined && outside.status === 0
         && outside.stdout.includes(`answering - instance ${instanceId} - outside this stack`)
-        && !outside.stdout.includes("bare `cotal up` adds it") && /cotal ps\s+List managed agents/.test(outside.stdout)
+        && !outside.stdout.includes("bare `cotal up` adds it") && /cotal ps --space pinned\s+List managed agents/.test(outside.stdout)
         && observation?.endpoint === "answered" && observation.instanceId === instanceId,
       { status: outside, ps, observation });
   } finally {
