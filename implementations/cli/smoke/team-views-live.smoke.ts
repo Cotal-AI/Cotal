@@ -211,10 +211,10 @@ try {
   check("up -f --dry-run on the running controller stack refuses without starting anything",
     conflict.status === 2 && conflict.stderr.includes("CONFLICT") && conflict.stderr.includes("nothing was started"), conflict.out);
   const command = conflict.stderr.split("`").find((part) => part.startsWith("cotal team boot "));
-  const expected = `cotal team boot '${realpathSync(s).replaceAll("'", "'\\''")}/${spacedFile}' --dry-run`;
+  const expectedPreview = `cotal team boot '${realpathSync(s).replaceAll("'", "'\\''")}/${spacedFile}' --dry-run`;
   check("up -f quotes the whole manifest path in its preview and does not suggest redeployment",
-    command === expected && !conflict.stderr.includes("team deploy"), conflict.out);
-  if (command === expected && process.platform !== "win32") {
+    command === expectedPreview && !conflict.stderr.includes("team deploy"), conflict.out);
+  if (command === expectedPreview && process.platform !== "win32") {
     const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${command}`, TSX, CLI],
       { cwd: s, env, encoding: "utf8", timeout: 180_000 });
     check("the printed command previews the intended manifest in a POSIX shell",
