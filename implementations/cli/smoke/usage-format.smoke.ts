@@ -227,23 +227,6 @@ check("following that printed command removes the store that was named and leave
 const helpPath = run(["help", "service", "nosuch"]);
 check("help with an unknown subcommand names it and lists the command's subcommands", usageShape(helpPath, /cotal service has no subcommand "nosuch"/) && /\bstart\b/.test(helpPath.stderr) && /\bstop\b/.test(helpPath.stderr), shown(helpPath));
 
-for (const [args, title] of [
-  [["--help", "--help"], "cotal help"],
-  [["version", "--help", "--help"], "cotal version"],
-  [["docs", "--help", "-h"], "cotal docs"],
-  [["service", "status", "manager", "-h", "-h"], "cotal service status"],
-] as const) {
-  const r = run([...args]);
-  check(`${args.join(" ")} refuses the repeated help option with the relevant usage`,
-    usageShape(r, /Option '-h, --help' cannot be repeated/) && r.stderr.includes(`\n${title}\n`), shown(r));
-}
-const oneHelp = run(["docs", "-h"]);
-const helpOperand = run(["docs", "--help", "--", "-h"]);
-check("one help flag succeeds and a help word after -- does not count as a repeat",
-  oneHelp.status === 0 && oneHelp.stderr === "" && /^Usage$/m.test(oneHelp.stdout)
-  && helpOperand.status === 0 && helpOperand.stderr === "" && helpOperand.stdout === oneHelp.stdout,
-  { single: shown(oneHelp), operand: shown(helpOperand) });
-
 const explicitStatus = run(["help", "service", "status", "manager"]);
 const flagStatus = run(["service", "status", "manager", "--help"]);
 check("both help forms show service status usage with a service name",

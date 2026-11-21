@@ -150,8 +150,7 @@ Manager control, then stops and restarts them. Every platform must pass before n
 publication can proceed.
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
-repeatable, as `--opt` and `down --session-store` are. `--help` and `-h` count as the same flag.
-A word that starts with a dash and a digit,
+repeatable, as `--opt` and `down --session-store` are. A word that starts with a dash and a digit,
 as `-1` does, after a flag that takes a value is that flag's value, so `--limit -1` gets the
 command's own check of `--limit`. So is an unknown command, and a first word
 that is not one of the command's subcommands when it declares them. So is input a command checks

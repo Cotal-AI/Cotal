@@ -83,15 +83,12 @@ import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./te
 const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
 const managerChoice = () => import("./lib/manager-choice.js");
 
-/** Count help flags before `--`, after which every word is text. */
-function helpOptionCount(args: readonly string[]): number {
+/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
+function asksForHelp(args: readonly string[]): boolean {
   const end = args.indexOf("--");
   const options = end === -1 ? args : args.slice(0, end);
-  return options.filter((word) => word === "--help" || word === "-h").length;
+  return options.includes("--help") || options.includes("-h");
 }
-
-const asksForHelp = (args: readonly string[]): boolean => helpOptionCount(args) > 0;
-const HELP_OPTION_LABEL = "-h, --help";
 
 /** Whether a global flag ({@link GLOBAL_FLAG_WORDS}: `--no-color`, `--no-input`) is `word`, applying
  *  it when it is. */
@@ -123,9 +120,9 @@ function takesWordsRaw(cmd: Command | undefined): boolean {
   return Boolean(cmd && (cmd.rawArgs || cmd.name.startsWith("__")));
 }
 
-/** Refuse a repeated global or help flag using the command's output mode and subcommand help. */
-async function repeatedFlag(word: string, cmd: Command | undefined, words: string[], warnings: OutputWarning[] = []): Promise<never> {
-  const { cmd: found, rest } = await serviceSurface(takesWordsRaw(cmd) && word !== HELP_OPTION_LABEL ? undefined : cmd, words, true);
+/** Refuse a repeated global flag using the command's output mode and subcommand help. */
+async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words: string[], warnings: OutputWarning[] = []): Promise<never> {
+  const { cmd: found, rest } = await serviceSurface(takesWordsRaw(cmd) ? undefined : cmd, words, true);
   const end = rest.indexOf("--");
   const options = end === -1 ? rest : rest.slice(0, end);
   const json = found !== undefined && asksForJson(found, rest);
@@ -655,9 +652,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   }
   if (argv[lead] === "--") lead++;
   const original = argv[lead];
-  const leadingHelp = original === "--help" || original === "-h";
   const word = original === "--version" || original === "-V" ? "version"
-    : leadingHelp ? "help" : original;
+    : original === "--help" || original === "-h" ? "help" : original;
   const words = [...output, ...argv.slice(lead + 1)];
   const builtin = findCommand(registry.all<Command>("command"), word);
   const globals = splitGlobalFlags(words, leadingGlobals);
@@ -666,10 +662,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     for (const option of globals.flags) takeGlobalFlag(option);
     return [...globals.rest];
   };
-  const repeatedHelp = helpOptionCount(words) + Number(leadingHelp) > 1;
-  const duplicate = (cmd: Command | undefined) => repeatedLeading ?? (takesWordsRaw(cmd) ? undefined : globals.repeated)
-    ?? (repeatedHelp && cmd && !cmd.name.startsWith("__") ? HELP_OPTION_LABEL : undefined);
-  if (repeatedLeading && (word === undefined || takesWordsRaw(builtin))) return repeatedFlag(repeatedLeading, undefined, []);
+  const duplicate = (cmd: Command | undefined) => repeatedLeading ?? (takesWordsRaw(cmd) ? undefined : globals.repeated);
+  if (repeatedLeading && (word === undefined || takesWordsRaw(builtin))) return repeatedGlobalFlag(repeatedLeading, undefined, []);
   if (output.length && word === undefined) usageExit(`${output[0]} needs a command after it - run \`cotal help\` to list commands`);
   if (output.length && takesWordsRaw(builtin))
     usageExit(`${output[0]} before ${original} is not read - ${original} takes its words raw, with no output flags`);
@@ -692,7 +686,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
   const builtinDuplicate = builtin && duplicate(builtin);
-  if (builtinDuplicate) return repeatedFlag(builtinDuplicate, builtin, ownWords(builtin));
+  if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
@@ -729,7 +723,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
           let found: Command | undefined;
           try { found = findCommand(overlayExtensions(registry, collisionWarning(warnings)), word); }
           catch { /* The current manifest cannot supply refusal context. */ }
-          return repeatedFlag(repeatedLeading, found, ownWords(found), warnings);
+          return repeatedGlobalFlag(repeatedLeading, found, ownWords(found), warnings);
         }
         seedRefusal(e);
         process.exit(1);
@@ -770,7 +764,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd);
   const repeated = duplicate(cmd);
-  if (repeated) return repeatedFlag(repeated, cmd, rest, pendingWarnings);
+  if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
   for (const warning of pendingWarnings) console.error(c.red(`! ${warning.message}`));
   const wantsHelp = asksForHelp(rest);
   ({ cmd, rest } = await serviceSurface(cmd, rest));
@@ -844,7 +838,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       cmd = findCommand(commands, word);
       if (!cmd) usageExit(unknownCommandMessage(commands, word));
       const repeated = duplicate(cmd);
-      if (repeated) return repeatedFlag(repeated, cmd, ownWords(cmd), warnings);
+      if (repeated) return repeatedGlobalFlag(repeated, cmd, ownWords(cmd), warnings);
       for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
       ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
       arm();
