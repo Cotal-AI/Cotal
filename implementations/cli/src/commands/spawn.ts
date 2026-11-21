@@ -367,7 +367,7 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
  * here vs. a supervised runtime in the manager. The connector is resolved from
  * the registry by agent type, composed at the root.
  *
- * The mesh it joins — creds and personas together — is resolved by {@link resolveMeshTarget}, so a
+ * The mesh it joins — creds and personas together — is resolved by `resolveMeshTarget` (in @cotal-ai/workspace), so a
  * bare `cotal spawn <persona>` from any directory finds the running mesh (one up, or the `current`
  * default) instead of mistaking `~/.cotal` for a space.
  */
