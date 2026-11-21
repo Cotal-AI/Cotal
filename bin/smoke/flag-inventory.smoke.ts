@@ -53,7 +53,7 @@ for (const [input, expected] of [
   ["review,review", ["review", "review"]], ["review.>,ops.*", ["review.>", "ops.*"]],
 ] as const) assert.deepEqual(parseCommaList(input), expected, `comma-list flag ${JSON.stringify(input)}`);
 
-for (const [file, calls] of [["spawn", 6], ["mint", 2], ["persona", 1], ["persona-remote", 6], ["personas", 1]] as const) {
+for (const [file, calls] of [["spawn", 3], ["spawn-managed-launch", 3], ["mint", 2], ["persona", 1], ["persona-remote", 6], ["personas", 1]] as const) {
   const source = readFileSync(new URL(`../../implementations/cli/src/commands/${file}.ts`, import.meta.url), "utf8");
   assert.match(source, /import\s*\{[^}]*\bparseCommaList\b[^}]*\}\s*from\s*["']@cotal-ai\/workspace["']/s, `${file} imports the shared list rule`);
   assert.equal([...source.matchAll(/\bparseCommaList\(/g)].length, calls, `${file} routes its list flags through the shared rule`);
