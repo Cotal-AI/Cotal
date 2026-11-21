@@ -82,6 +82,8 @@ credentials. Per-user-auth spaces refuse too; a cached login does not replace si
 resolved root supplies the persona ACL, signer and default storage together. With no space selected
 or available, start a local static-auth space with `cotal up` in its project folder and retry there.
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
+For a prepared space that has never started, the refusal says how to run `cotal up` to create
+the local signing trust. It keeps an explicit local broker URL when the first startup can use it.
 Conflicting current-folder and selected-root accounts refuse before issuance.
 After a local static space is stopped, its retained broker configuration and validated signing
 trust still resolve file-only fixed-profile minting from its project folder, including when you

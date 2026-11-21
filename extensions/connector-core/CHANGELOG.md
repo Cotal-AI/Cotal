@@ -1,5 +1,13 @@
 # @cotal-ai/connector-core
 
+## 0.172.1
+
+### Patch Changes
+
+- d5365ab: The channel policy reference now calls the inventory bare `cotal channel` and says there is no `list` subcommand, which the CLI refuses.
+- dc1bad8: The Agent files example now previews successfully with Claude and keeps the `opus` model without a variant.
+- 280840a: Show how to set severity, area, and contact name in the feedback command reference.
+
 ## 0.172.0
 
 ### Minor Changes

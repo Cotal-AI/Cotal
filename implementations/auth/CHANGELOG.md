@@ -1,5 +1,30 @@
 # @cotal-ai/auth
 
+## 0.172.1
+
+### Patch Changes
+
+- 714b325: The manager-service issuance operations take the composed issued-source liveness check as a dependency from `service.ts`. Behaviour is unchanged.
+- Updated dependencies [46f5a7a]
+- Updated dependencies [e9d7585]
+- Updated dependencies [2ec9a4d]
+- Updated dependencies [a880a09]
+- Updated dependencies [6f05bd5]
+- Updated dependencies [ee3a15c]
+- Updated dependencies [c3d0a38]
+- Updated dependencies [f346cde]
+- Updated dependencies [6e98cc0]
+- Updated dependencies [cceb29a]
+- Updated dependencies [6a6a4e4]
+- Updated dependencies [9a06339]
+- Updated dependencies [fb6c87f]
+- Updated dependencies [e11a800]
+- Updated dependencies [728bde0]
+- Updated dependencies [2037c77]
+  - @cotal-ai/workspace@0.172.1
+  - @cotal-ai/core@0.172.1
+  - @cotal-ai/lang@0.172.1
+
 ## 0.172.0
 
 ### Patch Changes

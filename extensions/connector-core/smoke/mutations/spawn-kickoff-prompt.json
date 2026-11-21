@@ -26,14 +26,14 @@
     },
     {
       "name": "A2 the MCP tool accepts prompt but silently omits it from MeshAgent.spawn",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, runtime, instance, join, persona, ...(onceArg !== undefined ? { once: onceArg } : {}) });",
       "replace": "          const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, events, runtime, instance, join, persona, ...(onceArg !== undefined ? { once: onceArg } : {}) });",
       "expectRed": "cotal_spawn tool forwards the kickoff prompt"
     },
     {
       "name": "A3 hide prompt from the published MCP schema",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "        prompt: z\n          .string()\n          .min(1)\n          .optional()\n          .describe(\n            \"Optional kickoff message auto-submitted as the new peer's first turn. Pass it when the peer should begin work immediately; omitted means no first model turn is submitted.\",\n          ),\n",
       "replace": "",
       "expectRed": "cotal_spawn schema exposes the kickoff prompt"

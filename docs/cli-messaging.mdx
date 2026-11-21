@@ -25,8 +25,9 @@ are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; t
 preserved and never printed in the receipt. A file that cannot be used is refused with its path:
 `TARGET_NOT_FOUND` when it does not exist, `PERMISSION_DENIED` when this account may not read it,
 and `USAGE_INVALID` (exit 1, without the command's help) for a directory or text that is not UTF-8.
-The refusal names the mesh the send was aimed at when this machine's records name one, and its
-remedy keeps the destination with a quoted body. No destination, several destinations, several body sources or an empty message is refused. A lone
+The refusal names the mesh the send was aimed at when this machine's records name one. The retry
+uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
+No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
 The recipient grammar is checked before connector installation or target preparation. Channel
@@ -596,7 +597,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--follow` | off | Keep listening and print each new message |
 | `--json` / `-j` | off | One JSON document, or with `--follow` one JSON record per line |
 | `--plain` | off | The same report without color or marks |
-| `--yes` / `-y` | off | `clear` and `limit`: confirm without prompting. Scripts and `--json` require it |
+| `--yes` / `-y` | off | `clear` and `limit`: confirm without prompting. Scripts and `--json` require it for a purge or a limit change |
 | `--dry-run` | off | `clear`: show the selected target and streams without connecting, and purge nothing |
 | `--max-age <age\|none>` | none | `limit`: delete a channel post once it is older than this, from `2m` to `3650d`, or `none` |
 | `--per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest posts on each channel, at least 1, or `none` |
@@ -700,8 +701,9 @@ gives how many of those copies the agent's consumer has not delivered yet, and s
 delivered and not acknowledged yet may be among them too. For the
 inbox and DMs it says that copies not passed on yet and DMs not read yet may be among them. The
 preview lists every agent and DM pair, because the operator reads the streams under the space root's
-trust. Raising asks nothing, and entries deleted under an earlier limit do not come back. Scripts and
-`--json` need `--yes`, checked before any credential is minted. `result.lowered` carries the same
+trust. Raising asks nothing in a terminal, and entries deleted under an earlier limit do not come back.
+Scripts and `--json` need `--yes` to change a limit. If the streams already hold all the requested
+values, the command reports that the limits are unchanged and writes nothing. `result.lowered` carries the same
 preview, and each `result.streams[]` entry gives its `from` and `to` limits and its `outcome`.
 
 The streams change one at a time: channel posts, the inbox, stored copies, then DMs. Each update

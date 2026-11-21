@@ -1,5 +1,88 @@
 # @cotal-ai/cli
 
+## 0.172.1
+
+### Patch Changes
+
+- 46f5a7a: `cotal auth mint` now explains how to re-mint an exported credential when `--replace` and `--out` are used together. Leave off `--replace` and pass the existing file to both `--out` and `--identity`.
+- 8cf5da8: Name `auth mint` in its JSON refusals without changing the reported error or exit status.
+- e9d7585: Explain the minimum lifetime and how to retry when `cotal auth mint` refuses `--expires-in 0`.
+- bc697eb: Keep attached values when correcting typographic dashes and stop suggesting `--` where a subcommand name is required.
+- 9e757ef: Show the manager requirement in broker-only shutdown previews and make agent retirement a no-op after stopping a stack that never ran a manager.
+- ddf3386: Make `cotal personas list --running` check the mesh even when the local catalog is empty, and include `--subscribe` in the empty catalog's creation example.
+- dc1bad8: The Agent files example now previews successfully with Claude and keeps the `opus` model without a variant.
+- fc569ee: Move the spawn command's enrollment and managed-handoff helpers out of `spawn.ts` into an internal `spawn-enrollment.ts`. `spawn.ts` re-exports every name it exported before, so the module surface is unchanged.
+- d1d8aaa: Point the missing or stale Codex plugin status row to setup help for scripts instead of a command that requires a terminal.
+- a3c88a2: If a restore is interrupted after it commits but before the broker starts, Cotal prints the attempt ID and the command to continue it.
+- bbb333c: `cotal completion uninstall` no longer refuses when the startup folder that `ZDOTDIR` names does not exist. It removes only the recorded stub and record it finds and creates no folder, and with nothing recorded it changes nothing. A record wired into another `ZDOTDIR` is still refused with that folder named. For a stub with no ownership record, the refusal names the stub and says to delete the startup lines that source it and then delete or move the stub yourself, instead of recommending an install that refuses the same stub. Bare `cotal completion` no longer offers install or uninstall for that stub.
+- 3ba92f9: Uppercase console commands now preserve recipient names, channel names, and message text.
+- a79718b: Recognize renamed stopped projects in `cotal use` and `cotal space delete`, and report a damaged selection instead of showing no selected space.
+- b921290: When several open spaces share a project folder, `cotal doctor auth` lists them and asks you to pass `--space` instead of sending you to another folder.
+- 280840a: Show how to set severity, area, and contact name in the feedback command reference.
+- 4e5a58c: Keep incomplete `cotal join` slash commands out of channel history and leave the session cleanly on Ctrl-D at the terminal prompt.
+- 0e3eb09: Stop the live stack manager even when an older standalone manager is saved, and show how to configure a separate manager when the stack cannot use the requested options.
+- 2ec9a4d: A prepared space record containing `null` no longer blocks listing or selecting other spaces, and `cotal space forget` can remove it.
+- e921676: Clarify that `cotal history` reads either one channel or, with `--dms`, all accessible channels and direct messages.
+- 79d2574: Report the lost connection and the gap when `cotal history --follow` resumes after a short broker restart.
+- 4363588: Accept future sequence cutoffs for history and keep JSON history follows in stream format when startup fails.
+- a880a09: Fix `cotal ext add` for packages that declare their entry through a root `exports` entry without a `main` field.
+- 5a18517: Report the correct file position for duplicate YAML keys in `cotal personas list` without printing the persona's frontmatter values.
+- 347027f: Live endpoint inventory now shows why the broker connection failed and how to recover when a recovery step is available, while keeping saved references in the partial result.
+- ee3a15c: Let `cotal down` finish stopping the stack when the Manager writes matching stop receipts while the CLI is reading them.
+- 2d4f340: `cotal down -f <file>` in a root with no ledger from the retired `spawn -f` deploy no longer asks whether the manifest was edited and offers a run ID. It says the root holds no such ledger and names `cotal team remove <id>` for a `team deploy` deployment and `cotal down --dry-run` for the whole-stack preview. When ledgers exist and none matches, it lists their run IDs and the `--run <id> --dry-run` preview.
+- be5e46d: `auth mint --provision` against a broker that is not running now says which broker and space it found stopped, how to restart it, and that a mint without `--provision` writes the credential file offline.
+- 856cf75: Clarify that `cotal models` uses registered meshes for authenticated connections and does not accept raw credential files.
+- bde81d3: `cotal up` names the local space registered at an occupied broker address instead of reporting an unknown broker.
+- d8fe52e: Extensions can be removed offline without npm fetching peers for packages that stay installed. Removal and failed-add cleanup now use the same peer policy as installation.
+- 2dd82c8: Check the payload limit before adding a manager to a running open broker, and leave the broker running with recovery instructions if its limit is too low.
+- 7b6d652: Explain that channel membership is unavailable on open meshes instead of suggesting a command that refuses.
+- c3d0a38: Reading the roster of an unstarted open space no longer creates broker resources or makes the space pass verified registration.
+- 50696a6: Reject invalid UTF-8 in `cotal persona create --from` files and piped input instead of saving corrupted instructions.
+- 1078e3a: `cotal persona create --from -` waits for the full piped input even when the producer pauses.
+- 2002099: `cotal manager status --instance` now refuses an unmatched instance ID instead of reporting a manager known only by its PID.
+- 6e98cc0: When an endpoint invocation times out before sending the command, the CLI tells you to change only `--timeout` on the original command without displaying its argument values.
+- 6078a57: When a stack cannot print a JSON or plain receipt for `down --preserve-state`, the refusal names a retry that still preserves state.
+- ed535b3: Resume a preserved stack with `cotal up --recreate-membership-store` without losing channel history or leaving the broker running if conversion fails.
+- af34160: The shell installer's dry run now reports the same launcher conflicts as a normal install. It stops if a directory occupies the launcher path, or if the launcher belongs to a different npm installation and a daemon service is recorded.
+- 807e6fd: `cotal doctor auth` rejects invalid `--space` values and points to `cotal space` instead of advising you to restore trust records.
+- 1670fbe: A second start during foreground startup now points to `cotal status` or stopping the original foreground process instead of suggesting a retry against the running stack.
+- cceb29a: Show the completed stop and where to restart when `cotal history` or `cotal send` cannot reach a stopped local space at its saved broker address.
+- cf67c96: Return one JSON refusal with restart guidance when `cotal stop --json` targets a stopped local space.
+- b825bde: Stop connector seeding after the current install when the seed command receives SIGTERM, and exit 143 so callers can tell it was cancelled.
+- 6a6a4e4: Quote arguments in commands printed by `cotal space` and `cotal status`, so you can verify a space whose project path contains spaces.
+- a214ad7: Record an empty replacement when cleanup removes a stopped controller stack's store, and keep cleanup previews non-destructive in the retry instructions.
+- 9a06339: Let `cotal ext seed --repair` replace an unreadable connector selection while keeping the original record for recovery.
+- 92a6ab4: `cotal status --components` shows the actual PID of a suspended local broker in its broker health row.
+- 8fcbc43: Reject invalid restore flags before staging or replacing the preserved store, and report user-auth-only flags on open spaces as usage errors instead of unknown outcomes.
+- fb6c87f: Keep the selected space, broker and applicable manager in the roster commands suggested after agent lookup and unsupported `ps --slots` refusals.
+- 39840df: Setup points to the original project for an already prepared space and reports an unreachable self-hosted broker as a refusal before launch.
+- 59b4842: `cotal space show` finds a running project's space from inside the project after its folder is renamed.
+- 728bde0: Workflow simulations now time out when a scripted event arrives after the wait deadline.
+- 4ebd6da: When `cotal space export` cannot find the named space, it suggests running `cotal space` to list local registrations.
+- e7d4605: Show the selected broker's reachability in the status report and JSON inventory even when its URL has a trailing slash.
+- 1adcf3f: `cotal status --server` no longer suggests resetting a different broker's store when the address you supplied is unreachable.
+- c65336e: `cotal status --all` reports on the sole reachable space when no target is selected, while bare status does not call unchecked registrations running.
+- 2037c77: Allow file-only credential minting from a stopped local static-auth project when `--space` matches, and show restart guidance if provisioning needs the broker.
+- c95b329: `cotal up -f <folder> --json` and `--plain` now say the manifest is a directory and name the manifest file to give, as the text output does, instead of a generic read error that repeated the error code.
+- 4547b70: Report successful writes to your defaults even when an unreadable space record prevents `cotal config` from showing the effective value.
+- fc3d455: Return a usage error for out-of-range workflow timeouts and refuse local resumes of completed or failed runs without replaying them.
+- Updated dependencies [46f5a7a]
+- Updated dependencies [e9d7585]
+- Updated dependencies [2ec9a4d]
+- Updated dependencies [a880a09]
+- Updated dependencies [6f05bd5]
+- Updated dependencies [ee3a15c]
+- Updated dependencies [c3d0a38]
+- Updated dependencies [f346cde]
+- Updated dependencies [6e98cc0]
+- Updated dependencies [cceb29a]
+- Updated dependencies [6a6a4e4]
+- Updated dependencies [9a06339]
+- Updated dependencies [fb6c87f]
+- Updated dependencies [2037c77]
+  - @cotal-ai/workspace@0.172.1
+  - @cotal-ai/core@0.172.1
+
 ## 0.172.0
 
 ### Patch Changes

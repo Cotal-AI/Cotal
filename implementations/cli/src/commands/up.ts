@@ -1484,11 +1484,11 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // The manifest path renders its broker from the manifest, which has no store fields, so the flag
   // would be accepted and never rendered. Refuse it rather than drop it.
   if (maxFileStore !== undefined && values.file)
-    throw new Error("--max-file-store cannot be combined with --file/-f - a manifest launch does not render a store cap; drop --max-file-store, or start the mesh without -f");
+    throw new FlagValueRefusal("--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", "drop --max-file-store, or start the mesh without -f");
   // An open mesh has no operator, no system account, and no $SYS creds, so there is nothing to
   // rotate; the request is a misunderstanding to name, never a silent no-op that reports success.
   if (values["rotate-sys"] && values.open) {
-    throw new Error("--rotate-sys is for auth meshes: an open mesh (--open) has no system account or $SYS credentials to rotate");
+    throw new FlagValueRefusal("--rotate-sys is for auth meshes: an open mesh (--open) has no system account or $SYS credentials to rotate, so nothing was started", "drop --rotate-sys, or drop --open to rotate an auth mesh's system account");
   }
   // THE EFFECTIVE PROJECT ROOT IS PINNED BEFORE THE TRANSPORT IS DECIDED.
   //
@@ -3763,7 +3763,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // nothing: a rotation ask answered with silent success, the exact failure class this change
   // exists to remove. Before the dry-run print and before anything boots.
   if (opts.rotateSys && open)
-    throw new Error("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate");
+    throw new FlagValueRefusal("--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate, and nothing was started", "drop --rotate-sys for this open manifest");
   // Before the dry-run print and before connector preflight or any write, as the refusals above.
   if (!opts.storeDir) refuseUnnamedLastStore(cotalPath("nats"));
   else refuseMissingNamedStore(resolve(opts.storeDir));

@@ -36,7 +36,8 @@ import { strict as assert } from "node:assert";
 import type { CotalMessage, Delivery, MessageMeta } from "@cotal-ai/core";
 import { MeshAgent as BaseMeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { cotalToolSpecs, INBOX_WINDOW_CHARS, type ToolResult } from "../src/tool-specs.js";
+import { cotalToolSpecs, type ToolResult } from "../src/tool-specs.js";
+import { INBOX_WINDOW_CHARS } from "../src/tool-specs-inbox.js";
 
 // Existing window/framing cells model a ready session. No broker is dialled here.
 // The live companion proves degraded/disconnected reachability against owned brokers.

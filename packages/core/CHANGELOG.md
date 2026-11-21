@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.172.1
+
+### Patch Changes
+
+- c3d0a38: Reading the roster of an unstarted open space no longer creates broker resources or makes the space pass verified registration.
+
 ## 0.172.0
 
 ### Minor Changes
