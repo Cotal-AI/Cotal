@@ -7,6 +7,7 @@ import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
@@ -35,7 +36,7 @@ export interface SeatStartLaunch {
 
 /** The agent-start path: admission, grant, launch, readiness and the rollback of a failed start. */
 export class SeatStart {
-  constructor(private readonly deps: SeatLaunchDeps, private readonly launch: SeatStartLaunch) {}
+  constructor(private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">, private readonly launch: SeatStartLaunch) {}
 
   // The Manager members startActive reads, under their Manager names. Each reads through its dep
   // at use, so a field the Manager assigns later is current and a method a test replaces on the
@@ -68,7 +69,6 @@ export class SeatStart {
   private provisionUserAgent(...args: Parameters<Manager["provisionUserAgent"]>): ReturnType<Manager["provisionUserAgent"]> { return this.deps.provisionUserAgent(...args); }
   private readerRemedy(...args: Parameters<Manager["readerRemedy"]>): ReturnType<Manager["readerRemedy"]> { return this.deps.readerRemedy(...args); }
   private get readinessTimeoutMs() { return this.deps.readinessTimeoutMs(); }
-  private refreshUnavailableConnectors(...args: Parameters<Manager["refreshUnavailableConnectors"]>): ReturnType<Manager["refreshUnavailableConnectors"]> { return this.deps.refreshUnavailableConnectors(...args); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private get retirement() { return this.deps.retirement(); }
@@ -169,7 +169,7 @@ export class SeatStart {
     // spawns could overshoot the ceiling or pick the same name.
     let occupancy = this.namesCapacity.occupancy(); // prunes expired cooling stamps; counts each name once
     if (occupancy.used >= MAX_AGENTS) return { ok: false, error: this.namesCapacity.capacityRefusal(occupancy) };
-    const recheck = this.refreshUnavailableConnectors(connector.name, true);
+    const recheck = this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
     if (recheck) {
       await recheck;
       occupancy = this.namesCapacity.occupancy();

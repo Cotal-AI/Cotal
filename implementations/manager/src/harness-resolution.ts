@@ -2,6 +2,7 @@ import { connectorServers, registry, spawnEnvAllow } from "@cotal-ai/core";
 import type { Connector, CotalConfig, LaunchOpts } from "@cotal-ai/core";
 import { connectorInstallHint, manifestExtensionNames, materializeFromManifest, resolveOnPath } from "@cotal-ai/workspace";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 /** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
  *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
@@ -19,7 +20,6 @@ export function resolveHarness(name: string, requires: readonly string[]): { bin
 /** What {@link HarnessResolution} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface HarnessResolutionDeps {
-  connectorStatuses: () => Manager["connectorStatuses"];
   eventPayloadsWithheld: () => Manager["eventPayloadsWithheld"];
   eventsRequired: () => Manager["eventsRequired"];
   expectedConnectorGeneration: () => Manager["expectedConnectorGeneration"];
@@ -33,7 +33,6 @@ export interface HarnessResolutionDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function harnessResolutionDeps(m: Manager): HarnessResolutionDeps {
   return {
-    connectorStatuses: () => m["connectorStatuses"],
     eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
     eventsRequired: () => m["eventsRequired"],
     expectedConnectorGeneration: () => m["expectedConnectorGeneration"],
@@ -46,12 +45,11 @@ export function harnessResolutionDeps(m: Manager): HarnessResolutionDeps {
 
 /** Resolving a connector by name and the host fields, harness binaries and capability and events refusals a launch carries. */
 export class HarnessResolution {
-  constructor(private readonly deps: HarnessResolutionDeps) {}
+  constructor(private readonly deps: HarnessResolutionDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
-  private get connectorStatuses() { return this.deps.connectorStatuses(); }
   private get eventPayloadsWithheld() { return this.deps.eventPayloadsWithheld(); }
   private get eventsRequired() { return this.deps.eventsRequired(); }
   private get expectedConnectorGeneration() { return this.deps.expectedConnectorGeneration(); }
@@ -80,7 +78,7 @@ export class HarnessResolution {
    *  is there. Callers recheck unavailable rows first; available rows retain their resolved files.
    *  A connector registered after boot has no inventory row and is checked on PATH now. */
   launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
-    const row = this.connectorStatuses.find((status) => status.agent === connector.name);
+    const row = this.parts.connectorInventory.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };
     const { reason } = resolveHarness(connector.name, connector.requires ?? []);

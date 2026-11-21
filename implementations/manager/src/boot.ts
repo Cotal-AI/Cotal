@@ -13,6 +13,7 @@ import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from ".
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { RunHosting } from "./run-hosting.js";
 import { TranscriptReceiver } from "./transcript-receive.js";
@@ -30,7 +31,6 @@ export interface ManagerBootDeps {
   attach: () => Manager["attach"];
   auth: () => Manager["auth"];
   setAuth: (value: Manager["auth"]) => void;
-  bootNotes: () => Manager["bootNotes"];
   credRenewTimer: () => Manager["credRenewTimer"];
   setCredRenewTimer: (value: Manager["credRenewTimer"]) => void;
   daemonRenewalLeaseTimer: () => Manager["daemonRenewalLeaseTimer"];
@@ -76,7 +76,6 @@ export interface ManagerBootDeps {
   claimDaemonRenewalOwnership: (...args: Parameters<Manager["claimDaemonRenewalOwnership"]>) => ReturnType<Manager["claimDaemonRenewalOwnership"]>;
   dial: (...args: Parameters<Manager["dial"]>) => ReturnType<Manager["dial"]>;
   executionRecordPath: (...args: Parameters<Manager["executionRecordPath"]>) => ReturnType<Manager["executionRecordPath"]>;
-  inspectConnectorsAtBoot: (...args: Parameters<Manager["inspectConnectorsAtBoot"]>) => ReturnType<Manager["inspectConnectorsAtBoot"]>;
   keepDaemonRenewalLease: (...args: Parameters<Manager["keepDaemonRenewalLease"]>) => ReturnType<Manager["keepDaemonRenewalLease"]>;
   logSeatMeshTransitions: (...args: Parameters<Manager["logSeatMeshTransitions"]>) => ReturnType<Manager["logSeatMeshTransitions"]>;
   reconcileGoalIndex: (...args: Parameters<Manager["reconcileGoalIndex"]>) => ReturnType<Manager["reconcileGoalIndex"]>;
@@ -101,7 +100,6 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     attach: () => m["attach"],
     auth: () => m["auth"],
     setAuth: (value) => { m["auth"] = value; },
-    bootNotes: () => m["bootNotes"],
     credRenewTimer: () => m["credRenewTimer"],
     setCredRenewTimer: (value) => { m["credRenewTimer"] = value; },
     daemonRenewalLeaseTimer: () => m["daemonRenewalLeaseTimer"],
@@ -147,7 +145,6 @@ export function bootDeps(m: Manager): ManagerBootDeps {
     claimDaemonRenewalOwnership: (...args) => m["claimDaemonRenewalOwnership"](...args),
     dial: (...args) => m["dial"](...args),
     executionRecordPath: (...args) => m["executionRecordPath"](...args),
-    inspectConnectorsAtBoot: (...args) => m["inspectConnectorsAtBoot"](...args),
     keepDaemonRenewalLease: (...args) => m["keepDaemonRenewalLease"](...args),
     logSeatMeshTransitions: (...args) => m["logSeatMeshTransitions"](...args),
     reconcileGoalIndex: (...args) => m["reconcileGoalIndex"](...args),
@@ -166,7 +163,7 @@ export function bootDeps(m: Manager): ManagerBootDeps {
 
 /** Starting the manager: admitting its execution state, connecting and registering it, taking its instance lease, and healing a predecessor's frozen registration gate. */
 export class ManagerBoot {
-  constructor(private readonly deps: ManagerBootDeps) {}
+  constructor(private readonly deps: ManagerBootDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -176,7 +173,6 @@ export class ManagerBoot {
   private get attach() { return this.deps.attach(); }
   private get auth() { return this.deps.auth(); }
   private set auth(value: Manager["auth"]) { this.deps.setAuth(value); }
-  private get bootNotes() { return this.deps.bootNotes(); }
   private get credRenewTimer() { return this.deps.credRenewTimer(); }
   private set credRenewTimer(value: Manager["credRenewTimer"]) { this.deps.setCredRenewTimer(value); }
   private get daemonRenewalLeaseTimer() { return this.deps.daemonRenewalLeaseTimer(); }
@@ -222,7 +218,6 @@ export class ManagerBoot {
   private claimDaemonRenewalOwnership(...args: Parameters<Manager["claimDaemonRenewalOwnership"]>): ReturnType<Manager["claimDaemonRenewalOwnership"]> { return this.deps.claimDaemonRenewalOwnership(...args); }
   private dial(...args: Parameters<Manager["dial"]>): ReturnType<Manager["dial"]> { return this.deps.dial(...args); }
   private executionRecordPath(...args: Parameters<Manager["executionRecordPath"]>): ReturnType<Manager["executionRecordPath"]> { return this.deps.executionRecordPath(...args); }
-  private inspectConnectorsAtBoot(...args: Parameters<Manager["inspectConnectorsAtBoot"]>): ReturnType<Manager["inspectConnectorsAtBoot"]> { return this.deps.inspectConnectorsAtBoot(...args); }
   private keepDaemonRenewalLease(...args: Parameters<Manager["keepDaemonRenewalLease"]>): ReturnType<Manager["keepDaemonRenewalLease"]> { return this.deps.keepDaemonRenewalLease(...args); }
   private logSeatMeshTransitions(...args: Parameters<Manager["logSeatMeshTransitions"]>): ReturnType<Manager["logSeatMeshTransitions"]> { return this.deps.logSeatMeshTransitions(...args); }
   private reconcileGoalIndex(...args: Parameters<Manager["reconcileGoalIndex"]>): ReturnType<Manager["reconcileGoalIndex"]> { return this.deps.reconcileGoalIndex(...args); }
@@ -306,7 +301,7 @@ export class ManagerBoot {
   async runStart(): Promise<void> {
     await this.admitExecutionState();
     this.staticLifecycle.start();
-    await this.inspectConnectorsAtBoot();
+    await this.parts.connectorInventory.inspectConnectorsAtBoot();
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns. The signer comes
@@ -629,7 +624,7 @@ export class ManagerBoot {
       });
       await this.transcripts.start();
     }
-    for (const note of this.bootNotes.splice(0)) console.error(note);
+    for (const note of this.parts.connectorInventory.bootNotes.splice(0)) console.error(note);
     // Plane-3 (durable backstop) is NOT the manager's job — the manager only manages agent lifecycle.
     // The server-side delivery daemon hosts the fan-out writer + trusted reader, owns the durable
     // membership registry, and serves the runtime durable join/leave/list ops (on `ctl.delivery`). The
