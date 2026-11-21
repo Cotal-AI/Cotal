@@ -123,16 +123,18 @@ export async function clean(args: ParsedArgs): Promise<void> {
       remedy: `if you ran this from the project you intend to clean, rerun from the same directory, removing only ${flags} and ${meshFlags.length === 1 ? "its value" : "their values"}`,
     });
   }
+  const explicitStore = values["store-dir"];
+  const storeFlag = explicitStore === undefined ? "" : ` --store-dir${explicitStore.startsWith("-") ? "=" : " "}${shellWord(explicitStore)}`;
   if (!values.force && !dryRun) {
     // The command to run keeps every flag that picks what is deleted; without one it deletes another
     // target than the one asked for. The restore verbs act on one attempt, named as given or as a placeholder.
     const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
     const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
-    const flag = (name: "store-dir" | "space" | "server" | "creds"): string => {
+    const flag = (name: "space" | "server" | "creds"): string => {
       const value = values[name];
       return value === undefined ? "" : ` --${name} ${shellWord(value)}`;
     };
-    const picks = target === "store" || target === "all" ? flag("store-dir")
+    const picks = target === "store" || target === "all" ? storeFlag
       : target === "history" ? `${flag("space")}${flag("server")}${flag("creds")}${values.dms ? " --dms" : ""}` : "";
     throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt}${picks} --force${discard}`, remedyIsCommand: true });
   }
@@ -221,7 +223,6 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // the lock included, so it reads the same state without one.
   // From here an interrupt says what the clean left, and releases the lock so the next run does not find it held.
   // The handler is in place before the lock is taken: without one, an interrupt ends the process with the lock held.
-  const storeFlag = values["store-dir"] === undefined ? "" : ` --store-dir ${shellWord(values["store-dir"])}`;
   const cleanCommand = (preview: boolean) => codeSpan(`${displayCmd()} clean ${target}${storeFlag} ${preview ? "--dry-run" : "--force"}`);
   let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
   const progress: string[] = [];
@@ -292,7 +293,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const userAuthRemoved = removed.some((path) => path.endsWith(USER_AUTH_TRUST));
   if (dryRun) {
     for (const path of removed) console.log(`would remove ${path}`);
-    console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${values["store-dir"] ? ` --store-dir ${shellWord(values["store-dir"])}` : ""} --force`)} removes these`));
+    console.log(c.dim(`dry run - nothing was removed; ${codeSpan(`cotal clean ${target}${storeFlag} --force`)} removes these`));
     if (userAuthRemoved) console.error(c.yellow("! this clean would remove the IdP trust and the actor ledger of this user-auth space, so every actor grant would be lost. A later up would need `cotal up --user-auth --idp <auth base URL>`, and each actor `cotal actor grant` again"));
     if (trustRemoved) console.error(c.yellow("! full backups taken before this clean would no longer restore into this root: each is bound to the space trust it removes. Only their registry would restore, with backup restore <dir> --only registry, and chat and DM history would start empty"));
     return;
@@ -672,6 +673,13 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
   };
   checkRemoval(target);
   refuseForeignStoreEntries(target, foreignStoreEntries(target));
+  const parent = dirname(target);
+  try { accessSync(parent, constants.W_OK | constants.X_OK); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!["EACCES", "EPERM", "EROFS"].includes(code ?? "")) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the store parent ${parent} is not writable and searchable by this account (${code}), so the store cannot be moved aside; nothing was moved or removed`, { target: { storeDir: target, path: parent }, remedy: `make the parent writable with chmod u+w ${shellWord(parent)}, then run this command again` });
+  }
   return { path: target, identity: { dev: stat.dev, ino: stat.ino } };
 }
 
