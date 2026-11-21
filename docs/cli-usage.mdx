@@ -240,8 +240,15 @@ one JSON document on stdout. Most commands have one, among them `cotal status`, 
 `cotal version --json` writes:
 
 ```json
-{"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
+{"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","update":"update status unknown","reconciliation":{"kind":"none"},"extensions":[]},"warnings":[]}
 ```
+
+This example shows a fresh installation before setup. `result.update` is a text summary of
+the local update state, such as `update status unknown` when no update check has been recorded.
+The command does not check the registry. `result.reconciliation` describes whether local update
+records or extension versions need attention. It is `{"kind":"none"}` when there is nothing to
+reconcile. Other kinds include an `instruction` with the next step. `result.extensions` lists
+installed extensions by `package` and `version`.
 
 If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
 version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a

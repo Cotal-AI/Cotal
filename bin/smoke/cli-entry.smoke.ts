@@ -35,6 +35,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import { spaceSegment } from "@cotal-ai/workspace";
 import "@cotal-ai/cli";
@@ -356,6 +357,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     shown(json),
   );
   check("version --json reports the version the text prints", `cotal-ai ${env?.result?.version}` === text.stdout.split("\n")[0], { json: env?.result, text: text.stdout });
+  const usage = (await readDocument(join(REPO, "docs", "cli-usage.mdx"))).markdown;
+  const example = /^`cotal version --json` writes:\n\n```json\n([\s\S]+?)\n```$/m.exec(usage)?.[1];
+  const documented = example === undefined ? undefined : JSON.parse(example);
+  const actual = env?.result && { ...env, result: { ...env.result, version: "<version>" } };
+  check("the documented version --json example matches a fresh home", actual !== undefined && isDeepStrictEqual(documented, actual), { documented, actual });
   check("version -j, --version --json and -V -j print the same envelope", same(json, cotal(["version", "-j"])) && same(json, cotal(["--version", "--json"])) && same(json, cotal(["-V", "-j"])));
   const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
   check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
