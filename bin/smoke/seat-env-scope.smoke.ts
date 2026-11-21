@@ -86,7 +86,7 @@ const seatCreds = await mintCreds(await createSpaceAuth("scope"), seatIdentity, 
 });
 writeFileSync(credsPath, seatCreds);
 
-const opts: LaunchOpts = {
+const baseOpts: LaunchOpts = {
   space: "scope",
   name: "seat-1",
   role: "worker",
@@ -130,7 +130,7 @@ console.log(`• broker: ${SERVERS} (suite constant; this suite opens no connect
 // session runs in the seat process, so it is the tightest case). The seat spawns a child with no env
 // argument at all, which is exactly what a coding agent's shell tool does, and that child reports
 // what the operating system gave it.
-const piSpec = registry.resolve<Connector>("connector", "pi").buildLaunch(opts);
+const piSpec = registry.resolve<Connector>("connector", "pi").buildLaunch(baseOpts);
 const observer = `const found = Object.keys(process.env).filter((k) => ${JSON.stringify([...FORBIDDEN])}.includes(k)); console.log("GRANDCHILD " + JSON.stringify(found));`;
 const seat = `require("node:child_process").execFileSync(process.execPath, ["-e", ${JSON.stringify(observer)}], { stdio: "inherit" });`;
 const run = spawnSync(process.execPath, ["-e", seat], { env: piSpec.env, encoding: "utf8" });
@@ -148,6 +148,7 @@ console.log("✓ A2: a real grandchild of a real seat process inherited none of 
 for (const name of CONNECTORS) {
   assert.ok(registry.has("connector", name), `connector "${name}" is registered`);
   const connector = registry.resolve<Connector>("connector", name);
+  const opts = name === "hermes" ? { ...baseOpts, model: "test-model" } : baseOpts;
   const spec = connector.buildLaunch(opts);
   const env = spec.env ?? {};
 

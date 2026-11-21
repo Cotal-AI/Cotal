@@ -18,7 +18,8 @@ import { discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type L
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { ADOPT_HOME_ENV, LaunchRefused } from "../src/profile-options.js";
 import { briefing } from "@cotal-ai/connector-core";
 
 /**
@@ -51,7 +52,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 179;
+const EXPECTED_CELLS = 182;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -96,6 +97,7 @@ process.env.SOME_UNRELATED_SECRET = "smoke-unrelated";
 process.env.COTAL_CONTROL_SOCKET = "parent-control.sock";
 process.env.COTAL_LAUNCH_MATERIAL = "parent-material.json";
 process.env.COTAL_HERMES_SEAT_HOME = "parent-profile";
+delete process.env[ADOPT_HOME_ENV];
 const owned: string[] = [];
 process.once("exit", () => discardLaunchArtifacts(owned));
 function buildLaunch(opts: LaunchOpts) {
@@ -105,7 +107,7 @@ function buildLaunch(opts: LaunchOpts) {
 }
 
 // ── Default allow-list (no operator extras declared) ─────────────────────────────────────────────
-const spec = buildLaunch({ space: "smoke", name: "hermes-1" });
+const spec = buildLaunch({ space: "smoke", name: "hermes-1", model: "test-model" });
 const env = spec.env!;
 assert.notEqual(env.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "the child receives its own socket");
 assert.notEqual(env.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "the child receives its own carrier");
@@ -124,7 +126,7 @@ for (const k of HOST_MARKERS)
   assert.ok(!(k in env), `${k} leaked from this process into the child: a host-session marker must be withheld`);
 
 for (const k of PER_SESSION)
-  assert.ok(!(k in env), `${k} leaked from this process into the child: a per-session name must be reset, not inherited`);
+  assert.equal(env[k], k === "COTAL_MODEL" ? "test-model" : undefined, `${k} comes from the launch, never the parent`);
 
 assert.equal(env.COTAL_SPACE, "smoke", "the connector supplies this child's space");
 assert.equal(env.COTAL_NAME, "hermes-1", "the connector supplies this child's name");
@@ -134,11 +136,11 @@ for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
 
 // A floor request DOES forward, distinct from the per-session ambient reset asserted above.
-const withFloor = buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
+const withFloor = buildLaunch({ space: "smoke", name: "hermes-1", model: "test-model", backfillFloor: 42 }).env ?? {};
 assert.equal(withFloor.COTAL_BACKFILL_FLOOR, "42", "a requested backfill floor is forwarded");
 
 // ── Allow-list extras (the operator declared `spawn.env`) ─────────────────────────────────────────
-const confined = buildLaunch({ space: "smoke", name: "hermes-2", envAllow: ["NOUS_API_KEY"] }).env ?? {};
+const confined = buildLaunch({ space: "smoke", name: "hermes-2", model: "test-model", envAllow: ["NOUS_API_KEY"] }).env ?? {};
 
 assert.notEqual(confined.COTAL_LAUNCH_MATERIAL, process.env.COTAL_LAUNCH_MATERIAL, "containment does not reuse the parent carrier");
 assert.equal(confined.NOUS_API_KEY, "smoke-NOUS_API_KEY", "a declared name is forwarded under containment");
@@ -146,18 +148,18 @@ assert.ok(!("GH_TOKEN" in confined), "an undeclared name is withheld under conta
 assert.ok(!("SOME_UNRELATED_SECRET" in confined), "containment means the OS allow-list plus the declared names, nothing else");
 assert.ok(confined.PATH !== undefined, "the OS allow-list still carries what the child needs to run");
 for (const k of PER_SESSION)
-  assert.ok(!(k in confined), `${k} must be absent under containment too`);
+  assert.equal(confined[k], k === "COTAL_MODEL" ? "test-model" : undefined, `${k} comes from the launch under containment too`);
 for (const k of HOST_MARKERS)
   assert.ok(!(k in confined), `${k} must stay withheld when spawn.env names something else`);
 
 // Opt-in: a persona / operator that names a host marker gets it. The default path never does.
-const opted = buildLaunch({ space: "smoke", name: "hermes-4", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
+const opted = buildLaunch({ space: "smoke", name: "hermes-4", model: "test-model", envAllow: ["CLAUDE_CODE_CHILD_SESSION"] }).env ?? {};
 assert.equal(opted.CLAUDE_CODE_CHILD_SESSION, "smoke-CLAUDE_CODE_CHILD_SESSION", "a host marker named on spawn.env is the explicit opt-in");
 assert.ok(!("CLAUDECODE" in opted), "an unnamed host marker stays withheld even when a sibling is opted in");
 
 // An empty array is a POLICY (the OS allow-list alone), not "unset". If this were read as unset the
 // child would inherit everything, which is the one way the opt-in could silently fail open.
-const bare = buildLaunch({ space: "smoke", name: "hermes-3", envAllow: [] }).env ?? {};
+const bare = buildLaunch({ space: "smoke", name: "hermes-3", model: "test-model", envAllow: [] }).env ?? {};
 assert.notEqual(bare.COTAL_CONTROL_SOCKET, process.env.COTAL_CONTROL_SOCKET, "an empty allow-list does not reuse the parent socket");
 assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not drop connector-declared provider keys");
 assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
@@ -172,6 +174,7 @@ assert.throws(
 const bootResolved = buildLaunch({
   space: "smoke",
   name: "hermes-boot-resolved",
+  model: "test-model",
   resolvedBinaries: { uv: "/manager/boot/uv" },
 }).env ?? {};
 assert.equal(bootResolved.COTAL_HERMES_UV_BIN, "/manager/boot/uv", "the exact manager-boot uv path reaches the launcher");
@@ -345,7 +348,7 @@ const mgdConfig = {
 const mgdNone = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-none-"));
 assert.throws(
   () => setupProfile(mgdNone, { model: undefined, config: mgdConfig }),
-  /no model was resolved/,
+  /managed Hermes profile needs a model/,
   "a managed profile with no resolved model refuses the launch",
 );
 assert.throws(() => setupProfile(mgdNone, { model: undefined, config: mgdConfig }), new RegExp(ADOPT_HOME_ENV), "and names the variable that runs the gateway on the operator's own profile instead");
@@ -371,10 +374,15 @@ rmSync(mgdSet, { recursive: true, force: true });
 // The opt-in has to survive the launch env or the launcher never sees it: every other COTAL_* name
 // is deliberately reset per session, and this one would be stripped with them.
 process.env.COTAL_HERMES_ADOPT_HOME = "/srv/op/.hermes";
-const adoptEnv = buildLaunch({ space: "smoke", name: "hermes-adopt" }).env ?? {};
+const adoptOpts = { space: "smoke", name: "hermes-adopt" };
+const adoptEnv = buildLaunch(adoptOpts).env ?? {};
 assert.equal(adoptEnv.COTAL_HERMES_ADOPT_HOME, "/srv/op/.hermes", "the adopt-home opt-in reaches the launcher");
+assert.equal(adoptEnv.HERMES_MODEL, undefined, "the adopted profile can supply its own model");
+assert.deepEqual(hermesConnector.buildLaunch({ ...adoptOpts, validateOnly: true }), { command: "", args: [] });
+process.env[ADOPT_HOME_ENV] = "   ";
+assert.throws(() => hermesConnector.buildLaunch({ ...adoptOpts, validateOnly: true }), LaunchRefused, "a blank adopt-home is still managed and needs a model");
 delete process.env.COTAL_HERMES_ADOPT_HOME;
-const plainEnv = buildLaunch({ space: "smoke", name: "hermes-plain" }).env ?? {};
+const plainEnv = buildLaunch({ space: "smoke", name: "hermes-plain", model: "test-model" }).env ?? {};
 assert.ok(!("COTAL_HERMES_ADOPT_HOME" in plainEnv), "without the opt-in the child gets the managed default");
 
 rmSync(opAdopt, { recursive: true, force: true });

@@ -21,8 +21,10 @@ export async function checkSpawnPreflight(check: (name: string, condition: boole
   for (const name of ["claude", "pi", "codex", "opencode"])
     writeFileSync(join(bins, name), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${piCalls}'\nexit 0\n`, { mode: 0o700 });
   const badVersion = join(home, "bad-version");
+  const uvCalls = join(home, "uv-calls");
   writeFileSync(join(bins, "uv"), `#!${process.execPath}
 const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(uvCalls)}, "uv\\n");
 if (process.argv.includes("python")) {
   console.log(fs.existsSync(${JSON.stringify(badVersion)}) ? "9.0.0" : "0.20.1");
   process.exit(0);
@@ -66,15 +68,22 @@ setInterval(() => {}, 60_000);
       ["claude", ["--resume=-foo"], /cannot resume/], ["codex", ["--resume=abc"], /resum/], ["opencode", ["--resume=abc"], /resum/],
       ["pi", ["--resume=--help"], /cannot resume/], ["pi", ["--resume=-v"], /cannot resume/], ["pi", ["--prompt=-bad"], /initial prompt cannot start/],
       ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "high"], /model variants/],
+      ["hermes", [], /managed Hermes profile needs a model.*--model.*model:.*COTAL_HERMES_ADOPT_HOME/],
     ];
     for (const [harness, flags, diagnostic] of invalid) {
       for (const preview of [true, false]) {
         const result = cli("spawn", "-H", harness, ...flags, ...(preview ? ["--dry-run", "--json"] : []));
-        check(`${harness} ${flags.join(" ")} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
+        check(`${harness} ${flags.join(" ") || "without a model"} ${preview ? "preview" : "foreground"} refuses before credentials or a child`,
           result.status === 1 && diagnostic.test(result.out) && (preview ? /"code":\s*"USAGE_INVALID"/.test(result.stdout) : /^✗ /m.test(result.stderr))
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
+    const hermesPersona = join(root, "hermes.md");
+    writeFileSync(hermesPersona, "---\nname: hermes_test\nmodel: test-model\n---\n");
+    const hermesPreview = cli("spawn", "-H", "hermes", "--file", hermesPersona, "--dry-run");
+    check("Hermes preview accepts a persona model and neither refusal nor preview runs uv",
+      hermesPreview.status === 0 && /Model:\s+test-model/.test(hermesPreview.out)
+      && /Connector arguments:\s+checked/.test(hermesPreview.out) && !existsSync(uvCalls), hermesPreview.out);
     check("invalid pi resumes never reach its argv", !existsSync(piCalls));
     const preview = cli("spawn", "-H", "pi", "--resume", "session-valid", "--dry-run");
     check("valid direct preview checks connector arguments without creating launch artifacts or session state", preview.status === 0

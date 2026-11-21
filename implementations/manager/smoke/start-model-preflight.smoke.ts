@@ -64,6 +64,7 @@ function check(label: string, cond: boolean, extra?: unknown): void {
 // whose buildLaunch is exercised per-platform.
 const onWin = process.platform === "win32";
 const connectors = onWin ? [claudeConnector, opencodeConnector] : [claudeConnector, opencodeConnector, hermesConnector];
+delete process.env.COTAL_HERMES_ADOPT_HOME;
 
 // A workspace with no cotal *config*. A manager spawn now REQUIRES a discoverable persona (no
 // silent default-ACL fallback), so seed a minimal `.cotal/agents/<name>.md` per spawned name —
@@ -185,6 +186,11 @@ registry.register(recNoResumeCon);
   const claudeModel = (s: LaunchSpec) => { const i = s.args.indexOf("--model"); return i >= 0 ? s.args[i + 1] : undefined; };
   const ocModel = (s: LaunchSpec) => JSON.parse(s.env!.OPENCODE_CONFIG_CONTENT).model as string | undefined;
   const hermesModel = (s: LaunchSpec) => s.env!.HERMES_MODEL;
+  const hermesMissingModel = (opts: LaunchOpts): boolean => {
+    try { hermesConnector.buildLaunch(opts); }
+    catch (error) { return error instanceof Error && /managed Hermes profile needs a model/.test(error.message); }
+    return false;
+  };
 
   check("claude.requires == [claude]", JSON.stringify(claudeConnector.requires) === '["claude"]');
   check("opencode.requires == [opencode]", JSON.stringify(opencodeConnector.requires) === '["opencode"]');
@@ -211,24 +217,25 @@ registry.register(recNoResumeCon);
   // no flag → the launcher resolves the agent file's model; a connector never re-reads it
   check("claude: agent file alone → no --model", claudeModel(claudeConnector.buildLaunch({ ...base, configPath: af })) === undefined);
   check("opencode: agent file alone → no config.model", ocModel(opencodeConnector.buildLaunch({ ...base, configPath: af })) === undefined);
-  if (!onWin) check("hermes: agent file alone → no HERMES_MODEL", hermesModel(hermesConnector.buildLaunch({ ...base, configPath: af })) === undefined);
+  if (!onWin) check("hermes: agent file alone cannot supply an unresolved model", hermesMissingModel({ ...base, configPath: af }));
 
   // nothing set → no model applied
   check("claude: nothing → no --model", claudeModel(claudeConnector.buildLaunch({ ...base })) === undefined);
   check("opencode: nothing → no config.model", ocModel(opencodeConnector.buildLaunch({ ...base })) === undefined);
-  if (!onWin) check("hermes: nothing → no HERMES_MODEL", hermesModel(hermesConnector.buildLaunch({ ...base })) === undefined);
+  if (!onWin) check("hermes: no model is refused", hermesMissingModel(base));
 
   // 4 — ACL ENV emission: each connector forwards the resolved policy so the spawned session's
   // runtime read/post set matches its minted creds. Wildcard allowSubscribe (team.>) must survive.
   const acl = { subscribe: ["team"], allowSubscribe: ["team", "team.>"], allowPublish: ["team"] };
   for (const con of connectors) {
-    const env = con.buildLaunch({ ...base, ...acl }).env!;
+    const opts = con === hermesConnector ? { ...base, model: "test-model" } : base;
+    const env = con.buildLaunch({ ...opts, ...acl }).env!;
     check(`${con.name}: COTAL_SUBSCRIBE forwarded`, env.COTAL_SUBSCRIBE === "team", env.COTAL_SUBSCRIBE);
     check(`${con.name}: COTAL_ALLOW_SUBSCRIBE forwarded (wildcard kept)`, env.COTAL_ALLOW_SUBSCRIBE === "team,team.>", env.COTAL_ALLOW_SUBSCRIBE);
     check(`${con.name}: COTAL_ALLOW_PUBLISH forwarded`, env.COTAL_ALLOW_PUBLISH === "team", env.COTAL_ALLOW_PUBLISH);
     // No policy → no env (persona-spawn / no-channel path unchanged: connector reads the file or
     // falls back to the general baseline — never silently overridden to empty).
-    check(`${con.name}: no policy → COTAL_SUBSCRIBE absent`, con.buildLaunch({ ...base }).env!.COTAL_SUBSCRIBE === undefined);
+    check(`${con.name}: no policy → COTAL_SUBSCRIBE absent`, con.buildLaunch(opts).env!.COTAL_SUBSCRIBE === undefined);
   }
 }
 
@@ -302,7 +309,7 @@ registry.register(recNoResumeCon);
   if (!onWin) {
     let spec: LaunchSpec | undefined;
     let err: unknown;
-    try { spec = hermesConnector.buildLaunch({ ...base, resume: "sess-1" }); } catch (e) { err = e; }
+    try { spec = hermesConnector.buildLaunch({ ...base, model: "test-model", resume: "sess-1" }); } catch (e) { err = e; }
     check("hermes: buildLaunch({resume}) builds the fork launch", spec?.env?.COTAL_HERMES_RESUME === "sess-1", err ?? spec?.env?.COTAL_HERMES_RESUME);
     check("hermes: fork record path rides the spec and the env", !!spec?.resumeRecordPath && spec.env?.COTAL_HERMES_RESUME_RECORD === spec.resumeRecordPath, spec?.resumeRecordPath);
   }
