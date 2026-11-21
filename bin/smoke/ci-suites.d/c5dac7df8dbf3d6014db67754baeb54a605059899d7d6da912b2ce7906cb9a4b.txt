@@ -1,0 +1,2 @@
+# Unknown saved-reference spaces are refused with recovery guidance. Prepared spaces still work offline.
+smoke:endpoint-reference-space

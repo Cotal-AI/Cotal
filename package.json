@@ -982,6 +982,7 @@
     "smoke:telemetry": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/telemetry.smoke.ts",
     "smoke:usage-format": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/usage-format.smoke.ts",
     "smoke:space-prepared-delete": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-prepared-delete.smoke.ts",
+    "smoke:endpoint-reference-space": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/endpoint-reference-space.smoke.ts",
     "smoke:service-target-hint": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/service-target-hint.smoke.ts",
     "smoke:status-forgotten-space": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/status-forgotten-space.smoke.ts",
     "smoke:target-recorded-stack": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/target-recorded-stack.smoke.ts",
