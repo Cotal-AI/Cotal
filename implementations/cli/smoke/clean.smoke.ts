@@ -88,8 +88,30 @@ try {
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
   writeFileSync(join(guarded, ".cotal", "nats.pid"), String(child.pid));
   check("a live recorded pid blocks cleanup", /nats-server, pid \d+/.test(liveMeshProcess(guarded) ?? ""), liveMeshProcess(guarded));
-  child.kill("SIGKILL");
-  await new Promise((r) => child.once("exit", r));
+  const guardedCwd = process.cwd(), guardedExit = process.exitCode, guardedError = console.error;
+  const guardedStore = join(guarded, "private store", "jetstream", "stream.dat");
+  mkdirSync(join(guarded, "private store", "jetstream"), { recursive: true });
+  writeFileSync(guardedStore, "owned fixture");
+  try {
+    process.chdir(guarded);
+    for (const target of ["store", "all"]) {
+      const messages: string[] = [];
+      console.error = (...args: unknown[]) => { messages.push(args.join(" ")); };
+      process.exitCode = 0;
+      await clean({ positionals: [target], values: { "dry-run": true, "store-dir": "./private store" }, raw: [] });
+      const refusal = messages.join(" ");
+      check(`${target}: live cleanup retries the same preview and quotes its store`, process.exitCode === 1 &&
+        refusal.includes("the mesh is still running") &&
+        refusal.includes(` clean ${target} --dry-run --store-dir './private store'\``) &&
+        !refusal.includes("--force") && existsSync(guardedStore), refusal);
+    }
+  } finally {
+    console.error = guardedError;
+    process.exitCode = guardedExit;
+    process.chdir(guardedCwd);
+    child.kill("SIGKILL");
+    await new Promise((r) => child.once("exit", r));
+  }
   check("a STALE pidfile (dead pid) does not block", liveMeshProcess(guarded) === undefined);
   // A corrupt/empty pidfile parses to 0 - POSIX kill(0, 0) probes our own process group, which
   // must NOT read as a phantom live mesh (it would wedge cleanup forever).

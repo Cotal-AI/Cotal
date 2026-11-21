@@ -732,6 +732,8 @@ from the working directory. When local cleanup refuses these flags, it reports `
 (exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
 retry from the same working directory and remove only the named flags and their values. A relative
 `--store-dir` is resolved from the working directory, which can be a subdirectory of the project.
+If the local mesh is still running, `clean store` and `clean all` tell you how to stop it and retry
+with the same cleanup mode and any explicit `--store-dir`. A refused preview recommends another preview.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). A stream that is not on the broker is already clear: the command purges the streams

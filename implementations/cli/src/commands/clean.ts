@@ -48,6 +48,7 @@ import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
+import { canPrompt } from "./meshes-wizard.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
@@ -233,7 +234,10 @@ export async function clean(args: ParsedArgs): Promise<void> {
     }
     const running = liveMeshProcess(root, undefined, true);
     if (running) {
-      stderrLine("✗ ", `the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``, c.red);
+      const stop = `cotal down${canPrompt() ? "" : " --yes"}`;
+      const store = values["store-dir"];
+      const retry = `cotal clean ${target}${dryRun ? " --dry-run" : " --force"}${store === undefined ? "" : ` --store-dir ${shellWord(store)}`}`;
+      stderrLine("✗ ", `the mesh is still running (${running}) - stop it first: ${codeSpan(stop)}, then ${codeSpan(retry)}`, c.red);
       process.exitCode = 1;
       return;
     }
