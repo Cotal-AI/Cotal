@@ -365,7 +365,7 @@ export const upFlags: FlagSpec[] = [
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
   { name: "max-payload", type: "string", value: "<bytes>", description: `broker-wide message size limit in bytes (default: nats-server's ${NATS_DEFAULT_MAX_PAYLOAD}). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next \`up\`` },
   { name: "account-resolver", type: "string", value: "<memory|full>", description: "how the broker resolves space accounts: memory (default) knows only the accounts its configuration lists, so adding one means a reload; full also keeps pushed account claims in .cotal/account-jwts, so a host can add and retire accounts on the running broker without a reload. Fixed at broker start and recorded for the next `up`" },
-  { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
+  { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json); not used with -f" },
   { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
   { name: "tls-key", type: "string", value: "<file>", description: "the private key for --tls-cert" },
   { name: "restore", type: "string", value: "<dir>", description: "restore an offline backup before exposing the normal listener" },
@@ -897,9 +897,9 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     checkNewUpSpace(args.values.space, root ?? fresh);
-    // The broker reads an explicit channels file only once it is being prepared, so a file it would
-    // refuse is named here, before the stack journal or anything else is written.
-    if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
+    // Validate a seed before writing stack records only on the route that uses it.
+    if (typeof args.values.channels === "string" && args.values.file) recordOperationWarning({ code: "MANIFEST_CHANNEL_SEED_IGNORED", target: null, message: "--channels is not used with -f. Set channels and defaults in the manifest." }, { echo: args.values.json !== true });
+    else if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
     const folderNamed = folderNamedSpace(args.values);
     if (folderNamed) args = { ...args, values: { ...args.values, space: folderNamed, __folderNamed: true } };
     // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
