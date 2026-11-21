@@ -43,8 +43,8 @@
  * legacy route, each with its reason, its remedy and exit 2, and the registration is kept. An `up` in
  * a folder other local accounts can write refuses before it writes anything, naming the folder and its
  * parent with one remedy.
- * Once a started stack is stopped, `down --with-agents` still refuses, and its dry run shows the no-op
- * and warns with that refusal.
+ * A running broker-only stack previews the same manager requirement that `down --with-agents`
+ * refuses on. After stopping that stack, which never ran a manager, retirement is a no-op.
  *
  * Needs `nats-server` on PATH.
  *
@@ -1430,6 +1430,20 @@ if (process.platform === "linux") {
   const unconfirmed = await run(["down"], {}, fresh);
   check("a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
     unconfirmed.status === 1 && /requires --yes/.test(unconfirmed.stderr) && /cotal down --yes/.test(unconfirmed.stderr) && !/Usage|Options/.test(unconfirmed.stderr) && findMesh("demo")?.root === fresh, shown(unconfirmed));
+  const beforeAgentStop = readFileSync(stackJournalPath(fresh), "utf8");
+  assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
+  const liveReapPreview = await json(["down", "--with-agents", "--dry-run"], fresh);
+  assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes", "--json"], { cwd: fresh, env: runEnv });
+  const liveReap = await json(["down", "--with-agents", "--yes"], fresh);
+  const liveRefusal = liveReap.env?.error;
+  const liveStopPlan = liveReapPreview.env?.result;
+  check("retiring agents on a running broker-only stack refuses without writing or stopping a member",
+    refused(liveReap, 2, "LIFECYCLE_BLOCKED") && liveRefusal?.message.includes("started without a manager") && liveRefusal.remedy?.includes("`cotal down --yes`") && readFileSync(stackJournalPath(fresh), "utf8") === beforeAgentStop, shown(liveReap));
+  check("the broker-only retirement preview shows the same refusal and alternative without signalling or querying manager impact",
+    liveReapPreview.status === 0 && liveReapPreview.env?.completeness === "partial" && liveStopPlan?.blockedBy?.code === liveRefusal?.code
+      && liveStopPlan?.blockedBy?.message === liveRefusal?.message && liveStopPlan?.blockedBy?.remedy === liveRefusal?.remedy
+      && liveStopPlan?.signalled === false && liveStopPlan?.nativeImpactChecked === false && liveStopPlan?.members?.some((member: { role: string; process: string }) => member.role === "broker" && member.process === "running")
+      && liveReapPreview.env.warnings?.some((warning: { code: string; message: string }) => warning.code === liveRefusal?.code && warning.message === `the real stop would refuse: ${liveRefusal?.message}; ${liveRefusal?.remedy}`), shown(liveReapPreview));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
@@ -1538,16 +1552,15 @@ if (process.platform === "linux") {
   const stoppedPreview = await json(["down", "--dry-run"], fresh);
   check("--dry-run of the stopped stack shows the same no-op",
     stoppedPreview.status === 0 && stoppedPreview.env?.outcome === "no-op" && stoppedPreview.env.result?.kind === "stack-not-running", shown(stoppedPreview));
-  // The down that stopped it did not take --with-agents, so a real --with-agents still refuses, and
-  // its preview shows the no-op and warns with that refusal.
+  // The down that stopped it did not take --with-agents, but no manager ever ran in this stack.
   assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
   const reapPreview = await json(["down", "--with-agents", "--dry-run"], fresh);
   assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes", "--json"], { cwd: fresh, env: runEnv });
   const reap = await json(["down", "--with-agents", "--yes"], fresh);
-  check("down --with-agents --yes of the stopped stack refuses LIFECYCLE_BLOCKED, exit 2", refused(reap, 2, "LIFECYCLE_BLOCKED"), shown(reap));
-  check("its dry run shows the same no-op and warns with that refusal",
-    reapPreview.status === 0 && reapPreview.env?.outcome === "no-op" && reapPreview.env.result?.kind === "stack-not-running" && reapPreview.env.warnings?.length === 1
-      && reapPreview.env.warnings[0].code === "LIFECYCLE_BLOCKED" && reapPreview.env.warnings[0].message === `the real stop would refuse: ${reap.env?.error?.message}; ${reap.env?.error?.remedy}`, shown(reapPreview));
+  check("down --with-agents --yes of a stopped stack that never ran a manager is a no-op",
+    reap.status === 0 && reap.env?.outcome === "no-op" && reap.env.result?.kind === "stack-not-running", shown(reap));
+  check("its dry run shows the same no-op without a manager warning",
+    reapPreview.status === 0 && reapPreview.env?.outcome === "no-op" && reapPreview.env.result?.kind === "stack-not-running" && reapPreview.env.warnings?.length === 0, shown(reapPreview));
   assertSmokeSandboxDown(sandbox, ["down", "--plain"], { cwd: fresh, env: runEnv });
   const plainAgain = await run(["down", "--plain"], {}, fresh);
   check("--plain of the stopped stack shows the same no-op", plainAgain.status === 0 && /is not running/.test(plainAgain.stdout), shown(plainAgain));
