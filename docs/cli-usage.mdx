@@ -80,7 +80,9 @@ in a folder that holds another space, its first step is that folder's own `cotal
 starts this folder's space, and `cotal spawn` follows. A stopped stack's recorded file-store cap does
 not change that restart command. Membership and artifact stores reserve no capacity at creation, so
 there is no per-space `--max-file-store` floor. With spaces on the machine but none selected
-or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
+or in this folder, it names `cotal use <name>` and `cotal space` instead. When the entry screen names a
+space, its Start here section shows `cotal space` to list spaces and `cotal use <name>` to switch.
+Every command generates its own help, usage, and shell completion from its declared
 flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
 command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
 itself do (exit 1), rather than print the command's help. A subcommand's help gives its whole
