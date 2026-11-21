@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { boundedValue, oneLine } from "@cotal-ai/core";
+import { boundedValue, oneLine, type PresenceCondition } from "@cotal-ai/core";
 import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
 import { fmtChannel, fmtFrom, formatInjection } from "@cotal-ai/connector-core";
 import { InboxTurn } from "./inbox-turn.js";
@@ -268,6 +268,17 @@ export class PiDriver {
         lastAssistant?.stopReason === "toolUse" ||
         (lastAssistant?.stopReason === "length" && (lastAssistant.usage?.output ?? 0) > 0));
 
+    // Pi's own error names the cause, such as a missing model provider. It is relayed as the
+    // presence condition, the field observers read for a failed turn, and also carried in the held
+    // reason below. `failed` is the only code pi's signal supports: its stop reason says the turn
+    // failed, and its error is free text this connector does not classify.
+    const error =
+      typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
+    const excerpt = error ? oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT)) : "";
+    if (!aborted && lastAssistant?.stopReason === "error") {
+      this.enqueueCondition({ code: "failed", source: "error", ...(excerpt ? { message: excerpt } : {}), since: Date.now() });
+    }
+
     if (!terminal) {
       this.terminalEvidenceBatchIds.clear();
       if (this.batches.length === 0) {
@@ -282,14 +293,8 @@ export class PiDriver {
         this.hold("Pi turn was aborted; Cotal delivery is retained until a proven clean continuation completes");
         return;
       }
-      // Pi's own error names the cause, such as a missing model provider, so the held reason carries
-      // it: without it the presence line said only "ended with error" and pointed at a retry that
-      // could not help.
-      const error =
-        typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
       const reasonLabel =
-        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` +
-        (error ? ` (${oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT))})` : "");
+        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` + (excerpt ? ` (${excerpt})` : "");
       if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {
         this.continuationAttempts++;
         this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);
@@ -509,6 +514,14 @@ export class PiDriver {
   private enqueuePresence(status: "idle" | "working" | "waiting", activity?: string): void {
     this.presence = this.presence
       .then(() => this.mesh.setStatus(status, activity))
+      .catch(() => {});
+  }
+
+  /** Ordered behind every status write, so a later turn's `working` (which clears it) cannot land
+   *  before it. */
+  private enqueueCondition(condition: PresenceCondition): void {
+    this.presence = this.presence
+      .then(() => this.mesh.setCondition(condition))
       .catch(() => {});
   }
 
