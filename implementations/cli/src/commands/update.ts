@@ -1,12 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import { lookup } from "node:dns/promises";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
+  CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec, oneLine,
   beginGlobalUpdateChild,
   processGroupMembers,
@@ -53,6 +53,7 @@ import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
+import { collectUpdateCaches } from "./update-caches.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
@@ -334,7 +335,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     // The installed command owns any remaining activation and its exit result.
     rt.generationWaited = true;
   }
-  if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectArchiveCaches(dirname(scratch));
+  if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectUpdateCaches(dirname(scratch));
 }
 
 async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<string | undefined> {
@@ -1382,62 +1383,6 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
   }
 }
 
-/** Only caches with recorded custody can be reclaimed. A worker cannot open its cache before its
- * process group is recorded, and the owner cannot start new workers after it exits. */
-function collectArchiveCaches(parent: string): void {
-  if (process.platform !== "linux" && process.platform !== "darwin") return;
-  try { parent = realpathSync(parent); }
-  catch { return; }
-  const uid = process.getuid!();
-  const privateDirectory = (path: string) => {
-    const info = lstatSync(path);
-    return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
-  };
-  const deadOwner = (cache: string): boolean => {
-    const file = join(cache, ".owner");
-    const info = lstatSync(file);
-    if (!info.isFile() || info.uid !== uid || info.size > 256 || (info.mode & 0o077) !== 0) return false;
-    const owner = /^([1-9]\d*)\n([^\r\n]+)\n$/.exec(readFileSync(file, "utf8"));
-    const pid = Number(owner?.[1]);
-    return !!owner && Number.isSafeInteger(pid) && pid > 1 && recoveryProcessStartToken(pid) !== owner[2];
-  };
-  const absentGroup = (pid: number): boolean => {
-    if (!Number.isSafeInteger(pid) || pid < 2) return false;
-    try {
-      process.kill(-pid, 0);
-      if (process.platform !== "linux") return false;
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      return /^[ZX] /.test(stat.slice(stat.lastIndexOf(") ") + 2)) && processGroupMembers(pid).length === 0;
-    }
-    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-  };
-  function sweep(directory: string): void {
-    for (const name of readdirSync(directory)) {
-      if (!/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
-      const cache = join(directory, name);
-      try {
-        if (!privateDirectory(cache)) continue;
-        protectedLocalDirectory(cache, "the release archive cache");
-        if (!deadOwner(cache)) continue;
-        const workers = readdirSync(cache).filter(name => name.startsWith(".worker-"));
-        if (workers.every(worker => {
-          const match = /^\.worker-([1-9]\d*)$/.exec(worker);
-          return !!match && absentGroup(Number(match[1]));
-        })) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
-      } catch { /* Unprovable or already collected scratch is left alone. */ }
-    }
-  }
-  try {
-    sweep(parent);
-    for (const name of readdirSync(parent)) {
-      if (!/^cotal-update-[a-zA-Z0-9]{6}$/.test(name)) continue;
-      const scratch = join(parent, name);
-      try { if (privateDirectory(scratch)) sweep(scratch); }
-      catch { /* Another command can retire its scratch during the scan. */ }
-    }
-  } catch { /* Temporary storage cleanup is best effort. */ }
-}
-
 class ReleaseNotAvailable extends Error {}
 class ReleaseDateExcluded extends Error {}
 class DependencyCheckInterrupted extends Error {}
@@ -2032,6 +1977,12 @@ async function runGlobalProcess(
   let stopping: Promise<void> | undefined;
   try {
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
+    const recordCache = gated && staging !== undefined;
+    if (recordCache) {
+      const start = processStartToken(process.pid);
+      if (!start) throw new Error("cannot identify the staged npm cache owner");
+      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+    }
     if (staging !== undefined) {
       // npm is quiet during a download. Its private cache receives the archive bytes and
       // the private prefix changes as packages unpack. Neither depends on terminal output.
@@ -2065,6 +2016,8 @@ async function runGlobalProcess(
     permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
       try {
+        // Publish cache custody before the gate permits npm to write to it.
+        if (recordCache) writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
         mutation.markLive(child.pid);
         published = true;
       } catch (e) {

@@ -630,7 +630,9 @@ before connecting. When older retained messages are not shown, raise `--limit` t
 There is no 1000-message read cap. For example, `cotal history general --limit 2000`
 reads the newest 2000 retained messages before applying filters. `result.window` says how many messages were read, whether older retained
 messages exist that the window did not reach, and whether the window goes back to `--since`.
-With `--dms`, a full window alone does not prove that it left out older messages.
+With `--dms`, channel posts keep their broker sequence order even when sender timestamps disagree.
+To fill the window, the command works from the newest end of each stream and compares sender
+timestamps across the two sources. A full window alone does not prove that it left out older messages.
 The report names the local time and the ISO instant a time `--since` resolved to, or the chat
 stream sequence a bare number was read as. A cutoff past the chat stream's newest sequence returns
 an empty window. A four-digit number from 1900 to 2099 that is past the newest sequence is refused
@@ -737,7 +739,10 @@ observer or admin credential reads across channels.
 A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
-`--follow` prints the window and then each new message until interrupted, each as one line in the
+`--follow` prints the window and then each new message until interrupted. With a static agent
+credential and no channel named, the live feed follows the credential's read grant, including
+channel families. If the broker refuses that feed, name a channel the credential can read.
+With no channel read grant, the follow refuses with `PERMISSION_DENIED`. Each message is one line in the
 form `watch --plain` uses: `[<space>] <time>  <sender>  <destination>  <text>`, with a 24-hour local
 time and `#<channel>` or `DM to <principal>` as the destination. A purge by `history clear` is not
 announced to a follow or to `watch`; messages sent after it keep arriving. A lost connection is

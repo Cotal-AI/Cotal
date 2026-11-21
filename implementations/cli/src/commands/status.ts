@@ -174,6 +174,7 @@ import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { readCursor } from "../seed/lock.js";
 import { reconcileCursorPath } from "../seed/paths.js";
+import { managerStopImpactFacts } from "./status-stop-impact.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -549,7 +550,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
   // while a maintenance journal holds the store, or if the store is unwritable.
-  if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
+  if ((target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
     const reset = storeResetTarget(root, folder.processSpace);
     // An explicit address is not evidence about a different broker's store.
     if (values.server === undefined || (reset && selected.ok && selected.target.space === reset.space
@@ -1504,6 +1505,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
+    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+      gaps.add(e.code, e.message, e.target);
+      if (e.remedy) hints.push(e.remedy);
+      return { resolved: false, code: e.code, message: e.message };
+    }
     // Resolution reads the whole registry and refuses a directory or record it cannot use. The meshes
     // reader has already named it, so this is the same gap, and the selection is unresolved.
     if (isMeshRegistryError(e)) {
@@ -1639,7 +1645,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const store = offline ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
-    if (preflight.kind === "unreachable" && (overridden || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
+    if (preflight.kind === "unreachable" && (overridden || offline || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);
@@ -2283,13 +2289,13 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   }
   if (r.selected.resolved) {
     const s = r.selected;
+    const reachable = s.connection === "ok" || s.connection === "reachable";
     // Name what fixes the default persona alone; setup does far more than that.
     if (!noApplication) {
-      if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
-      else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
-      else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
+      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
+      else if (reachable) items.push({ command: `${cmd} spawn`, description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
     }
-    items.push({ command: `${cmd} who`, description: "See the live roster" });
+    if (reachable) items.push({ command: `${cmd} who`, description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
       items.push({ command: `${cmd} ps`, description: "List managed agents" });
   }
@@ -2663,31 +2669,6 @@ type ManagerServiceStatus = {
   };
 };
 
-/** Display only. A status observation never authorizes process control or proves cleanup. */
-function managerStopImpactFacts(input: unknown): string[] {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return ["stop impact not reported by this manager build"];
-  const impact = input as Record<string, unknown>;
-  if (!["manager", "owner-filtered"].includes(String(impact.agentScope)) || typeof impact.observedAt !== "string" || impact.observedAt.length > 100 || !Number.isFinite(Date.parse(impact.observedAt)) || !Array.isArray(impact.agents)) return ["stop impact could not be interpreted; no safe stop inferred"];
-  const facts = [`stop impact ${impact.agentScope === "manager" ? "manager-owned rows" : "owner-filtered; full scope unknown"} as of ${new Date(impact.observedAt).toISOString()}`];
-  const actions = { stop: 0, release: 0, retained: 0, unknown: 0 };
-  for (const row of impact.agents) {
-    const action = row && typeof row === "object" && !Array.isArray(row) ? (row as Record<string, unknown>).defaultAction : undefined;
-    if (action === "stop") actions.stop++;
-    else if (action === "release-custody") actions.release++;
-    else if (action === "stop-retaining-state") actions.retained++;
-    else actions.unknown++;
-  }
-  facts.push(`default stop policy: stop ${actions.stop}, release custody ${actions.release}, stop retaining state ${actions.retained}, unknown ${actions.unknown} visible seats`);
-  for (const [key, label] of [["lifecycleInFlight", "lifecycle work"], ["reservedLaunches", "reserved launches"], ["retirementsPending", "pending retirements"], ["deprovisioningInFlight", "cleanup in flight"], ["staticReconciliationInFlight", "reconciliation in flight"]] as const) {
-    const count = impact[key];
-    if (!Number.isSafeInteger(count) || Number(count) < 0) facts.push(`${label} unknown`);
-    else if (Number(count) > 0) facts.push(`${label} ${count}`);
-  }
-  if (impact.stopping === true) facts.push("native manager stop already in progress");
-  facts.push("stop not reserved; seat exit and cleanup not checked");
-  return facts;
-}
-
 /** A service registration is the health target itself.  Calling its `status` command through a
  * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
  * rail; a one-shot standalone caller does. */
@@ -3021,6 +3002,11 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
   section("Component Health");
   if (!selected.ok) {
     const e = selected.error;
+    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+      printComponent({ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] });
+      process.exitCode = COMPONENT_EXIT.refused;
+      return;
+    }
     if (isMeshRegistryError(e)) {
       printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
       process.exitCode = COMPONENT_EXIT.refused;

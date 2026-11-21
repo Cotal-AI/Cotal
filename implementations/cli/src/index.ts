@@ -514,6 +514,7 @@ const baseCommands: Command[] = [
     summary: "(legacy) validate + view a mesh manifest's access graph (read-only). `team check --graph` replaces it",
     positionals: "<view>",
     flags: [{ name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "the manifest to inspect" }],
+    reads: true,
     run: topology,
   },
   // ---- Messaging ----------------------------------------------------------------------------

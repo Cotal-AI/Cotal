@@ -237,7 +237,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "sync") return true; // refreshing account catalogs does not install connectors
   if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
   if (name === "meshes" && (sub === undefined || sub === "list")) return true;
-  if (name === "config" && sub === "set") return true; // saving a preference does not require installing connectors
+  if (name === "config" && (sub === "set" || sub === "unset")) return true; // editing a preference does not require installing connectors
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
   // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
@@ -705,7 +705,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (useExtensionOverlay) {
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
-      recoverExtensionPromotion();
+      // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
+      if (builtin?.name !== "topology") recoverExtensionPromotion();
     } catch (e) {
       if (!skipUnreadableConnectorOverlay(e)) {
         if (repeatedLeading) {
@@ -808,14 +809,16 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         if (!brokerOnly) deferSeedToLaunch();
       } else await reconcileSeededConnectors();
     } catch (e) {
-      // The seed runs before the command, so a command that asked for JSON has not reached its own
-      // failure path. The refusal is the envelope on stdout and no text report, as any later refusal is.
-      if (cmd && asksForJson(cmd, rest)) {
+      // The seed runs before the command reaches its own failure path. A structured command still
+      // reports the same outcome and exit status in every presentation.
+      const sub = parsed?.positionals[0] ?? (cmd && metadataPositionals(cmd, rest).positionals[0]?.value);
+      if (cmd && structured(cmd, sub)) {
         const message = e instanceof Error ? e.message : String(e);
-        const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, message.includes("`cotal ext seed --repair`") ? {} : {
-          remedy: "fix that, then run `cotal ext seed --repair`",
-        });
-        failureExit(cmd, failure, true, rest.includes("--plain"));
+        const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
+          e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
+        const end = rest.indexOf("--");
+        const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
+        failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);
       }
       seedRefusal(e);
       process.exit(1);

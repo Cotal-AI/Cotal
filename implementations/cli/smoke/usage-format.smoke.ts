@@ -315,8 +315,8 @@ for (const [args, usage, foreign] of [
   }
 }
 
-// Every command and subcommand `cotal help` lists shows one to three examples, the most common use
-// first, each a whole command with a note on what it does. Each example parses under the options its
+// Every supported command and subcommand `cotal help` lists shows one to three examples, the most common
+// use first, each a whole command with a note on what it does. Each example parses under the options its
 // help lists and selects that subcommand. Examples follow Usage and Shorthands, before Commands and
 // Options, and on 80 columns each command is one line that fits, with its note beside it or under it.
 {
@@ -359,15 +359,15 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    // The work grammar is reserved, but every lease and commit request is refused.
-    const gatedWork = cmd.name === "endpoint" && path[0] === "work";
-    if (gatedWork ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
+    // Endpoint work and Manager unit installation are listed but have no runnable examples.
+    const unavailable = (cmd.name === "endpoint" && path[0] === "work") || (cmd.name === "manager" && path[0] === "install");
+    if (unavailable ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
     const at = lines.indexOf("Examples");
     const end = lines.indexOf("", at);
     const section = lines.slice(at + 1, end === -1 ? undefined : end);
-    if (gatedWork ? at !== -1 : at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`unexpected Examples section: ${lines.join(" | ").slice(0, 300)}`);
+    if (unavailable ? at !== -1 : at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`unexpected Examples section: ${lines.join(" | ").slice(0, 300)}`);
     for (const example of examples) {
       if (typeof example === "string") { problems.push(`${example}: has no note`); continue; }
       const { command, note } = example;
@@ -375,7 +375,7 @@ for (const [args, usage, foreign] of [
       if (!section.some((line) => line.startsWith(`  ${command}`) && displayWidth(line) <= 80) || !section.join(" ").replace(/\s+/g, " ").includes(`${command} ${note}`)) problems.push(`${command}: is not one line that fits 80 columns with its note: ${section.join(" | ")}`);
       problems.push(...problemsOf(cmd, path, command));
     }
-    const expectation = gatedWork ? "omits examples for unavailable work operations" : "shows one to three examples after its usage, each one line with a note, parsing under its own options";
+    const expectation = unavailable ? "omits examples for an unavailable operation" : "shows one to three examples after its usage, each one line with a note, parsing under its own options";
     check(`${["cotal", cmd.name, ...path].join(" ")} ${expectation}`, problems.length === 0, problems);
     for (const sub of node.subcommands ?? []) if (!sub.hidden) census(cmd, [...path, sub.name], sub);
   };
@@ -575,6 +575,8 @@ const project = join(home, "proj");
 mkdirSync(project, { mode: 0o700 });
 const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
 check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
+const deleteTarget = run(["space", "add", "delete-target", "--root", project, "--mode", "open", "--server", "nats://127.0.0.1:43028", "--force", "--yes"]);
+check("space delete confirmation uses a registered target", deleteTarget.status === 0, shown(deleteTarget));
 mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
@@ -582,7 +584,7 @@ const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string
 for (const [args, message, remedy] of [
   [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with `cotal persona remove p1 --yes`"],
   [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with `cotal history clear --dms --yes`"],
-  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run `cotal space delete nosuch --yes`"],
+  [["space", "delete", "delete-target"], /live space deletion requires a terminal/, "then run `cotal space delete delete-target --yes`"],
   [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run `cotal reset store nosuch --yes`"],
   [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run `cotal reset space nosuch --yes`"],
 ] as const) {

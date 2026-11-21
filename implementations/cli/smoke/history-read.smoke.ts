@@ -23,14 +23,19 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   channelBucket,
   chatStream,
+  chatSubject,
   createSpaceAuth,
+  credsClaims,
+  credsFromJwt,
   dialerFor,
   dmStream,
   idFromCreds,
@@ -43,6 +48,7 @@ import {
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  unicastSubject,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
@@ -474,6 +480,51 @@ try {
   await prefill.exited;
   check("a follow prints its window in the same form as its live lines", prefilled && prefill.lines.some((l) => scriptShape(l, "\\S+", "#general", ".+")) && !prefill.lines.some((l) => /^TIME\s+WHERE/.test(l)), prefill.lines);
 
+  const scopedAll = follow(["history", "--follow", "--json", "--creds", agentCreds]);
+  const scopedNamed = follow(["history", "general", "--follow", "--json", "--creds", agentCreds]);
+  try {
+    const hasSnapshot = (line: string) => line.includes('"type":"snapshot"');
+    const snapshots = await Promise.all([scopedAll, scopedNamed].map((f) => f.until(hasSnapshot)));
+    await bob.multicast("outside scoped follow", { channel: "ops" });
+    await alice.multicast("inside scoped follow", { channel: "general" });
+    await Promise.all([scopedAll, scopedNamed].map((f) => f.until((line) => line.includes('"text":"inside scoped follow"') || line.includes('"type":"error"'))));
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+    const codes = await Promise.all([scopedAll.exited, scopedNamed.exited]);
+    for (const [i, f] of [scopedAll, scopedNamed].entries()) {
+      const records = f.lines.map((line) => JSON.parse(line) as { type: string; data: { text?: string; reason?: string } });
+      check(`a scoped credential follows ${i === 0 ? "all granted channels" : "a named channel"} without subscription errors or out-of-scope events`,
+        snapshots[i] && codes[i] === 143 && records.map((r) => r.type).join() === "snapshot,event,end" && records[1]?.data.text === "inside scoped follow" && records[2]?.data.reason === "terminated", f.lines);
+    }
+  } finally {
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+  }
+  const noFollow = await run(["history", "--follow", "--json", "--creds", ungranted]);
+  const noFollowRecords = noFollow.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; data: { code?: string; reason?: string } });
+  check("an all-channel follow with no channel read grant refuses without opening a feed",
+    noFollow.status === 2 && noFollowRecords.map((r) => r.type).join() === "error,end" && noFollowRecords[0]?.data.code === "PERMISSION_DENIED" && noFollowRecords[1]?.data.reason === "setup-failed", shown(noFollow));
+
+  // A raw credential can have a broader retained read than live read. The broker's live denial
+  // must still end the all-channel follow, rather than leave an apparently running feed.
+  const retainedReader = newIdentity();
+  const { pub, sub } = credsClaims(await mintCreds(auth, retainedReader, "observer")).nats!;
+  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  const restricted = join(home, "retained-reader.creds");
+  try {
+    const chat = chatSubject(space, "*", "*", "general");
+    const jwt = await encodeUser("observer", fromPublic(retainedReader.id), fromPublic(auth.account.pub), {
+      pub,
+      sub: { allow: [...(sub?.allow ?? []).filter((row) => !row.startsWith(`cotal.${space}.chat.`)), chat] },
+    }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
+    writeFileSync(restricted, credsFromJwt(jwt, retainedReader), { mode: 0o600 });
+  } finally { signer.clear(); }
+  const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
+  try {
+    const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));
+    const records = refusedFollow.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; remedy?: string; reason?: string } });
+    check("a broker denial of the live wildcard ends the follow and says to name a channel",
+      ended && await refusedFollow.exited === 2 && records.map((r) => r.type).join() === "error,end" && records[0]?.data.code === "PERMISSION_DENIED" && records[0]?.data.remedy?.includes("name a channel") === true && records[1]?.data.reason === "setup-failed", refusedFollow.lines);
+  } finally { await killAndAwaitExit(refusedFollow.child, "SIGTERM"); }
+
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
   const brief = join(home, "brief.creds");
   writeFileSync(brief, await mintCreds(auth, newIdentity(), "observer", { expiresInSeconds: 8 }), { mode: 0o600 });
@@ -546,6 +597,43 @@ try {
     longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
       && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
+
+  // Payload times can disagree with broker arrival order across publishers.
+  {
+    const nc = await connect({ servers: openServers });
+    const js = jetstream(nc);
+    const now = Date.now();
+    const publish = (subject: string, actor: string, id: string, ts: number, target: { channel: string } | { to: string }) =>
+      js.publish(subject, JSON.stringify({ id, ts, space: openSpace, from: { id: `local.${actor}`, name: actor }, ...target, parts: [{ kind: "text", text: id }] }));
+    try {
+      const first = await publish(chatSubject(openSpace, "local", "alice", "volume"), "alice", "arrived-first", now, { channel: "volume" });
+      const second = await publish(chatSubject(openSpace, "local", "bob", "volume"), "bob", "arrived-second", now - 2_000, { channel: "volume" });
+      const args = ["--space", openSpace, "--json"];
+      const channel = await run(["history", "volume", ...args]);
+      const emptyDms = await run(["history", "--dms", ...args]);
+      const sequences = (r: typeof channel) => r.envelope?.result?.items.filter((item) => item.channel === "volume").map((item) => item.seq).join();
+      const expected = [first.seq, second.seq].join();
+      check("--dms with no DMs keeps the same broker sequence as channel history",
+        channel.status === 0 && emptyDms.status === 0 && sequences(channel) === expected && sequences(emptyDms) === expected,
+        { channel: shown(channel), mixed: shown(emptyDms) });
+
+      const dmSubject = unicastSubject(openSpace, "local", "bob", "local", "alice");
+      await publish(dmSubject, "alice", "older-direct", now - 3_000, { to: "local.bob" });
+      await publish(dmSubject, "alice", "direct", now - 1_000, { to: "local.bob" });
+      const mixed = await run(["history", "--dms", ...args]);
+      const narrow = await run(["history", "--dms", "--limit", "2", ...args]);
+      check("--dms preserves channel sequence with a DM present and retains the newest channel post in a two-row window",
+        mixed.status === 0 && texts(mixed).includes("direct") && sequences(mixed) === expected && narrow.status === 0
+          && texts(narrow).includes("direct") && sequences(narrow) === String(second.seq) && narrow.envelope?.result?.window.olderRetained === true,
+        { mixed: shown(mixed), narrow: shown(narrow) });
+      const byTime = await run(["history", "--dms", "--limit", "3", "--since", new Date(now - 1_500).toISOString(), ...args]);
+      check("a mixed window reaches a time cutoff even if its first row is newer than the cutoff",
+        byTime.status === 0 && byTime.envelope?.result?.window.reachesSince === true && texts(byTime).join() === "arrived-first,direct",
+        shown(byTime));
+    } finally {
+      await nc.close();
+    }
+  }
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {

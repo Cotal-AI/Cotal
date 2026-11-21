@@ -1,4 +1,4 @@
-import { spawn, BIN, check, HOST_ENV, freshCfg, listNames, track, finishScenario } from "./harness.js";
+import { spawn, BIN, bootArgs, check, HOST_ENV, freshCfg, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 12. TRULY-PARALLEL first boots do not collide or falsely report "interrupted" ────────────────
@@ -6,7 +6,7 @@ try {
     const cfg = track(freshCfg());
     const boot = (): Promise<{ code: number; err: string }> =>
       new Promise((resolve) => {
-        const p = spawn("node", [BIN, "config", "unset", "color", "--user"], {
+        const p = spawn("node", [BIN, ...bootArgs], {
           env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
         });
         let err = "";

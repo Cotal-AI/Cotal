@@ -1,6 +1,7 @@
 import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, codeSpan, connectOrThrow, findCotalRoot, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { UnusableFile } from "../lib/unusable-file.js";
@@ -427,10 +428,26 @@ function removalShape(root: string, attempt: AdditiveTeamAttempt): { agents: num
 }
 
 async function previewRemove(deploymentId: string, values: TeamValues): Promise<void> {
+  const catalog = personaCatalog(values);
+  recordOperationSpace(catalog.space);
+  let summary: FreshTeamSummary | undefined;
+  try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
+  catch {
+    assertSummaryNotElsewhere(catalog.root, deploymentId);
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
+  }
+  if (summary) {
+    const atRoot = canonicalRoot(findCotalRoot()) === catalog.root ? "" : `cd ${shellPath(catalog.root)} && `;
+    throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: `stop the booted stack with ${codeSpan(`${atRoot}cotal down`)}; preview that stop with ${codeSpan(`${atRoot}cotal down --space ${shellWord(summary.space)} --dry-run`)}` });
+  }
+  let freshAttempt: ReturnType<typeof findFreshTeamAttempt>;
+  try { freshAttempt = findFreshTeamAttempt(catalog.root, deploymentId); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot attempt for this ID is unreadable; it was not treated as an additive target", { target: { root: catalog.root, deploymentId } }); }
+  if (freshAttempt) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot attempt, not an additive removal target", { target: { root: catalog.root, deploymentId } });
+
   if (values["dry-run"] !== true) {
     // The original intent picks the route; each route revalidates its own returned or stopped receipt.
     let routed: ReturnType<typeof findAdditiveTeamAttempt>;
-    const catalog = personaCatalog(values);
     try { routed = findAdditiveTeamAttempt(catalog.root, deploymentId); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this ID is unreadable; no removal route was inferred", { target: { deploymentId } }); }
     if (!routed) { const missing = unknownDeployment(catalog.root, catalog.space, deploymentId); if (missing) throw missing; }
@@ -446,19 +463,6 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
     const { removeAgentTeam } = await import("./team-agent-remove.js");
     return removeAgentTeam(deploymentId, values);
   }
-  const catalog = personaCatalog(values);
-  recordOperationSpace(catalog.space);
-  let summary: FreshTeamSummary | undefined;
-  try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
-  catch {
-    assertSummaryNotElsewhere(catalog.root, deploymentId);
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
-  }
-  if (summary) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: `stop the booted stack with \`cotal down\`; preview that stop with \`cotal down --space ${summary.space} --dry-run\`` });
-  let freshAttempt: ReturnType<typeof findFreshTeamAttempt>;
-  try { freshAttempt = findFreshTeamAttempt(catalog.root, deploymentId); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot attempt for this ID is unreadable; it was not treated as an additive target", { target: { root: catalog.root, deploymentId } }); }
-  if (freshAttempt) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot attempt, not an additive removal target", { target: { root: catalog.root, deploymentId } });
   let attempt: ReturnType<typeof findAdditiveTeamAttempt>;
   try { attempt = findAdditiveTeamAttempt(catalog.root, deploymentId); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this ID is unreadable; no safe removal target was inferred", { target: { root: catalog.root, deploymentId } }); }
