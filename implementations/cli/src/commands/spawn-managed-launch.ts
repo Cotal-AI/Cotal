@@ -56,7 +56,7 @@ import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from
 import { cliControl, failIfNotOk } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { callerHarness, missingConnector, refuseUnmintableName, spawnPersona } from "../lib/spawn-defaults.js";
+import { callerHarness, managedSpawnCaller, missingConnector, refuseUnmintableName, spawnPersona } from "../lib/spawn-defaults.js";
 import { attachSeat, joinedAgentRows, psSeatLabel } from "./agents.js";
 import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -155,7 +155,7 @@ export async function launchManagedPersona(
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
   const flags = { space: values.space, server: values.server, creds: values.creds };
-  const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
+  const { seatIntent, space: callerSpace } = managedSpawnCaller(flags.space);
   if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
   let cwd = values.cwd;
   // On a terminal, a pinned manager that is not known to run on this host is asked which of its
@@ -184,7 +184,7 @@ export async function launchManagedPersona(
   }
   let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
   if (seatIntent) {
-    try { seat = await resolveSeatControlTarget({ ...flags, space: flags.space ?? process.env.COTAL_SPACE }, on); }
+    try { seat = await resolveSeatControlTarget({ ...flags, space: callerSpace }, on); }
     catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the launching seat's own credential could not be verified; no operator identity was substituted"); }
     if (!seat) throw new CommandFailure("refused", "UNSUPPORTED", "the managed seat cannot act as itself through this CLI; missing/mismatched caller context and user-auth self impersonation do not fall back to the operator");
   }

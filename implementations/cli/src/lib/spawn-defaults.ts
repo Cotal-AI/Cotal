@@ -36,6 +36,12 @@ export function callerHarness(space: string): string | undefined {
  *  `--on`. Any other spawn runs the application in this terminal, on every kind of mesh. */
 export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
 
+/** A managed child launch defaults to the calling seat's space ahead of the local selection. */
+export function managedSpawnCaller(space: string | undefined): { seatIntent: boolean; space: string | undefined } {
+  const seatIntent = Boolean(process.env.COTAL_NAME || process.env.COTAL_ID || process.env.COTAL_LIFECYCLE_UID || process.env.COTAL_ACCEPTED_TOKEN);
+  return { seatIntent, space: space ?? (seatIntent ? process.env.COTAL_SPACE : undefined) };
+}
+
 /** Give the caller the same name refusal the manager would give, without a launch request. */
 export function refuseUnmintableName(name: string, userMode: boolean): void {
   const refusal = spawnNameError(name, { userMode });

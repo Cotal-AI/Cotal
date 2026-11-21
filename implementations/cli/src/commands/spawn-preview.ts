@@ -5,7 +5,7 @@ import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSele
 import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, refuseUnmintableName, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, managedSpawnCaller, missingConnector, missingPersona, refuseUnmintableName, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import type { spawnFlags } from "./spawn.js";
@@ -33,6 +33,7 @@ function unknownHarness(harness: string | undefined, explicit: boolean, space: s
  *  two name the same one. */
 export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> & { values: Values }): Promise<void> {
   const values = args.values;
+  const managed = spawnUsesManager(values);
   let root: string;
   let space: string;
   let broker: string | null = null;
@@ -43,7 +44,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   try {
     // A space this folder registered is the target only while it runs, which the launch reads from
     // the recorded brokers before it resolves. The preview reads the same, without signing in.
-    const flags = { space: values.space, server: values.server };
+    const flags = { space: managed ? managedSpawnCaller(values.space).space : values.space, server: values.server };
     const sweep = resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(values.server, "targets") : {};
     selected = resolveMeshTarget(process.cwd(), { ...flags, ...sweep, readOnly: true });
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
@@ -65,8 +66,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   const requested = { persona: ref, source: values.file ? "file" : values.config !== undefined || args.positionals.length ? "argument" : from ?? "default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, runtime: values.runtime?.trim() ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
   const target = { space, broker, authMode: targetMode };
-  if (spawnUsesManager(values)) {
-    if (values.name !== undefined) refuseUnmintableName(values.name, targetMode === "user");
+  if (managed) {
+    if (values.name !== undefined) refuseUnmintableName(values.name, selected?.mode === "user");
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.
     const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space);

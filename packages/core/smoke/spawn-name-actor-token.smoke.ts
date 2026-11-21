@@ -219,8 +219,8 @@ check("a plain name is accepted in BOTH modes",
 // straight to the manager and the operator read the manager's refusal after the round trip. The fix
 // is the CLI calling the SAME predicate the manager calls, keyed on the target mesh's auth mode.
 // The suite cannot import the CLI's module (core's smoke may not depend on implementations), so
-// this pins the behaviour at the shared predicate with the exact argument shapes both call sites
-// pass, and the wiring itself is pinned structurally below by reading the CLI's shipped source.
+// this pins the behaviour at the shared predicate. The wiring is pinned structurally below by
+// reading the CLI's shipped source.
 const CLI_REFUSAL_USER = spawnNameError("default_agent-3", { userMode: true });
 check("a hyphenated --name on a USER-mode target is refused by the same predicate the manager uses",
   CLI_REFUSAL_USER !== undefined && /actor token/.test(CLI_REFUSAL_USER),
@@ -236,16 +236,17 @@ check("the same hyphenated --name on a STATIC-mode target is accepted",
 // the only moment the difference shows is after the next grammar change. The source is parsed, so
 // the #867 comments, the door's declaration or a string that spells a call cannot pass for one, and
 // requoting an argument changes nothing.
-const CLI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands");
-const CLI_RAW = readFileSync(join(CLI_DIR, "spawn.ts"), "utf8");
-const CLI_LAUNCH_RAW = readFileSync(join(CLI_DIR, "spawn-managed-launch.ts"), "utf8");
+const CLI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src");
+const cliAst = (file: string) => ts.createSourceFile(file, readFileSync(join(CLI_DIR, file), "utf8"), ts.ScriptTarget.Latest);
+const CLI_AST = cliAst("commands/spawn.ts");
+const CLI_LAUNCH_AST = cliAst("commands/spawn-managed-launch.ts");
+const CLI_PREVIEW_AST = cliAst("commands/spawn-preview.ts");
+const CLI_NAME_AST = cliAst("lib/spawn-defaults.ts");
 check("instrument control: the CLI's spawn source was located",
-  CLI_LAUNCH_RAW.includes("async function launchManagedPersona") && CLI_RAW.includes("export async function spawn"),
-  { len: CLI_RAW.length, launchLen: CLI_LAUNCH_RAW.length });
-const CLI_AST = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest);
-const CLI_LAUNCH_AST = ts.createSourceFile("spawn-managed-launch.ts", CLI_LAUNCH_RAW, ts.ScriptTarget.Latest);
+  CLI_LAUNCH_AST.text.includes("async function launchManagedPersona") && CLI_AST.text.includes("export async function spawn")
+    && CLI_PREVIEW_AST.text.includes("export async function spawnLaunchPreview"));
 // Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
-const CORE_IMPORTS = CLI_LAUNCH_AST.statements
+const CORE_IMPORTS = CLI_NAME_AST.statements
   .filter(ts.isImportDeclaration)
   .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
   .flatMap((d) => {
@@ -256,17 +257,24 @@ const CORE_IMPORTS = CLI_LAUNCH_AST.statements
   .map((e) => e.name.text);
 check("the CLI calls the shared name door (import present)",
   CORE_IMPORTS.includes("spawnNameError"));
-const DOOR_CALLS: ts.CallExpression[] = [];
-const collectDoorCalls = (node: ts.Node): void => {
-  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableName")
-    DOOR_CALLS.push(node);
-  ts.forEachChild(node, collectDoorCalls);
-};
-collectDoorCalls(CLI_AST);
-collectDoorCalls(CLI_LAUNCH_AST);
+function collectDoorCalls(source: ts.SourceFile): ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const walk = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableName")
+      calls.push(node);
+    ts.forEachChild(node, walk);
+  };
+  walk(source);
+  return calls;
+}
+const FOREGROUND_CALLS = collectDoorCalls(CLI_AST);
+const MANAGED_CALLS = collectDoorCalls(CLI_LAUNCH_AST);
+const PREVIEW_CALLS = collectDoorCalls(CLI_PREVIEW_AST);
 check("the CLI calls the shared name door (call sites: detached + foreground)",
-  DOOR_CALLS.length === 2,
-  { sites: DOOR_CALLS.length });
+  MANAGED_CALLS.length === 1 && FOREGROUND_CALLS.length === 1,
+  { detached: MANAGED_CALLS.length, foreground: FOREGROUND_CALLS.length });
+check("the CLI calls the shared name door in the managed preview", PREVIEW_CALLS.length === 1);
+const DOOR_CALLS = [...FOREGROUND_CALLS, ...MANAGED_CALLS, ...PREVIEW_CALLS];
 // Parentheses change no behaviour, so they must not change the verdict.
 const unparen = (node: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(node) ? unparen(node.expression) : node;

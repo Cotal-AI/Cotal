@@ -427,11 +427,14 @@ for (const [args, name] of [
 const userRoot = join(home, "user-project");
 mkdirSync(dirname(agentFilePath(userRoot, "minimal")), { recursive: true });
 writeFileSync(agentFilePath(userRoot, "minimal"), "---\nname: minimal\n---\n");
+const seatRoot = join(home, "seat-project");
+mkdirSync(join(seatRoot, ".cotal"), { recursive: true });
 const priorHome = process.env.COTAL_HOME;
 try {
   process.env.COTAL_HOME = env.COTAL_HOME;
   recordMesh({ space: "preview-user", server: "nats://127.0.0.1:34300", root: userRoot, mode: "user", origin: "manual",
     userAuth: { provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" } }, ts: new Date().toISOString() });
+  recordMesh({ space: "preview-seat", server: "nats://127.0.0.1:34301", root: seatRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
 } finally {
   if (priorHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = priorHome;
@@ -487,6 +490,23 @@ for (const mode of [["--dry-run"], []]) {
   check(`--runtime auto is refused USAGE_INVALID ${mode.length ? "by the preview" : "before a launch resolves any target"}`,
     auto.status === 1 && auto.envelope?.error?.code === "USAGE_INVALID" && auto.envelope.error.message === "--runtime auto chooses a manager's own runtime, not the runtime of one seat", shown(auto));
 }
+
+const selectedUser = cotal("use", "preview-user", "--json");
+check("fixture: the workspace explicitly selects the user-auth space", selectedUser.status === 0 && selectedUser.envelope?.target?.space === "preview-user", shown(selectedUser));
+const seatPreview = (caller: Record<string, string>, ...words: string[]) => outcome(spawnSync(process.execPath,
+  [BIN, "spawn", "remote-only", "--on", "aaaaaaaaaaaaaaaaaaaaaaaaaa", "--name", "sample-ok", "--dry-run", "--json", ...words],
+  { cwd: root, env: { ...env, COTAL_SPACE: "preview-seat", ...caller }, encoding: "utf8", timeout: 120_000 }));
+const seatIdentity = { COTAL_NAME: "parent", COTAL_ID: "parent_actor", COTAL_LIFECYCLE_UID: "aaaaaaaaaaaaaaaaaaaaaaaaaa" };
+const fromSeat = seatPreview(seatIdentity);
+check("a managed preview uses its calling seat's open space ahead of the local selection",
+  fromSeat.status === 0 && fromSeat.envelope?.target?.space === "preview-seat" && fromSeat.envelope.target.authMode === "open"
+    && fromSeat.envelope.completeness === "not-checked" && (fromSeat.envelope.result as Preview | undefined)?.requested?.name === "sample-ok", shown(fromSeat));
+const bareSpaceEnv = seatPreview({});
+check("a space environment variable alone does not override the operator's selected space",
+  bareSpaceEnv.status === 1 && bareSpaceEnv.envelope?.error?.code === "USAGE_INVALID" && bareSpaceEnv.envelope.target?.space === "preview-user", shown(bareSpaceEnv));
+const namedSpace = seatPreview(seatIdentity, "--space", "preview-user");
+check("an explicit managed preview space takes precedence over the caller's space",
+  namedSpace.status === 1 && namedSpace.envelope?.error?.code === "USAGE_INVALID" && namedSpace.envelope.target?.space === "preview-user", shown(namedSpace));
 
 finish();
 process.exit(process.exitCode ?? 0);
