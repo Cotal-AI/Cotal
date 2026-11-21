@@ -830,13 +830,13 @@ function hangupForegroundStack(root: string): never {
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
  *  The hold's end sets the exit code: 0 when another command completed the stop or preserve, 129 after
  *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
-export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
+export async function holdForegroundStack(root: string, start?: () => Promise<void>, releaseRestoreNotice?: () => void): Promise<void> {
   claimForegroundHold(root);
-  try { await holdStack(root, start); }
+  try { await holdStack(root, start, releaseRestoreNotice); }
   finally { releaseForegroundHold(root); }
 }
 
-async function holdStack(root: string, start?: () => Promise<void>): Promise<void> {
+async function holdStack(root: string, start?: () => Promise<void>, releaseRestoreNotice?: () => void): Promise<void> {
   // The start's listeners go only once the hold's own are installed. Node runs a listener for a
   // signal when the loop next polls, and drops the signal if its last listener was removed first,
   // so a signal that lands in the start's last synchronous step would be lost in between.
@@ -893,6 +893,7 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     process.on("SIGINT", interrupt); process.on("SIGTERM", terminate); process.on("SIGHUP", hangup);
     releaseStart();
     handOverStartupNotice();
+    releaseRestoreNotice?.();
   });
 }
 
@@ -1086,36 +1087,32 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // A `backup restore` owns stdout for its receipt, so its seat admission lines go to stderr.
     const prepared = await prepareRestore(root, flags, validateLaunch, restoreSink ? (line) => console.error(line) : undefined);
     pendingRestores.set(prepared.attemptId, prepared);
-    const committed = readMaintenanceJournal(prepared.root);
-    if (committed && cutController(committed.cut)) {
-      // A controller restore continues through its recorded members. A member
-      // that cannot start holds the attempt at commit intent for bare `cotal up` to continue; it is
-      // not marked degraded, because a degraded attempt starts nothing.
-      const lock = acquireMaintenanceLock(prepared.root);
-      let foreground: boolean;
-      try { foreground = await resumeControllerStack(lock, prepared.root, values, restoreSink); }
-      finally {
-        pendingRestores.delete(prepared.attemptId);
-        releaseMaintenanceLock(lock);
-      }
-      if (foreground) await holdForegroundStack(prepared.root);
-      return;
-    }
-    if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink);
     try {
-      await up(nextArgs(prepared, prepared.attemptId));
-    } catch (error) {
+      const committed = readMaintenanceJournal(prepared.root);
+      if (committed && cutController(committed.cut)) {
+        // A controller restore continues through its recorded members. A member
+        // that cannot start holds the attempt at commit intent for bare `cotal up` to continue; it is
+        // not marked degraded, because a degraded attempt starts nothing.
+        const lock = acquireMaintenanceLock(prepared.root);
+        let foreground: boolean;
+        try { foreground = await resumeControllerStack(lock, prepared.root, values, restoreSink); }
+        finally { releaseMaintenanceLock(lock); }
+        if (foreground) await holdForegroundStack(prepared.root, undefined, prepared.releaseInterruptNotice);
+        return;
+      }
+      if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink);
+      try {
+        await up(nextArgs(prepared, prepared.attemptId));
+      } catch (error) {
+        // The re-entry has already released its startup lock, so this helper takes its own.
+        markPreparedRestoreDegraded(prepared.root, prepared.attemptId, (error as Error).message);
+        throw error;
+      }
+    } finally {
+      prepared.releaseInterruptNotice?.();
       pendingRestores.delete(prepared.attemptId);
       restoreSinks.delete(prepared.attemptId);
-      // The one journal writer deliberately NOT handed a lock, and the reason is structural rather
-      // than stylistic: no lock is held in this frame either way. This invocation returns just below
-      // without ever reaching the `startupLock` acquire, and the re-entry that did hold one released
-      // it in its own `finally` on the way out through this very throw. So the helper must take its
-      // own — passing something here would mean passing `undefined`, which reads as an oversight.
-      markPreparedRestoreDegraded(prepared.root, prepared.attemptId, (error as Error).message);
-      throw error;
     }
-    restoreSinks.delete(prepared.attemptId);
     return;
   }
   // A result sink belongs to the explicit restore entry above, never to a recovery, resume or
@@ -2503,6 +2500,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   };
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
+  restored?.releaseInterruptNotice?.();
   // The broker is gone. Drop the registration this stop recorded, and the `current` pointer when it
   // names that registration, so a later `cotal spawn` does not join a dead mesh. A space named after
   // its folder keeps both, as `cotal down` does, so the name stays the folder's.
