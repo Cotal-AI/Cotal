@@ -28,6 +28,7 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
+  CHANNEL_DEFAULTS_KEY,
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   channelBucket,
@@ -43,12 +44,14 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  openChannelRegistry,
   provisionAgent,
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
   unicastSubject,
+  type ChannelRegistryRead,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
@@ -837,11 +840,6 @@ try {
       policyIs(inherited, "off - inherited", "1h - inherited", "live - inherited"), shown(inherited));
     check("channel list uses inherited for replay and delivery as show does",
       listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
-    const structured = await run(["channel", "show", "policy", "--space", space, "--json"]);
-    const registry = (structured.envelope?.result as unknown as { registry?: { defaults?: object; channels?: Record<string, object> } })?.registry;
-    check("JSON keeps stored metadata without presentation marks or resolved overrides",
-      structured.status === 0 && JSON.stringify(registry?.channels?.policy) === JSON.stringify({ description: "Operations" })
-        && JSON.stringify(registry?.defaults) === JSON.stringify({ replay: false, replayWindow: "1h", deliveryClass: "live" }), shown(structured));
     const defaultsCard = await channel("defaults");
     check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
     const missing = await channel("show", "policy-unregistered");
@@ -864,6 +862,48 @@ try {
     check("explicit settings equal to defaults are still unmarked",
       sameSet.status === 0 && policyIs(same, "off", "1h", "live") && sameList.status === 0
         && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
+  }
+
+  // Named JSON includes the same raw defaults as the inventory and only the requested entry.
+  {
+    const registrySpace = `histreg-${randomUUID().slice(0, 8)}`;
+    const json = (...args: string[]) => run(["channel", ...args, "--space", registrySpace, "--server", openServers, "--json"]);
+    const registryOf = (r: Awaited<ReturnType<typeof run>>) =>
+      (r.envelope?.result as { registry?: ChannelRegistryRead } | null | undefined)?.registry;
+    const defaults = await json("defaults", "--delivery", "live", "--no-replay", "--window", "2h");
+    const saved = await json("set", "__proto__", "--desc", "Operations");
+    const other = await json("set", "elsewhere", "--desc", "Elsewhere");
+    const inventory = await json();
+    const full = registryOf(inventory);
+    check("control: channel inventory JSON returns both saved entries and the raw defaults",
+      defaults.status === 0 && saved.status === 0 && other.status === 0 && inventory.status === 0
+        && full?.channels?.elsewhere?.description === "Elsewhere"
+        && Object.hasOwn(full?.channels ?? {}, "__proto__") && full?.channels?.__proto__?.description === "Operations"
+        && full?.defaults?.deliveryClass === "live" && full.defaults?.replay === false && full.defaults?.replayWindow === "2h",
+      { defaults: shown(defaults), saved: shown(saved), other: shown(other), inventory: shown(inventory) });
+    const named = await json("show", "__proto__");
+    const missing = await json("show", "constructor");
+    check("channel show JSON returns only the named saved entry and raw defaults",
+      named.status === 0 && JSON.stringify(registryOf(named)?.channels) === '{"__proto__":{"description":"Operations"}}'
+        && JSON.stringify(registryOf(named)?.defaults) === JSON.stringify(full?.defaults), shown(named));
+    check("channel show JSON for an unsaved name keeps the defaults and returns an empty channel map",
+      missing.status === 0 && JSON.stringify(registryOf(missing)?.channels) === "{}"
+        && JSON.stringify(registryOf(missing)?.defaults) === JSON.stringify(full?.defaults), shown(missing));
+
+    const nc = await connect({ servers: openServers });
+    const badKeys = [CHANNEL_DEFAULTS_KEY, "bad.target", "bad.other"];
+    try {
+      const kv = await openChannelRegistry(nc, registrySpace);
+      for (const key of badKeys) await kv.put(key, new TextEncoder().encode("[]"));
+    } finally { await nc.close(); }
+    const bad = await json("show", "bad.target");
+    const badList = await json();
+    const entries = registryOf(badList)?.undecodable;
+    check("control: channel inventory JSON reports all undecodable registry keys",
+      badList.status === 0 && entries?.length === 3 && badKeys.every((key) => entries.some((entry) => entry.key === key)), shown(badList));
+    check("channel show JSON keeps decode errors for the requested channel and defaults only",
+      bad.status === 0 && registryOf(bad)?.defaults === undefined && JSON.stringify(registryOf(bad)?.channels) === "{}"
+        && JSON.stringify(registryOf(bad)?.undecodable) === JSON.stringify(entries?.filter(({ key }) => key !== "bad.other")), shown(bad));
   }
 
   {

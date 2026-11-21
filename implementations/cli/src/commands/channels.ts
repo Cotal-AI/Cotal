@@ -2,6 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
+  CHANNEL_DEFAULTS_KEY,
   assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
   ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
@@ -124,7 +125,8 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const options = { servers: connection.server, space: connection.space, ...auth };
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
-    const registry = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
+    const full = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
+    const registry = action === "show" ? namedRegistry(full, name!) : full;
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open"));
     return;
   }
@@ -248,6 +250,12 @@ function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegist
     ...(replay ? [["Chat replay", `the newest ${MAX_BUFFER} messages in the window`] as [string, string]] : []),
     ["Delivery", policyValue(effectiveDeliveryClass(config, defaults), config?.deliveryClass)],
   ];
+}
+
+function namedRegistry({ defaults, channels, undecodable }: ChannelRegistryRead, name: string): ChannelRegistryRead {
+  const entry = channels && Object.hasOwn(channels, name) ? channels[name] : undefined;
+  const errors = undecodable?.filter(({ key }) => key === name || key === CHANNEL_DEFAULTS_KEY);
+  return { defaults, channels: entry === undefined ? {} : { [name]: entry }, ...(errors?.length ? { undecodable: errors } : {}) };
 }
 
 function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean): Report {
