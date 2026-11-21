@@ -268,8 +268,27 @@ semantics remain opaque to the native parser, so a file declaring them produces 
 exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
 names the path and asks you to retry with an existing contract file.
 
-Neither command contacts a broker, loads the handler, starts a service or proves serving
-permission. Authoring takes no space, broker, caller or invocation flags.
+Neither authoring command contacts a broker, loads the handler, starts a service or registers an
+endpoint. Authoring takes no space, broker, caller or invocation flags.
+
+
+### Check results
+
+With `--json`, `result.kind` is `local-endpoint-contract`. `result.closureDigest` identifies
+the compiled cluster closure manifest. `result.commands` lists the declared commands with
+`name`, `capability`, `class` and `targeted`. Each entry's `inputDigest` and `outputDigest`
+identify the compiled input and output schema closures. All three digest fields use `sha256:`
+followed by 64 lowercase hexadecimal digits.
+
+The offline report sets these fields in `result` to `false`:
+
+- `handlerExecuted`: The handler was not loaded or run.
+- `brokerContacted`: No broker was contacted.
+- `authorityChecked`: Registration and serving permissions were not checked.
+- `servingChecked`: Support for serving this contract with the executable adapter was not checked.
+
+
+### Serve the contract
 
 Serve the edited contract through the independent service controller:
 

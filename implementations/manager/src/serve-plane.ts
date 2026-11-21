@@ -20,6 +20,7 @@ import { MANAGER_ENDPOINT, managerClusterArtifacts, managerContractArtifactValue
 import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
 import type { ManagerOptions } from "./manager.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { caughtEnvelope } from "./turn-relay.js";
 import { lifecycleBlocked, lifecycleBlockedFrom } from "@cotal-ai/core";
 import { REMOTE_STANDING_BUDGET_MS, remoteStandingTimeLeft } from "./credential-renewal.js";
@@ -76,8 +77,7 @@ export interface ServePlaneDeps {
   setSessionPlane(value: ManagerSessionPlane | undefined): void;
   sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined;
   setSessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined): void;
-  /** The connector rows a status read serves (see {@link servedConnectorStatuses}). */
-  connectorStatuses(): readonly ManagerConnectorStatus[];
+  userMode(): boolean;
   setGoalWriterIdentity(value: Identity): void;
   setGoalWriterCreds(value: string | undefined): void;
   remoteStandingBudgetMs: number;
@@ -129,7 +129,7 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     setSessionPlane: (value) => { m["sessionPlane"] = value; },
     sessionKeyRenewTimer: () => m["sessionKeyRenewTimer"],
     setSessionKeyRenewTimer: (value) => { m["sessionKeyRenewTimer"] = value; },
-    connectorStatuses: () => { m["refreshUnavailableConnectors"](); return servedConnectorStatuses(m["connectorStatuses"], m["userMode"]); },
+    userMode: () => m["userMode"],
     setGoalWriterIdentity: (value) => { m["goalWriterIdentity"] = value; },
     setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
@@ -164,7 +164,7 @@ export class ServePlane {
    *  revoke; a session that never staged drops its entry when the manager exits. */
   private readonly sessionServingKeys = new Map<string, string>();
 
-  constructor(private readonly deps: ServePlaneDeps) {}
+  constructor(private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
   private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.deps.remoteAuthority(); }
@@ -188,7 +188,12 @@ export class ServePlane {
   private set sessionPlane(value: ManagerSessionPlane | undefined) { this.deps.setSessionPlane(value); }
   private get sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined { return this.deps.sessionKeyRenewTimer(); }
   private set sessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setSessionKeyRenewTimer(value); }
-  private get connectorStatuses(): readonly ManagerConnectorStatus[] { return this.deps.connectorStatuses(); }
+  /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
+  private get connectorStatuses(): readonly ManagerConnectorStatus[] {
+    const inventory = this.parts.connectorInventory;
+    inventory.refreshUnavailableConnectors();
+    return servedConnectorStatuses(inventory.connectorStatuses, this.deps.userMode());
+  }
 
   /** #2073: dial the manager's ONE control-plane connection and serve its typed command surface on
    *  it. Shared by the

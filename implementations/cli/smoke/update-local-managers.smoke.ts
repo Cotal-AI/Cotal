@@ -203,5 +203,102 @@ if (process.platform === "linux") {
     else process.env.COTAL_HOME = priorHome;
     rmSync(relativeRoot, { recursive: true, force: true });
   }
+  await checkCoordinatesRace();
 }
+
+async function checkCoordinatesRace(): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  const { default: fs } = await import("node:fs");
+  const { syncBuiltinESMExports } = await import("node:module");
+  const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+  const read = fs.readFileSync;
+  const root = mkdtempSync(join(tmpdir(), "cotal-update-coordinates-"));
+  const entry = join(root, "cotal.cjs");
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(root, "update-home");
+  writeFileSync(entry, "setInterval(() => {}, 1000);\n");
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const procState = (pid: number) => {
+    try {
+      const stat = read(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+    } catch (error) { return (error as NodeJS.ErrnoException).code; }
+  };
+  const waitForState = (pid: number, state: string) => {
+    const deadline = Date.now() + 5000;
+    while (procState(pid) !== state) {
+      if (Date.now() >= deadline) throw new Error(`pid ${pid} did not reach state ${state}`);
+      Atomics.wait(pause, 0, 0, 1);
+    }
+  };
+  try {
+    // The foreign Manager is a child of this suite; it gets none of the runner's own connection material.
+    const foreignEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+    for (const [mode, pinned] of [["gone", false], ["gone", true], ["zombie", false], ["zombie", true], ["unreadable", true]] as const) {
+      // The reaper is separate from this synchronous scan and can be stopped to hold a real zombie.
+      const parent = spawn("/bin/sh", ["-c", '"$NODE" "$ENTRY" "$VERB" --space coordinates-race >/dev/null & child=$!; echo "$child"; wait "$child"'], {
+        cwd: root, stdio: ["ignore", "pipe", "inherit"],
+        env: { ...foreignEnv, COTAL_HOME: join(root, "foreign-home"), NODE: process.execPath, ENTRY: entry, VERB: "supervise" },
+      });
+      const exit = once(parent, "exit");
+      let pid: number | undefined;
+      let signaled = false;
+      let reached = false;
+      try {
+        const [output] = await once(parent.stdout!, "data");
+        pid = Number(String(output).trim());
+        assert.ok(Number.isSafeInteger(pid) && pid > 0, String(output));
+        const childPid = pid;
+        const proc = `/proc/${childPid}`;
+        const deadline = Date.now() + 5000;
+        while (!read(`${proc}/cmdline`, "utf8").includes("\0coordinates-race\0")) {
+          if (Date.now() >= deadline) throw new Error(`pid ${childPid} did not reach fixture argv`);
+          Atomics.wait(pause, 0, 0, 1);
+        }
+        if (mode === "zombie") {
+          parent.kill("SIGSTOP");
+          waitForState(parent.pid!, "T");
+        }
+        let cmdlineReads = 0;
+        let statReads = 0;
+        const denied = () => Object.assign(new Error("fixture permission denied"), { code: "EACCES" });
+        const scan = () => localUpdateManagers({ space: "coordinates-race" }, entry);
+        fs.readFileSync = ((path: Parameters<typeof read>[0], ...args: unknown[]) => {
+          if (!pinned && path === `${proc}/stat` && ++statReads === 1) throw denied();
+          if (mode === "unreadable" && path === `${proc}/environ`) {
+            reached = true;
+            throw denied();
+          }
+          if (mode !== "unreadable" && path === `${proc}/cmdline` && ++cmdlineReads === 3) {
+            process.kill(childPid, "SIGKILL");
+            signaled = true;
+            waitForState(childPid, mode === "gone" ? "ENOENT" : "Z");
+            reached = true;
+          }
+          return Reflect.apply(read, fs, [path, ...args]);
+        }) as typeof read;
+        syncBuiltinESMExports();
+        if (mode === "unreadable") {
+          assert.throws(scan, new RegExp(`cannot read launch coordinates for Manager pid ${childPid},`));
+          assert.equal(process.kill(childPid, 0), true, "a live Manager with unreadable environ still refuses");
+        } else {
+          assert.deepEqual(scan(), [], `${mode} Manager (${pinned ? "with" : "without"} creation pin) has no custody`);
+        }
+        assert.ok(reached, `${mode} cell reached the launch coordinate read`);
+        if (!pinned) assert.ok(statReads > 1, "the initial creation pin was unreadable and liveness was checked again");
+      } finally {
+        fs.readFileSync = read;
+        syncBuiltinESMExports();
+        if (pid && !signaled) process.kill(pid, "SIGKILL");
+        if (mode === "zombie") parent.kill("SIGCONT");
+        await exit;
+      }
+    }
+  } finally {
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 emitSentinel({ passed: counted.cells(), failed: 0 });

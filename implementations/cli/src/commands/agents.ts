@@ -156,7 +156,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   recordOperationSpace(t.space);
   const reply = await askManager(cliControl, t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { ...pin, instanceId: on });
   const target = { space: t.space, managerInstanceId: reply.managerInstanceId ?? on ?? null, selection: v.self ? "verified-self" : "named", ...(name ? { agent: name } : {}) };
-  if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target);
+  if (!reply.ok) throw unansweredDescribeRefusal(reply, "agent stop", target) ?? managerFailure(reply, "agent stop", target, onRerun("cotal ps", v, v.on !== undefined && on ? ["--on", on] : []));
   const data = reply.data as { name?: unknown; stopped?: unknown; graceful?: unknown } | undefined;
   if (!data || typeof data.name !== "string" || typeof data.stopped !== "boolean" || typeof data.graceful !== "boolean")
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the manager answered, but the stop receipt could not be read; the request was not repeated", { target, ...(reply.request ? { native: { detail: { request: reply.request } } } : {}) });

@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -1478,7 +1478,7 @@ try {
     const failedCode = failed.exitCode;
     await stopHostTree(failed, "SIGKILL");
     const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
-    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${relative(root, logPath)}\n`;
+    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${logPath}\n`;
     const persisted = readFileSync(logPath, "utf8");
     check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
     check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);

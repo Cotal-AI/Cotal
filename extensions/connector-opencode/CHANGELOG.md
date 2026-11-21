@@ -1,5 +1,16 @@
 # @cotal-ai/connector-opencode
 
+## 0.173.0
+
+### Minor Changes
+
+- e268f34: An agent's owner can now interrupt the agent's running turn, so commands queued behind a turn that hangs can run. The `agent` endpoint advances to revision 3 with `interrupt`, which only the owner's interactive session may call and which answers `interrupted`, or `idle` when no turn ran. A connector offers it through an optional `interrupt()` on its command dispatcher; the OpenCode 2.x plugin posts OpenCode's own `/api/session/:id/interrupt`, and the stopped turn ends as a Stop at the terminal does. An agent never interrupts its own turn.
+
+### Patch Changes
+
+- 82531e6: A failed OpenCode or pi turn now sets the presence `condition`, so observers no longer read it as plain `idle` or `waiting`. OpenCode relays its own error kind as `source` and its message, mapped to `auth`, `rate_limit`, `budget`, `request`, `model`, `server`, `context` or `failed`. pi relays `failed` with its error message. A turn someone stopped sets none.
+- a5e9eea: An OpenCode agent no longer offers `/reconnect` to remote callers. The agent endpoint's `commands` list leaves out the `/reconnect` the connector's launch injects, and a `command` that names it ends `refused` with `failed-precondition` instead of running and dropping the link its answer needs. `/reconnect` still works at the agent's terminal.
+
 ## 0.172.2
 
 No changes in this release.

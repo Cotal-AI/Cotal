@@ -1,11 +1,12 @@
 import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
-import { mintCreds, newIdentity, probeConnect, isReachable } from "@cotal-ai/core";
-import { brokerAddressKey, loadMeshes } from "./mesh-registry.js";
-import type { MeshTarget } from "./mesh-target.js";
+import { dialerFor, mintCreds, newIdentity, probeConnect, isReachable, token } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { brokerAddressKey, brokerUrlKey, getCurrent, loadMeshes } from "./mesh-registry.js";
+import { isGenuineSpace, type MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
-import { stackJournalPath } from "./auth-paths.js";
+import { findCotalRoot, stackJournalPath } from "./auth-paths.js";
 import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
 import { isCommandFailure } from "./output.js";
 
@@ -317,6 +318,23 @@ export async function brokerCheck(server: string, tlsRequired = false): Promise<
 export interface MeshSweep {
   /** Spaces kept despite a dead broker. */
   offline: string[];
+  /** Inventory verdicts for unchecked open registrations. An unreadable inventory supplies neither. */
+  openInventory?: { served: string[]; unserved: string[] };
+}
+
+/** A bare connection cannot establish which spaces an open broker serves. */
+export async function openSpaceNames(server: string, tlsRequired: boolean): Promise<string[]> {
+  const nc = await dialerFor(server)({ servers: server, timeout: 2000, reconnect: false, ...(tlsRequired ? { tls: {} } : {}) });
+  try {
+    const names = new Set<string>();
+    for await (const stream of (await jetstreamManager(nc)).streams.names()) {
+      const space = /^(?:CHAT_|KV_cotal_presence_)(.+)$/.exec(stream)?.[1];
+      if (space) names.add(space);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  } finally {
+    await nc.close();
+  }
 }
 
 /** Whether `server` answers a liveness probe. A first miss is confirmed with a second, longer probe
@@ -331,10 +349,11 @@ export async function brokerAnswers(server: string): Promise<boolean> {
 /** Sweep liveness without deleting records. Catalog entries are not probed. Given the `--server` a
  *  command resolves with, only the records at that address are probed: that resolve reads no other
  *  record's liveness. Other explicitly requested checks, such as status --all, have their own scope. */
-export async function pruneStaleMeshes(server?: string): Promise<MeshSweep> {
+export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targets" = "brokers"): Promise<MeshSweep> {
   const sweep: MeshSweep = { offline: [] };
+  const entries = loadMeshes().filter((m) => server === undefined || m.server === server);
   await Promise.all(
-    loadMeshes().filter((m) => server === undefined || m.server === server).map(async (m) => {
+    entries.map(async (m) => {
       // A catalog snapshot is registry preparation, not broker discovery. Catalog-owned entries are
       // never pruned from liveness and must not be probed here either: `meshes`, `use`, and a
       // space-less control command may prepare hundreds of registrations, while only the command's
@@ -344,5 +363,24 @@ export async function pruneStaleMeshes(server?: string): Promise<MeshSweep> {
       sweep.offline.push(m.space);
     }),
   );
+  if (scope === "targets" && server === undefined && !getCurrent() && !isGenuineSpace(findCotalRoot())) {
+    const candidates = entries.filter((m) => !sweep.offline.includes(m.space));
+    const inventories = new Map<string, Promise<string[] | undefined>>();
+    const openInventory = { served: [] as string[], unserved: [] as string[] };
+    // Inventory can disambiguate a choice, but a lone registration does not need a tie-breaker.
+    if (candidates.length > 1) await Promise.all(candidates.map(async (m) => {
+      if (m.origin === "catalog" || m.mode !== "open" || !m.unchecked) return;
+      const tls = m.tlsRequired === true;
+      const key = `${tls}:${brokerUrlKey(m.server)}`;
+      let inventory = inventories.get(key);
+      if (!inventory) {
+        inventory = openSpaceNames(m.server, tls).catch(() => undefined);
+        inventories.set(key, inventory);
+      }
+      const names = await inventory;
+      if (names !== undefined) (names.includes(token(m.space)) ? openInventory.served : openInventory.unserved).push(m.space);
+    }));
+    sweep.openInventory = openInventory;
+  }
   return sweep;
 }

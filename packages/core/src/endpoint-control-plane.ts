@@ -1,10 +1,12 @@
 // The control plane and service-invocation region of CotalEndpoint, as an internal component. Moved
 // verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import { ClosedConnectionError, type Msg, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { withDeadline } from "./deadline.js";
-import { isFromSubjectSender, type CotalEndpoint } from "./endpoint.js";
+import type { CotalEndpoint } from "./endpoint.js";
+import { isFromSubjectSender } from "./endpoint-messages.js";
 import { resolveService, invokeCommand, goalFollowRefusal, submitAndFollowGoal, BIND_SPLIT_REISSUES, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
@@ -23,15 +25,10 @@ type GoalFollower = { cancel: () => void; reconnected: (nc: NatsConnection) => v
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointControlPlaneDeps {
   nc: () => NatsConnection | undefined;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
   stopped: () => boolean;
   authed: () => boolean;
-  connId: () => string;
   presentedExp: () => number | undefined;
   issuedGeneration: () => string | undefined;
-  acceptedToken: () => string | undefined;
   rebuildPromise: () => Promise<void> | undefined;
   subs: () => Subscription[];
   resolvedServices: () => Map<string, ResolvedService>;
@@ -53,18 +50,13 @@ export interface EndpointControlPlaneDeps {
  *  bound reply every request rides) and its service-invocation client (describe, list, invoke,
  *  and follow a goal). Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointControlPlane {
-  constructor(private readonly deps: EndpointControlPlaneDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointControlPlaneDeps) {}
 
   private get nc() { return this.deps.nc(); }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
   private get stopped() { return this.deps.stopped(); }
   private get authed() { return this.deps.authed(); }
-  private get connId() { return this.deps.connId(); }
   private get presentedExp() { return this.deps.presentedExp(); }
   private get issuedGeneration() { return this.deps.issuedGeneration(); }
-  private get acceptedToken() { return this.deps.acceptedToken(); }
   private get rebuildPromise() { return this.deps.rebuildPromise(); }
   private get subs() { return this.deps.subs(); }
   private get resolvedServices() { return this.deps.resolvedServices(); }
@@ -100,7 +92,7 @@ export class EndpointControlPlane {
     opts: { boundReply?: boolean; concurrent?: (req: ControlRequest) => boolean } = {},
   ): import("@nats-io/transport-node").Subscription {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const sub = this.nc.subscribe(controlServiceSubject(this.space, service, "*", "*"), {
+    const sub = this.nc.subscribe(controlServiceSubject(this.identity.space, service, "*", "*"), {
       queue: service,
     });
     this.subs.push(sub);
@@ -222,7 +214,7 @@ export class EndpointControlPlane {
     timeoutMs = 5000,
   ): Promise<ControlReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = controlServiceSubject(this.space, service, this.owner, this.actor);
+    const reqSubject = controlServiceSubject(this.identity.space, service, this.identity.owner, this.identity.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     const body: ControlRequest = { ...req, from: req.from ?? this.ref() };
     const m = await this.requestBoundReply(this.nc, reqSubject, JSON.stringify(body), reply, timeoutMs);
@@ -242,8 +234,8 @@ export class EndpointControlPlane {
    *  launcher-supplied incarnation the rows are keyed on (ledger-consistent: the §13.1 presence
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
-    const triple = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
-    if (this.acceptedToken === undefined) return triple;
+    const triple = { owner: this.identity.owner, actor: this.identity.actor, uid: this.requireLifecycleUid("invokeService") };
+    if (this.identity.acceptedToken === undefined) return triple;
     if (this.issuedGeneration === undefined) throw new Error("invokeService: the issued generation is not yet discovered on this connection");
     return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
@@ -282,7 +274,7 @@ export class EndpointControlPlane {
         if (q.reply.ok !== true) throw new Error(q.reply.error.message);
         return q.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
       });
-      return await submitAndFollowGoal(this.nc, this.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
+      return await submitAndFollowGoal(this.nc, this.identity.space, endpoint, this.serviceCaller(), deadlineMs, submit, {
         reconcile,
         currentNc: () => this.nc,
         onReconnect: (cb) => {
@@ -344,7 +336,7 @@ export class EndpointControlPlane {
     if (opts.refresh) this.clearResolvedService(endpoint);
     const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
     if (cached) return cached;
-    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
+    const svc = await resolveService(this.nc, this.identity.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal, ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}) });
     if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
   }
@@ -355,7 +347,7 @@ export class EndpointControlPlane {
    *  credential carries no listing binding, because it predates listing issuance or has no expiry. */
   async listingCaller(): Promise<IssuedCaller | undefined> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    return registryListingCaller(this.nc, this.space, this.serviceCaller(), { connId: this.connId, ...(this.presentedExp !== undefined ? { exp: this.presentedExp } : {}) });
+    return registryListingCaller(this.nc, this.identity.space, this.serviceCaller(), { connId: this.identity.connId, ...(this.presentedExp !== undefined ? { exp: this.presentedExp } : {}) });
   }
 
   /** One page of the registry's `endpoints` answer (SPEC 13.20) over this connection
@@ -386,7 +378,7 @@ export class EndpointControlPlane {
   ): Promise<{ unbound: true } | { unbound?: false; reply: EpAttributedReply; page?: RegistryEndpointsOutput }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const own = this.nc;
-    const result = await listRegistryEndpoints(this.space, (deadlineMs, signal) => resolveService(own, this.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
+    const result = await listRegistryEndpoints(this.identity.space, (deadlineMs, signal) => resolveService(own, this.identity.space, REGISTRY_ENDPOINT, this.serviceCaller(), {
       deadlineMs, signal, commands: [REGISTRY_ENDPOINTS_COMMAND],
     }), { nc, ...(listing ? { caller: listing } : {}) }, input, opts);
     if (result.unbound) return result;
@@ -482,7 +474,7 @@ export class EndpointControlPlane {
       const commandCache = classSelected ? this.resolvedCommandServices.get(endpoint) : undefined;
       const cached = commandCache?.get(cacheKey);
       if (cached) return cached;
-      const svc = await resolveService(nc, this.space, endpoint, caller, {
+      const svc = await resolveService(nc, this.identity.space, endpoint, caller, {
         deadlineMs,
         signal,
         commands: needed,
@@ -510,7 +502,7 @@ export class EndpointControlPlane {
       const deadlineMs = retryDeadline === undefined ? invokeOpts.deadlineMs : retryDeadline - Date.now();
       if (deadlineMs !== undefined && deadlineMs <= 0)
         throw new EpEnvelopeError("deadline-exceeded", "the invocation deadline elapsed before publish", undefined, "not-executed");
-      return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, deadlineMs, signal });
+      return invokeCommand(nc, this.identity.space, service, command, args, { ...invokeOpts, deadlineMs, signal });
     };
     // A `failed-precondition` from the resolve is its own refusal, raised before any command was
     // published, so resolving once more is a repair. The repair spends what is left of the same

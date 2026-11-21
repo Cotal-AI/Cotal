@@ -440,8 +440,10 @@ one of the listed names. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
-space registered as open, with or without `--fix`, the report says that the space issues no
-credentials, so there are none to check, and the result is a no-op (exit 0). The same applies after
+space registered as open, with or without `--fix`, the local credential check is a no-op (exit 0).
+If `space add --force` recorded the mode without checking it, `doctor auth` warns with
+`MODE_NOT_CHECKED` and points to `cotal space show <name>` for verification. It makes no claim
+about what that broker enforces. A checked open space has no credentials to inspect. The same applies after
 `cotal down` when this root's stack journal still records that space as open, including with
 `--space` naming it. This is a local mode observation, not proof that a broker is running or accepts
 connections. With `--space` naming
@@ -490,6 +492,11 @@ file, carries the file's profile as `--profile observer` or `--profile admin`, a
 read and post channels and its role as `--allow-subscribe`, `--allow-publish` and `--role`, since
 the replacement is a new key, which holds only the profile and grants its mint names. For an
 observer or admin file it names no managed renewal, as no manager runs one.
+
+Doctor cannot tell from a standing agent credential whether its inbox was provisioned. The printed
+replacement command writes a credential without creating an inbox. To use the replacement with
+`cotal join`, add `--provision` before running the mint while the broker is up, then join with the
+lifecycle UID the mint reports.
 
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows

@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.173.0
+
+### Patch Changes
+
+- f79e065: Jcode startup failures report the full path to the private log, so you can open it from any directory on the host that ran Jcode.
+
 ## 0.172.2
 
 ### Patch Changes

@@ -3,6 +3,7 @@
 // that lost a race with stop, stop the endpoint, and report its native connections. Moved verbatim from
 // endpoint.ts; the endpoint keeps connectAndBind, the supervisor and the retry loop and forwards to these.
 // Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { openChannelRegistry } from "./channels.js";
 import { drainAndClose } from "./connection-cleanup.js";
@@ -21,7 +22,7 @@ import { type NativeConnectionBinding, nativeConnectionBinding } from "./native-
 import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable } from "./subjects.js";
-import type { AgentCard, CotalMessage, ChannelConfig, ChannelDefaults } from "./types.js";
+import type { CotalMessage, ChannelConfig, ChannelDefaults } from "./types.js";
 import { type JetStreamClient, type JetStreamManager, type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
@@ -42,61 +43,33 @@ async function bucketExists(kv: KV): Promise<boolean> {
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointConnectionDeps {
-  bearerSource: () => (() => Promise<string>) | undefined;
   currentBearer: () => string | undefined;
   bearerRenewalFailures: () => number;
   bearerAdoptedAtMs: () => number;
-  credsSource: () => (() => Promise<string>) | undefined;
   currentCreds: () => string | undefined;
-  userMode: () => boolean;
   bearerRefusalSurfaced: () => boolean;
   setBearerRefusalSurfaced: (value: boolean) => void;
   nc: () => NatsConnection | undefined;
   setNc: (value: NatsConnection | undefined) => void;
-  servers: () => string;
-  connId: () => string;
-  card: () => AgentCard;
-  transportPingIntervalMs: () => number | undefined;
-  transportMaxPingOut: () => number | undefined;
-  transportConnectTimeoutMs: () => number | undefined;
-  token: () => string | undefined;
-  user: () => string | undefined;
-  pass: () => string | undefined;
-  sentinelCreds: () => string | undefined;
-  tls: () => boolean;
   watchDeletePermissions: () => WeakMap<object, () => IssuedSubjectPermission | undefined>;
   ownedConnections: () => Set<NatsConnection>;
-  onConnection: () => ((nc: NatsConnection) => void) | undefined;
   js: () => JetStreamClient | undefined;
   setJs: (value: JetStreamClient | undefined) => void;
-  dmOnly: () => DmOnlyOptions | undefined;
-  beforeBind: () => (() => Promise<void>) | undefined;
   stopped: () => boolean;
   setStopped: (value: boolean) => void;
-  acceptedToken: () => string | undefined;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
   issuedGeneration: () => string | undefined;
   setIssuedGeneration: (value: string | undefined) => void;
-  doWatch: () => boolean;
-  doRegister: () => boolean;
   kv: () => KV | undefined;
   setKv: (value: KV | undefined) => void;
   authed: () => boolean;
-  ttlMs: () => number;
-  readOnce: () => boolean;
   sweepTimer: () => ReturnType<typeof setInterval> | undefined;
   setSweepTimer: (value: ReturnType<typeof setInterval> | undefined) => void;
-  doWatchChannels: () => boolean;
-  doConsume: () => boolean;
   channelKv: () => KV | undefined;
   setChannelKv: (value: KV | undefined) => void;
   readsChannelsOnDemand: () => boolean;
   deliveryLease: () => EndpointDeliveryLease;
   jsm: () => JetStreamManager | undefined;
   setJsm: (value: JetStreamManager | undefined) => void;
-  heartbeatMs: () => number;
   heartbeatTimer: () => ReturnType<typeof setInterval> | undefined;
   setHeartbeatTimer: (value: ReturnType<typeof setInterval> | undefined) => void;
   livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
@@ -189,63 +162,35 @@ export interface EndpointConnectionDeps {
 /** One endpoint's connection bind and teardown. Internal: `CotalEndpoint` keeps the fields, connectAndBind,
  *  the supervisor and the retry loop, and forwards to it. */
 export class EndpointConnection {
-  constructor(private readonly deps: EndpointConnectionDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointConnectionDeps) {}
 
-  private get bearerSource() { return this.deps.bearerSource(); }
   private get currentBearer() { return this.deps.currentBearer(); }
   private get bearerRenewalFailures() { return this.deps.bearerRenewalFailures(); }
   private get bearerAdoptedAtMs() { return this.deps.bearerAdoptedAtMs(); }
-  private get credsSource() { return this.deps.credsSource(); }
   private get currentCreds() { return this.deps.currentCreds(); }
-  private get userMode() { return this.deps.userMode(); }
   private get bearerRefusalSurfaced() { return this.deps.bearerRefusalSurfaced(); }
   private set bearerRefusalSurfaced(value: boolean) { this.deps.setBearerRefusalSurfaced(value); }
   private get nc() { return this.deps.nc(); }
   private set nc(value: NatsConnection | undefined) { this.deps.setNc(value); }
-  private get servers() { return this.deps.servers(); }
-  private get connId() { return this.deps.connId(); }
-  private get card() { return this.deps.card(); }
-  private get transportPingIntervalMs() { return this.deps.transportPingIntervalMs(); }
-  private get transportMaxPingOut() { return this.deps.transportMaxPingOut(); }
-  private get transportConnectTimeoutMs() { return this.deps.transportConnectTimeoutMs(); }
-  private get token() { return this.deps.token(); }
-  private get user() { return this.deps.user(); }
-  private get pass() { return this.deps.pass(); }
-  private get sentinelCreds() { return this.deps.sentinelCreds(); }
-  private get tls() { return this.deps.tls(); }
   private get watchDeletePermissions() { return this.deps.watchDeletePermissions(); }
   private get ownedConnections() { return this.deps.ownedConnections(); }
-  private get onConnection() { return this.deps.onConnection(); }
   private get js() { return this.deps.js(); }
   private set js(value: JetStreamClient | undefined) { this.deps.setJs(value); }
-  private get dmOnly() { return this.deps.dmOnly(); }
-  private get beforeBind() { return this.deps.beforeBind(); }
   private get stopped() { return this.deps.stopped(); }
   private set stopped(value: boolean) { this.deps.setStopped(value); }
-  private get acceptedToken() { return this.deps.acceptedToken(); }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
   private get issuedGeneration() { return this.deps.issuedGeneration(); }
   private set issuedGeneration(value: string | undefined) { this.deps.setIssuedGeneration(value); }
-  private get doWatch() { return this.deps.doWatch(); }
-  private get doRegister() { return this.deps.doRegister(); }
   private get kv() { return this.deps.kv(); }
   private set kv(value: KV | undefined) { this.deps.setKv(value); }
   private get authed() { return this.deps.authed(); }
-  private get ttlMs() { return this.deps.ttlMs(); }
-  private get readOnce() { return this.deps.readOnce(); }
   private get sweepTimer() { return this.deps.sweepTimer(); }
   private set sweepTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setSweepTimer(value); }
-  private get doWatchChannels() { return this.deps.doWatchChannels(); }
-  private get doConsume() { return this.deps.doConsume(); }
   private get channelKv() { return this.deps.channelKv(); }
   private set channelKv(value: KV | undefined) { this.deps.setChannelKv(value); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private get deliveryLease() { return this.deps.deliveryLease(); }
   private get jsm() { return this.deps.jsm(); }
   private set jsm(value: JetStreamManager | undefined) { this.deps.setJsm(value); }
-  private get heartbeatMs() { return this.deps.heartbeatMs(); }
   private get heartbeatTimer() { return this.deps.heartbeatTimer(); }
   private set heartbeatTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setHeartbeatTimer(value); }
   private get livenessResponders() { return this.deps.livenessResponders(); }
@@ -340,13 +285,13 @@ export class EndpointConnection {
     // cached token is past its renewal window (a rebuild after a long outage would otherwise
     // present a dead bearer). While renewals are failing, their retry timer owns the source: a
     // fetch here too would add one call to the exchange per rebuild attempt.
-    if (this.bearerSource) {
+    if (this.identity.bearerSource) {
       if (!this.currentBearer) await this.refreshBearer(true);
       else if (this.bearerRenewalFailures === 0 && Date.now() >= bearerRenewalDeadlineMs(this.currentBearer, this.bearerAdoptedAtMs)) await this.refreshBearer();
     }
     // Creds-source endpoints likewise fetch before the FIRST connect, and re-fetch on a rebuild
     // whose cached cred is expired or inside its renewal window.
-    if (this.credsSource) {
+    if (this.identity.credsSource) {
       const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
       if (stale) await this.refreshCreds(!this.currentCreds);
     }
@@ -358,7 +303,7 @@ export class EndpointConnection {
     // The loop's capped backoff paces the retries and re-enters this method, and a renewal that
     // starts working ends its wait; an endpoint with no bearer source cannot renew at all, and says
     // so. The refusal is surfaced once per outage: the loop retries a repeat without a notice.
-    if (this.userMode) {
+    if (this.identity.userMode) {
       try {
         this.bearerForWire();
         this.bearerRefusalSurfaced = false;
@@ -378,13 +323,13 @@ export class EndpointConnection {
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
     let watchDeletePermission: IssuedSubjectPermission | undefined;
-    this.nc = await dialerFor(this.servers)({
-      servers: this.servers,
+    this.nc = await dialerFor(this.identity.servers)({
+      servers: this.identity.servers,
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
       noAsyncTraces: true,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
       // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
-      name: this.userMode ? this.connId : `cotal:${this.card.name}`,
+      name: this.identity.userMode ? this.identity.connId : `cotal:${this.identity.card.name}`,
       // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
       // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
       // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
@@ -392,10 +337,10 @@ export class EndpointConnection {
       // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
       // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
       // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
-      inboxPrefix: `_INBOX_${this.connId}`,
-      ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
-      ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
-      ...(this.transportConnectTimeoutMs === undefined ? {} : { timeout: this.transportConnectTimeoutMs }),
+      inboxPrefix: `_INBOX_${this.identity.connId}`,
+      ...(this.identity.transportPingIntervalMs === undefined ? {} : { pingInterval: this.identity.transportPingIntervalMs }),
+      ...(this.identity.transportMaxPingOut === undefined ? {} : { maxPingOut: this.identity.transportMaxPingOut }),
+      ...(this.identity.transportConnectTimeoutMs === undefined ? {} : { timeout: this.identity.transportConnectTimeoutMs }),
       // The bearer rides the CHECKED getter: nats.js re-evaluates the token authenticator per
       // (re)connect attempt, so internal reconnects present whatever refreshBearer last fetched,
       // and refuse a token that has expired since, as the creds getter does.
@@ -408,7 +353,7 @@ export class EndpointConnection {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined, bearer: this.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls,
+      ...authOpts({ token: this.identity.token, user: this.identity.user, pass: this.identity.pass, creds: this.currentCreds !== undefined || this.identity.credsSource ? () => this.presentCreds() : undefined, bearer: this.identity.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
         onCreds: (creds) => {
           watchDeletePermission = undefined;
           try {
@@ -427,7 +372,7 @@ export class EndpointConnection {
     this.ownedConnections.add(this.nc);
     const owned = this.nc;
     void owned.closed().then(() => this.ownedConnections.delete(owned));
-    this.onConnection?.(this.nc);
+    this.identity.onConnection?.(this.nc);
     requireBrokerFloor(this.nc);
     this.armAuthExpiryReconnectFence(this.nc);
     this.watchStatus();
@@ -436,10 +381,10 @@ export class EndpointConnection {
     // DM-only (EndpointOptions.dmOnly): the own DM durable is the whole binding. Nothing below runs:
     // no accepted-row read, presence, channel registry, JetStream manager, lease, membership,
     // Plane-3 or liveness responder, so the credential needs no row for any of them.
-    if (this.dmOnly) {
-      await this.beforeBind?.();
+    if (this.identity.dmOnly) {
+      await this.identity.beforeBind?.();
       if (this.stopped) return;
-      await this.bindDmOnly(this.dmOnly);
+      await this.bindDmOnly(this.identity.dmOnly);
       if (this.stopped) return;
       this.emit("connection", { connected: true });
       return;
@@ -450,33 +395,33 @@ export class EndpointConnection {
     // connection's own per-key grant. What comes back must name this incarnation, and a fresh
     // connection re-reads it: the generation is bound to the credential the transport presented,
     // never to a file that may have been replaced under it.
-    if (this.acceptedToken !== undefined) {
-      const ref = await readAcceptedRow(this.nc, this.space, this.acceptedToken);
+    if (this.identity.acceptedToken !== undefined) {
+      const ref = await readAcceptedRow(this.nc, this.identity.space, this.identity.acceptedToken);
       const uid = this.requireLifecycleUid("an issued endpoint");
-      if (ref.owner !== this.owner || ref.actor !== this.actor || ref.uid !== uid)
-        throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
+      if (ref.owner !== this.identity.owner || ref.actor !== this.identity.actor || ref.uid !== uid)
+        throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.identity.owner}.${this.identity.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
       this.issuedGeneration = ref.generation;
     }
 
-    await this.beforeBind?.();
+    await this.identity.beforeBind?.();
     if (this.stopped) return;
 
     // A one-shot observer must not initialize an open space just to read it.
-    const createBuckets = !this.authed && !this.readOnce;
-    if (this.doWatch || this.doRegister) {
+    const createBuckets = !this.authed && !this.identity.readOnce;
+    if (this.identity.doWatch || this.identity.doRegister) {
       const kvm = new Kvm(this.nc);
       this.kv = createBuckets
-        ? await kvm.create(presenceBucket(this.space), { ttl: this.ttlMs, storage: PRESENCE_STORAGE })
-        : await kvm.open(presenceBucket(this.space));
-      if (!this.authed && this.readOnce && !(await bucketExists(this.kv))) this.kv = undefined;
+        ? await kvm.create(presenceBucket(this.identity.space), { ttl: this.identity.ttlMs, storage: PRESENCE_STORAGE })
+        : await kvm.open(presenceBucket(this.identity.space));
+      if (!this.authed && this.identity.readOnce && !(await bucketExists(this.kv))) this.kv = undefined;
     }
 
-    if (this.doWatch && this.readOnce) await this.readPresenceOnce();
-    else if (this.doWatch) {
+    if (this.identity.doWatch && this.identity.readOnce) await this.readPresenceOnce();
+    else if (this.identity.doWatch) {
       await this.startPresenceWatch();
       this.sweepTimer = setInterval(
         () => this.sweep(),
-        Math.max(500, Math.floor(this.ttlMs / 3)),
+        Math.max(500, Math.floor(this.identity.ttlMs / 3)),
       );
     }
 
@@ -485,11 +430,11 @@ export class EndpointConnection {
     // supervisor (watchChannels:false, consume:false) skips it entirely — it needs no channel cache,
     // so its scoped cred holds no channel-registry read (residual 2). Auth mode OPENs the bucket
     // pre-created at `cotal up`; an open live endpoint can lazily create it.
-    const watchChannels = this.doWatch && this.doWatchChannels;
-    if (watchChannels || this.doConsume) {
-      this.channelKv = await openChannelRegistry(this.nc, this.space, { create: createBuckets });
-      if (!this.authed && this.readOnce && !(await bucketExists(this.channelKv))) this.channelKv = undefined;
-      if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
+    const watchChannels = this.identity.doWatch && this.identity.doWatchChannels;
+    if (watchChannels || this.identity.doConsume) {
+      this.channelKv = await openChannelRegistry(this.nc, this.identity.space, { create: createBuckets });
+      if (!this.authed && this.identity.readOnce && !(await bucketExists(this.channelKv))) this.channelKv = undefined;
+      if (watchChannels) await (this.identity.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
       // A seat reads the registry on demand, as it reads the roster; this first read fills the cache
       // its boot briefing renders from.
       else if (this.readsChannelsOnDemand) await this.readChannels();
@@ -508,13 +453,13 @@ export class EndpointConnection {
     // delivery daemon, one-shot CLI probes) bind no lifecycle-keyed names and stay outside the
     // rule; open/token mode self-minted at construction, so this only ever throws for a
     // mis-launched AUTH endpoint.
-    if (this.authed && (this.doConsume || this.doRegister))
-      this.requireLifecycleUid(this.doConsume ? "an authed consuming endpoint" : "an authed presence-registering endpoint");
+    if (this.authed && (this.identity.doConsume || this.identity.doRegister))
+      this.requireLifecycleUid(this.identity.doConsume ? "an authed consuming endpoint" : "an authed presence-registering endpoint");
 
     // Consumers bind BEFORE presence publishes: the durable bind is the broker's proof that this
     // incarnation's lifecycle-keyed names match its minted grants, so a wrong-uid launch dies
     // with NO presence ghost instead of advertising an agent that can never receive.
-    if (this.doConsume) {
+    if (this.identity.doConsume) {
       this.jsm = await jetstreamManager(this.nc);
       // Open mode: lazily create the streams on the first endpoint. Auth mode: they are
       // pre-created at `cotal up` and STREAM.CREATE is denied to agents, so skip.
@@ -531,19 +476,19 @@ export class EndpointConnection {
     // does not exist, so the info throws and presence never publishes. Only for `kind: "agent"`
     // (a peer on the roster); pure `kind: "endpoint"` infra (manager, delivery, feedback intake)
     // holds no dm_ durable and stays exempt.
-    if (this.doRegister && !this.doConsume && this.authed && this.card.kind === "agent") {
+    if (this.identity.doRegister && !this.identity.doConsume && this.authed && this.identity.card.kind === "agent") {
       const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
       const uid = this.requireLifecycleUid("an authed presence-registering agent");
       try {
-        await jsm.consumers.info(dmStream(this.space), dmDurable(this.owner, this.actor, uid));
+        await jsm.consumers.info(dmStream(this.identity.space), dmDurable(this.identity.owner, this.identity.actor, uid));
       } catch (e) {
         throw new Error(
-          `lifecycle proof failed for ${this.card.id} (uid ${uid}): its dm_ durable is not present at the broker, so this incarnation's uid does not match its provisioned resources - refusing to publish presence (SPEC 13.1 fail-before-presence): ${(e as Error)?.message ?? String(e)}`,
+          `lifecycle proof failed for ${this.identity.card.id} (uid ${uid}): its dm_ durable is not present at the broker, so this incarnation's uid does not match its provisioned resources - refusing to publish presence (SPEC 13.1 fail-before-presence): ${(e as Error)?.message ?? String(e)}`,
         );
       }
     }
 
-    if (this.doRegister) {
+    if (this.identity.doRegister) {
       // #1356: this await is bounded already — a refused presence write returns no response at all,
       // so it surfaces as the JetStream request TIMEOUT (~5s), once, with no retry here. What it did
       // NOT do was say what failed: the bare `timeout` names no bucket, no space and no subsystem,
@@ -556,7 +501,7 @@ export class EndpointConnection {
       } catch (e) {
         const detail = (e as Error)?.message ?? String(e);
         throw new Error(
-          `presence registration failed for ${this.card.id}: the space's presence KV bucket "${presenceBucket(this.space)}" did not accept this endpoint's first write (${detail}). The bucket can be OPENED and WATCHED while refusing every write, so a healthy-looking connection does not rule this out; a broker whose store has latched refuses until it is restarted, and no client can clear it (#1356).`,
+          `presence registration failed for ${this.identity.card.id}: the space's presence KV bucket "${presenceBucket(this.identity.space)}" did not accept this endpoint's first write (${detail}). The bucket can be OPENED and WATCHED while refusing every write, so a healthy-looking connection does not rule this out; a broker whose store has latched refuses until it is restarted, and no client can clear it (#1356).`,
         );
       }
       // Beat at this endpoint's own phase. A repeating timer re-arms from the instant its callback
@@ -567,7 +512,7 @@ export class EndpointConnection {
       const phase = Date.now();
       let beat = 0;
       const arm = () => {
-        const next = nextHeartbeat(phase, this.heartbeatMs, beat, Date.now());
+        const next = nextHeartbeat(phase, this.identity.heartbeatMs, beat, Date.now());
         beat = next.beat;
         const handle = setTimeout(() => {
           this.publishPresence().catch((e) => this.emitRecoverable(e as Error));
@@ -834,7 +779,7 @@ export class EndpointConnection {
     this.stopDeliveryLeaseWatch();
     await Promise.all(principalStops);
     try {
-      if (this.doRegister) {
+      if (this.identity.doRegister) {
         await this.presence.publishOffline();
       }
     } catch {
@@ -844,8 +789,8 @@ export class EndpointConnection {
     // DM-only: the pull above is stopped, so no new copy reaches the handler. Let a running handler
     // settle while the connection is still open, so its ack can reach the broker; close either way.
     let dmOnlyUnsettled = false;
-    if (this.dmOnly && this.dmOnlyInFlight) {
-      const settleMs = this.dmOnly.settleTimeoutMs ?? 30_000;
+    if (this.identity.dmOnly && this.dmOnlyInFlight) {
+      const settleMs = this.identity.dmOnly.settleTimeoutMs ?? 30_000;
       dmOnlyUnsettled = await withDeadline(this.dmOnlyInFlight.then(() => false), settleMs, () => new Error("unsettled"))
         .catch(() => true);
     }
@@ -863,7 +808,7 @@ export class EndpointConnection {
     if ([...this.ownedConnections].some((nc) => !nc.isClosed()))
       throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
     if (dmOnlyUnsettled)
-      throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
+      throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.identity.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
   }
 
   /** The native binding of every connection this endpoint holds. A host compares the list with a

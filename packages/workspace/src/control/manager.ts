@@ -53,6 +53,7 @@ import { controlCaller, type ControlAuth } from "../control-target.js";
 import { staleStoreHint } from "../maintenance.js";
 import { brokerUrlKey, findMesh } from "../mesh-registry.js";
 import { CommandFailure, isCommandFailure, nativeEndpointRefusal, type RefusalCode } from "../output.js";
+import { codeSpan } from "../text-wrap.js";
 import { presenceSeat } from "./seat-presence.js";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, notAdmittedRefusal } from "./dial-retry.js";
 
@@ -328,13 +329,13 @@ export type ManagerReply = ControlReply & {
 /** Classify only a proved pre-effect refusal as refused; a missing effect outcome is not proof.
  *  Every message names the agent when the target carries one and ends with the manager's own
  *  reason, kept to one line. */
-export function managerFailure(reply: ManagerReply, operation: string, target: unknown): CommandFailure {
+export function managerFailure(reply: ManagerReply, operation: string, target: unknown, rosterCommand = "cotal ps"): CommandFailure {
   const native = { code: reply.code, outcome: reply.nativeOutcome, ...(reply.preSubmitRefusal ? { detail: { phase: "target-resolution", actionSubmitted: false } } : reply.request || reply.intent ? { detail: { request: reply.request ?? null, intent: reply.intent ?? null, observation: reply.observationCause ?? null } } : {}) };
   const code = reply.preSubmitRefusal ? reply.targetRefusal ?? nativeEndpointRefusal(reply.code) : nativeEndpointRefusal(reply.code);
   const agent = (target as { agent?: unknown } | null)?.agent;
   const what = typeof agent === "string" ? `${operation} for agent "${oneLine(agent)}"` : operation;
   const reason = reply.error ? `: ${oneLine(reply.error)}` : "";
-  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: "run `cotal ps` to check the selected manager and agent name" });
+  if (reply.preSubmitRefusal && code) return new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : `${operation} was not submitted because its target could not be resolved`, { target, native, remedy: `run ${codeSpan(rosterCommand)} to check the selected manager and agent name` });
   if (reply.nativeOutcome === "not-executed" && code) return new CommandFailure("refused", code, `the manager refused ${what} before execution${reason}`, { target, native, remedy: "nothing ran; fix what the manager reported, then run the command again" });
   if (reply.nativeOutcome === "executed" && !reply.unanswered) return new CommandFailure("failed", "OPERATION_FAILED", `the manager reported that ${what} failed${reason}`, { target, native });
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", `the manager did not confirm the outcome of ${what}; it was not submitted again${reason}`, { target, native, remedy: "inspect the recorded manager, request and target before retrying" });

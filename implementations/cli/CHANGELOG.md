@@ -1,5 +1,43 @@
 # @cotal-ai/cli
 
+## 0.173.0
+
+### Patch Changes
+
+- c2013e2: Broker-only `up` receipts no longer suggest adding a manager the broker's payload limit cannot support. When the limit is below the minimum a manager starts on, the Next step names stopping the broker and restarting it with a payload it can start on instead of the bare `up` that would refuse.
+- e489bae: Clarify which output flags work with `up`, what `down --dry-run` inspects, how to prepare a space for `service add`, and how to supply a feedback key safely.
+- 980dd2f: Reject invalid simulation clock durations before running the workflow, and keep the supplied arguments in the retry commands for `run answer` and `run check`.
+- 1373059: Move the down command's state-preserving stop and pidfile liveness reads out of `down.ts` into an internal `down-preserve.ts`. `down.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 1012df9: Keep browser terminal sessions on the broker's WebSocket port when `cotal up` restarts only the broker or only the manager.
+- 0f566cd: A controller stack's `down` refusal for a shared broker now names the blocking registration and gives a usable next step. When another registration names the stack's exact broker address, the human-readable refusal names each blocking space with its `cotal space show`, its `cotal space forget --plain`, and the down to run again, instead of refusing without identifying the registration. The guard itself is unchanged: the broker is not stopped under the other registration, and nothing is forgotten automatically.
+- b330b93: The foreground startup smoke test waits for the full degraded control-plane notice so a slow stderr reader does not cause a false failure.
+- 1db7cda: When a foreground stack is already held by another terminal, include its launching Cotal home in the suggested stop and retry commands if it differs from the current home.
+- e8a6028: The CLI accepts service names in explicit subcommand help and suggests only options for the selected subcommand.
+- 780a9bf: When a space was registered without checking its broker, `cotal whoami` now suggests `cotal space show <name>`. Following the advice keeps the registration and selection even if the broker is offline.
+- 5e1c467: Show an open stack's stopped manager and running broker, retain occupied-port guidance after a refused restart, and report unwritable custom stores in status and ps.
+- dc60a3b: Manager directory commands now tell you to pass an absolute path on the manager host when you supply a relative one. The CLI reports a confirmed refusal without echoing the supplied path.
+- 5beae54: Direct spawn selects catalog names ending in `.md` correctly, and spawn and local persona listings reject files with invalid UTF-8.
+- 871b5b3: Automatically select the only running space when an unchecked registration points to an open broker that does not serve it.
+- c20f63c: Backup creation retries now quote paths with spaces for a POSIX shell. If a path cannot be displayed unchanged, the CLI asks you to rerun your original command instead.
+- 1bd7817: Quote project path and space name in whoami registration retry remedies when they contain spaces or special characters.
+- 721c9ee: Leave built-in connector installations untouched when `cotal backup restore` refuses a project with no preserved cut.
+- 7adb660: When `cotal clean restore-fallback` finds no maintenance record, it asks you to check the original project folder and verify the attempt ID without claiming the restore has settled.
+- 3a33c68: Space inventory includes the required root outside a project, and `space show` helps verify unchecked registrations without removing them or clearing the selection.
+- 97bdb7d: `cotal channel show <name> --json` returns only the requested channel's metadata and the space defaults. Use `cotal channel --json` to list all saved entries.
+- 4ac75d7: Doctor auth explains how to make a standing agent credential replacement ready to join. The file-only command stays available for offline minting. Add `--provision` when the replacement needs an inbox.
+- f4bbffa: `cotal team deploy` now names missing manifest files and directories and gives the same remedies as its dry run.
+- a08c4dd: `cotal team deploy` recommends live channels on open meshes instead of suggesting a durable channel command that will fail there.
+- 4b80fa0: Show how to restore an unavailable local delivery responder instead of suggesting spawn, and keep unused delivery from turning a stopped open broker into a component probe refusal.
+- 48ed7e4: Select a space without installing or updating connectors.
+- 8087bea: Include the resolved space in both `cotal watch --json` records when startup refuses a stopped space.
+- Updated dependencies [e268f34]
+- Updated dependencies [e489bae]
+- Updated dependencies [7bce605]
+- Updated dependencies [5beae54]
+- Updated dependencies [871b5b3]
+  - @cotal-ai/core@0.173.0
+  - @cotal-ai/workspace@0.173.0
+
 ## 0.172.2
 
 ### Patch Changes

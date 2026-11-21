@@ -111,6 +111,7 @@ const isolatedEnv: NodeJS.ProcessEnv = {
   COTAL_HOME: join(home, ".cotal"),
   XDG_CONFIG_HOME: xdg,
   COTAL_SKIP_CONNECTOR_SEED: "1",
+  DO_NOT_TRACK: "1",
   NO_COLOR: "1",
 };
 

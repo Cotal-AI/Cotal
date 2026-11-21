@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
+import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -229,11 +229,26 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
   return undefined;
 }
 
-/** Why the broker at `root` cannot start on its recorded store, or the default `.cotal/nats`. */
-export function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
+/** Check the store a restart opens, with an explicit path taking precedence over its records. */
+export function startupStoreProblem(root: string, storeDir?: string): ReturnType<typeof storeWriteProblem> {
+  if (storeDir !== undefined) return storeWriteProblem(resolve(storeDir));
+  const defaultStore = join(root, ".cotal", "nats");
   let recorded: string | undefined;
   try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
-  try { return storeWriteProblem(recorded ?? join(root, ".cotal", "nats")); } catch { return undefined; }
+  if (recorded === undefined) {
+    const local = localMeshesForRoot(root);
+    recorded = local.length === 1 ? local[0]!.storeDir : undefined;
+    if (recorded === undefined && !existsSync(join(defaultStore, "jetstream"))) {
+      const served = lastServedStores(root, defaultStore);
+      if (served.length === 1) recorded = served[0];
+    }
+  }
+  return storeWriteProblem(recorded ?? defaultStore);
+}
+
+/** A write permission problem established during a read-only diagnosis. */
+export function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
+  try { return startupStoreProblem(root); } catch { return undefined; }
 }
 
 /** The `store_dir` a broker configuration names for `storeDir`: relative to `root` when the store

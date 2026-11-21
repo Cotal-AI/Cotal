@@ -1,6 +1,7 @@
 // The Plane-3 registries, leases and durable membership writes of CotalEndpoint, as an internal
 // component. Moved verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to
 // them. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { jetstream, jetstreamManager, JetStreamApiCodes, type JetStreamClient, type JetStreamManager, type ConsumerInfo, type JetStreamPublishOptions } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -13,7 +14,7 @@ import type { ManagerLeaseInfo } from "./lease.js";
 import { openMembersRegistry, commitMemberRevision, tombstoneMember, activateMember, readMember, deleteMember, listMembers } from "./members.js";
 import { MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS } from "./streams.js";
 import { chatStream, dinboxSubject, FANOUT_DURABLE, isConcreteChannel, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, managerLeaseKey, memberKey, parsePrincipalKey } from "./subjects.js";
-import type { AgentCard, DeliveryClass, MembershipRecord, Plane3Entry } from "./types.js";
+import type { DeliveryClass, MembershipRecord, Plane3Entry } from "./types.js";
 
 /** What the durable backstop reads from its endpoint. State is read when it is used, never copied,
  *  and every method is looked up on the endpoint at call time. The connection-scoped handles stay
@@ -23,8 +24,6 @@ export interface EndpointDurableBackstopDeps {
   js: () => JetStreamClient | undefined;
   jsm: () => JetStreamManager | undefined;
   setJsm: (manager: JetStreamManager) => void;
-  space: () => string;
-  card: () => AgentCard;
   authed: () => boolean;
   channelKv: () => KV | undefined;
   presence: () => EndpointPresence;
@@ -49,14 +48,12 @@ export interface EndpointDurableBackstopDeps {
  *  registries, the manager and daemon-renewal leases, and the durable join and leave writes the
  *  delivery daemon serves. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointDurableBackstop {
-  constructor(private readonly deps: EndpointDurableBackstopDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointDurableBackstopDeps) {}
 
   private get nc() { return this.deps.nc(); }
   private get js() { return this.deps.js(); }
   private get jsm() { return this.deps.jsm(); }
   private set jsm(manager: JetStreamManager | undefined) { if (manager) this.deps.setJsm(manager); }
-  private get space() { return this.deps.space(); }
-  private get card() { return this.deps.card(); }
   private get authed() { return this.deps.authed(); }
   private get channelKv() { return this.deps.channelKv(); }
   private get presence() { return this.deps.presence(); }
@@ -81,7 +78,7 @@ export class EndpointDurableBackstop {
   /** Lazily open the privileged members registry KV (delivery daemon / open-mode self). */
   async membersRegistry(): Promise<KV> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    this.membersKv ??= await openMembersRegistry(this.nc, this.space);
+    this.membersKv ??= await openMembersRegistry(this.nc, this.identity.space);
     return this.membersKv;
   }
 
@@ -89,7 +86,7 @@ export class EndpointDurableBackstop {
    *  ACL at mint); the delivery daemon reads it fresh per durable entry to re-authorize. */
   async aclRegistry(): Promise<KV> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    this.aclKv ??= await openAclRegistry(this.nc, this.space);
+    this.aclKv ??= await openAclRegistry(this.nc, this.identity.space);
     return this.aclKv;
   }
 
@@ -155,15 +152,15 @@ export class EndpointDurableBackstop {
     // every op on it is a single small keyed request, and nothing else shares this client.
     const kvm = new Kvm(jetstream(this.nc, { timeout: MANAGER_LEASE_ATTEMPT_MS }));
     if (this.authed) {
-      this.managerLeaseKv = await kvm.open(managerBucket(this.space));
+      this.managerLeaseKv = await kvm.open(managerBucket(this.identity.space));
     } else {
       try {
-        this.managerLeaseKv = await kvm.create(managerBucket(this.space), { ttl: MANAGER_LEASE_TTL_MS });
+        this.managerLeaseKv = await kvm.create(managerBucket(this.identity.space), { ttl: MANAGER_LEASE_TTL_MS });
       } catch {
         // OPEN mode has no broker ACLs, so a permission denial is impossible here. `create` is only
         // the ensure-exists attempt; `open` below is the authority after either a pre-existing bucket
         // or a create race, and it still throws if the bucket cannot actually be used.
-        this.managerLeaseKv = await kvm.open(managerBucket(this.space));
+        this.managerLeaseKv = await kvm.open(managerBucket(this.identity.space));
       }
     }
     return this.managerLeaseKv;
@@ -283,8 +280,8 @@ export class EndpointDurableBackstop {
     if (!this.nc) return undefined;
     try {
       const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
-      const stream = `KV_${managerBucket(this.space)}`;
-      const prefix = `$KV.${managerBucket(this.space)}.${MANAGER_LEASE_KEY}.`;
+      const stream = `KV_${managerBucket(this.identity.space)}`;
+      const prefix = `$KV.${managerBucket(this.identity.space)}.${MANAGER_LEASE_KEY}.`;
       // STREAM.INFO to learn WHICH instance keys exist, then one point-get per key. NOT a bucket
       // scan: `liveKvEntries` binds a push consumer, and this principal's grant on this bucket is
       // STREAM.INFO + STREAM.MSG.GET + the `lease.*` publish only (`provision.ts`, supervisor). A
@@ -389,7 +386,7 @@ export class EndpointDurableBackstop {
     if (!this.js) return;
     const p = parsePrincipalKey(principal);
     if (!p) throw new Error(`publishDinbox: "${principal}" is not a valid member principal <owner>.<actor>`);
-    await this.js.publish(dinboxSubject(this.space, p.owner, p.actor, lifecycleUid), JSON.stringify(entry), {
+    await this.js.publish(dinboxSubject(this.identity.space, p.owner, p.actor, lifecycleUid), JSON.stringify(entry), {
       // JetStream dedupe is STREAM-WIDE, so the id must carry the LIFECYCLE too: with an alias-keyed
       // id, lifecycle A's copy would suppress a same-alias successor B's copy of the same message —
       // cross-lifecycle suppression, not dedup. It carries no row generation: two rows of one
@@ -401,7 +398,7 @@ export class EndpointDurableBackstop {
   /** The fan-out consumer's delivered stream-seq — the activation-fence upper bound (red-team
    *  BLOCKER-1: the shared fan-out cursor advances independently of the stream frontier). */
   private async fanoutDeliveredSeq(): Promise<number> {
-    const info = await this.consumerInfo(chatStream(this.space), FANOUT_DURABLE);
+    const info = await this.consumerInfo(chatStream(this.identity.space), FANOUT_DURABLE);
     return info?.delivered?.stream_seq ?? 0;
   }
 
@@ -451,7 +448,7 @@ export class EndpointDurableBackstop {
     const generation = open ? existing!.record.generation : (existing?.record.generation ?? 0) + 1;
     const base: MembershipRecord = {
       channel, owner, lifecycleUid, state: "durable-active", joinCursor, generation,
-      activated: false, writerIdentity: this.card.id, updatedAt: Date.now(),
+      activated: false, writerIdentity: this.identity.card.id, updatedAt: Date.now(),
     };
     if (!open) {
       if (opts.aclFence && !(await this.aclAllows(owner, lifecycleUid, channel)))
@@ -506,6 +503,6 @@ export class EndpointDurableBackstop {
     const kv = await this.membersRegistry();
     // expectedGeneration (captured by the agent at durableJoin) refuses a stale leave from tombstoning
     // a newer rejoin (StaleMembershipWrite) — a durable-disable primitive otherwise.
-    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.chatFrontier(), this.card.id, expectedGeneration);
+    await tombstoneMember(kv, channel, owner, lifecycleUid, await this.chatFrontier(), this.identity.card.id, expectedGeneration);
   }
 }

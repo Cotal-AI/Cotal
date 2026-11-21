@@ -31,6 +31,8 @@ If the selected entry no longer exists, the command refuses with `TARGET_NOT_FOU
 
 With no selection, Cotal first uses the current project's `.cotal/`.
 Outside a project, it uses the only running mesh or refuses an ambiguous choice when several are running.
+If a competing unchecked open registration names a space its broker does not serve, automatic
+selection skips that record without removing it.
 The `(default)` marker in `cotal meshes` marks the selected entry.
 
 `cotal up` records a local mesh's broker URL, project root, and authentication mode in `~/.cotal/meshes/space.<key>.json`.

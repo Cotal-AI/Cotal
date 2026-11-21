@@ -879,14 +879,31 @@ try {
           res.code === 2 && /Outcome:\s+refused/.test(res.out) && /Code:\s+UNSUPPORTED/.test(res.out) && /Next[\s\S]*without --creds/.test(res.out), res);
       }
 
-      // #7541: doctor auth includes --provision (and quotes paths) when repairing an expired exported --provision join credential.
+      // Exported credentials carry a provisioning record. Standing credentials do not.
       const spacedJoinCreds = join(exports, "with space", "exp1s.creds");
       const provMinted = await runMint(["j_exp", "--expires-in", "2", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--out", spacedJoinCreds, "--json"]);
       check("the two-second minimum still provisions and writes a credential", provMinted.code === 0 && existsSync(spacedJoinCreds), provMinted.out);
+      const standingMint = await runMint(["standing_join", "--expires-in", "4", "--provision", "--allow-subscribe", "general", "--json"]);
+      type MintReceipt = { result: { expiresAt: number; lifecycleUid: string; provisioned: boolean } };
+      check("mint issues a short-lived standing join credential", standingMint.code === 0, standingMint.out);
+      const { result: standing } = JSON.parse(standingMint.out) as MintReceipt;
+      check("the standing credential was provisioned with an expiry", standing.provisioned && Number.isInteger(standing.expiresAt), standing);
       await wait(2100);
+      await wait(Math.max(0, standing.expiresAt * 1000 - Date.now() + 100));
       const docExp = await runCotal(["doctor", "auth", "--space", "offlinecheck", "--json"]);
       const docExpLine = docExp.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
-      const docExpEnv = docExpLine ? JSON.parse(docExpLine) as { result?: { exported?: { path: string; state: string; repair: string | null }[] } } : {};
+      type DoctorRow = { label: string; path: string; state: string; repair: string | null };
+      const docExpEnv = docExpLine ? JSON.parse(docExpLine) as { result?: { exported?: DoctorRow[]; items?: DoctorRow[] } } : {};
+      const standingRow = docExpEnv.result?.items?.find((r) => r.label === "standing_join.creds");
+      check("doctor auth distinguishes a file-only standing replacement from a join-ready one",
+        docExp.code === 5 && standingRow?.state === "expired"
+          && standingRow.repair?.includes("auth mint standing_join --replace --space offlinecheck --allow-subscribe general --allow-publish '' --no-persona`") === true
+          && /file-only replacement.*join-ready replacement.*`--provision`.*broker.*lifecycle UID/.test(standingRow.repair), standingRow);
+      const standingReplaced = await runMint(["standing_join", "--replace", "--space", "offlinecheck", "--provision", "--allow-subscribe", "general", "--allow-publish", "", "--no-persona", "--json"]);
+      check("the join-ready standing replacement succeeds", standingReplaced.code === 0, standingReplaced.out);
+      const { result: replacement } = JSON.parse(standingReplaced.out) as MintReceipt;
+      check("the standing replacement provisions a fresh lifecycle",
+        replacement.provisioned && /^[a-z0-9]{26,32}$/.test(replacement.lifecycleUid) && replacement.lifecycleUid !== standing.lifecycleUid, replacement);
       const expRow = (docExpEnv.result?.exported ?? []).find((r) => r.path === spacedJoinCreds);
       check("#7541: doctor auth expired repair includes --provision and shell-quotes the exported path",
         expRow?.state === "expired" && expRow.repair?.includes("--provision") === true && expRow.repair.includes(`'${spacedJoinCreds}'`), expRow);

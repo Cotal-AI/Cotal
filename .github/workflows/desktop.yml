@@ -34,6 +34,8 @@ on:
       - '.github/workflows/desktop.yml'
 permissions:
   contents: read
+env:
+  DO_NOT_TRACK: '1'
 concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true

@@ -1,14 +1,13 @@
 // The boot durable memberships of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { isChannelFamily, isConcreteChannel } from "./subjects.js";
 import type { ControlReply, DeliveryClass } from "./types.js";
 
 /** What the boot-membership component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointBootMembershipsDeps {
-  channels: () => string[];
   plane3Channels: () => Map<string, number>;
-  pendingBootJoins: () => Set<string>;
   stopped: () => boolean;
   requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
@@ -24,11 +23,16 @@ export interface EndpointBootMembershipsDeps {
  *  check the leave path and the delivery-health surface use. Internal: `CotalEndpoint` keeps the
  *  public methods and forwards to it. */
 export class EndpointBootMemberships {
-  constructor(private readonly deps: EndpointBootMembershipsDeps) {}
+  /** Boot durable channels whose self-join hasn't yet established a membership (daemon down/absent at
+   *  first connect, or a transient `durable:false`). {@link reconcileBootJoin} retries with capped
+   *  backoff until the membership exists or the channel is left — so a first-connect daemon outage
+   *  self-heals on recovery instead of leaving the channel silently live-only. Surfaced to the connector
+   *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
+  private readonly pendingBootJoins = new Set<string>();
 
-  private get channels() { return this.deps.channels(); }
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointBootMembershipsDeps) {}
+
   private get plane3Channels() { return this.deps.plane3Channels(); }
-  private get pendingBootJoins() { return this.deps.pendingBootJoins(); }
   private get stopped() { return this.deps.stopped(); }
   private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number) { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }
@@ -64,7 +68,7 @@ export class EndpointBootMemberships {
    *  the daemon recovers, not left silently live-only. Until a membership exists the channel renders
    *  degraded in `cotal_channels` ({@link hasDurableMembership}). */
   async armBootDurableMemberships(): Promise<void> {
-    for (const channel of this.channels) {
+    for (const channel of this.identity.channels) {
       if (this.plane3Channels.has(channel)) continue;
       // A family (`review.>`) asks for its row whatever the default class: each channel under it decides
       // its own at fan-out (#5404). Any other pattern has no durable membership.
@@ -97,7 +101,7 @@ export class EndpointBootMemberships {
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
       await this.membershipPause(attempt);
-      if (this.stopped || !this.channels.includes(channel) || this.plane3Channels.has(channel)) {
+      if (this.stopped || !this.identity.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
       }

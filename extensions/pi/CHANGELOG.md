@@ -1,5 +1,15 @@
 # @cotal-ai/pi
 
+## 0.173.0
+
+### Minor Changes
+
+- 7030cca: A pi agent's own commands, prompt templates and skills can now be listed and run from its agent endpoint, and its running turn interrupted, on pi 0.84.2 or later. The pi extension gives its mesh agent a command dispatcher: it lists pi's `getCommands()`, runs a listed name through pi's own command path (`sendUserMessage` with `expandPromptTemplates`), refuses a name pi does not list before pi sees it, and stops a turn with pi's abort. On an older pi, which would send `/name args` to its model as text, `commands` answers `supported: false`.
+
+### Patch Changes
+
+- 82531e6: A failed OpenCode or pi turn now sets the presence `condition`, so observers no longer read it as plain `idle` or `waiting`. OpenCode relays its own error kind as `source` and its message, mapped to `auth`, `rate_limit`, `budget`, `request`, `model`, `server`, `context` or `failed`. pi relays `failed` with its error message. A turn someone stopped sets none.
+
 ## 0.172.2
 
 No changes in this release.

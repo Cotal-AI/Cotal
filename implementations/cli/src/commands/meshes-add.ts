@@ -1,8 +1,7 @@
 import { statSync } from "node:fs";
 import { connect as netConnect } from "node:net";
 import { join, resolve } from "node:path";
-import { dialerFor, mkSecretDir, probeConnect, token, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { mkSecretDir, probeConnect, token, writeSecretFileAtomic, type SpaceAuth } from "@cotal-ai/core";
 import {
   assertPinnedFetchUrl,
   authDir,
@@ -15,6 +14,7 @@ import {
   homeCotalDir,
   listSpaceAccounts,
   loadSpaceAuth,
+  openSpaceNames,
   personaDir,
   pinnedFetch,
   PinnedFetchRefused,
@@ -385,20 +385,7 @@ export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
 }
 
-/** Discover open spaces from their chat or presence streams, using the candidate's TLS policy. */
-export async function openSpaceNames(server: string, tlsRequired: boolean): Promise<string[]> {
-  const nc = await dialerFor(server)({ servers: server, timeout: 2000, reconnect: false, ...(tlsRequired ? { tls: {} } : {}) });
-  try {
-    const names = new Set<string>();
-    for await (const stream of (await jetstreamManager(nc)).streams.names()) {
-      const space = /^(?:CHAT_|KV_cotal_presence_)(.+)$/.exec(stream)?.[1];
-      if (space) names.add(space);
-    }
-    return [...names].sort((a, b) => a.localeCompare(b));
-  } finally {
-    await nc.close();
-  }
-}
+export { openSpaceNames };
 
 /** A bare connection alone cannot establish that an open broker serves this space. */
 export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean): Promise<Check<void>> {
