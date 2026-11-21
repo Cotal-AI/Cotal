@@ -457,7 +457,7 @@ try {
     process.chdir(root);
     await new Promise<void>((resolve) => holder.close(() => resolve()));
     check("--provision naming no mesh, from an unrecorded root, stays local and is refused at the preflight of the broker it dials",
-      r3.code === 2 && /provisioning preflight/.test(r3.out) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
+      r3.code === 2 && r3.out.includes(`nothing answered at ${held}, the broker address --server named`) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 
@@ -916,19 +916,50 @@ try {
       const stopped = await down();
       check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
 
+      const issued = await runMint(["example", "--json"]);
+      const success = JSON.parse(issued.out.trim()) as { command: string; outcome: string };
+      check("auth mint success names the operation in its JSON envelope",
+        issued.code === 0 && success.command === "auth mint" && success.outcome === "ok", issued.out);
+      for (const [args, status, code] of [
+        [["--json"], 1, "USAGE_INVALID"],
+        [["example", "--json"], 2, "CONFLICT"],
+        [["example", "--json", "--out"], 1, "USAGE_INVALID"],
+      ] as const) {
+        const refused = await runMint([...args]);
+        const failure = JSON.parse(refused.out.trim()) as { command: string; outcome: string; error?: { code: string } };
+        check(`auth mint ${args.join(" ")} names the operation on refusal`,
+          refused.code === status && failure.command === "auth mint" && failure.outcome === "refused" && failure.error?.code === code, refused.out);
+      }
+
       for (const profile of ["agent", "observer", "admin"]) {
         const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
         const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;
         check(`stopped root mints ${profile} without repeating --server`, minted.code === 0 && existsSync(file) && /Broker footprint:\s+not provisioned by this command/.test(minted.out), minted.out);
         check(`offline ${profile} credential retains the original account`, credsClaims(readFileSync(file, "utf8")).nats?.issuer_account === credsClaims(readFileSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds, "utf8")).nats?.issuer_account);
       }
+      const named = await runMint(["named_offline", "--space", "offlinecheck", "--plain"]);
+      const namedFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "named_offline").creds;
+      const liveFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds;
+      check("#8302: naming the stopped local space mints from its original account without provisioning",
+        named.code === 0 && existsSync(namedFile) && /Broker footprint:\s+not provisioned by this command/.test(named.out) &&
+        credsClaims(readFileSync(namedFile, "utf8")).nats?.issuer_account === credsClaims(readFileSync(liveFile, "utf8")).nats?.issuer_account, named.out);
+      const wrongName = await runMint(["wrong_name", "--space", "not_offlinecheck", "--plain"]);
+      check("#8302: a different name does not mint from the stopped local account",
+        wrongName.code === 2 && wrongName.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_name").creds), wrongName.out);
       const signer = join(exports, "signer.json");
-      const exported = await runCotal(["auth", "signer", "--out", signer, "--plain"]);
+      const exported = await runCotal(["auth", "signer", "--space", "offlinecheck", "--out", signer, "--plain"]);
       check("stopped root exports its signer without a broker", exported.code === 0 && existsSync(signer) && (statSync(signer).mode & 0o777) === 0o600, exported.out);
-      const provision = await runMint(["needsbroker", "--provision"]);
-      check("stopped root still refuses provisioning and publishes no credential", provision.code === 2 && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
-      const endpoint = await runMint(["caller", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds")]);
-      check("stopped root still refuses endpoint discovery and publishes no caller", endpoint.code === 2 && !existsSync(join(exports, "caller.creds")), endpoint.out);
+      for (const space of [[], ["--space", "offlinecheck"]]) {
+        const provision = await runMint(["needsbroker", "--provision", ...space, "--plain"]);
+        check(`stopped root ${space.length ? "with" : "without"} --space names the restart and publishes no provisioned credential`,
+          provision.code === 2 && provision.out.includes("TARGET_UNAVAILABLE") && provision.out.includes("start it again with `cotal up`") &&
+          !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
+        check(`  #8379: ${space.length ? "with" : "without"} --space it says the mesh is not running and offers a file-only mint without --provision`,
+          /the mesh "offlinecheck" in .* last ran at/.test(provision.out) && /omit --provision to mint only the private credential file/.test(provision.out), provision.out);
+      }
+      const endpoint = await runMint(["caller", "--space", "offlinecheck", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds"), "--plain"]);
+      check("stopped root still refuses named endpoint discovery and publishes no caller",
+        endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")) && !endpoint.out.includes("omit --provision"), endpoint.out);
       check("offline signing started no stack process", !(await down()).out.includes("✓ stopped"));
     } finally {
       await down();

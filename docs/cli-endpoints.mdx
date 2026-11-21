@@ -210,7 +210,8 @@ registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no
 A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
 enrollment path, and nothing is written.
 After a local static space is stopped, signer export can still resolve its retained broker
-configuration and validated trust without starting a broker or repeating its address.
+configuration and validated trust from its project folder, including when you name that space
+with `--space <space>`. You do not need to start the broker or repeat its address.
 
 
 ### Protected output

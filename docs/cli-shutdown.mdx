@@ -86,8 +86,10 @@ the real stop would give. That check observes processes on this host and changes
 the exact recorded broker address appear as possible sharing. No match does not exclude
 address aliases, remote tenants or live attachments. The preview does not establish process
 ownership, the complete service set, exclusive broker use or agent impact.
-`--with-agents` only marks the requested policy. It does not reserve or signal
-a process, and the receipt is not an authorized stop plan. A fresh `team show`
+`--with-agents` marks the requested policy. If a controller stack has no live manager,
+the preview reports the known refusal. For a stack started with `--no-manager`, it
+names `cotal down --yes` to stop the stack without retiring agents. The preview does not
+reserve or signal a process, and the receipt is not an authorized stop plan. A fresh `team show`
 summary points to this read-only command from the recorded root.
 
 On a root with a controller journal, bare `down` reads only its recorded full instance IDs. On an
@@ -310,11 +312,13 @@ a link never gives the no-op: on a stopped controller stack `down` refuses at `.
 legacy root it refuses `CONFLICT` before any record is read. A template whose `{space}`
 normalizes away names one path for every space and is read as that path. The refusal lists each
 record by name, path under the root and pid, and its next step names the pids and paths to check.
-It stops, adopts and removes nothing. `--with-agents` on a stopped stack refuses
-`LIFECYCLE_BLOCKED`, because no running manager can stop the agents; start the stack first. Its
-preview, `cotal down --dry-run --with-agents`, shows the no-op and warns with that refusal. When the
-stack's last completed `down` took `--with-agents`, or the root never started a stack, no agent of
-it can remain, and `--with-agents` reports the same no-op.
+It stops, adopts and removes nothing. `--with-agents` reports the same no-op when the last completed
+`down` took that flag, the root never started a stack, or the stopped controller stack's records
+show that it never ran a manager. If an earlier manager may have left agents running, the stop
+refuses `LIFECYCLE_BLOCKED`. Its preview, `cotal down --dry-run --with-agents`, shows the no-op and
+warns with that refusal. When the recorded broker payload limit is too low to run a manager,
+the refusal names the limit and the minimum a manager needs. The no-op receipt offers
+`cotal up --no-manager` to restart the broker-only stack at that limit.
 For a legacy stack, the retry needs the registration that `down` keeps for a space named after its
 project folder. The registration records retirement only when the manager completed that shutdown.
 A plain stop or an unconfirmed retirement still leaves `--with-agents` unable to tell whether agents remain.
@@ -329,7 +333,9 @@ listener may still be running, or maintenance is in progress, it refuses without
 
 The legacy bare-stack and manifest apply paths described below are retained. They do not
 accept the new named-service JSON/plain apply receipt flags, except that `--json` and
-`--plain` show the no-op of a stack that is already stopped. A retained bare stop shows its
+`--plain` show the no-op of a stack that is already stopped. On this path,
+`down --preserve-state` refuses `--json` and `--plain` before stopping anything and names the same
+preserve command without the output flag. A retained bare stop shows its
 recorded components and asks for confirmation on an interactive terminal, defaulting to No.
 Without an interactive terminal, or when prompts are disabled, it requires `--yes`, exit 1,
 before any stop or cleanup. This applies to a folder started with plain `cotal up` too.

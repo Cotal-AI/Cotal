@@ -84,8 +84,9 @@ or available, start a local static-auth space with `cotal up` in its project fol
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
 Conflicting current-folder and selected-root accounts refuse before issuance.
 After a local static space is stopped, its retained broker configuration and validated signing
-trust still resolve file-only fixed-profile minting. No repeated `--server` or running broker is
-needed. Provisioning and endpoint discovery still require the selected broker.
+trust still resolve file-only fixed-profile minting from its project folder, including when you
+name that space with `--space <space>`. No repeated `--server` or running broker is needed.
+Provisioning and endpoint discovery still require the selected broker.
 
 A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
 takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
@@ -172,7 +173,9 @@ would accept the key again; mint a fresh key without `--identity`.
 Without `--provision`, fixed-profile minting writes credentials only. `--provision` uses one native provisioner
 connection to pre-create that lifecycle's bind-only DM/delivery and role footprint. It performs
 the authenticated preflight against the same recorded broker and TLS requirement, without
-pruning a registration. An acknowledgement proves neither a joined agent nor task completion.
+pruning a registration. When that broker is not running, the refusal names it and the folder to
+restart it from, and offers a mint without `--provision`, which writes only the credential file.
+An acknowledgement proves neither a joined agent nor task completion.
 A partial or unknown result retains the allocated public identity and lifecycle for diagnosis
 and does not retry the mint.
 
@@ -425,7 +428,9 @@ prove current broker authorization, daemon adoption, connected agents or task pr
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
 rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
 spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
-spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whose root holds no space,
+spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. This includes multiple open spaces
+registered at the same root. With or without `--fix`, stay in that folder and pass `--space` with
+one of the listed names. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a

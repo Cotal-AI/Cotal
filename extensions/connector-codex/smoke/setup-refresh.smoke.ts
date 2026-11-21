@@ -1,7 +1,7 @@
 /** Codex refresh must distinguish no installed plugin from an installed plugin it cannot update. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -226,6 +226,52 @@ if (args === "plugin list") {
       assert.equal(statSync(config).ino, inode);
       assert.equal(statSync(config).mode & 0o777, 0o444);
     });
+    if (codex("--version").status === 0) for (const enabled of [true, false]) {
+      await check(`native Codex repoints a moved marketplace and keeps the plugin ${enabled ? "enabled" : "disabled"}`, async () => {
+        const f = fixture(`native-moved-${enabled}`);
+        const cotal = [process.execPath, join(ROOT, "cotal.js")];
+        await codexSetupProvider.connector!.run({ cotal });
+        const original = join(process.env.COTAL_HOME!, "codex-plugin");
+        const unrelated = join(f.root, "other-marketplace");
+        mkdirSync(join(unrelated, ".agents/plugins"), { recursive: true });
+        writeFileSync(join(unrelated, ".agents/plugins/marketplace.json"), '{"name":"other-marketplace","plugins":[]}\n');
+        const added = codex("plugin", "marketplace", "add", unrelated);
+        assert.equal(added.status, 0, added.stderr);
+        const config = join(f.codex, "config.toml");
+        if (!enabled) writeFileSync(config, readFileSync(config, "utf8").replace("enabled = true", "enabled = false"));
+        const originalConfig = readFileSync(config, "utf8");
+        process.env.COTAL_HOME = join(f.root, "new home's files");
+        mkdirSync(process.env.COTAL_HOME);
+        const replacement = join(process.env.COTAL_HOME, "codex-plugin");
+        const missing = join(f.root, "not the Cotal marketplace");
+        renameSync(original, missing);
+
+        const broken = codex("plugin", "list");
+        assert.notEqual(broken.status, 0);
+        assert.match(broken.stderr, /marketplace root does not contain a supported manifest/);
+        assert.match(await refresh(), /Restore the Cotal marketplace/);
+        assert.equal(readFileSync(config, "utf8"), originalConfig);
+        renameSync(missing, replacement);
+
+        const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
+        chmodSync(config, 0o444);
+        assert.match(await codexSetupProvider.refresh!.run({ cotal: changed }), /read-only/);
+        assert.equal(statSync(config).mode & 0o777, 0o444);
+        assert.equal(readFileSync(config, "utf8"), originalConfig);
+        chmodSync(config, 0o600);
+        await codexSetupProvider.refresh!.run({ cotal: changed });
+
+        const listed = codex("plugin", "list");
+        assert.equal(listed.status, 0, listed.stderr);
+        assert.match(listed.stdout, new RegExp(`^cotal@cotal-mesh\\s+installed, ${enabled ? "enabled" : "disabled"}\\s+`, "m"));
+        assert.equal(readFileSync(config, "utf8"), originalConfig.replace(original, replacement));
+        assert.equal(existsSync(original), false);
+        const manifest = join(replacement, "plugins/cotal/.codex-plugin/plugin.json");
+        const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version: string };
+        assert.ok(listed.stdout.includes(version), listed.stdout);
+        assert.deepEqual(readFileSync(join(cache(f.codex), version, ".codex-plugin/plugin.json")), readFileSync(manifest));
+      });
+    }
   }
 } finally {
   for (const key of keys) {

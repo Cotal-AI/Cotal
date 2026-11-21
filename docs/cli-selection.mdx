@@ -113,8 +113,10 @@ remedy. For `--server`, the `--force` route follows either one.
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
 its mode was not checked: `space` and `space show` show the mode as not checked, with
-`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact. Declining the question is a
-`no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
+`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact.
+Once the broker is up, `space show` prints commands to forget the unchecked registration and add it
+again without `--force`. The command quotes the root when the shell would otherwise split or expand it.
+Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
 
 
@@ -331,6 +333,10 @@ live broker to read or delete from: `space delete` refuses it with `TARGET_UNAVA
 For a stopped stack it names `cotal reset store <space> --yes`, which removes the stored streams, and
 `space forget`, which removes only its local record. For a space that never ran it names only
 `space forget`, because no streams were stored.
+If the recorded project folder is missing and this folder holds the matching journal, the refusal
+names how to move the project back before resetting the store. When it offers adoption, start and
+stop the adopted stack in its new root before resetting its store. If the project cannot be
+located, the refusal says that stored streams could not be checked.
 
 The dry run also reads the space's workflow runs from its records bucket and lists each run that
 has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
@@ -418,6 +424,8 @@ space and how to reach it with `--space <name>` or `cotal use --clear`. `use --j
 `cotal status` mark the folder as the target only when no explicit selection overrides it.
 A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
+Bare `use` refuses with `SCHEMA_INVALID`, exit 1, if the saved selection is empty or unreadable.
+It names the file without changing it. Clear it with `cotal use --clear`, or select a known space again.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
 nothing selected it is a `no-op`, exit 0. It takes no space name.
@@ -425,7 +433,9 @@ A space stays selected through its `cotal down`: `use` then reports it as stoppe
 operation, such as `` `cotal down`, completed ``, and names `cotal up` in its root. This also applies
 when a legacy space named after its folder keeps its registration after `down`. For that space,
 `use --json` reports `currentRecorded: true` and `preparedState: "stopped"` together. The space stays
-selected until `use` changes it. On a controller root, `up --json` gives
+selected until `use` changes it. Inside a renamed project with the matching stack journal, `use`
+still reports the stopped state and tells you how to move the folder back, as `space show` does.
+On a controller root, `up --json` gives
 `result.selection`, with `current`, the space selected after the start, and `changed`, which is true
 when this `up` selected its own space because no space was selected.
 
@@ -1016,10 +1026,17 @@ cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
 
 Only the selected mesh is checked. Its row under Spaces dials its address with its recorded TLS
 requirement, and every other row carries no connection state, under the note that says what was
-dialed. When `--server` names another address, that address is the only broker dialed, and the
-selected mesh's row carries no state either. In `--json` each of those rows is `not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
+dialed. A trailing slash on the same NATS URL does not change its address: the Spaces row uses the
+selected broker's check. When `--server` names another address, that address is the only broker
+dialed, and the selected mesh's row carries no state either. In `--json` each of those rows is
+`not-checked`. `--all` checks every recorded mesh, including discovered ones, each with its own
 recorded TLS requirement. Each row then shows the check of its own address, the selected mesh's
 row included when `--server` names another.
+
+Outside a project, without a default selection, `--space` or `--server`, `status --all` reports on
+the sole reachable registration. It does not change the default
+selection. Without `--all`, status lists multiple registrations as unchecked rather than assuming
+their brokers are running.
 
 
 ### JSON report

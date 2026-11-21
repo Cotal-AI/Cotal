@@ -34,6 +34,7 @@ import {
   legacyRenewalRecord,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  meshesForRoot,
   WEB_CREDS_KIND,
   MeshTargetError,
   migrateLegacyCotalMaterial,
@@ -42,7 +43,6 @@ import {
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
-  loadMeshes,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -115,13 +115,18 @@ export function validateDoctorArguments(args: ParsedArgs): void {
 
 /** The space recorded as open at this root, in its stack journal or registration. Missing signing
  *  trust alone is never read as an open space. */
-function recordedOpenSpace(root: string, space: string | undefined): string | undefined {
+function recordedOpenSpace(root: string, space: string | undefined, fix: boolean): string | undefined {
   const stack = readStackJournal(root)?.journal;
-  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return stack.space;
   // Bare, the scope is the one space registered at this root, not a selection made for other
   // commands: resolving the selection names another folder's space, and the open branch is missed.
-  const here = space === undefined ? [...new Set(loadMeshes().filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space))] : [];
-  const named = space ?? (here.length === 1 ? here[0] : undefined);
+  const here = space === undefined ? meshesForRoot(root) : [];
+  const open = here.filter((entry) => entry.mode === "open").map((entry) => entry.space);
+  if (open.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", `this root has ${open.length} open spaces (${open.join(", ")}); doctor auth diagnoses one space`, {
+    target: { root, space: null, candidates: open },
+    remedy: `run \`cotal doctor auth${fix ? " --fix" : ""} --space ${shellWord(open[0]!)}\` here, or name another listed space with --space`,
+  });
+  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return stack.space;
+  const named = space ?? (here.length === 1 ? here[0]!.space : undefined);
   try {
     const target = resolveMeshTarget(root, { ...(named === undefined ? {} : { space: named }), readOnly: true });
     return target.mode === "open" && target.origin !== undefined && canonicalRoot(target.root) === canonicalRoot(root) ? target.space : undefined;
@@ -178,7 +183,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     try { files = accountInventory(authDir(root)).corrupt.map((file) => join(authDir(root), file)); } catch { /* the trust folder itself could not be read */ }
     throw new CommandFailure("refused", "SCHEMA_INVALID", `the local authority inventory under ${authDir(root)} could not be validated${files.length ? ` (${files.join(", ")})` : ""}; no repair was attempted`, { target: { root, space: values.space ?? null }, remedy: `restore ${files.length ? files.join(", ") : "the trust records in that folder"} from backup; do not remove other account records, then re-run \`cotal up\`` });
   }
-  const open = recordedOpenSpace(root, values.space ?? auth?.space);
+  const open = recordedOpenSpace(root, values.space ?? auth?.space, values.fix === true);
   if (open !== undefined && (!auth || auth.space === open)) {
     writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
     return;

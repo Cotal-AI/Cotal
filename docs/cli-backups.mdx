@@ -247,7 +247,9 @@ began names its attempt in the text and in the JSON target, which also carries `
 its remedy gives the next step for that state. The listener endpoint must be a bare `nats://` or
 `tls://` URL without credentials, a query, a fragment or a path. Its refusal does not repeat the
 endpoint value, including when it came from a preserved launch. `up --restore`
-remains as the equivalent startup form. After their startup lines, both foreground and detached
+remains as the equivalent startup form. It refuses `--no-manager` with `USAGE_INVALID` (exit 1)
+before staging. A restore needs the manager to commit its state, so run it without `--no-manager`.
+The preserved store and its ready journal stay unchanged. After their startup lines, both foreground and detached
 starts name the restore attempt and give the cleanup step that retires it, with `--discard-history`
 for a restore that left history or workflow runs out. When `up --restore --root` selects another
 project, the cleanup step starts with `cd <project> &&` so you can run it from the folder where you

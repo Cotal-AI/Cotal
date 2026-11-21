@@ -121,7 +121,7 @@ stop removes it, so the row names starting it again and stopping it if its host 
 and says no supported command removes the record if the host is gone. The row stays and the read
 stays `partial`.
 
-`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
+`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does. On an open or user-auth space, `--slots` refuses and shows how to run the same read without `--slots`.
 
 A revision-32 manager also supports a bounded native `slots` query through
 `endpoint invoke manager slots --on <instance> --args '{"names":["worker"],"includeRetired":true}'`.
@@ -229,8 +229,9 @@ seat when no live peer matches. Both paths retain the selected lifecycle and the
 checks. A live peer with an invalid or missing holding-manager hint still refuses.
 This happens by default; you do not need `--on`. When every instance
 answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
-before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
-as Next. When an instance did not answer for itself, the seat may run there, so they refuse
+before anything is sent, as they do with `--on`, naming the managers that answered. The roster
+command in Next keeps the space and broker selectors from the failed lookup. When an instance did
+not answer for itself, the seat may run there, so they refuse
 `TARGET_UNAVAILABLE` (exit 2) and name that instance. When more than one instance runs the name,
 they refuse `TARGET_AMBIGUOUS` (exit 2) and name each of them. `--json` carries each refusal. On a
 terminal the last two ask instead, listing only the managers that hold the name or did not answer,
@@ -574,6 +575,9 @@ its message.
 other target or credential. Missing, mismatched and unsupported user-auth seat context refuses
 without switching to the operator. JSON and plain modes show the acknowledged native result,
 not a separate measurement of process exit. Stop and input do not seed connector installations.
+
+In a stopped local space's project folder, `cotal stop <agent> --json` writes one
+`TARGET_UNAVAILABLE` refusal to stdout and tells you to run `cotal up` there.
 
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof

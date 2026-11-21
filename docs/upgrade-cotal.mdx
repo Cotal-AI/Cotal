@@ -284,6 +284,9 @@ directory and selects a separate copy. If replacement is interrupted, the next r
 restores the old copy if necessary or removes it once the new copy is in place.
 An unreadable connector selection does not prevent `cotal --version`, `cotal status` or a bare
 `cotal down`. `cotal status` reports the connector inventory as unreadable.
+Run `cotal ext seed --repair` to repair an unreadable selection. It keeps the unreadable record
+beside the replacement with a `.corrupt.` suffix. If no readable record identifies the existing
+connector set, repair seeds a new set without deleting the old files.
 `cotal update --self` still checks for a newer release. When no newer release is available, it
 reports that it did not reconcile connectors. Replacing packages still needs a readable selection
 to preserve the installed connector state.

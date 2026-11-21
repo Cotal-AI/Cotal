@@ -638,7 +638,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with \`cotal space forget ${space}\`, then run ${codeSpan(`cotal space create ${space} --adopt --root ${shellPath(root)}`)}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with ${codeSpan(`cotal space forget ${shellPath(space)}`)}, then run ${codeSpan(`cotal space create ${shellPath(space)} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
 }
 
@@ -660,7 +660,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
       stoppedRemedy = `forget it with ${codeSpan(`cotal space forget ${name}`)}, then run ${codeSpan(`cotal space create ${name} --adopt --root ${shellPath(root)}`)}`;
     }
   } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
+  const adopt = block === undefined ? `adopt it with ${codeSpan(`cotal space create ${space === "<space>" ? space : shellPath(space)} --adopt --root ${shellPath(root)}`)}` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
@@ -1071,7 +1071,7 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
 
 /**
  * Resolve the mesh target by precedence (first match wins):
- *  1. `--space` — registry lookup (errors if that space isn't running).
+ *  1. `--space` — registry lookup, or this project's matching retained static space for file-only signing.
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The `current` selected by `cotal use`, except inside a project whose root has one RUNNING space
  *     other than it, where step 4 applies. A space this folder prepared and never started, and one
@@ -1097,6 +1097,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const m = findMesh(flags.space);
     if (!m) {
       notStarted(flags.space, cwd);
+      const root = findCotalRoot(cwd);
+      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
+        const retained = retainedLegacyBroker(root);
+        if (retained && !retained.open && !legacyStackOtherHome(root)) {
+          const { spaces } = rootInventory(root);
+          if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
+            if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
+            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space });
+          }
+        }
+      }
       throw new MeshTargetError("unknown-space", `no mesh named "${boundedValue(flags.space, SHOWN_VALUE_MAX)}" is running`, {
         requested: flags.space,
       });

@@ -475,9 +475,19 @@ try {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   childEnv.COTAL_HOME = home;
-  const native = (args: string[], cwd = MESH, env = childEnv) => spawnSync(process.execPath, [binary, ...args], {
-    cwd, env, encoding: "utf8", timeout: 30_000,
+  const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
+    cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
+  if (process.platform !== "win32") {
+    const slow = spawnSync("sh", ["-c",
+      `(printf 'First line.\\n'; sleep 3; printf 'Second line.\\n') | "$@"`,
+      "sh", process.execPath, binary, "persona", "create", "slow-stdin", "--space", "meshspace",
+      "--from", "-", "--subscribe", "", "--plain",
+    ], { cwd: MESH, env: childEnv, encoding: "utf8", timeout: 30_000 });
+    check("persona create waits for EOF on a paused pipe", slow.status === 0, slow.stdout + slow.stderr);
+    check("persona create saves both chunks of piped input",
+      loadAgentFile(agentFilePath(MESH, "slow-stdin")).persona === "First line.\nSecond line.");
+  }
   for (const [label, raw, expected] of cases) {
     for (const verb of ["persona", "personas"] as const) {
       const name = `list-${verb}-${label}`;
@@ -517,6 +527,28 @@ try {
   const validEncoding = native(encodedArgs);
   check("persona create accepts valid UTF-8 and keeps the original bytes",
     validEncoding.status === 0 && readFileSync(encodedFile).equals(utf8), validEncoding.stdout + validEncoding.stderr);
+
+  const bodySource = join(scratch, "body.txt");
+  const bodyText = "Review café and the literal � symbol.";
+  const latinBody = Buffer.from("Review café changes.\n", "latin1");
+  const utf8Body = Buffer.from(`${bodyText}\n`);
+  for (const [name, from] of [["body-file", bodySource], ["body-stdin", "-"]] as const) {
+    const create = (bytes: Buffer) => {
+      if (from !== "-") writeFileSync(from, bytes);
+      return native(["persona", "create", name, "--from", from, "--subscribe", "", "--plain"], MESH, childEnv, from === "-" ? bytes : undefined);
+    };
+    const path = agentFilePath(MESH, name);
+    const refused = create(latinBody);
+    const source = from === "-" ? "standard input" : from;
+    check(`${name}: invalid UTF-8 is refused with conversion guidance and no write`,
+      refused.status === 1 && refused.stderr.includes("SCHEMA_INVALID") &&
+      refused.stderr.includes(`${source} is not valid UTF-8`) &&
+      refused.stderr.includes("convert the input to UTF-8 and retry") && !existsSync(path), refused.stdout + refused.stderr);
+    const created = create(utf8Body);
+    const shown = native(["persona", "show", name, "--plain"]);
+    check(`${name}: valid UTF-8 keeps accented text and a literal replacement character`,
+      created.status === 0 && shown.status === 0 && shown.stdout.includes(bodyText), created.stderr + shown.stdout + shown.stderr);
+  }
 
   const decoyFile = agentFilePath(ALPHA, "encoded");
   const decoy = "---\nname: encoded\n---\nAlpha instructions.\n";

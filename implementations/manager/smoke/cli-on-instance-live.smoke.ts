@@ -351,7 +351,7 @@ try {
     mustHaveRun(missingAttach, "`attach <missing> --on IID1`");
     const out = strip(missingAttach.out);
     check("attach <missing> --on <live-instance> refuses as TARGET_NOT_FOUND (exit 2), not OPERATION_UNKNOWN (#7612)",
-      missingAttach.status === 2 && /Outcome:\s+refused/.test(out) && /Code:\s+TARGET_NOT_FOUND/.test(out) && out.includes(`Manager:     ${IID1}`) && out.includes("run `cotal ps`"),
+      missingAttach.status === 2 && /Outcome:\s+refused/.test(out) && /Code:\s+TARGET_NOT_FOUND/.test(out) && out.includes(`Manager:     ${IID1}`) && out.includes(`run \`cotal ps --on ${IID1} --space ${space}\``),
       { status: missingAttach.status, tail: out.slice(-400) });
   }
   {

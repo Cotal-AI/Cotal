@@ -124,7 +124,10 @@ command when its returned tokens are safe to put in a shell command. Preparation
 after a denied or uncertain start. Unknown outcomes are not retried; the setup heading is not
 shown as healthy and the next command inspects the original startup before attachment. JSON stdout has
 one envelope. A confirmed local startup refusal keeps its code and diagnostic in
-`result.startup.failure` and the setup report. Interrupted startup or an incomplete child result
+`result.startup.failure` and the setup report. If a self-hosted broker does not answer, setup
+reports that it sent no launch and keeps preparation saved. Start or restore the broker where the
+space runs before trying again. Inspect the registration with `cotal space show <name>`.
+Interrupted startup or an incomplete child result
 remains unknown. Native startup output is not parsed or echoed as readiness evidence. Fresh prepared
 static-auth, open and plain-loopback user-auth roots use the controller stack described under `up`.
 Manifest startup retains its native launch path.
@@ -144,7 +147,9 @@ out.
 
 A rerun with the same answers changes nothing and is a `no-op`; a space already prepared, started or
 registered at that root is reported, not refused. A space name or root another space holds is
-`CONFLICT`. An application whose host tool is not on PATH leaves the rest saved and the result
+`CONFLICT`. If the local space is already prepared in an existing folder, rerun setup with that
+folder as `--project`, or choose another `--space` name for the new folder.
+An application whose host tool is not on PATH leaves the rest saved and the result
 `partial` (exit 4), naming the tool; an application action that does not finish does the same.
 `cotal status` reports the machine's state, and it points
 stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. See
@@ -624,7 +629,9 @@ An interactive presence: join a space under your own name and role, without laun
 harness. Another participant whose name is only whitespace is shown as the id, in the roster,
 on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
-Enter `/quit` to leave the session, including when pasting it after another command.
+Enter `/quit` to leave the session, including when pasting it after another command, or press
+Ctrl-D at the terminal prompt. If `/dm`, `/anycast`, or `/me` is missing an argument, `join`
+prints its usage without posting the line to the channel.
 
 A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
 channel. It establishes durable membership when the channel's delivery policy is durable, even
@@ -728,6 +735,8 @@ When linking siblings, only a missing package directory can be skipped with a wa
 without metadata, or a dangling package link, is damaged and still refuses.
 Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
 installed copies, rather than turning them into links to their source or the built-in seed store.
+Removal uses the same peer policy as installation. Cotal relinks its shared packages without npm
+looking up peer dependencies for the remaining extensions in the registry.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
 `ext seed` or an update does that, a command that needs a connector waits for it. After one second

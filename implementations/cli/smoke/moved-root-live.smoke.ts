@@ -1,4 +1,4 @@
-/** Status and space inventory diagnose renamed stacks, both running and stopped.
+/** Status, space inventory, selection and deletion diagnose renamed stacks.
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
@@ -22,7 +22,7 @@ mkdirSync(join(other, ".cotal"), { mode: 0o700 });
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env = { ...hostEnv, PATH: `${launcherDir}${delimiter}${process.env.PATH ?? ""}`, HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { check, finish } = createSuite();
-type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[] }; error?: unknown };
+type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[]; preparedRoot?: string; preparedState?: string; lastOperation?: string }; error?: { code?: string; message?: string } };
 const cli = (cwd: string, ...args: string[]) => {
   const run = spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   console.log(JSON.stringify({ cwd, args, status: run.status, stdout: run.stdout, stderr: run.stderr }));
@@ -206,6 +206,21 @@ for (const open of [false, true]) {
   const implicit = cli(subdir, "space", "show", "--plain");
   check("space show from a subfolder recognizes the matching moved stopped stack without a name",
     implicit.status === 0 && /broker: +stopped/.test(implicit.stdout) && implicit.stdout.includes(`was moved from ${project}`) && implicit.stdout.includes(remedy));
+  const use = cli(subdir, "use", space, "--plain");
+  const selection = json(subdir, "use");
+  check("use from a subfolder reports the stopped selection and move-back remedy",
+    use.status === 0 && use.stdout.includes("stopped; its last operation, `cotal down`, completed") && use.stdout.includes(remedy) && !use.stdout.includes("which no longer exists"));
+  check("use JSON keeps the recorded root and completed stop",
+    selection.status === 0 && selection.envelope.result?.preparedRoot === project && selection.envelope.result.preparedState === "stopped" && selection.envelope.result.lastOperation === "`cotal down`, completed");
+  for (const flag of ["--dry-run", "--yes"]) {
+    const deletion = cli(subdir, "space", "delete", space, flag, "--plain");
+    check(`space delete ${flag} refuses without a broker and names the moved root before reset`,
+      deletion.status === 2 && deletion.stderr.includes("TARGET_UNAVAILABLE") && deletion.stderr.includes("no broker was contacted") && deletion.stderr.includes(remedy) && deletion.stderr.includes(`cotal reset store ${space} --yes`) && !deletion.stderr.includes("no stored streams"));
+  }
+  const unknownStore = json(other, "space", "delete", space, "--dry-run");
+  check("space delete outside the renamed project does not infer absent streams",
+    unknownStore.status === 2 && unknownStore.envelope.error?.code === "TARGET_UNAVAILABLE" && unknownStore.envelope.error.message?.includes("its stored streams could not be checked") === true && !unknownStore.stdout.includes(adopt));
+  check("selection and deletion leave the moved journal unchanged", readFileSync(journal).equals(before));
   const shell = (command: string) => spawnSync("sh", ["-c", command], { cwd: renamed, env, encoding: "utf8", timeout: 120_000 });
   const printedForget = list.stdout.match(/forget it with `([^`]+)`/)?.[1];
   check("following the inventory's exact forget command succeeds", printedForget === forget && shell(printedForget).status === 0);

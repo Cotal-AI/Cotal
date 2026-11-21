@@ -20,7 +20,7 @@ function reconciliationPending(version: string): boolean {
 interface Attempt { version?: string; failures: number; result: string; next: number; }
 interface UpdateHost {
   version: string;
-  eligible(): boolean;
+  eligible(): boolean | "pending";
   prepare(): Promise<void>;
   abort(): Promise<void>;
   report(line: string): void;
@@ -54,7 +54,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     try {
       const settings = readUpdateSettings();
       notify = settings.notify;
-      automatic = ["linux", "darwin", "win32"].includes(process.platform) && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
+      const eligibility = host.eligible();
+      automatic = ["linux", "darwin", "win32"].includes(process.platform) && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && eligibility !== false;
+      if (automatic && eligibility === "pending") reason = "verifying native service ownership";
       const recovery = readUpdateRecovery();
       if (recovery) {
         const decision = recoveryDisposition(recovery);
@@ -121,7 +123,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       persist();
       return;
     }
-    if (!status().automatic) return;
+    if (host.eligible() !== true || !status().automatic) return;
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
     const reconciling = !retiring && !newerUpdate(cached.latest, host.version) && reconciliationPending(host.version);
@@ -132,7 +134,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     try { await host.prepare(); }
     catch (error) { state = { ...state, result: `waiting for idle Managers: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + 60_000 }; persist(); return; }
     try {
-      if (closed || !status().automatic) return;
+      if (closed || host.eligible() !== true || !status().automatic) return;
       state = { ...state, failures: state.failures, result: `updating to ${cached.latest}`, next: Date.now() + UPDATE_HOUR_MS };
       persist();
       if (process.platform === "win32") {

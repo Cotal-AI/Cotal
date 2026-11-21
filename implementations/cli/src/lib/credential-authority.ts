@@ -4,21 +4,31 @@ import {
   workspaceErrorParts, workspaceSecretStore, type MeshTarget,
 } from "@cotal-ai/workspace";
 
-/** Offline resolution retains stale registrations instead of repairing the selected target. */
-export function resolveMintTarget(values: { space?: string; server?: string }, allowStoppedLocal = false): MeshTarget {
+/**
+ * Offline resolution retains stale registrations instead of repairing the selected target.
+ * `offlineRemedy` is the caller's other step when a mint that writes only the private file would
+ * resolve the same target, as one for a stopped local space does.
+ */
+export function resolveMintTarget(values: { space?: string; server?: string }, allowStoppedLocal = false, offlineRemedy?: string): MeshTarget {
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true, allowStoppedLocal }); }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    const remedy = error.code === "no-meshes"
-      ? "start a local static-auth space with `cotal up` in its project folder and retry there, or use `--space <name>` to select a static-auth space with signing trust on this machine"
-      : workspaceErrorParts({ kind: "target", error }).remedy;
-    throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen", remedy === undefined ? {} : { remedy });
+    if (error.code === "no-meshes")
+      throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen", { remedy: "start a local static-auth space with `cotal up` in its project folder and retry there, or use `--space <name>` to select a static-auth space with signing trust on this machine" });
+    const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+    let offline = false;
+    if (offlineRemedy !== undefined) {
+      try { resolveMeshTarget(process.cwd(), { ...values, readOnly: true, allowStoppedLocal: true }); offline = true; }
+      catch (other) { if (!isWorkspaceTargetError(other)) throw other; }
+    }
+    const next = offline ? (remedy === undefined ? offlineRemedy : `${remedy}, or ${offlineRemedy}`) : remedy;
+    throw new CommandFailure("refused", targetErrorCode(error.code), `${message}; no other root was chosen`, next === undefined ? {} : { remedy: next });
   }
 }
 
 /** Fixed profiles and endpoint callers share the same explicit local signing authority. */
-export async function staticMintAuthority(values: { space?: string; server?: string }, reportTarget: Record<string, unknown>, allowStoppedLocal = false) {
-  const target = resolveMintTarget(values, allowStoppedLocal), { root, space } = target;
+export async function staticMintAuthority(values: { space?: string; server?: string }, reportTarget: Record<string, unknown>, allowStoppedLocal = false, offlineRemedy?: string) {
+  const target = resolveMintTarget(values, allowStoppedLocal, offlineRemedy), { root, space } = target;
   const currentRoot = findCotalRoot(), store = workspaceSecretStore(root);
   const auth = await getSpaceAuth(store, space);
   const currentAuth = canonicalRoot(currentRoot) === canonicalRoot(root) ? auth : await getSoleSpaceAuth(workspaceSecretStore(currentRoot), authDir(currentRoot));

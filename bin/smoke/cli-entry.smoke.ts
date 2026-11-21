@@ -781,6 +781,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // gets no next step. Root reads through the mode, so those cells run only for an ordinary POSIX user.
   const absent = cotal(["personas", "list"], (home) => mkdirSync(join(home, "..", ".cotal")), noSeed);
   check("personas list reports no personas when the catalog folder does not exist", absent.status === 0 && absent.stdout.includes("no personas in "), shown(absent));
+  const emptyCatalog = (home: string) => mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+  const offline = cotal(["personas", "list", "--space", "entry"], emptyCatalog, noSeed);
+  check("plain personas list works offline and suggests creation with an explicit subscription and target",
+    offline.status === 0 && offline.stdout.includes("no personas in ") && offline.stdout.includes('cotal personas new example --space entry --prompt "Help with this project" --subscribe ""'), shown(offline));
+  const running = cotal(["personas", "list", "--space", "entry", "--running"], emptyCatalog, noSeed);
+  check("personas list --running refuses a prepared but unstarted space even with an empty catalog",
+    running.status === 1 && running.stdout === "" && running.stderr.includes('"entry" is prepared but not started') && running.stderr.includes("start it with `cotal up`"), shown(running));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     let agents = "", mode = "";
     const locked = (home: string) => {

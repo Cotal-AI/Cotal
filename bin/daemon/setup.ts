@@ -14,7 +14,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { claimUpdateClosureAccess, codeSpan, CommandFailure, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -393,6 +393,12 @@ async function connectWhenApproved(opts: SetupOptions, steps: SetupStep[]): Prom
 
 /** Run setup through an answering Manager, or a connected machine service with the opt-out. */
 export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
+  // As in connect-check, a stopped local stack is recorded as prepared, not registered.
+  const entry = findMesh(opts.space);
+  const prepared = entry ? undefined : findPreparedSpace(opts.space);
+  if ((entry && (entry.mode !== "user" || !entry.userAuth)) || (prepared && !hasUserAuthState(prepared.root, opts.space, { readOnly: true }))) {
+    throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+  }
   const steps: SetupStep[] = [];
   let discoveredSignIn = false;
   const unit = await ensureInstalled(opts, steps);

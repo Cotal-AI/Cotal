@@ -267,8 +267,12 @@ try {
     for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status", "setup"]) {
       const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
       check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
-      if (mode === "service-connect") check("G2 stopped service-connect names the same quoted foreground start", result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
+      if (mode === "connect-check" || mode === "service-connect") check(`G2 stopped ${mode} names the same quoted foreground start`, result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
     }
+    const plain = await cli(["connect-check", "--daemon-home", managed, "--space", "missing", "--plain"]);
+    check("G2 stopped explicit connect-check prints the same Next in plain output", plain.status === 2 && plain.err.includes(expected), plain.err);
+    const defaultCheck = await cli(["connect-check", "--space", "missing", "--json"]);
+    check("G2 stopped default connect-check keeps the bare foreground start", defaultCheck.status === 2 && defaultCheck.doc.error?.cause?.code === "NOT_RUNNING" && defaultCheck.doc.error.remedy === "start it with `cotal daemon serve`", defaultCheck.doc);
     for (const mode of ["login", "setup"]) {
       for (const idp of ["http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "http://127.0.0.1/api/auth?PRIVATE_MARKER=1", "http://127.0.0.1/api/auth#PRIVATE_MARKER", "http://provider.example/api/auth", "https://"]) {
         const invalid = await cli([mode, "--daemon-home", managed, "--idp", idp, "--json"]);

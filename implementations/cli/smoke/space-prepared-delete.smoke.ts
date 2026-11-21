@@ -37,7 +37,7 @@ const root = mkdtempSync(join(home, "project-"));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, "registry"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 const run = (args: string[], cwd = root) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -171,6 +171,26 @@ check("space forget --yes names space add and space delete as the commands that 
 
 const forgot = run(["space", "forget", "b4b"]);
 check("forget says the prepared space is not running", forgot.status === 0 && /prepared, not running/.test(forgot.stdout) && !/never started/.test(forgot.stdout), shown(forgot));
+
+// Two open registrations in one folder need a space name, not a change of directory.
+const workshop = mkdtempSync(join(home, "workshop-"));
+const workshops = ["workshop-a", "workshop-b"];
+for (const [i, space] of workshops.entries()) {
+  const added = run(["space", "add", space, "--mode", "open", "--server", `nats://127.0.0.1:${43026 + i}`, "--root", ".", "--force", "--yes"], workshop);
+  check(`rig: ${space} is registered open at the shared root`, added.status === 0, shown(added));
+}
+for (const fix of [[], ["--fix"]]) {
+  const command = ["doctor", "auth", ...fix];
+  const bare = run([...command, "--plain"], workshop);
+  check(`${command.join(" ")} refuses ambiguity and names both choices instead of another directory`,
+    bare.status === 2 && /TARGET_AMBIGUOUS/.test(bare.stderr) && workshops.every((space) => bare.stderr.includes(space))
+      && bare.stderr.includes(`cotal ${command.join(" ")} --space workshop-a`) && !bare.stderr.includes("in a space's root folder"), shown(bare));
+  for (const space of workshops) {
+    const explicit = run([...command, "--space", space, "--plain"], workshop);
+    check(`${command.join(" ")} --space ${space} reports no credentials in that same folder`,
+      explicit.status === 0 && explicit.stdout.includes("No credentials to check") && explicit.stdout.replace(/\s+/g, " ").includes(`Space: ${space}`), shown(explicit));
+  }
+}
 
 finish();
 process.exit(process.exitCode ?? 0);

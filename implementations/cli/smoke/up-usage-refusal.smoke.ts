@@ -52,7 +52,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { connect, createServer, type AddressInfo } from "node:net";
+import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -113,6 +113,19 @@ for (const { args, message } of cases) {
   check(`up ${args.join(" ")} --json is one USAGE_INVALID refusal, exit 1`, json.status === 1 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "USAGE_INVALID" && message.test(json.envelope.error.message ?? ""), shown(json));
   const text = run(["up", ...args]);
   check(`up ${args.join(" ")} prints the error and the help on stderr, nothing on stdout, exit 1`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Usage/.test(text.stderr), shown(text));
+}
+
+for (const [flag, value] of [
+  ["--service-endpoints"], ["--exchange-public-port", "43033"],
+  ["--exchange-public-url", "https://example.test"], ["--exchange-trusted-proxy"],
+  ["--advertised-server", "nats://127.0.0.1:43033"], ["--agent-provisioning-url", "https://example.test"],
+] as const) {
+  const result = run(["up", "--open", flag, ...(value === undefined ? [] : [value]), "--space", "flags-audit", "--server", "nats://127.0.0.1:43034", "--json"]);
+  const error = result.envelope?.error;
+  check(`up --open ${flag} refuses USAGE_INVALID before writing project state`,
+    result.status === 1 && result.envelope?.outcome === "refused" && error?.code === "USAGE_INVALID"
+      && error.message === `${flag} can only be used with user auth. Nothing started.`
+      && error.remedy?.includes("--user-auth instead of --open") === true && !existsSync(join(folder, ".cotal")), shown(result));
 }
 
 // First-enable user auth must not leave static signing authority on any startup route.
@@ -547,8 +560,18 @@ try {
       .map((row) => row.trim().split(/\s+/)).filter(([, at]) => at && local.includes(at.slice(0, at.lastIndexOf(":"))) && Number.parseInt(at.slice(at.lastIndexOf(":") + 1), 16) === port).map(([, , , state]) => state);
     const peer = createServer((socket) => socket.on("end", () => socket.end()).on("error", () => {}));
     const at = await new Promise<number>((resolve) => peer.listen(0, "127.0.0.1", () => resolve((peer.address() as AddressInfo).port)));
-    const client = connect(at, "127.0.0.1");
-    await once(client, "connect");
+    // Linux gives an automatic port to connections bound for other destinations too, so another
+    // process's open connection can share the client's and still hold it after the client closes.
+    // The client keeps a port no other socket has. Binding one itself would not hold it: Node binds
+    // with SO_REUSEADDR, and the broker then binds beside it.
+    const dial = async (): Promise<Socket> => {
+      const socket = connect(at, "127.0.0.1");
+      await once(socket, "connect");
+      if (states(socket.localPort!).length === 1) return socket;
+      socket.destroy();
+      return dial();
+    };
+    const client = await dial();
     const port = client.localPort!;
     const open = run(["up", "--server", `nats://127.0.0.1:${port}`, "--json"], prepared);
     const openLegacy = run(["up", "--server", `nats://127.0.0.1:${port}`], unprepared);
