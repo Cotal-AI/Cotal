@@ -96,6 +96,9 @@ try {
     check("a post is accepted while chat has left", cli("send", "-c", "general", gap).status === 0);
     const back = await say("/join general");
     check("/join returns to the channel it left", back.includes("joined #general") && !back.includes("denied"), back);
+    const family = await say("/join family.>");
+    check("/join refuses a channel family without suggesting an unusable chat command",
+      family.includes("/join denied (USAGE_INVALID): name one concrete channel, without wildcards") && !family.includes("cotal chat"), family);
     const fresh = "fresh post after rejoin";
     check("a fresh post is accepted after rejoin", cli("send", "-c", "general", fresh).status === 0);
     for (let i = 0; i < 150 && !out.includes(fresh); i++) await sleep(200);

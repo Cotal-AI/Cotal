@@ -16,7 +16,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { OPENCODE_BOOT_TIMEOUT_MS, OPENCODE_READINESS_TIMEOUT_MS } from "../src/startup.js";
 import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 
@@ -84,6 +84,25 @@ async function stop(l: Launch): Promise<void> {
 }
 
 try {
+  await check("unsupported OpenCode names the executable that answered the version probe", async () => {
+    const shadowDir = join(root, "shadow");
+    const oldBinDir = join(root, "old-bin");
+    mkdirSync(shadowDir);
+    mkdirSync(oldBinDir);
+    const shadow = join(shadowDir, "opencode");
+    const oldBin = join(oldBinDir, "opencode");
+    writeFileSync(shadow, "not an executable\n", { mode: 0o644 });
+    writeFileSync(oldBin, '#!/bin/sh\n[ "$1" = --version ] || exit 99\nprintf "0.0.1\\n"\n', { mode: 0o700 });
+    const result = spawnSync(process.execPath, [serveJs], {
+      env: { PATH: [shadowDir, oldBinDir, process.env.PATH].join(delimiter), HOME: root, COTAL_OPENCODE_HOME: root },
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const { status, stderr } = result;
+    expect(status === 1 && stderr.includes(`unsupported OpenCode version "0.0.1" from ${oldBin};`) &&
+      stderr.includes(`Install a supported OpenCode in place of ${oldBin},`) && !stderr.includes(shadow), result);
+  });
+
   await check("a failed boot retains complete private server output after exit", async () => {
     const failedBoot = launch({ STUB_FAIL: "1" });
     const code = await failedBoot.exited;
@@ -178,4 +197,4 @@ try {
 
 console.log(`\nopencode-launch-claim.smoke: ${passed} passed, ${failed} failed`);
 emitSentinel({ passed, failed });
-if (failed > 0 || passed !== 8) process.exitCode = 1;
+if (failed > 0 || passed !== 9) process.exitCode = 1;

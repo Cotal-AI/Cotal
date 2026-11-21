@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
 import { Kvm } from "@nats-io/kv";
 import { JetStreamApiCodes, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
@@ -11,11 +12,12 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, CommandFailure, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
+  brokerAddressForDisplay, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
-import { readStackJournal } from "../lib/stack-journal.js";
+import { journalRecordedElsewhere, readStackJournal } from "../lib/stack-journal.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { displayRemedy } from "../lib/self-exec.js";
 import { verdictSection } from "../lib/verdict.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
@@ -104,13 +106,32 @@ async function readSpaceDeletion(name: string) {
     try { prepared = findPreparedSpace(name); }
     catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local prepared-space records could not be read; no live space deletion target was inferred", { target: { space: name } }); }
     if (prepared) {
+      const target = { space: name, root: prepared.root };
+      const reset = codeSpan(`cotal reset store ${shellPath(name)} --yes`), forget = codeSpan(`cotal space forget ${shellPath(name)}`);
+      if (!existsSync(prepared.root)) {
+        const project = canonicalRoot(findCotalRoot());
+        let moved: ReturnType<typeof journalRecordedElsewhere>;
+        if (cotalDirLink(project) === undefined) {
+          try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not locate the store. */ }
+        }
+        if (moved?.recordedRoot === prepared.root && moved.journal.space === name) {
+          const recovery = stackElsewhereRemedy(project, moved.recordedRoot, name, moved.journal.members, moved.journal.operation);
+          const afterAdoption = recovery.includes("--adopt --root") ? " If you adopt it instead, run `cotal up` and then `cotal down --yes` in the adopted root before resetting its store." : "";
+          throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this folder holds the stack journal of "${oneLine(name)}" moved from ${oneLine(prepared.root)}; there is no live broker to delete from and no broker was contacted`, {
+            target, remedy: displayRemedy(`${recovery}. Once the original root is restored, remove its stored streams with ${reset}.${afterAdoption}`),
+          });
+        }
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded project folder for "${oneLine(name)}" at ${oneLine(prepared.root)} is missing or inaccessible, so its stored streams could not be checked; no broker was contacted`, {
+          target, remedy: `locate the project folder and restore it to ${oneLine(prepared.root)}, then run ${codeSpan(`cotal space delete ${shellPath(name)} --dry-run`)} again`,
+        });
+      }
       // Starting a stopped stack to delete its streams meets the running-stack refusal, so name the
       // command that removes them while it is stopped. One that never ran has no streams to remove.
       let stopped: boolean;
       try { stopped = readStackJournal(prepared.root)?.journal.space === name; } catch { stopped = true; }
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target: { space: name, root: prepared.root }, remedy: stopped
-        ? `remove its stored streams with \`cotal reset store ${oneLine(name)} --yes\`, or remove only the local record with \`cotal space forget ${oneLine(name)}\``
-        : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with \`cotal space forget ${oneLine(name)}\`` });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target, remedy: stopped
+        ? `remove its stored streams with ${reset}, or remove only the local record with ${forget}`
+        : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with ${forget}` });
     }
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
   }

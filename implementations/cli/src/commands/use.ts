@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, clearCurrent, CommandFailure, findMesh, findPreparedSpace, folderSpace, getCurrent, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, SHOWN_VALUE_MAX, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, oneLine, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { displayRemedy } from "../lib/self-exec.js";
+import { journalRecordedElsewhere } from "../lib/stack-journal.js";
 
 export const useFlags = [
   { name: "clear", type: "boolean", description: "clear the selection, so a command targets its folder's space again" },
@@ -45,21 +47,19 @@ export async function use(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   if (args.positionals.length > 1) throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal use [<space> | --clear]");
   if (values.clear) return clearSelection(args.positionals.length > 0, presentation);
-  const previous = getCurrent() ?? null;
   const name = args.positionals[0];
-  if (name === undefined) {
-    const m = previous === null ? undefined : findMesh(previous);
-    const p = previous === null || m ? undefined : findPreparedSpace(previous);
-    const result: Selection = { kind: "selection", current: previous, previous, currentRecorded: previous === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m), folder: folderSpace(process.cwd()) ?? null };
-    const warnings: OutputWarning[] = previous !== null && !m && !p
-      ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: previous }, message: `the selected space "${previous}" is not registered here - select another with \`cotal use <name>\`` }]
-      : [];
-    writeResult(presentation, { command: "use", target: previous === null ? null : { space: previous }, result, warnings }, selectionView);
-    return;
+  let previous: string | null;
+  try { previous = (name === undefined ? readCurrent() : getCurrent()) ?? null; }
+  catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", oneLine(error.message), {
+      target: { file: error.file }, remedy: "clear the selection with `cotal use --clear`, or select a known space again",
+    });
   }
-  const m = findMesh(name);
-  const p = m ? undefined : findPreparedSpace(name);
-  if (!m && !p) {
+  const current = name ?? previous;
+  const m = current === null ? undefined : findMesh(current);
+  const p = current === null || m ? undefined : findPreparedSpace(current);
+  if (name !== undefined && !m && !p) {
     // No target, so the refusal is not headed with a space that does not exist. Clearing is a step only
     // while something is selected.
     const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space)])].sort();
@@ -67,18 +67,29 @@ export async function use(args: ParsedArgs): Promise<void> {
       remedy: `see the registered and prepared spaces with \`cotal space\`${previous === null ? "" : ", or clear the selection with `cotal use --clear`"}`,
     });
   }
-  const changed = previous !== name || readCurrentSelection()?.source !== "explicit";
+  const changed = name !== undefined && (previous !== name || readCurrentSelection()?.source !== "explicit");
   if (changed) setCurrent(name);
-  const result: Selection = { kind: "selection", current: name, previous, currentRecorded: m !== undefined, server: m?.server ?? null, ...prepared(p, m), folder: folderSpace(process.cwd()) ?? null };
-  writeResult(presentation, { command: "use", target: { space: name }, result, noOp: !changed }, selectionView);
+  const cwd = process.cwd(), project = canonicalRoot(findCotalRoot(cwd));
+  let moved: ReturnType<typeof journalRecordedElsewhere>;
+  if (p && !existsSync(p.root) && cotalDirLink(project) === undefined) {
+    try {
+      const found = journalRecordedElsewhere(project);
+      if (found?.recordedRoot === p.root && found.journal.space === p.space) moved = found;
+    } catch { /* An unusable journal does not identify a moved project. */ }
+  }
+  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd) ?? null };
+  const warnings: OutputWarning[] = current !== null && name === undefined && !m && !p
+    ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: current }, message: `the selected space "${current}" is not registered here - select another with \`cotal use <name>\`` }]
+    : [];
+  writeResult(presentation, { command: "use", target: current === null ? null : { space: current }, result, noOp: name !== undefined && !changed, warnings }, (s) => selectionView(s, project, moved));
 }
 
 /** The selection's local lifecycle fields, without a broker probe. */
-function prepared(p: PreparedSpace | undefined, m: MeshEntry | undefined): Pick<Selection, "preparedRoot" | "preparedState" | "lastOperation"> {
+function prepared(p: PreparedSpace | undefined, m: MeshEntry | undefined, moved?: string): Pick<Selection, "preparedRoot" | "preparedState" | "lastOperation"> {
   if (m?.stoppedByDown === true && m.origin !== "manual" && m.origin !== "catalog")
     return { preparedRoot: m.root, preparedState: "stopped", lastOperation: "`cotal down`, completed" };
   if (!p) return { preparedRoot: null, preparedState: null, lastOperation: null };
-  const lifecycle = existsSync(p.root) ? preparedLifecycle(p.root, p.space) : undefined;
+  const lifecycle = moved !== undefined ? preparedLifecycle(moved, p.space) : existsSync(p.root) ? preparedLifecycle(p.root, p.space) : undefined;
   return { preparedRoot: p.root, preparedState: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
 }
 
@@ -96,7 +107,7 @@ function clearSelection(named: boolean, presentation: ReturnType<typeof presenta
   ] }] }] }));
 }
 
-function selectionView(s: Selection): Report {
+function selectionView(s: Selection, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   if (s.current === null) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: loadMeshes().length === 0 && loadPreparedSpaces().length === 0
     ? "no spaces are known here - sign in to Cotal Cloud with `cotal login`"
     : "no space is selected - select one with `cotal use <name>`; `cotal space` lists them", tone: "hint" }] }] }] };
@@ -105,7 +116,12 @@ function selectionView(s: Selection): Report {
     : { text: `selected ${s.current}${s.previous ? ` (was ${s.previous})` : ""}`, tone: "ok", mark: "✓" };
   const lines: Cell[] = [head];
   if (s.server) lines.push({ text: `  ${s.server}`, tone: "hint" });
-  if (s.preparedRoot) lines.push(!existsSync(s.preparedRoot) ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which no longer exists - forget it with \`cotal space forget ${s.current}\``, tone: "waiting" }
+  if (moved) {
+    if (s.lastOperation) lines.push({ text: `  ${s.preparedState === "stopped" ? "stopped; its last operation" : "its last operation"}, ${s.lastOperation}`, tone: "waiting" });
+    lines.push(
+      { text: `  this folder holds the stack journal of "${s.current}" and was moved from ${moved.recordedRoot}`, tone: "waiting" },
+      { text: `  ${displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation))}`, tone: "hint" });
+  } else if (s.preparedRoot) lines.push(!existsSync(s.preparedRoot) ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which no longer exists - forget it with ${codeSpan(`cotal space forget ${shellPath(s.current)}`)}`, tone: "waiting" }
     : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
     : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
     : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });

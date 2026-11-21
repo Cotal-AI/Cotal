@@ -13,8 +13,8 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { connectorConfigDir } from "@cotal-ai/workspace";
-import { inspectLock, extensionNpmMutationPath, oneLine } from "@cotal-ai/workspace";
+import { connectorConfigDir, extensionEntry } from "@cotal-ai/workspace";
+import { codeSpan, CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -129,10 +129,12 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // On Windows `npm` is `npm.cmd`; Node refuses to spawn a `.cmd` without a shell (CVE-2024-27980),
   // and a naive shell re-parses cmd metachars, so run it through cmd.exe with a byte-for-byte command
   // line (shared with the manager's PtyRuntime launch).
+  // Use the same peer policy for installs and removals, including failed-add cleanup. Cotal links
+  // its shared peers to the running binary's copies after npm changes the prefix.
   // The prefix verifier requires every host-compatible dependency, including native optional
   // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--prefix", prefix, "--include=optional"]);
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
   const seedGroup = seeding && process.platform === "linux";
@@ -308,7 +310,7 @@ export async function installExtensionSet(
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
     const mutationPath = extensionNpmMutationPath();
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", ...requests.map(request => request.spec)], stage.prefix);
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...requests.map(request => request.spec)], stage.prefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
@@ -316,7 +318,8 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      if (!existsSync(join(extensionPackageDir(request.pkg), meta.main ?? "index.js"))) throw new Error(`extension set installed no main entry for ${request.pkg}`);
+      const entry = join(extensionPackageDir(request.pkg), extensionEntry(meta));
+      if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {
@@ -493,11 +496,9 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
  *  the caller to print once it has committed. */
 async function installCandidate(pkg: string, resolved: string, dir: string, recorded: readonly InstalledExtension[], seeding: boolean, staged: boolean, note: (line: string) => void): Promise<string[]> {
   console.error(c.dim(`installing ${resolved} into ${dir} …`));
-  // --legacy-peer-deps: never auto-install the peer'd core from the registry — the add ALWAYS
-  // links the running binary's copy below (one core instance is the whole point).
   // --install-links: a file:/path spec is COPIED into the prefix, not symlinked — a symlink's
   // realpath would escape the prefix and Node could no longer resolve the linked core from it.
-  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", resolved], dir, seeding);
+  const r = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", resolved], dir, seeding);
   if (r.status !== 0) {
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
@@ -757,7 +758,7 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   return `${provider.name} (${state}) in ${context.root} - ${next}`;
 }
 
-/** One installed extension as the listing reports it. */
+/** One recorded extension as the listing reports it. */
 export interface ExtensionRow {
   readonly pkg: string;
   /** The manifest pin recorded at add time. */
@@ -770,10 +771,35 @@ export interface ExtensionRow {
   readonly provides: readonly string[];
 }
 
-/** The installed extensions, read from the manifest, under the cotal-owned install root. */
+/** Keep every recorded pin, and check its on-disk metadata without loading the extension. */
 function list(presentation: Presentation): void {
-  const items = loadExtensionsManifest().extensions.map(extensionRow);
-  writeResult(presentation, { command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items } }, extensionsView);
+  const entries = loadExtensionsManifest().extensions;
+  const warnings = entries.flatMap((entry): OutputWarning[] => {
+    const dir = extensionPackageDir(entry.pkg);
+    const path = join(dir, "package.json");
+    let problem: string;
+    try {
+      if (installedExtensionPackage(entry.pkg)) return [];
+      problem = lstatSync(dir, { throwIfNoEntry: false })
+        ? `has a corrupt package at ${dir}: ${path} is missing`
+        : `is not installed at ${dir}`;
+    } catch (error) {
+      problem = error instanceof CorruptExtensionPackageError
+        ? `has a corrupt package.json at ${path}`
+        : `could not be checked: ${path} is unreadable`;
+    }
+    // Do not echo a registry spec containing a URL or opaque selector in a text warning.
+    const recovery = entry.source === "seeded" ? "Run `cotal ext seed --repair` to reinstall it."
+      : isPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec)
+        ? `Run ${codeSpan(`cotal ext add ${shellWord(entry.spec)}`)} to reinstall it.`
+        : `Run ${codeSpan(`cotal ext remove ${shellWord(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
+    return [{ code: "DEPENDENCY_UNAVAILABLE", target: { pkg: entry.pkg }, message: `Extension ${entry.pkg} ${problem}. ${recovery}` }];
+  });
+  writeResult(presentation, {
+    command: "ext", target: null, result: { kind: "extensions", root: extensionsDir(), items: entries.map(extensionRow) },
+    warnings,
+    ...(warnings.length ? { completeness: "partial", partial: { message: "Some recorded extension packages could not be verified." } } : {}),
+  }, extensionsView);
 }
 
 function extensionsView(r: { readonly root: string; readonly items: readonly ExtensionRow[] }): Report {

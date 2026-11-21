@@ -258,8 +258,9 @@ export const COMMANDS: ConsoleCommand[] = [
 export function runCommand(line: string, ctx: CommandCtx, canWrite: boolean, canControl: boolean): void {
   const trimmed = line.trim();
   if (!trimmed) return;
-  const name = trimmed.split(/\s+/)[0].toLowerCase();
-  const rest = trimmed.slice(trimmed.indexOf(name) + name.length).trim();
+  const verb = trimmed.split(/\s+/)[0];
+  const name = verb.toLowerCase();
+  const rest = trimmed.slice(verb.length).trim();
   const cmd = COMMANDS.find((c) => c.name === name);
   if (!cmd) return ctx.notify(`unknown command: ${name}`);
   if (cmd.write && !canWrite) return ctx.notify("read-only - pass --creds to send");

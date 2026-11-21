@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, canonicalRoot, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -104,8 +105,8 @@ export function presetDefinition(space: string, root: string, preset: ServicePre
 }
 
 /** Resolve a preset name given to a service action to the one definition of this space it means.
- *  A saved definition of that exact name usually wins. An unpinned manager status prefers a live
- *  stack manager to a saved manager that is not running. Otherwise a start
+ *  A saved definition of that exact name usually wins. An unpinned manager status or stop prefers
+ *  a live stack manager to a saved manager that is not running. Otherwise a start
  *  with no definition saves one from the preset's defaults and the options it named; a start of an
  *  existing, stopped one with other options saves it again. With no saved `stack-manager`, stop and
  *  restart identify the manager `up` recorded by PID so their refusal names its stack stop. A log
@@ -118,10 +119,10 @@ export function resolvePresetService(space: string, root: string, requested: str
   const options = mode === "start" && preset ? namedOptions(requested, values) : [];
   if (exact) {
     const launch = exact.record.value.launch;
-    if (mode === "status" && values.instance === undefined && preset?.name === "manager" && launch.type === "adapter" && launch.adapter === preset.adapter && !running(space, requested)) {
+    if ((mode === "status" || mode === "stop") && values.instance === undefined && preset?.name === "manager" && launch.type === "adapter" && launch.adapter === preset.adapter && !running(space, requested)) {
       const stack = presetDefinitions(space, root, preset).find((row) => row.name === STACK_DEFINITION.manager);
       if (stack && running(space, stack.name)) return { requested, name: stack.name, preset: preset.name, saved: null };
-      const recorded = recordedPresetProcess(space, root, preset);
+      const recorded = mode === "status" ? recordedPresetProcess(space, root, preset) : undefined;
       if (recorded) return { requested, name: requested, preset: preset.name, saved: null, recorded };
     }
     // A definition that is not this preset's takes no preset options on its start line.
@@ -129,17 +130,19 @@ export function resolvePresetService(space: string, root: string, requested: str
     if (launch.type !== "adapter" || launch.adapter !== preset!.adapter) throw new CommandFailure("refused", "USAGE_INVALID", `${requested} is a saved service of your own, not the ${requested} preset; its options are fixed when it is added`, { target: { space, name: requested }, remedy: `cotal service start ${requested}`, remedyIsCommand: true });
     return redefine(space, root, preset!, exact, requested, options, values);
   }
+  const chosen = preset && presetDefinition(space, root, preset, requested, mode);
+  if (preset && chosen) return options.length ? redefine(space, root, preset, chosen, requested, options, values) : { requested, name: chosen.name, preset: preset.name, saved: null };
+  // The retained launcher saves no stack-manager. Logs read its manager, and stop/restart
+  // identify it only to refuse service control with the working stack stop.
+  const manager = !preset && requested === STACK_DEFINITION.manager && ["logs", "stop", "restart"].includes(mode) ? findServicePreset("manager") : undefined;
+  if ((preset || manager) && values.instance !== undefined)
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", { target: { space, name: requested, instanceId: values.instance } });
   if (!preset) {
-    // The retained launcher saves no stack-manager. Logs read its manager, and stop/restart
-    // identify it only to refuse service control with the working stack stop.
-    const manager = requested === STACK_DEFINITION.manager && ["logs", "stop", "restart"].includes(mode) ? findServicePreset("manager") : undefined;
     if (!manager) return undefined;
     const recorded = recordedPresetProcess(space, root, manager);
     if (recorded) return { requested, name: requested, preset: manager.name, saved: null, recorded };
     return mode === "logs" ? stoppedManagerLog(space, root, requested, manager) : undefined;
   }
-  const chosen = presetDefinition(space, root, preset, requested, mode);
-  if (chosen) return options.length ? redefine(space, root, preset, chosen, requested, options, values) : { requested, name: chosen.name, preset: preset.name, saved: null };
   const recorded = recordedPresetProcess(space, root, preset);
   if (recorded) return { requested, name: requested, preset: preset.name, saved: null, recorded };
   if (mode === "logs" && requested === "manager") return stoppedManagerLog(space, root, requested, preset);
@@ -165,7 +168,16 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   const changed = options.filter((name) => JSON.stringify(fresh.options[name]) !== JSON.stringify(launch.options[name]));
   if (!changed.length) return { requested, name: row.name, preset: preset.name, saved: null };
   const shown = changed.map((name) => `--${name}`).join(", ");
-  if (isStackDefinition(row.name)) throw new CommandFailure("refused", "CONFLICT", `${requested} here is ${row.name}, which \`cotal up\` saved with its own ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `start it as \`cotal up\` saved it with \`cotal service start ${row.name}\`, or pass ${shown} to \`cotal up\`` });
+  if (isStackDefinition(row.name)) {
+    const spaceFlag = `--space ${shellWord(space)}`;
+    const up = `cotal up --root ${shellWord(root)} ${spaceFlag}`;
+    let remedy = `start the stack with ${codeSpan(up)}`;
+    if (row.name === STACK_DEFINITION.manager) {
+      const stop = running(space, row.name) ? `stop the stack manager with ${codeSpan(`cotal service stop stack-manager ${spaceFlag} --yes`)}, then ` : "";
+      remedy += `. For options that \`cotal up\` does not accept, ${stop}start the stack without its manager with ${codeSpan(`${up} --no-manager`)}, then add and start a named service with the manager preset. ${codeSpan("cotal service add custom-manager --preset manager --help")} lists its options.`;
+    }
+    throw new CommandFailure("refused", "CONFLICT", `${requested} here is ${row.name}, which \`cotal up\` saved with its own ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy });
+  }
   const merged = Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined));
   // The start's options are judged with the saved ones they keep: a --read-only start of a posting
   // dashboard keeps its --posting-creds, a pair the dashboard's launch refuses (#7589).

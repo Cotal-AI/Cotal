@@ -22,7 +22,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { recordMesh, removeMesh } from "@cotal-ai/workspace";
+import { meshFile, recordMesh, removeMesh } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -109,6 +109,39 @@ const ansi = /\x1b\[/;
   check("unset removes the value and reports what it was", unset.status === 0 && unset.envelope?.outcome === "ok" && u?.previous === "reviewer" && u.value === null && saved().spaces.demo === undefined, shown(unset));
   const unsetAgain = run(["config", "unset", "persona", "--space", "demo", "--json"]);
   check("unsetting a value that is not set is a no-op", unsetAgain.status === 0 && unsetAgain.envelope?.outcome === "no-op", shown(unsetAgain));
+}
+
+// A registry read can block the follow-up report, not the user preference write.
+{
+  const xdg = join(home, "damaged-registry-config");
+  const runHere = (args: string[]) => run(args, { XDG_CONFIG_HOME: xdg }, project);
+  const add = runHere(["space", "add", "archived", "--server", "nats://127.0.0.1:47311", "--root", ".", "--force", "--yes", "--json"]);
+  check("setup: archived is registered", add.status === 0, shown(add));
+  const record = meshFile("archived");
+  writeFileSync(record, "{");
+  try {
+    const set = runHere(["config", "set", "harness", "opencode", "--user", "--plain"]);
+    const get = runHere(["config", "get", "harness", "--user", "--plain"]);
+    check("a user set prints its saved value even when the effective value is unavailable",
+      set.status === 0 && /harness = opencode in your defaults/.test(set.stdout) && /Effective value:\s+unavailable/.test(set.stdout) &&
+      set.stderr.includes("Could not determine the effective value in this project") && set.stderr.includes(record) &&
+      get.status === 0 && /Value:\s+opencode/.test(get.stdout), { set: shown(set), get: shown(get) });
+    const preferences = join(xdg, "cotal", "preferences.json");
+    const before = readFileSync(preferences, "utf8");
+    const blocked = runHere(["config", "set", "harness", "claude", "--space", "archived", "--json"]);
+    check("a write targeting the damaged space is still refused before changing preferences",
+      blocked.status === 1 && blocked.envelope?.error?.code === "SCHEMA_INVALID" && readFileSync(preferences, "utf8") === before, shown(blocked));
+    const unset = runHere(["config", "unset", "harness", "--user", "--json"]);
+    const after = runHere(["config", "get", "harness", "--user", "--plain"]);
+    check("a user unset succeeds with a partial receipt and a separate registry warning",
+      unset.status === 0 && unset.envelope?.outcome === "ok" && unset.envelope.completeness === "partial" &&
+      unset.envelope.result?.previous === "opencode" && unset.envelope.result.value === null && unset.envelope.result.effective === null &&
+      unset.envelope.warnings.some((w) => w.code === "SCHEMA_INVALID" && w.message.includes(record) && w.message.includes("cotal space forget archived")) &&
+      after.status === 0 && /Value:\s+claude/.test(after.stdout), { unset: shown(unset), after: shown(after) });
+    check("the preference commands leave the damaged registration alone", readFileSync(record, "utf8") === "{");
+  } finally {
+    rmSync(record);
+  }
 }
 
 // ── refusals: each one exit 1 and the file unchanged ─────────────────────────────────────────────

@@ -48,7 +48,7 @@
     {
       "name": "M4 reuse the dead listing client instead of redialing",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        await stopPrivateJcode();\n        client = await launchPrivateJcode();",
+      "find": "        await stopPrivateJcode();\n        hostState.client = await launchPrivateJcode();",
       "replace": "        /* mutant keeps the closed client */",
       "command": "pnpm smoke:jcode-empty-sessions",
       "expectRed": "listing panic still starts a fresh session on a new harness",

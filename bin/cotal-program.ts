@@ -14,7 +14,7 @@ async function runVersionFlag(): Promise<boolean> {
   const { cliVersion, printVersion, readExtensionVersions } = await import("@cotal-ai/cli/version");
   (await import("./update-notice.js")).installUpdateNotice(process.argv.slice(2), cliVersion());
   const inventory = readExtensionVersions();
-  if (inventory.unreadable !== undefined) {
+  if (inventory.unreadable !== undefined && !inventory.unreadableSelection) {
     stderrLine("✗ ", inventory.unreadable, c.red);
     process.exitCode = 1;
   } else {

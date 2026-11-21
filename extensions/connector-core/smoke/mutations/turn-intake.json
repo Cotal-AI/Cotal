@@ -135,7 +135,7 @@
     },
     {
       "name": "MP5 (MO1b): strip COTAL_MANAGER_INSTANCE in applyHandoffManagerInstance (spec.env = { ...spec.env })",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/commands/spawn-enrollment.ts",
       "find": "  if (handoffManagerInstanceId !== undefined) {\n    spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: handoffManagerInstanceId };\n  }",
       "replace": "  if (handoffManagerInstanceId !== undefined) {\n    spec.env = { ...spec.env };\n  }",
       "expectRed": "N1a: cotal spawn handoff branch builds LaunchSpec via connector.buildLaunch and forwards COTAL_MANAGER_INSTANCE onto the launched child env (leaving a direct launch unpinned)",

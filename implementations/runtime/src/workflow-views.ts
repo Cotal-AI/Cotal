@@ -1,7 +1,7 @@
 import type { RunFailure, RunJournalRow, RunListRow, RunStatusView } from "@cotal-ai/core";
-import { oneLine, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
+import { oneLine, presentationOf, shellPath, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
 
-interface OutputValues { json?: boolean; plain?: boolean; on?: string; limit?: string; local?: boolean }
+interface OutputValues { json?: boolean; plain?: boolean; on?: string; limit?: string; local?: boolean; endpoint?: string; space?: string; server?: string; creds?: string }
 const recordedState = (state: string | undefined, failure?: RunFailure): Styled => ({ text: state === "failed" && failure?.code ? `failed (${failure.code})` : state ?? "not recorded", tone: state === "completed" ? "ok" : state === "failed" ? "failed" : state === "released" || state === "held" ? "waiting" : "hint" });
 const managerPin = (values: OutputValues) => values.on ? ` --on ${values.on}` : "";
 const runToken = (value: string | undefined) => value && /^run-[0-9a-f]{32}$/.test(value) ? value : "<run-id>";
@@ -99,6 +99,11 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
   // A released status carries no reason or log location. Do not infer its execution host from a read.
   const released = view.status?.state === "released";
   const unreadable = view.revocationUnreadable !== undefined;
+  const selection = (["endpoint", "space", "server", "creds"] as const).flatMap((flag) => {
+    const value = values[flag];
+    return value === undefined ? [] : [` --${flag} ${shellPath(value)}`];
+  }).join("");
+  const showJson = `cotal r show ${runToken(view.runId)}${values.local ? " --local" : ""}${selection} --json${managerPin(values)}`;
   writeResult(presentationOf(values), {
     command: "run", target: { space, endpoint: view.endpoint, run: view.runId, requestedManagerInstance: values.on ?? null }, result: { kind: "run", view },
     warnings: unreadable ? [{ code: "REVOCATION_NOT_CHECKED", target: { run: view.runId, endpoint: view.endpoint }, message: "The revocation marker could not be read; the recorded state does not establish that this run may continue." }] : [],
@@ -125,7 +130,7 @@ export function printRunDetail(space: string, view: RunStatusView, values: Outpu
     ...(released ? [{ title: "Released", blocks: [{ kind: "lines" as const, lines: ["The recorded driver released this run; its status does not record why. For a hosted run, inspect the executing manager's log. For a locally driven run, inspect the driving process's output."] }] }] : []),
     ...(errored.length ? [{ title: "Step errors", blocks: [{ kind: "lines" as const, lines: errored.flatMap((row) => [{ text: `${row.step}  ${row.outcome}`, tone: "failed" as const }, ...row.errorMessage!.split("\n").map((line) => `  ${oneLine(line)}`)]) }] }] : []),
     { title: `Journal · last ${shown.length} of ${view.journal.length}`, blocks: [shown.length ? { kind: "table", columns: [{ key: "number", label: "Entry" }, { key: "step", label: "Step" }, { key: "outcome", label: "Recorded outcome" }], rows: shown.map((row) => ({ number: String(row.n), step: row.kind === "activation" ? "holder activation" : row.step, outcome: row.kind === "activation" ? `epoch ${row.epoch}` : row.winner !== undefined ? `${row.outcome}, ${row.winner} won` : row.outcome === "cancelled" && row.lostRace !== undefined ? `cancelled, ${winners.get(row.lostRace) ?? "another branch"} won ${row.lostRace}` : row.outcome })) } : { kind: "lines", lines: ["No journal entries in this view."] }, { kind: "lines", lines: [{ text: "Use --limit <n> for up to 1000 rows, or --json for the full returned journal. A step outcome is not proof that every external task succeeded.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: `cotal r show ${runToken(view.runId)} --json${managerPin(values)}`, description: "Read the complete returned status and journal" }, ...(unrecorded ? [{ command: `cotal service logs stack-manager --space ${space}`, description: "Read the stack manager's log, where a hosted run's failure outside any step is recorded" }] : [])] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [...(needsAnswer.length && !view.revoked ? [{ command: `cotal r answer ${runToken(view.runId)} '<step-key>' --value '<json>'${managerPin(values)}`, description: "Answer an open request under the native caller policy" }] : []), { command: showJson, description: "Read the complete returned status and journal" }, ...(unrecorded ? [{ command: `cotal service logs stack-manager --space ${space}`, description: "Read the stack manager's log, where a hosted run's failure outside any step is recorded" }] : [])] }] },
   ] }));
 }
 

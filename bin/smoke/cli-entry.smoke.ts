@@ -35,6 +35,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import { spaceSegment } from "@cotal-ai/workspace";
 import "@cotal-ai/cli";
@@ -356,6 +357,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     shown(json),
   );
   check("version --json reports the version the text prints", `cotal-ai ${env?.result?.version}` === text.stdout.split("\n")[0], { json: env?.result, text: text.stdout });
+  const usage = (await readDocument(join(REPO, "docs", "cli-usage.mdx"))).markdown;
+  const example = /^`cotal version --json` writes:\n\n```json\n([\s\S]+?)\n```$/m.exec(usage)?.[1];
+  const documented = example === undefined ? undefined : JSON.parse(example);
+  const actual = env?.result && { ...env, result: { ...env.result, version: "<version>" } };
+  check("the documented version --json example matches a fresh home", actual !== undefined && isDeepStrictEqual(documented, actual), { documented, actual });
   check("version -j, --version --json and -V -j print the same envelope", same(json, cotal(["version", "-j"])) && same(json, cotal(["--version", "--json"])) && same(json, cotal(["-V", "-j"])));
   const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
   check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
@@ -768,19 +774,31 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("d\\u001b]0;PWN\\u0007R\\u001b[2JD") &&
         (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
   }
-  // A parser diagnostic spans lines, and each is printed on its own rather than as escaped breaks.
-  const unparseable = cotal(["personas", "list"], (home) => {
-    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+  const unparseable = cotal(["personas", "list", "--space", "entry"], (home) => {
+    seeded(home);
     writeFileSync(join(home, "..", ".cotal", "agents", "broken.md"), "---\nname: broken\nmodel: [unclosed\n---\nbody\n");
+    writeFileSync(join(home, "..", ".cotal", "agents", "duplicate.md"), "---\nname: duplicate\nrole: private-first\nrole: private-second\n---\nExample persona.\n");
   }, noSeed);
-  check("personas list exits 4 and prints a YAML diagnostic as lines, with no escaped line breaks",
-    unparseable.status === 4 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  check("personas list names the file and the duplicate key's file position without printing YAML values",
+    unparseable.status === 4 && /^default\s/m.test(unparseable.stdout) &&
+      /^duplicate +⨯ unparseable agent file .*duplicate\.md: the frontmatter has a duplicate YAML key at line 4, column 1$/m.test(unparseable.stdout) &&
+      !/private-first|private-second/.test(unparseable.stdout + unparseable.stderr), shown(unparseable));
+  check("personas list names other YAML syntax errors without printing a source excerpt",
+    /^broken +⨯ unparseable agent file .*broken\.md: the frontmatter is not valid YAML at line 3, column 17$/m.test(unparseable.stdout) &&
+      !/unclosed|^ +\^$/m.test(unparseable.stdout + unparseable.stderr), shown(unparseable));
   // Only a catalog folder that does not exist lists as empty. One that cannot be read is refused, as
   // `persona` refuses it, under the space it read. A folder this account owns whose mode denies it is
   // given the chmod that lets it read, and the run leaves the mode as it was. Any other read error
   // gets no next step. Root reads through the mode, so those cells run only for an ordinary POSIX user.
   const absent = cotal(["personas", "list"], (home) => mkdirSync(join(home, "..", ".cotal")), noSeed);
   check("personas list reports no personas when the catalog folder does not exist", absent.status === 0 && absent.stdout.includes("no personas in "), shown(absent));
+  const emptyCatalog = (home: string) => mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+  const offline = cotal(["personas", "list", "--space", "entry"], emptyCatalog, noSeed);
+  check("plain personas list works offline and suggests creation with an explicit subscription and target",
+    offline.status === 0 && offline.stdout.includes("no personas in ") && offline.stdout.includes('cotal personas new example --space entry --prompt "Help with this project" --subscribe ""'), shown(offline));
+  const running = cotal(["personas", "list", "--space", "entry", "--running"], emptyCatalog, noSeed);
+  check("personas list --running refuses a prepared but unstarted space even with an empty catalog",
+    running.status === 1 && running.stdout === "" && running.stderr.includes('"entry" is prepared but not started') && running.stderr.includes("start it with `cotal up`"), shown(running));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     let agents = "", mode = "";
     const locked = (home: string) => {
@@ -1088,6 +1106,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
   check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
     json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+  // up -f's structured refusal keeps the same sentence and Next, rather than a generic read error.
+  for (const format of ["--json", "--plain"]) {
+    const up = cotal(["up", "-f", dir, "--dry-run", format], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+    const said = format === "--json" ? (() => { try { return (JSON.parse(up.stdout) as { error?: { message?: string; remedy?: string } }).error; } catch { return undefined; } })() : { message: up.stdout + up.stderr, remedy: up.stdout + up.stderr };
+    check(`up -f --dry-run ${format} of a folder names the directory and the Next, not a generic read error`,
+      up.status === 1 && said?.message?.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`) === true
+        && said.remedy?.includes("name the manifest file in it, such as its cotal.yaml") === true && !(up.stdout + up.stderr).includes("could not be read"), shown(up));
+  }
 }
 
 // A retained teardown ledger uses the manifest source hash, without reading launch-time personas.
@@ -1132,6 +1158,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
+  // A new project records no stack and no ledger, so there is no run ID to offer.
+  const fresh = cotal(["down", "-f", "old.yaml", "--dry-run"], (home) => writeFileSync(join(dirname(home), "old.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: fresh\nchannels: {}\n"), noSeed);
+  check("down -f in a root with no ledger and no stack says it holds none and names team remove and the stack preview, with no run ID",
+    fresh.status === 1 && fresh.stderr.includes("this root holds no ledger from the retired `spawn -f` deploy") && fresh.stderr.includes("`cotal team remove <id>`")
+      && fresh.stderr.includes("`cotal down --dry-run`") && !fresh.stderr.includes("--run <id>"), shown(fresh));
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────

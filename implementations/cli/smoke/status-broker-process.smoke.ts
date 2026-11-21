@@ -1,18 +1,21 @@
 /** Controller broker process summaries retain the legacy observation without treating it as ownership.
  * Run: pnpm exec tsx implementations/cli/smoke/status-broker-process.smoke.ts
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { MANAGER_PIDFILE, canonicalLocalProcessPath } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
+import { observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-status-broker-"));
 console.log(`Evidence: ${scratch}`);
 const root = join(scratch, "project");
 const home = join(scratch, "home");
-const cotalHome = join(scratch, "cotal-home");
+// Stop the outside-project root walk at the private machine home, not at a host project.
+const cotalHome = join(scratch, ".cotal");
 const config = join(scratch, "config");
 const runtime = join(scratch, "runtime");
 const stubs = join(scratch, "service-stubs");
@@ -35,9 +38,12 @@ const cli = resolve(import.meta.dirname, "../../../bin/cotal.ts");
 const { check, finish } = createSuite();
 let commandIndex = 0;
 function run(...args: string[]) {
-  assertSmokeSandboxDown(anchor, args, { cwd: root, env });
+  return runFrom(root, ...args);
+}
+function runFrom(cwd: string, ...args: string[]) {
+  assertSmokeSandboxDown(anchor, args, { cwd, env });
   const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), cli, ...args], {
-    cwd: root, env, encoding: "utf8", timeout: 180_000,
+    cwd, env, encoding: "utf8", timeout: 180_000,
   });
   const tag = `${String(++commandIndex).padStart(2, "0")}-${args[0]}`;
   writeFileSync(join(scratch, `${tag}.stdout`), result.stdout ?? "");
@@ -178,6 +184,34 @@ try {
         missing.exit === 4 && nats(missing)?.state === "unreadable" && nats(missing)?.ownedService === null, missing);
     } finally { writeFileSync(instanceFile, bytes, { mode: 0o600 }); }
   }
+  const offlineRoot = join(scratch, "offline");
+  mkdirSync(offlineRoot, { mode: 0o700 });
+  const added = runFrom(scratch, "space", "add", "offline", "--root", offlineRoot, "--mode", "open", "--server", `nats://127.0.0.1:${await freePort()}`, "--force", "--yes");
+  if (added.status !== 0) throw new Error(added.stdout + added.stderr);
+  try {
+    const cleared = runFrom(scratch, "use", "--clear");
+    if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+    const bare = runFrom(scratch, "status", "--plain");
+    check("bare status outside both roots names unchecked registrations and offers the broker check",
+      bare.status === 0 && /multiple spaces are registered but unchecked: offline .*status-broker /.test(bare.stdout) &&
+      /cotal status --all/.test(bare.stdout.split("\nNext\n")[1] ?? "") && !bare.stdout.includes("multiple meshes running"), bare.stdout);
+    const all = runFrom(scratch, "status", "--all", "--plain");
+    check("status --all selects the only reachable registration without asking for a default",
+      all.status === 0 && /^  offline +unreachable/m.test(all.stdout) && /^  -> status-broker +reachable/m.test(all.stdout) &&
+      /^Selected space +-> status-broker$/m.test(all.stdout) && !/multiple meshes running|cotal use <name>|cotal status --all/.test(all.stdout), all.stdout);
+    const json = runFrom(scratch, "status", "--all", "--json");
+    const { target, result } = JSON.parse(json.stdout) as { target: { space: string; scope: string }; result: StatusResult };
+    check("the all-scope JSON report selects the reachable space but does not set a default",
+      json.status === 0 && target.scope === "all" && target.space === "status-broker" && result.selected.resolved &&
+      result.selected.source === "registry" && result.meshes.current === null &&
+      result.meshes.items.find(row => row.space === "offline")?.check === "unreachable", { target, selected: result.selected, meshes: result.meshes });
+    const explicit = runFrom(scratch, "status", "--all", "--space", "offline", "--plain");
+    check("an explicitly named offline space still takes precedence over a reachable registration",
+      explicit.status === 0 && /^Selected space +-> offline$/m.test(explicit.stdout) && /^  Connection: +unreachable/m.test(explicit.stdout), explicit.stdout);
+  } finally {
+    const forgotten = runFrom(scratch, "space", "forget", "offline");
+    if (forgotten.status !== 0) throw new Error(forgotten.stdout + forgotten.stderr);
+  }
 } finally {
   const stopped = run("down", "--yes", "--json");
   check("down stops the owned stack", stopped.status === 0 && (brokerPid === undefined || !alive(brokerPid)), stopped.stdout);
@@ -197,5 +231,86 @@ try {
     check("legacy-only nats summaries retain their state and name the pidfile source",
       nats(legacy)?.source === "legacy-pidfile" && nats(legacy)?.state === "stopped" && nats(legacy)?.detail === "no pidfile" && nats(legacy)?.ownedService === null, nats(legacy));
   } finally { writeFileSync(journal, bytes, { mode: 0o600 }); }
+}
+if (process.platform !== "win32") {
+  const other = join(scratch, "other"), project = join(scratch, "override-project");
+  for (const dir of [other, project]) mkdirSync(dir, { mode: 0o700 });
+  const server = async () => `nats://127.0.0.1:${await freePort()}`;
+  const recorded = await server(), live = await server(), override = await server();
+  const space = "override-project";
+  for (const args of [
+    ["space", "add", "manual-a", "--server", recorded, "--root", other, "--mode", "open", "--force"],
+    ["use", "manual-a"],
+    ["space", "create", space, "--root", project],
+  ]) {
+    const prepared = run(...args);
+    if (prepared.status !== 0) throw new Error(`override fixture: ${prepared.stdout}${prepared.stderr}`);
+  }
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli, "up", "--foreground", "--open", "--no-manager", "--server", live], {
+    cwd: project, env, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const state = observeOwnedChild(child);
+  let output = "";
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { output += String(chunk); });
+  try {
+    await waitForOwnedChild(() => {
+      if (state.error || state.exited) throw state.error ?? new Error(output);
+      return output.includes("commands here still target the selected space");
+    }, 60_000, "broker-only foreground stack registered");
+    const status = runFrom(project, "status", "--server", override, "--plain");
+    check("an unreachable server override names the checked address and offers no store reset",
+      status.status === 0 && /Connection:\s+unreachable/.test(status.stdout) &&
+      status.stdout.includes(`nothing answered at ${override}, the broker address --server named`) &&
+      !/\b(?:reset|clean) store\b/.test(status.stdout), status.stdout + status.stderr);
+    const history = runFrom(project, "history", "general", "--space", space, "--limit", "1");
+    check("the folder's independent broker still serves history",
+      history.status === 0 && history.stdout.includes(`Mesh: ${space}`), history.stdout + history.stderr);
+  } finally {
+    if (!state.exited && !state.error) child.kill("SIGTERM");
+    await waitForOwnedChild(() => state.closed, 60_000, "broker-only foreground stack stopped");
+    check("the foreground owner stopped the override fixture", state.code === 143 && output.includes("Controller stack stopped"), output);
+    const cleared = run("use", "--clear");
+    if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+  }
+}
+if (process.platform === "linux") {
+  const legacyRoot = join(scratch, "legacy-zombie");
+  mkdirSync(legacyRoot);
+  const pidfile = join(legacyRoot, ".cotal", "nats.pid");
+  const managerPidfile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: legacyRoot, space: "legacy-zombie" });
+  const foreground = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli,
+    "up", "--foreground", "--open", "--space", "legacy-zombie",
+    "--server", `nats://127.0.0.1:${await freePort()}`], { cwd: legacyRoot, env, stdio: "ignore" });
+  const finished = new Promise<void>((resolve, reject) => {
+    foreground.once("error", reject);
+    foreground.once("close", () => resolve());
+  });
+  const sleep = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
+  try {
+    for (let i = 0; i < 600 && (!existsSync(pidfile) || !existsSync(managerPidfile)) && foreground.exitCode === null; i++) await sleep();
+    if (!existsSync(managerPidfile)) throw new Error("foreground CLI did not record its manager PID");
+    const pid = Number(readFileSync(pidfile, "utf8"));
+    const stat = () => readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.split(" ");
+    if (!foreground.pid || Number(stat()[1]) !== foreground.pid) throw new Error("broker is not a child of the foreground CLI");
+    const running = runFrom(legacyRoot, "status", "--plain");
+    check("legacy status reports the live foreground broker as running", running.status === 0 && /Broker[^\n]*running/.test(running.stdout), running.stdout);
+    foreground.kill("SIGSTOP");
+    const parentState = () => readFileSync(`/proc/${foreground.pid}/stat`, "utf8").split(") ").at(-1)![0];
+    for (let i = 0; i < 100 && parentState() !== "T"; i++) await sleep();
+    if (parentState() !== "T") throw new Error("foreground CLI did not stop");
+    process.kill(pid, "SIGTERM");
+    for (let i = 0; i < 100 && stat()[0] !== "Z"; i++) await sleep();
+    if (stat()[0] !== "Z") throw new Error("broker did not become a zombie");
+    const plain = runFrom(legacyRoot, "status", "--plain");
+    check("legacy status reports the unreaped broker as stale", /Broker[^\n]*stale pidfile/.test(plain.stdout) && !/Broker[^\n]*running/.test(plain.stdout), plain.stdout);
+    const components = runFrom(legacyRoot, "status", "--components");
+    check("component health distinguishes the zombie from a live broker that is not serving",
+      /broker\s+absent[^\n]*stale pidfile/.test(components.stdout), components.stdout);
+  } finally {
+    foreground.kill("SIGCONT");
+    foreground.kill("SIGTERM");
+    const timeout = setTimeout(() => foreground.kill("SIGKILL"), 10_000);
+    try { await finished; } finally { clearTimeout(timeout); }
+  }
 }
 finish();

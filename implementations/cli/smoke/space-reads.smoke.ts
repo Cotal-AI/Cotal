@@ -173,6 +173,19 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("its text refusal repeats the name the same way", longText.status === 2 && longText.stderr.includes(`no space named "${"x".repeat(128)}… (100000 characters)"`) && longText.stderr.length < 1_000, shown(longText));
   const edge = json(["use", "w".repeat(128)]);
   check("control: a 128-character unregistered name is repeated whole", edge.status === 2 && (edge.env?.error?.message as string).startsWith(`no space named "${"w".repeat(128)}" is registered`) && !/characters\)/.test(edge.stdout), shown(edge));
+  const pointer = join(cotalHome, "current-mesh");
+  writeFileSync(pointer, "\n");
+  const damaged = json(["use"]), damagedText = run(["use", "--plain"]);
+  check("bare use refuses an empty selection file without removing it",
+    damaged.status === 1 && damaged.env?.outcome === "refused" && damaged.env.error?.code === "SCHEMA_INVALID" && damaged.env.error.message.includes(`${pointer} is empty`) && damaged.env.error.remedy.includes("cotal use --clear") && readFileSync(pointer, "utf8") === "\n", shown(damaged));
+  check("plain use identifies the damaged file and how to clear it",
+    damagedText.status === 1 && damagedText.stderr.includes(`${pointer} is empty`) && damagedText.stderr.includes("`cotal use --clear`"), shown(damagedText));
+  const repaired = json(["use", "--clear"]), empty = json(["use"]);
+  check("clearing a damaged record restores a successful empty read",
+    repaired.status === 0 && repaired.env?.outcome === "ok" && empty.status === 0 && empty.env?.outcome === "ok" && empty.env.result.current === null, shown(empty));
+  writeFileSync(pointer, "\n", { mode: 0o600 });
+  const replaced = json(["use", "alpha"]);
+  check("selecting a known space again replaces the damaged record", replaced.status === 0 && getCurrent() === "alpha", shown(replaced));
 }
 
 // ── show ─────────────────────────────────────────────────────────────────────────────────────────────

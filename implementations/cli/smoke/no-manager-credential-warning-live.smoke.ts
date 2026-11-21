@@ -69,6 +69,16 @@ try {
         const web = credsClaims(readFileSync(join(root, ".cotal", webCredsKey(space, { injected: false, root })), "utf8"));
         suite.check(`${scenario}: up provisions the space's web.creds with no expiry`, web.exp === undefined, web);
       }
+      if (scenario === "legacy-auth") {
+        const doctor = run("doctor", "auth", "--space", space, "--plain");
+        suite.check("doctor reports healthy trust for the registered static space",
+          doctor.status === 0 && doctor.text.includes("No local credential findings"), doctor.text);
+        const invalid = run("doctor", "auth", "--space", ".", "--plain");
+        suite.check("doctor refuses an invalid space name as usage and points to the registry, not trust repair",
+          invalid.status === 1 && invalid.text.includes('"." is not a valid space name for --space') &&
+          invalid.text.includes("USAGE_INVALID") && invalid.text.includes("`cotal space`") &&
+          !/SCHEMA_INVALID|restore.*from backup|cotal up/.test(invalid.text), invalid.text);
+      }
       if (managed) {
         const doctor = run("doctor", "auth");
         suite.check("doctor lists the unbounded dashboard credential without counting a finding",

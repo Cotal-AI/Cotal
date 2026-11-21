@@ -25,15 +25,38 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
       const node = realpathSync(process.execPath);
       writeFileSync(launcher, `#!/bin/sh
 if command -v node >/dev/null 2>&1; then
-  exec node ${quote(target)} "$@"
-fi
-if [ -x ${quote(node)} ]; then
+  node=node
+elif [ -x ${quote(node)} ]; then
+  node=${quote(node)}
   PATH="$PATH":${quote(dirname(node))}
   export PATH
-  exec ${quote(node)} ${quote(target)} "$@"
+else
+  printf '%s\\n' 'cotal: Node.js 22.10 or later is required. Restore Node to PATH and reinstall Cotal with npm.' >&2
+  exit 127
 fi
-printf '%s\\n' 'cotal: Node.js 22.10 or later is required. Restore Node to PATH and reinstall Cotal with npm.' >&2
-exit 127
+
+# Keep case outside command substitutions for Bash 3.2's parser.
+resolve_entry() {
+  launcher=$1
+  while :; do
+    case "$launcher" in /*) ;; *) launcher=./$launcher ;; esac
+    # Resolve the directory before interpreting a relative symlink target.
+    CDPATH= cd -P "\${launcher%/*}/" 2>/dev/null || return 1
+    launcher=$PWD/\${launcher##*/}
+    if [ ! -L "$launcher" ]; then
+      [ -f "$PWD/cotal.js" ] || return 1
+      printf '%s\\n' "$PWD/cotal.js"
+      break
+    fi
+    launcher=$(PATH="\${PATH:+$PATH:}/usr/bin:/bin" readlink "$launcher" 2>/dev/null) || return 1
+  done
+}
+
+entry=$(resolve_entry "$0") || {
+  printf 'cotal: cannot resolve the JavaScript entry from launcher %s\\n' "$0" >&2
+  exit 1
+}
+exec "$node" "$entry" "$@"
 `, { flag: "wx", mode: 0o755 });
       const temporary = mkdtempSync(join(dirname(link), ".cotal-node-"));
       try {

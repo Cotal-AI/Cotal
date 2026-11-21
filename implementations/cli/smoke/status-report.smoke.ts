@@ -790,13 +790,18 @@ if (process.platform !== "win32") {
   roots.push(parent);
   const [registered, unregistered] = ["stalereg", "staleunreg"].map((name) => join(parent, name));
   for (const root of [registered, unregistered]) mkdirSync(join(root, ".cotal", "nats"), { recursive: true });
+  const server = `nats://127.0.0.1:${await freePort()}`;
   const previousHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = join(home, ".cotal-home");
-  try { recordMesh({ space: "stalereg", server: `nats://127.0.0.1:${await freePort()}`, root: registered, mode: "open", origin: "up", ts: new Date().toISOString() }); }
+  try { recordMesh({ space: "stalereg", server, root: registered, mode: "open", origin: "up", ts: new Date().toISOString() }); }
   finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
-  const staleHints = (root: string) => (run(["status", "--json"], {}, root).envelope?.result?.hints ?? []).filter((hint) => hint.startsWith("if the stored JetStream state is stale:"));
+  const staleHints = (root: string, ...flags: string[]) => (run(["status", ...flags, "--json"], {}, root).envelope?.result?.hints ?? []).filter((hint) => hint.startsWith("if the stored JetStream state is stale:"));
   const reg = staleHints(registered);
   check("a registered stopped root names reset store with the space registered there", reg.length === 1 && / reset store stalereg`, then `up` with your usual flags$/.test(reg[0]!) && !reg[0]!.includes("clean"), reg);
+  const sameBroker = staleHints(registered, "--server", `${server}/`);
+  check("the same recorded broker with an equivalent URL keeps the stopped-store hint", reg.length === 1 && sameBroker[0] === reg[0], sameBroker);
+  const otherBroker = staleHints(registered, "--space", "stalereg", "--server", `nats://127.0.0.1:${await freePort()}`);
+  check("even the folder's own space does not imply the override addresses its store", otherBroker.length === 0, otherBroker);
   const preview = run(["reset", "store", "stalereg", "--dry-run", "--json"], {}, registered);
   check("…and that reset reaches the store as printed", preview.status === 0 && preview.envelope?.outcome === "ok", shown(preview));
   const unreg = staleHints(unregistered);

@@ -7,6 +7,7 @@ import {
   CommandFailure,
   authDir,
   canonicalRoot,
+  codeSpan,
   checkDiscoveryDocument,
   cotalDirLink,
   stackJournalPath,
@@ -399,7 +400,7 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
       protectedLocalDirectory(project, "the project folder");
       return { kind: "bind", entry, project: canonicalRoot(project) };
     }
-    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass --project ${entry.root}`);
+    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass ${codeSpan(`--project ${shellWord(entry.root)}`)}`);
   }
   return { kind: "registered", entry };
 }
@@ -496,8 +497,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
     if (again && here(prepared.root)) return "prepared";
     const gone = !existsSync(prepared.root);
     throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, target, gone
-      ? `forget it with \`cotal space forget ${name}\`, then run this create again`
-      : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+      ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again`
+      : flag === "--project"
+        ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
+        : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
   // Missing member records do not prove another home. Do not prepare over the running stack.
   let journal: Parameters<typeof stackRunsUnderOtherHome>[1] | undefined;

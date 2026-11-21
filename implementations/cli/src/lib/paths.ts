@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { authDir, canonicalRoot, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, readMaintenanceJournal, recordsMovedTo, soleSpaceOf } from "@cotal-ai/workspace";
+import { authDir, canonicalRoot, codeSpan, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, readMaintenanceJournal, recordsMovedTo, shellPath, soleSpaceOf } from "@cotal-ai/workspace";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
  *  command resolves the same `.cotal/` whether you're at the project root or a subdirectory. */
@@ -72,7 +72,7 @@ function linkAt(dir: string): CotalLink | undefined | null {
  *  or giving this folder records of its own. */
 export function linkedCotalRemedy(root: string, target: string): string {
   if (recordsMovedTo(root, dirname(target))) return moveRecordsBack(root, dirname(target));
-  const prepare = `remove the link and prepare this folder with \`cotal space create <space> --root ${root}\``;
+  const prepare = `remove the link and prepare this folder with ${codeSpan(`cotal space create <space> --root ${shellPath(root)}`)}`;
   return basename(target) === ".cotal" ? `run commands for that project from ${dirname(target)}, or ${prepare}` : prepare;
 }
 
@@ -87,7 +87,7 @@ export function linkedCotalRefusal(command: "up" | "down" | "clean" | "reset sto
   const removes = command !== "up" && command !== "down";
   const effect = command === "up" ? "started" : command === "down" ? "stopped" : "removed";
   const failureTarget = { root, path, link: target };
-  const here = command === "up" ? `remove the link and prepare this folder with \`cotal space create <space> --root ${root}\``
+  const here = command === "up" ? `remove the link and prepare this folder with ${codeSpan(`cotal space create <space> --root ${shellPath(root)}`)}`
     : command === "down" ? "remove the link, then run `cotal down` again"
     : "remove the link, then run it again where the records it should remove are";
   const why = removes ? `${command} reads and removes nothing through a link` : "a stack runs only from a folder whose .cotal is its own directory";

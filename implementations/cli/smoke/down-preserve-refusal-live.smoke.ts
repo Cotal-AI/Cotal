@@ -107,6 +107,23 @@ try {
   }
   ok("the delivery daemon is running before the cut", deliveryBefore);
 
+  const json = runSync(["down", "--preserve-state", "--json", "--yes"]);
+  const receipt = JSON.parse(json.stdout);
+  ok("JSON refusal keeps preservation and confirmation in the retry",
+    json.status === 2 && receipt.outcome === "refused" && receipt.error?.code === "UNSUPPORTED" &&
+      / down --preserve-state --yes` from this root$/.test(receipt.error?.remedy), tail(json));
+  const plain = runSync(["down", "--preserve-state", "--plain", "--yes"]);
+  ok("plain refusal keeps preservation and confirmation in the retry",
+    plain.status === 2 && /UNSUPPORTED/.test(tail(plain)) &&
+      / down --preserve-state --yes` from this root/.test(tail(plain)), tail(plain));
+  mkdirSync(join(root, "first store"));
+  mkdirSync(join(root, "second store"));
+  const custom = runSync(["down", "--preserve-state", "--store-dir", ".cotal/nats",
+    "--session-store", "first store", "--session-store", "second store", "--json"]);
+  const customRemedy = JSON.parse(custom.stdout).error?.remedy;
+  ok("JSON refusal retains the store and quotes each session store in the retry",
+    custom.status === 2 && / down --preserve-state --store-dir=\.cotal\/nats --session-store='first store' --session-store='second store'` from this root$/.test(customRemedy), tail(custom));
+
   console.log("\n2) CONTROL: an endpoint the manager did not spawn joins the roster");
   const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   ok("the folder holds the space's signer", auth !== undefined);

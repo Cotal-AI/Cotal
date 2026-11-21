@@ -1,5 +1,45 @@
 # @cotal-ai/workspace
 
+## 0.172.1
+
+### Patch Changes
+
+- 46f5a7a: `cotal auth mint` now explains how to re-mint an exported credential when `--replace` and `--out` are used together. Leave off `--replace` and pass the existing file to both `--out` and `--identity`.
+- e9d7585: Explain the minimum lifetime and how to retry when `cotal auth mint` refuses `--expires-in 0`.
+- 2ec9a4d: A prepared space record containing `null` no longer blocks listing or selecting other spaces, and `cotal space forget` can remove it.
+- a880a09: Fix `cotal ext add` for packages that declare their entry through a root `exports` entry without a `main` field.
+- 6f05bd5: When a local broker's payload limit is too low for a manager, agent commands explain how to stop and restart the stack with a higher limit.
+- ee3a15c: Let `cotal down` finish stopping the stack when the Manager writes matching stop receipts while the CLI is reading them.
+- f346cde: Chat now asks for one concrete channel when `/join` receives a wildcard, instead of suggesting a command that cannot work.
+- 6e98cc0: When an endpoint invocation times out before sending the command, the CLI tells you to change only `--timeout` on the original command without displaying its argument values.
+- cceb29a: Show the completed stop and where to restart when `cotal history` or `cotal send` cannot reach a stopped local space at its saved broker address.
+- 6a6a4e4: Quote arguments in commands printed by `cotal space` and `cotal status`, so you can verify a space whose project path contains spaces.
+- 9a06339: Let `cotal ext seed --repair` replace an unreadable connector selection while keeping the original record for recovery.
+- fb6c87f: Keep the selected space, broker and applicable manager in the roster commands suggested after agent lookup and unsupported `ps --slots` refusals.
+- 2037c77: Allow file-only credential minting from a stopped local static-auth project when `--space` matches, and show restart guidance if provisioning needs the broker.
+- Updated dependencies [c3d0a38]
+  - @cotal-ai/core@0.172.1
+
+## 0.172.0
+
+### Minor Changes
+
+- de93c7e: A Claude Code seat that Cotal launches on a signed-in space now lets its owner answer Claude's tool permissions from another session, while Claude's own dialog stays open.
+  
+  The plugin registers `PermissionRequest` and `SubagentStop`. The hook relay holds a `PermissionRequest` past its 2-second deadline once a proven connector has it, and the control server passes each handler a signal that aborts when the hook's connection closes. The connector opens each permission as a prompt on the agent's own `agent` endpoint, offered for 7 days, and hands Claude the remote allow or deny. It settles a prompt from what Claude reports later: a closed hook connection, a batch that ran a call with the same scope, tool and input, or the end of that scope's turn. A call the remote deny refused is listed in Claude's batch with the deny's message as its result, and it does not count as a call that ran. `AskUserQuestion` and `ExitPlanMode` stay with Claude's dialog. On Windows the hook answers each permission itself with no decision and the connector warns once. `MeshAgent.prompts` exposes the agent's prompt desk to a connector. A connector can declare `prompts`, and every Manager `status.connectors` row now carries `prompts`, true when the connector declares it and the mesh is user-auth. The Manager cluster advances to revision 52, whose closed status schema a revision-51 reader rejects. `HookHandle` takes a third argument, the hook's connection context, so code that calls a handler typed as `HookHandle` passes one.
+
+### Patch Changes
+
+- 7b4f3dd: Fix global updates from pnpm projects with Corepack and report npm refusals instead of a false registry outage.
+- 1e9c863: Keep npm downgrades compatible with idle retained connector sets and let installation and stack maintenance report unreadable connector selections without losing access to built-in commands.
+- 807e3e7: The space inventory now shows how to keep a renamed stopped project's new location, and plain create after forgetting it prints the exact adoption command.
+- 351daaf: Inside a named open space's project, an unmatched loopback broker address now names the registered address instead of sending to `main`.
+- Updated dependencies [de93c7e]
+- Updated dependencies [14b556d]
+- Updated dependencies [f166a78]
+- Updated dependencies [8aa6645]
+  - @cotal-ai/core@0.172.0
+
 ## 0.171.5
 
 ### Patch Changes

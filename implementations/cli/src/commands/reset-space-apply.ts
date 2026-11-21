@@ -13,8 +13,8 @@ import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/s
 import { assertResetIdentityRemoved, planResetSpaceIdentity, recheckResetSpaceIdentity, reviewedResetIdentityCleanup, resetSpaceIdentityProjection } from "../lib/reset-space-plan.js";
 import { removeLocalState, userAuthTrustNote, type safeStoreCleanupPath } from "./clean.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { assertResetEligible, recordResetStore, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
-import { acquireStackOperationLock } from "../lib/stack-journal.js";
+import { assertResetEligible, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
+import { acquireStackOperationLock, recordResetStore } from "../lib/stack-journal.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
 import { verdictSection } from "../lib/verdict.js";
 

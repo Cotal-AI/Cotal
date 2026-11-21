@@ -421,10 +421,16 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
-            if (req.op === "service-connect" && !findMesh(req.space)) return {
-              space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
-              remedy: "Check the space name or run `cotal space` to list registered spaces.",
-            };
+            if (req.op === "service-connect") {
+              const entry = findMesh(req.space);
+              if (!entry) return {
+                space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
+                remedy: "Check the space name or run `cotal space` to list registered spaces.",
+              };
+              if (entry.mode !== "user") return {
+                space: req.space, state: "unsupported" as const, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY,
+              };
+            }
             // Disconnect retires local authority even when sign-in or the account host is gone.
             // The local removal revision fences account reconciliation until a fresh enable.
             if (req.op === "service-connect" && await account.intent(req.space, true)) return services.status(req.space);

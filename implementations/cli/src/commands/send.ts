@@ -29,7 +29,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -92,13 +92,11 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const destination = destinations[0]!;
   destination.target = destination.target.replace(destination.mode === "msg" ? /^#/ : /^@/, "");
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
-  // A remedy reruns the destination the caller gave.
-  const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
-    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run \`cotal send ${flag} <${what}> "<message>"\`` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: sendAgain(destination, values, '"<message>"', `<${what}>`) });
   }
-  const again = (body: string) => sendAgain(destination, body);
+  const again = (body: string) => sendAgain(destination, values, body);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
@@ -129,19 +127,31 @@ export function sendArguments(args: ParsedArgs): SendInput {
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
 
-/** A remedy's rerun of the destination the caller gave, with another body. */
-function sendAgain(destination: Pick<SendInput, "mode" | "target">, body: string): string {
-  return `run ${codeSpan(`cotal send ${destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t"} ${shellWord(destination.target)} ${body}`)}`;
+/** A remedy that replaces the body without changing where or as whom the message is sent. */
+function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string, recipientPlaceholder?: string): string {
+  // Body grammar is also checked before the dispatcher validates --server. Never echo an unchecked URL.
+  if (values.server !== undefined) {
+    const checked = checkServer(values.server, "--server");
+    if (!checked.ok) return checked.remedy ?? checked.message.replace(/^✗ /, "");
+  }
+  const option = (name: string, value: string) => `--${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+  const [long, short] = destination.mode === "msg" ? ["channel", "-c"] : destination.mode === "ask" ? ["role", "-r"] : ["to", "-t"];
+  const recipient = recipientPlaceholder !== undefined ? `${short} ${recipientPlaceholder}`
+    : destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
+  const options = targetFlags.flatMap(({ name }) => values[name] === undefined ? [] : [option(name, values[name])]);
+  options.push(...(values.mention ?? []).map((name) => option("mention", name)));
+  if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));
+  return `run ${codeSpan(["cotal send", recipient, ...options, body].join(" "))}`;
 }
 
 /** How a refused message file is reported: with the mesh the send was aimed at, as a refusal after
- *  connecting names it, and a remedy that keeps the destination with a quoted body instead. */
+ *  connecting names it, and a remedy that replaces the file with a quoted body. */
 interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
 
 function fileRefusal(input: SendInput, values: Values): FileRefusal {
   return {
     target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
-    instead: `or ${sendAgain(input, '"<message>"')}`,
+    instead: `or ${sendAgain(input, values, '"<message>"')}`,
   };
 }
 

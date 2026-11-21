@@ -114,16 +114,16 @@ const deniedRecord = (file: string, cause: unknown): MeshRegistryError => {
 };
 
 function readPreparedFile(file: string): PreparedSpace | undefined {
-  let doc: Partial<PreparedSpace>;
+  let doc: Partial<PreparedSpace> | null;
   try {
-    doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace>;
+    doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace> | null;
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return undefined;
     if (code === "EACCES" || code === "EPERM") throw deniedRecord(file, e);
     throw unusableRecord(file, `does not parse as a prepared space record (${(e as Error).message})`, e);
   }
-  if (typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || preparedRecordSpace(file) !== doc.space)
+  if (doc === null || typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || preparedRecordSpace(file) !== doc.space)
     throw unusableRecord(file, "is not a usable prepared space record");
   return { space: doc.space, root: doc.root, ts: doc.ts };
 }

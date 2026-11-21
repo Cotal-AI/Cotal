@@ -316,7 +316,7 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; connectorArgumentValidation?: string }
+interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -353,6 +353,16 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("an installed harness validates and previews the file's source without warnings",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && knownPreview.result.connectorArgumentValidation === "checked" && same(knownPreview.warnings, []), shown(knownDirect));
+
+const agentFilesDoc = readFileSync(join(import.meta.dirname, "..", "..", "..", "docs", "agent-files.mdx"), "utf8");
+const agentFileExample = /^```markdown\r?\n([\s\S]*?)^```\r?$/m.exec(agentFilesDoc)?.[1];
+if (!agentFileExample) throw new Error("missing Markdown example in docs/agent-files.mdx");
+writeFileSync(join(root, "dave.md"), agentFileExample);
+const docsPreview = cotal("spawn", "--file", "./dave.md", "--dry-run", "--space", "opsp", "--harness", "claude", "--json");
+const docsResult = (docsPreview.envelope as { result?: Preview } | undefined)?.result;
+check("the opening Agent files example previews with Claude and validates its model",
+  docsPreview.status === 0 && docsPreview.envelope?.outcome === "ok" && docsResult?.harness === "claude"
+    && docsResult.model === "opus" && docsResult.variant === null && docsResult.connectorArgumentValidation === "checked", shown(docsPreview));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.

@@ -29,9 +29,9 @@
  *      beside its file
  *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
  *      original's; the seed file is read by core's own loader
- *   9. the refusals: both lifetime flags at once, or --no-expiry with either; --expires-in the seam would refuse (0, negative,
- *      fractional) without echoing it; an expiry past the last representable date; --identity on a file with no seed; --identity with a missing
- *      path → refused each, one sentence, nothing written
+ *   9. the refusals: incompatible lifetime flags; a zero lifetime with its minimum and retry;
+ *      malformed lifetimes without echoing them; an expiry past the last representable date;
+ *      --identity on a file with no seed or a missing path. Each refuses without writing anything.
  *  10. --replace: an existing label refuses CONFLICT, naming --replace; --replace swaps an expired
  *      standing credential and an unbounded one, whose no-expiry record goes with it; a still-valid
  *      one refuses CONFLICT naming its expiry and stays as it was; --replace with --out is refused
@@ -241,10 +241,12 @@ try {
     };
     const before = await inboxCount();
     const shortPath = join(root, "too-short.creds");
-    const short = await runMint(["too_short", "--provision", "--expires-in", "1", "--allow-subscribe", "general", "--out", shortPath, "--json"]);
-    check("a one-second provisioned mint refuses up front and names the two-second minimum",
-      short.code === 1 && short.out.includes("USAGE_INVALID") && short.out.includes("--expires-in 2"), short);
-    check("the refused mint leaves neither a credential nor an inbox", !existsSync(shortPath) && await inboxCount() === before);
+    for (const lifetime of ["0", "1"]) {
+      const short = await runMint(["too_short", "--provision", "--expires-in", lifetime, "--allow-subscribe", "general", "--out", shortPath, "--json"]);
+      check(`a ${lifetime}-second provisioned mint refuses up front and names the two-second minimum`,
+        short.code === 1 && short.out.includes("USAGE_INVALID") && short.out.includes("--expires-in 2"), short);
+      check("the refused mint leaves neither a credential nor an inbox", !existsSync(shortPath) && await inboxCount() === before);
+    }
 
     const out = join(root, "board.creds");
     const r = await runMint(["board", "--profile", "agent", "--provision", "--role", "board", "--out", out]);
@@ -457,7 +459,7 @@ try {
     process.chdir(root);
     await new Promise<void>((resolve) => holder.close(() => resolve()));
     check("--provision naming no mesh, from an unrecorded root, stays local and is refused at the preflight of the broker it dials",
-      r3.code === 2 && /provisioning preflight/.test(r3.out) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
+      r3.code === 2 && r3.out.includes(`nothing answered at ${held}, the broker address --server named`) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 
@@ -589,14 +591,23 @@ try {
       check(`${flags[0]} past the last representable date exits 1 with the reason and mints nothing`,
         r.code === 1 && /the credential would expire after \+275760-09-13T00:00:00\.000Z, the last date Cotal can represent; nothing was written/.test(r.out) && !existsSync(out), r.out);
     }
-    for (const bad of ["0", "-5", "1.5", "abc"]) {
+    const zeroOut = join(root, "zero-lifetime", "refused.creds");
+    const zero = await runMint(["zero_lifetime", "--expires-in", "0", "--out", zeroOut, "--json"]);
+    const zeroReport = JSON.parse(zero.out);
+    check("a zero file-only lifetime refuses before creating its output directory and names a valid retry",
+      zero.code === 1 && zeroReport.outcome === "refused" && zeroReport.error?.code === "USAGE_INVALID"
+      && zeroReport.error.message === "--expires-in must be at least 1 second for a file-only mint"
+      && zeroReport.error.remedy === "use --expires-in 1 or a larger whole number, or use --no-expiry instead to mint without an expiry"
+      && !existsSync(join(root, "zero-lifetime")), zero.out);
+    const retry = await runMint(["zero_lifetime", "--expires-in", "1", "--out", zeroOut, "--json"]);
+    check("retrying with --expires-in 1 mints the file", retry.code === 0 && existsSync(zeroOut), retry.out);
+    for (const bad of ["-5", "1.5", "abc"]) {
       // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the
-      // point is that it reaches THE COMMAND's validation and is refused there. The refusal does not
-      // echo the value, so a single digit such as 0 is not looked for in the output.
+      // point is that it reaches THE COMMAND's validation and is refused there.
       const r = await runMint(["x", "--profile", "observer", bad.startsWith("-") ? `--expires-in=${bad}` : "--expires-in", ...(bad.startsWith("-") ? [] : [bad]), "--out", out]);
       check(`--expires-in ${bad} exits 1 without echoing the value (a TTL the seam would refuse)`,
         r.code === 1 && /credential expiry needs an integer in native seconds; the supplied value was not echoed/.test(r.out)
-          && (bad.length === 1 || !r.out.includes(bad)), r.out);
+          && !r.out.includes(bad), r.out);
       check("  and mints nothing", !existsSync(out));
     }
     // Private, so the protected-reference check passes and the refusal is about the contents.
@@ -916,19 +927,50 @@ try {
       const stopped = await down();
       check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
 
+      const issued = await runMint(["example", "--json"]);
+      const success = JSON.parse(issued.out.trim()) as { command: string; outcome: string };
+      check("auth mint success names the operation in its JSON envelope",
+        issued.code === 0 && success.command === "auth mint" && success.outcome === "ok", issued.out);
+      for (const [args, status, code] of [
+        [["--json"], 1, "USAGE_INVALID"],
+        [["example", "--json"], 2, "CONFLICT"],
+        [["example", "--json", "--out"], 1, "USAGE_INVALID"],
+      ] as const) {
+        const refused = await runMint([...args]);
+        const failure = JSON.parse(refused.out.trim()) as { command: string; outcome: string; error?: { code: string } };
+        check(`auth mint ${args.join(" ")} names the operation on refusal`,
+          refused.code === status && failure.command === "auth mint" && failure.outcome === "refused" && failure.error?.code === code, refused.out);
+      }
+
       for (const profile of ["agent", "observer", "admin"]) {
         const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
         const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;
         check(`stopped root mints ${profile} without repeating --server`, minted.code === 0 && existsSync(file) && /Broker footprint:\s+not provisioned by this command/.test(minted.out), minted.out);
         check(`offline ${profile} credential retains the original account`, credsClaims(readFileSync(file, "utf8")).nats?.issuer_account === credsClaims(readFileSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds, "utf8")).nats?.issuer_account);
       }
+      const named = await runMint(["named_offline", "--space", "offlinecheck", "--plain"]);
+      const namedFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "named_offline").creds;
+      const liveFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds;
+      check("#8302: naming the stopped local space mints from its original account without provisioning",
+        named.code === 0 && existsSync(namedFile) && /Broker footprint:\s+not provisioned by this command/.test(named.out) &&
+        credsClaims(readFileSync(namedFile, "utf8")).nats?.issuer_account === credsClaims(readFileSync(liveFile, "utf8")).nats?.issuer_account, named.out);
+      const wrongName = await runMint(["wrong_name", "--space", "not_offlinecheck", "--plain"]);
+      check("#8302: a different name does not mint from the stopped local account",
+        wrongName.code === 2 && wrongName.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_name").creds), wrongName.out);
       const signer = join(exports, "signer.json");
-      const exported = await runCotal(["auth", "signer", "--out", signer, "--plain"]);
+      const exported = await runCotal(["auth", "signer", "--space", "offlinecheck", "--out", signer, "--plain"]);
       check("stopped root exports its signer without a broker", exported.code === 0 && existsSync(signer) && (statSync(signer).mode & 0o777) === 0o600, exported.out);
-      const provision = await runMint(["needsbroker", "--provision"]);
-      check("stopped root still refuses provisioning and publishes no credential", provision.code === 2 && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
-      const endpoint = await runMint(["caller", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds")]);
-      check("stopped root still refuses endpoint discovery and publishes no caller", endpoint.code === 2 && !existsSync(join(exports, "caller.creds")), endpoint.out);
+      for (const space of [[], ["--space", "offlinecheck"]]) {
+        const provision = await runMint(["needsbroker", "--provision", ...space, "--plain"]);
+        check(`stopped root ${space.length ? "with" : "without"} --space names the restart and publishes no provisioned credential`,
+          provision.code === 2 && provision.out.includes("TARGET_UNAVAILABLE") && provision.out.includes("start it again with `cotal up`") &&
+          !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
+        check(`  #8379: ${space.length ? "with" : "without"} --space it says the mesh is not running and offers a file-only mint without --provision`,
+          /the mesh "offlinecheck" in .* last ran at/.test(provision.out) && /omit --provision to mint only the private credential file/.test(provision.out), provision.out);
+      }
+      const endpoint = await runMint(["caller", "--space", "offlinecheck", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds"), "--plain"]);
+      check("stopped root still refuses named endpoint discovery and publishes no caller",
+        endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")) && !endpoint.out.includes("omit --provision"), endpoint.out);
       check("offline signing started no stack process", !(await down()).out.includes("✓ stopped"));
     } finally {
       await down();

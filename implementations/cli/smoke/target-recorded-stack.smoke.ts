@@ -328,7 +328,7 @@ check("with empty folders at the old path it is still moved, and names the same 
 }
 // A folder whose .cotal links to this project's is refused by up and down before anything reads through
 // the link, and status names the link once.
-const linked = `${root}-linked`, linkPath = join(linked, ".cotal"), linkTarget = join(root, ".cotal");
+const linked = `${root}-linked folder`, linkPath = join(linked, ".cotal"), linkTarget = join(root, ".cotal");
 mkdirSync(linked);
 symlinkSync(linkTarget, linkPath);
 sandbox(home);
@@ -337,13 +337,13 @@ const linkRefused = (r: ReturnType<typeof run>, command: "up" | "down", effect: 
   && r.envelope.error.message === `${linkPath} is a link to ${linkTarget}, and a stack runs only from a folder whose .cotal is its own directory; nothing was ${effect}`
   && r.envelope.error.remedy === `run \`cotal ${command}\` from ${root}, whose .cotal this links to, or ${here}`;
 check("up in a folder whose .cotal is a link refuses CONFLICT, naming the link, where it leads and that project",
-  linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with \`cotal space create <space> --root ${linked}\``), shown(linkedUp));
+  linkRefused(linkedUp, "up", "started", `remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``), shown(linkedUp));
 check("down --yes --json there refuses the same way, with no stack trace",
   linkRefused(linkedDown, "down", "stopped", "remove the link, then run `cotal down` again") && !linkedDown.stderr.includes("    at "), shown(linkedDown));
 const linkedStatus = run(["status", "--json"], linked);
 const linkedCodes = (linkedStatus.envelope?.warnings ?? []).map((w) => w.code);
 check("status there warns once that it did not read the attempt inventories through the link, with the next step",
-  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with \`cotal space create <space> --root ${linked}\``)), shown(linkedStatus));
+  linkedCodes.includes("COTAL_DIR_LINKED") && !linkedCodes.includes("FRESH_BOOT_RECORD_UNAVAILABLE") && !linkedCodes.includes("ADDITIVE_ATTEMPT_UNAVAILABLE") && (linkedStatus.envelope?.warnings ?? []).some((w) => w.message.includes(`is a link to ${linkTarget}`) && w.message.endsWith(`; run commands for that project from ${root}, or remove the link and prepare this folder with \`cotal space create <space> --root '${linked}'\``)), shown(linkedStatus));
 rmSync(linked, { recursive: true, force: true });
 // The project's .cotal moved to another folder and linked back. Through the link each folder seems to
 // hold the journal, so both used to name the other. Both now name moving the records back.
@@ -411,7 +411,7 @@ rmSync(linked, { recursive: true, force: true });
 // A link to a folder that is no project's .cotal, and a link that leads nowhere, which the walk to a
 // root passes over.
 {
-  const empty = `${root}-empty`, toEmpty = `${root}-to-empty`, dangling = `${root}-dangling`, nowhere = join(`${root}-nowhere`, ".cotal");
+  const empty = `${root}-empty`, toEmpty = `${root}-to-empty`, dangling = `${root}-dangling folder`, nowhere = join(`${root}-nowhere`, ".cotal");
   for (const dir of [empty, toEmpty, dangling]) mkdirSync(dir);
   symlinkSync(empty, join(toEmpty, ".cotal"));
   symlinkSync(nowhere, join(dangling, ".cotal"));
@@ -422,10 +422,10 @@ rmSync(linked, { recursive: true, force: true });
   const nowhereRefused = (r: ReturnType<typeof run>, effect: string, remedy: string) => r.status === 2 && r.envelope?.error?.code === "TARGET_NOT_FOUND"
     && r.envelope.error.message === `${join(dangling, ".cotal")} links to ${nowhere}, which does not exist; nothing was ${effect}` && r.envelope.error.remedy === remedy;
   check("up where .cotal leads nowhere refuses TARGET_NOT_FOUND, naming the link and where it leads, not the home .cotal",
-    nowhereRefused(danglingUp, "started", `remove the link and prepare this folder with \`cotal space create <space> --root ${dangling}\``), shown(danglingUp));
+    nowhereRefused(danglingUp, "started", `remove the link and prepare this folder with \`cotal space create <space> --root '${dangling}'\``), shown(danglingUp));
   check("down --dry-run there refuses the same way", nowhereRefused(danglingDown, "stopped", "remove the link, then run `cotal down` again"), shown(danglingDown));
   check("status there warns COTAL_DIR_DANGLING with the next step and exits 4",
-    danglingStatus.status === 4 && (danglingStatus.envelope?.warnings ?? []).some((w) => w.code === "COTAL_DIR_DANGLING" && w.message === `this folder's .cotal links to ${nowhere}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with \`cotal space create <space> --root ${dangling}\``), shown(danglingStatus));
+    danglingStatus.status === 4 && (danglingStatus.envelope?.warnings ?? []).some((w) => w.code === "COTAL_DIR_DANGLING" && w.message === `this folder's .cotal links to ${nowhere}, which does not exist, so this folder has no records of its own; remove the link and prepare this folder with \`cotal space create <space> --root '${dangling}'\``), shown(danglingStatus));
   const emptyStatus = run(["status", "--json"], toEmpty), emptyHints = emptyStatus.envelope?.result?.hints ?? [];
   check("status there names the same refusal and next step, and not cotal up",
     emptyStatus.status === 4 && (emptyStatus.envelope?.result?.selected?.message ?? "").startsWith(`${join(toEmpty, ".cotal")} is a link to ${empty}, and a stack runs only from a folder whose .cotal is its own directory, so `)

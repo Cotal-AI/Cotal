@@ -249,8 +249,9 @@ prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. 
 `race` row names the branch it took, and a cancelled row in a branch that lost a race names the
 branch that won and the race. An answer whose step was in a branch that lost a race, or
 whose pause was cancelled after accepting it, is listed as `not acted on`. Its JSON result contains
-the full returned status and journal. Revoked admission and unreadable revocation markers remain distinct
-from the record's state. Neither a record nor a receipt is a live agent-progress report.
+the full returned status and journal. The JSON command under `Next` keeps `--local` and any
+explicit target selectors, but omits `--limit`. Revoked admission and unreadable revocation markers
+remain distinct from the record's state. Neither a record nor a receipt is a live agent-progress report.
 
 ```bash
 cotal r
@@ -311,16 +312,21 @@ checkpoint result needs a `status` of `resolved` or `expired` and may carry `val
 `artifact`. An invalid checkpoint result is refused with `SCHEMA_INVALID`. The refusal names the
 results file and the entry to correct before rerunning. The simulator stamps `at` from virtual
 time, so you cannot script it. A scripted turn result needs a `status` of `done`, `blocked` or
-`handoff` and may carry `to` and `note`. If present, `to` is an agent handle such as
-`{ "agent": "sim.reviewer", "persona": "reviewer" }`, not an agent name. An invalid turn result,
-including a scripted `at`, is also refused with `SCHEMA_INVALID`. When the script has no result for an effect, the
-simulation does not complete: it exits 5 with `OPERATION_FAILED`, the message names the step and the
-entry to add, and `target.step` carries the step. When the program itself fails under the script,
-as a checkpoint scripted `expired` under the default `onExpiry: "fail"` does with L4007, the
-simulation completes and exits 0. Its program outcome is failed, with the step and that step's
-outcome, or the last step the program settled before its own code failed, and the language's error.
-JSON carries this as `result.outcome` and `result.failure`. A simulation does not establish live authority, installed applications or readiness. All three support JSON and
-plain output and contact no broker.
+`handoff` and may carry a string `note`. Only `handoff` requires and accepts `to`. Use an agent
+handle such as `{ "agent": "sim.reviewer", "persona": "reviewer" }` instead of an agent name.
+Invalid turn results are refused before simulation with `SCHEMA_INVALID`. This includes an invalid
+status, a non-string note, an unknown field, a scripted `at`, and a missing, malformed or
+unexpected destination. A destination refusal names the `to` field, including the array index
+for a list entry.
+
+When the script has no result for an effect, the simulation exits 5 with `OPERATION_FAILED`. The
+message names the step and the entry to add, and `target.step` carries the step. When the program
+itself fails under the script, as a checkpoint scripted `expired` under the default `onExpiry: "fail"`
+does with L4007, the simulation completes and exits 0. Its program outcome is failed, with the step
+and that step's outcome, or the last step the program settled before its own code failed, and the
+language's error. JSON carries this as `result.outcome` and `result.failure`. A simulation does not
+establish live authority, installed applications or readiness. All three support JSON and plain
+output and contact no broker.
 
 The `--handler` file is one JSON object in UTF-8, with an optional leading byte-order mark.
 It must be a regular file or a symlink to one, as the program file must be.
@@ -346,12 +352,18 @@ moves the virtual clock forward.
 
 | Field | Meaning |
 |---|---|
-| `turns` | `turn` results: `{status, to, note}`, where `status` is `done`, `blocked` or `handoff` |
+| `turns` | `turn` results: `{status, to, note}`, where `status` is `done`, `blocked` or `handoff`. Only `handoff` requires and accepts `to`. |
 | `asks` | `ask` replies, each checked against the step's `schema` |
 | `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
 | `events` | `wait` results. `null` is a timeout |
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+
+If the `clock.wait` delay is longer than the step's `timeout`, the simulated wait returns `null`
+and advances virtual time only to that timeout.
+
+A checkpoint scripted as `expired` expires at the step's `timeout`, as a live deadline does. A
+resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
 
 The simulation's `log(...)` lines print under `Log`, and `--json` carries them in `result.log`, each
 with its `scope` and `values`. A step with no entry, or a list shorter than the step's occurrences,

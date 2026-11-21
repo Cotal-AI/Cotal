@@ -25,8 +25,9 @@ are no implicit stdin reads. Files and stdin must contain nonempty UTF-8 text; t
 preserved and never printed in the receipt. A file that cannot be used is refused with its path:
 `TARGET_NOT_FOUND` when it does not exist, `PERMISSION_DENIED` when this account may not read it,
 and `USAGE_INVALID` (exit 1, without the command's help) for a directory or text that is not UTF-8.
-The refusal names the mesh the send was aimed at when this machine's records name one, and its
-remedy keeps the destination with a quoted body. No destination, several destinations, several body sources or an empty message is refused. A lone
+The refusal names the mesh the send was aimed at when this machine's records name one. The retry
+uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
+No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
 The recipient grammar is checked before connector installation or target preparation. Channel
@@ -210,7 +211,8 @@ A named channel is the session's initial channel. On a static or user-auth mesh 
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
 before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
-session to a channel it left. The refusal says to leave and run `cotal chat <channel>` with the
+session to a channel it left. `/join` takes one concrete channel name and refuses wildcards before
+checking the grant. A grant refusal says to leave and run `cotal chat <channel>` with the
 flags this session was started with, such as `--stdio` and `--space`. Choosing such a channel as
 the recipient in the terminal view or `--plain` warns with the same step. Before the session is admitted, `chat` reads the channel registry on the resolved
 mesh the way `send` does, under the same one-shot identity, and says on stderr whether the channel
@@ -515,6 +517,8 @@ record and the current census follow once the feed answers again, so a follow ou
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
 command with that credential gets, as [`history --follow`](#history) does. The delivery service
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
+On an open mesh, `channel show` explains that membership is unavailable and still suggests reading
+retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
@@ -554,8 +558,8 @@ root's default `.cotal/channels.json` would undo at the next start warns that it
 
 Inspects and edits the channel registry: replay and delivery policy, description, and joiner instructions. `live` has no per-member backstop; it does not disable ACL-bounded retained history. Changing a channel's delivery class does not settle already pending durable copies. `--delivery durable` requires a registered static-auth or user-auth space; an open or unregistered target has no established delivery-service support. A recorded auth mode does not prove that daemon is currently healthy. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
-[Channels and permissions](channels-and-permissions.mdx). On a user-auth mesh, `list` rides your
-own login as is; `set` and `defaults` edit the registry over a short-lived
+[Channels and permissions](channels-and-permissions.mdx). The inventory is bare `cotal channel`;
+there is no `list` subcommand. On a user-auth mesh, the inventory rides your own login as is; `set` and `defaults` edit the registry over a short-lived
 channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.mdx)).
 On a remote user-auth mesh that view is served by the public exchange; space-history `purger`
 and the read-only admin view are not.
@@ -568,16 +572,16 @@ the value of whichever wrote last. When the entry already holds every value you 
 written: the receipt is `Channel unchanged` or `Channel defaults unchanged`, and the outcome is
 `no-op` (exit 0).
 
-With the static credential this machine records for the space, or on an open mesh, `list` reads the
-registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your login has
-no Direct Get row on the registry, and neither has an agent credential passed with `--creds`, so
-`list` scans it with a consumer that stays on the broker for five minutes after the command exits.
+With the static credential this machine records for the space, or on an open mesh, the inventory
+reads the registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your
+login has no Direct Get row on the registry, and neither has an agent credential passed with
+`--creds`, so the inventory scans it with a consumer that stays on the broker for five minutes after the command exits.
 
 
 ## history [#history]
 
 ```bash
-cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
+cotal history [<channel> | --dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
 cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [--yes] [--json | --plain] [--space <s>]
 ```
@@ -585,7 +589,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
-| `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
+| `--dms` | off | Read all accessible channels and DMs. Requires a DM read grant. With `clear`, also clear DM history |
 | `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
 | `--limit <n>` | 50 | How many of the newest retained messages to read, a positive safe integer |
 | `--from <name>` | none | Keep messages from this sender name or id |
@@ -602,8 +606,10 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
-Reads the newest retained messages in the selected space, newest last: one channel, or every
-channel the identity may read. To read a channel named `clear`, use `cotal history '#clear'`.
+Reads the newest retained messages in the selected space, newest last. Name a channel to read
+only that channel. Without a channel, `history` reads every accessible channel, and `--dms` also
+includes accessible DMs. Do not combine a channel name with `--dms`.
+To read a channel named `clear`, use `cotal history '#clear'`.
 Use the same quoted `#` form for `limit`. `channel show` uses this form for every channel in its
 history recommendation. A name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards` before connecting. A channel with no retained
@@ -626,10 +632,10 @@ reads the newest 2000 retained messages before applying filters. `result.window`
 messages exist that the window did not reach, and whether the window goes back to `--since`.
 With `--dms`, a full window alone does not prove that it left out older messages.
 The report names the local time and the ISO instant a time `--since` resolved to, or the chat
-stream sequence a bare number was read as. A four-digit
-number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
-number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
-that names that sequence and how to write a date. An age outside the supported date range, a date
+stream sequence a bare number was read as. A cutoff past the chat stream's newest sequence returns
+an empty window. A four-digit number from 1900 to 2099 that is past the newest sequence is refused
+with `USAGE_INVALID`. The refusal names the newest sequence and shows how to write a date in full.
+An age outside the supported date range, a date
 that is not on the calendar, or a sequence that cannot be represented without rounding is a
 `USAGE_INVALID` refusal before connecting. A time is an ISO 8601 date such as `2026-10-23`, or a date and time such
 as `2026-10-23T09:00:00Z`, so `-5` and `10/23/2026` are refused. A date alone, or a date and time
@@ -741,14 +747,16 @@ credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `
 static-auth space the follow mints its own credential from the space's trust, so when the broker
 rejects it the Next says to run the follow again, which mints one from the current trust. With
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message that matches the
-filters. A time-based `--since` applies to both the snapshot and live messages. A sequence cutoff
-applies only to the snapshot because live events have no `seq`. To read on from a follow, give
+When the follow starts, it writes a `snapshot` holding the window, then one `event` per message
+that matches the filters. A time-based `--since` applies to both the snapshot and live messages.
+A sequence cutoff applies only to the snapshot because live events have no `seq`. To read on from a follow, give
 `--since` the last event's `ts`. An `error` record names a failure on the live feed, and a lost
 connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
-shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
-when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
+shown. If the follow cannot open its target or read the snapshot, it writes an `error` with the code
+and any remedy, then an `end` with `reason: "setup-failed"`, without a snapshot. An `end` record closes
+the stream. The exit code is the snapshot's, the failure's when setup or the credential ends the
+follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 
 `history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before

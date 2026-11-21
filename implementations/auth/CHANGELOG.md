@@ -1,5 +1,51 @@
 # @cotal-ai/auth
 
+## 0.172.1
+
+### Patch Changes
+
+- 714b325: The manager-service issuance operations take the composed issued-source liveness check as a dependency from `service.ts`. Behaviour is unchanged.
+- Updated dependencies [46f5a7a]
+- Updated dependencies [e9d7585]
+- Updated dependencies [2ec9a4d]
+- Updated dependencies [a880a09]
+- Updated dependencies [6f05bd5]
+- Updated dependencies [ee3a15c]
+- Updated dependencies [c3d0a38]
+- Updated dependencies [f346cde]
+- Updated dependencies [6e98cc0]
+- Updated dependencies [cceb29a]
+- Updated dependencies [6a6a4e4]
+- Updated dependencies [9a06339]
+- Updated dependencies [fb6c87f]
+- Updated dependencies [e11a800]
+- Updated dependencies [728bde0]
+- Updated dependencies [2037c77]
+  - @cotal-ai/workspace@0.172.1
+  - @cotal-ai/core@0.172.1
+  - @cotal-ai/lang@0.172.1
+
+## 0.172.0
+
+### Patch Changes
+
+- a0f1ea2: Move the authority plane's managed-agent operations (retained-agent validation, managed-agent enrollment and its verification, prepare-retirement and the runtime check) out of `service.ts` into an internal `service-managed-agents.ts`. The package surface is unchanged.
+- 3067fc5: Move the authority plane's manager-service issuance, platform-supervisor end, endpoint deregistration and remote Manager maintenance operations out of `service.ts` into an internal `service-manager-issuance.ts`. `service.ts` re-exports `authorizeRemoteManagerRetirement`, so the package surface is unchanged.
+- 80ad491: Move the authority plane's manager run operations (goal-index scan, admin and participation authorization, run submission, admission, cancellation and revocation, and run-attempt issuance) out of `service.ts` into an internal `service-manager-runs.ts`. The package surface is unchanged.
+- 6b7dd18: Move the `AuthAuthorityPlane` interface out of `service.ts` into an internal `service-plane-types.ts`. `service.ts` re-exports the type, so the package surface is unchanged.
+- 10b740a: Move the auth service's HTTP route handlers (chat sessions, the service endpoint host and authority routes, endpoint deregistration and the tool-result human-proof and consent routes) out of `service.ts` into an internal `service-routes.ts`. Both route tables stay in `service.ts`, which re-exports the two tool-result handlers, so the package surface is unchanged.
+- Updated dependencies [de93c7e]
+- Updated dependencies [14b556d]
+- Updated dependencies [f166a78]
+- Updated dependencies [8aa6645]
+- Updated dependencies [7b4f3dd]
+- Updated dependencies [1e9c863]
+- Updated dependencies [807e3e7]
+- Updated dependencies [351daaf]
+  - @cotal-ai/core@0.172.0
+  - @cotal-ai/workspace@0.172.0
+  - @cotal-ai/lang@0.172.0
+
 ## 0.171.5
 
 ### Patch Changes

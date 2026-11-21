@@ -304,6 +304,14 @@ try {
 
   const down = cli("down", "--yes");
   check("the stack stops", down.status === 0, down.stdout + down.stderr);
+  for (const pin of [[], ["--on", on]]) {
+    const stop = cli("stop", "absent", "--json", ...pin);
+    const receipt = JSON.parse(stop.stdout || "null") as { command?: string; outcome?: string; error?: { code?: string; remedy?: string } } | null;
+    check(`stop --json ${pin.length ? "with" : "without"} a manager pin returns one refusal after down`,
+      stop.status === 2 && stop.stderr === "" && receipt?.command === "stop" && receipt.outcome === "refused"
+      && receipt.error?.code === "TARGET_UNAVAILABLE" && receipt.error.remedy === "run `cotal up` there to restart",
+      { status: stop.status, stdout: stop.stdout, stderr: stop.stderr });
+  }
   const stopped = await pty(["spawn", "default", "-d", "--on", on]);
   check("a launch on a stopped mesh is refused TARGET_UNAVAILABLE with no question asked",
     stopped.code === 2 && stopped.out.includes("TARGET_UNAVAILABLE") && !/should the agent work in/.test(stopped.out), stopped);

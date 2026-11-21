@@ -31,7 +31,7 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
-  activateRun, lastActivation,
+  activateRun, lastActivation, writeRunStatus, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
 import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
@@ -138,15 +138,16 @@ const rendered = (...cells: string[]) => lines().some((l) => {
  *  The ceilings are `start` flags, and the run grammar refuses them on any other verb. */
 const wf = (positionals: string[], values: Record<string, string | boolean | undefined> = {}) =>
   runWorkflow({ values: { server: servers, space: SPACE, local: true, ...(positionals[0] === "start" ? { "admit-read": "none", "admit-publish": "none" } : {}), ...values }, positionals, raw: [] });
-/** The same invocation with `--json`: the envelope it writes straight to stdout, parsed. The full
- *  journal and each listed run's revocation are in the JSON result, not the rendered tables. */
-const envelopeOf = async (positionals: string[], values: Record<string, string> = {}): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
+/** Capture the JSON envelope a command writes straight to stdout. */
+const readEnvelope = async (run: () => Promise<void>): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
   const chunks: string[] = [];
   const write = process.stdout.write;
   process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
-  try { await wf(positionals, { json: true, ...values }); } finally { process.stdout.write = write; }
+  try { await run(); } finally { process.stdout.write = write; }
   try { return JSON.parse(chunks.join("")); } catch { return undefined; }
 };
+const envelopeOf = (positionals: string[], values: Record<string, string> = {}) =>
+  readEnvelope(() => wf(positionals, { json: true, ...values }));
 type JournalRowJson = { step?: string; schema?: unknown; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
 type RunRowJson = { runId?: string; endpoint?: string; state?: string; programHash?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
 
@@ -279,29 +280,55 @@ let P = "";
     !Object.hasOwn(journalStepRow(1, { ...pending, external: { asks: "Old?", schema: CHECKPOINT_SCHEMA }, hold: { asks: "New?" } }), "schema"));
 }
 
-// ── 4) resume: a completed run replays to the same completion ────────────────────────────────
-{
+// A terminal resume changes neither the recorded holder nor the journal and emits no program output.
+const checkTerminalResume = async (runId: string, state: "completed" | "failed") => {
+  const before = (await record(runId))?.status;
+  const entries = (await journal(runId)).records;
   reset();
-  await wf(["resume", P], { file: PURE });
-  c("resume replays a completed run to completed", captured().includes(`run ${P}: completed`), captured());
-}
+  const refused = await wf(["resume", runId]).then(() => undefined, (e: Error) => e);
+  c(`local resume refuses a ${state} run without running its program`,
+    before?.value.state === state && isCommandFailure(refused) && refused.outcome === "refused"
+      && refused.code === "LIFECYCLE_BLOCKED" && refused.message.includes(`already ${state}`) && captured() === "", { refused, output: captured() });
+  c(`local resume leaves the ${state} run's holder and journal unchanged`,
+    JSON.stringify((await record(runId))?.status) === JSON.stringify(before)
+      && JSON.stringify((await journal(runId)).records) === JSON.stringify(entries));
+};
+await checkTerminalResume(P, "completed");
+
+// For the takeover fixtures, pure code records no effects. Put its status back at the point where
+// the holder stopped before recording completion, with the existing activation and pins intact.
+const interruptedPureRun = async (runId: string) => {
+  const { revision, value } = (await record(runId))!.status!;
+  const pin = { endpoint: EP, runId, takeoverId: `t${(takeovers += 1)}`, instanceId: mintLifecycleUid(), epoch: value.epoch };
+  const creds = await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: pin });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await writeRunStatus(await openRecordsBucket(nc, SPACE), EP, runId, { ...value, state: "running" }, revision);
+  } finally { await nc.close(); }
+  return value;
+};
+
+reset();
+await wf(["start"], { file: PURE });
+const takeoverRun = startedId()!;
 
 // An attempt can activate and stop before its first status note. The command must advance past
 // that durable fence, not reuse the status token under a different holder.
 {
-  const before = (await record(P))!.status!.value;
+  const before = await interruptedPureRun(takeoverRun);
   const takeoverId = `t${(takeovers += 1)}`;
-  const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: EP, runId: P, takeoverId, instanceId: mintLifecycleUid(), epoch: before.epoch + 1 } });
+  const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: EP, runId: takeoverRun, takeoverId, instanceId: mintLifecycleUid(), epoch: before.epoch + 1 } });
   const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
-    await activateRun(jetstream(nc), await jetstreamManager(nc), { space: SPACE, runId: P, holder: "stopped-before-note", epoch: before.epoch + 1, fencingToken: before.fencingToken + 1, takeoverId, at: Date.now(), expect: "existing" });
+    await activateRun(jetstream(nc), await jetstreamManager(nc), { space: SPACE, runId: takeoverRun, holder: "stopped-before-note", epoch: before.epoch + 1, fencingToken: before.fencingToken + 1, takeoverId, at: Date.now(), expect: "existing" });
   } finally { await nc.close(); }
-  c("interrupted activation leaves the status token behind", (await record(P))?.status?.value.fencingToken === before.fencingToken);
+  c("interrupted activation leaves the status token behind", (await record(takeoverRun))?.status?.value.fencingToken === before.fencingToken);
   reset();
-  await wf(["resume", P]);
-  const after = (await record(P))!.status!.value;
-  c("local resume advances beyond the unnoted activation and completes", captured().includes(`run ${P}: completed`) && after.fencingToken === before.fencingToken + 2 && after.epoch === before.epoch + 2, { output: captured(), after });
-  c("the resumed holder matches the authoritative journal fence", lastActivation((await journal(P)).records)?.holder === after.holder);
+  await wf(["resume", takeoverRun]);
+  const after = (await record(takeoverRun))!.status!.value;
+  c("local resume advances beyond the unnoted activation and completes", captured().includes(`run ${takeoverRun}: completed`) && after.fencingToken === before.fencingToken + 2 && after.epoch === before.epoch + 2, { output: captured(), after });
+  c("the resumed holder matches the authoritative journal fence", lastActivation((await journal(takeoverRun)).records)?.holder === after.holder);
+  await checkTerminalResume(takeoverRun, "completed");
 }
 
 // The refusal block that once sat here (a `worktree` spawn held on the not-yet-durable seam) went
@@ -542,6 +569,7 @@ let P = "";
   c("...and its start fails OPERATION_FAILED with only the first line, so no newline reaches the one-line report",
     isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message.endsWith("erste Zeile") && !refused.message.includes("\n") && !refused.message.includes("zweite"),
     refused?.message);
+  await checkTerminalResume(tid, "failed");
 }
 
 // ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─
@@ -604,13 +632,16 @@ let P = "";
 // (higher token) while a shared token is impossible by design.
 {
   reset();
+  await wf(["start"], { file: PURE });
+  const runId = startedId()!;
   for (let k = 0; k < 5; k += 1) {
+    await interruptedPureRun(runId);
     await Promise.allSettled([
-      wf(["resume", P], { file: PURE }).catch(() => undefined),
-      wf(["resume", P], { file: PURE }).catch(() => undefined),
+      wf(["resume", runId], { file: PURE }).catch(() => undefined),
+      wf(["resume", runId], { file: PURE }).catch(() => undefined),
     ]);
   }
-  const back = await journal(P);
+  const back = await journal(runId);
   const tokens = back.records
     .filter((r) => r.record.kind === "activation")
     .map((r) => (r.record as { fencingToken: number }).fencingToken);
@@ -890,9 +921,21 @@ let P = "";
   reset();
   await wf(["start"], { file: PURE, endpoint });
   const rid = startedId() ?? "";
-  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: { endpoint?: string; programHash?: string; status?: { state?: string } } } | undefined;
+  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: RunStatusView } | undefined;
   c("a dotted-endpoint run starts and completes through the command",
     rid !== "" && detail?.view?.endpoint === endpoint && detail.view.status?.state === "completed", detail);
+  reset();
+  await wf(["show", rid], { endpoint, server: undefined, plain: true, limit: "1" });
+  const next = lines().find((line) => line.startsWith("  cotal r show "))?.trim().split(/ {2,}/)[0];
+  // These fixture arguments are all single shell words. Parse the printed command without adding
+  // the routing flags `wf` normally supplies, then use the real local broker to read the journal.
+  const [, alias, ...args] = next?.split(" ") ?? [];
+  const run = findCommand(registry.all<Command>("command"), alias);
+  const copied = run && await readEnvelope(() => runWorkflow(parseCommandArgs(run, args))).catch((error: Error) => error);
+  const copiedView = copied && !(copied instanceof Error) ? (copied.result as { view?: RunStatusView } | undefined)?.view : undefined;
+  c("the journal's printed JSON command reads all rows from the same local endpoint without a manager",
+    copiedView?.runId === rid && copiedView.endpoint === endpoint
+      && copiedView.journal.length === detail?.view?.journal.length, { next, copied });
   const all = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
   const row = all?.items?.find((r) => r.runId === rid);
   c("batched ps reports the dotted endpoint name and the recorded program hash",
@@ -1015,7 +1058,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 123;
+const DECLARED = 129;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

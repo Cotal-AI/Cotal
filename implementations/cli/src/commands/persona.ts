@@ -1,5 +1,7 @@
+import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { buffer } from "node:stream/consumers";
 import * as prompts from "../lib/prompts.js";
 import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -128,8 +130,8 @@ export async function persona(args: ParsedArgs): Promise<void> {
   throw usage(`unknown persona action '${sub}'`);
 }
 
-function readInput(path: string): Buffer {
-  try { return readFileSync(path === "-" ? 0 : path); }
+async function readInput(path: string): Promise<Buffer> {
+  try { return path === "-" ? await buffer(process.stdin) : readFileSync(path); }
   catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`); }
 }
 
@@ -138,7 +140,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
-    const bytes = readInput(values.file);
+    const bytes = await readInput(values.file);
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
     // The file's own name is known, so name it and the create that keeps it.
@@ -155,7 +157,16 @@ async function createSource(name: string, path: string, values: Values): Promise
     try { assertValidRole(values.role); }
     catch (error) { throw usage(`--role: ${oneLine((error as Error).message)}`); }
   }
-  const body = values.prompt ?? readInput(values.from!).toString("utf8");
+  let body = values.prompt;
+  if (body === undefined) {
+    const from = values.from!;
+    const bytes = await readInput(from);
+    if (!isUtf8(bytes)) {
+      const source = from === "-" ? "standard input" : oneLine(from);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
+    }
+    body = bytes.toString("utf8");
+  }
   if (!body.trim()) throw usage("persona body is empty");
   // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
   // the private draft the flags are written to.

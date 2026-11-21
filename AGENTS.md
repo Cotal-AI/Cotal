@@ -195,6 +195,23 @@ runs green over real type errors. Configurations extending `tsconfig.base.json` 
 `noUnusedLocals`, so builds and typechecks reject unused imports, locals and private members.
 When removing an unused binding, preserve any initialization or validation the expression performs.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
+- **Keep files small, one responsibility each.** No shipped source file grows past 1,500 lines,
+and a file already past that does not grow: put new code in a new module. Past about 500 lines,
+look for a part that can stand on its own. Split along boundaries the code already has, such as
+a family of functions over the same data, or a type with its parsers and validators. A split
+moves code verbatim and changes no behavior. The old file re-exports what importers use, so
+they stay unedited.
+- **Keep functions short**, about 50 lines or fewer. If a function needs comments to mark its
+sections, split it at those sections. Do not grow a long function whose sections share mutable
+locals: it cannot be split later without rewriting it.
+- **Keep module interfaces narrow.** Export only what another file imports, and keep the rest
+private to the module. Do not add a wrapper that only forwards a call, except to keep a public
+API in place after a split. A module must not import a value from a module that imports it back;
+`import type` adds no runtime edge and is fine.
+- **Comment sparingly.** A comment states what the code cannot: why it is written this way, a
+contract callers rely on, or a hazard. Do not restate the code, narrate its history, or cite
+issue and PR numbers. `pnpm check:comment-history` ratchets "used to", "previously",
+"no longer", "formerly" and `#123` references per file. Delete dead and commented-out code.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.
 - **Keep docs short and human**, and **keep them updated in the same change** as the behavior:

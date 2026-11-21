@@ -45,10 +45,10 @@ Object.assign(env, { COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTO
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Run the real binary without blocking this process, which hosts the manager that must answer. */
-function cotal(...args: string[]): Promise<{ status: number | null; output: string }> {
+function cotalAt(cwd: string, ...args: string[]): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve, reject) => {
-    assertSmokeSandboxDown(anchor, args, { cwd: root, env });
-    const child = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+    assertSmokeSandboxDown(anchor, args, { cwd, env });
+    const child = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", (d) => { output += d; });
     child.stderr.on("data", (d) => { output += d; });
@@ -57,6 +57,7 @@ function cotal(...args: string[]): Promise<{ status: number | null; output: stri
     child.once("exit", (status) => { clearTimeout(timer); resolve({ status, output }); });
   });
 }
+const cotal = (...args: string[]) => cotalAt(root, ...args);
 
 const { check, finish } = createSuite();
 const map = readOwnerMap();
@@ -99,13 +100,23 @@ try {
     check(`every request ${label} issued matches its owner rows and its case`, problems.length === 0, problems);
   }
   const openMgrId = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
-  for (const extra of [[], ["--on", openMgrId]] as const) {
+  const other = join(root, "other-project");
+  mkdirSync(other);
+  const prepared = await cotalAt(other, "space", "create", "otheraudit");
+  const selected = await cotalAt(other, "use", "otheraudit");
+  const wrongRoster = await cotalAt(other, "ps");
+  check("bare ps hits the selected space, not the running census space", prepared.status === 0 && selected.status === 0 && wrongRoster.status === 2 && wrongRoster.output.includes("Mesh: otheraudit"), { prepared, selected, wrongRoster });
+  for (const extra of [[], ["--on", openMgrId, "--plain"]] as const) {
+    const selectors = [...extra, "--space", SPACE, "--server", SERVER];
     let result: { status: number | null; output: string } | undefined;
-    const observed = await observeRequests(nc, SPACE, async () => { result = await cotal("ps", "--slots", ...extra, "--space", SPACE); });
+    const observed = await observeRequests(nc, SPACE, async () => { result = await cotalAt(other, "ps", "--slots", ...selectors); });
     const label = extra.length ? "cotal ps --slots --on <instance>" : "cotal ps --slots";
     check(`${label} on an open space refuses UNSUPPORTED with exit 2 and issues no endpoint request`,
-      result?.status === 2 && observed.length === 0 && Boolean(result.output.includes("Code:") && result.output.includes("UNSUPPORTED") && result.output.includes("cotal ps")),
+      result?.status === 2 && observed.length === 0 && /Code:\s+UNSUPPORTED/.test(result.output),
       { status: result?.status, observed, output: result?.output.slice(0, 400) });
+    check(`${label} suggests removing only --slots`, result?.output.includes(`run \`cotal ps ${selectors.join(" ")}\` without --slots to list live agents`) === true, result);
+    const roster = await cotalAt(other, "ps", ...selectors);
+    check(`${label} remedy lists the intended manager`, roster.status === 0 && roster.output.includes(openMgrId), roster);
   }
   // The kernel's own commands answer from local metadata, so against a live mesh they issue nothing.
   for (const argv of [["help"], ["help", "--all"], ["version"], ["version", "--json"]]) {

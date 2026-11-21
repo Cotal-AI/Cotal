@@ -4,8 +4,8 @@
  *  and it grants no PID-only stop authority: recovery requires the launching home, host and exact
  *  process creation pins; ordinary stops still recheck the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, rmdirSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { existsSync, mkdirSync, rmdirSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
@@ -15,6 +15,8 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
+import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { displayCmd } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -345,6 +347,20 @@ export function writeStackJournal(root: string, expected: StackJournalSnapshot |
   } finally { lock.release(); }
 }
 
+/** Leave an empty private replacement after deliberate removal of a stack's recorded store. Run
+ *  under the root's maintenance lock. A journal for a different space or path stays untouched. */
+export function recordResetStore(root: string, space: string, path: string, changed: readonly unknown[]): void {
+  try {
+    const snapshot = readStackJournal(root);
+    const broker = snapshot?.journal.space === space ? snapshot.journal.broker : undefined;
+    if (!snapshot || !broker || resolve(broker.storeDir) !== path) return;
+    mkdirSync(path, { mode: 0o700 });
+    writeStackJournal(root, snapshot, { ...snapshot.journal, broker: { ...broker, storeIdentity: readStoreIdentity(path) }, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", `the store was removed, but its empty replacement was not recorded (${error instanceof Error ? error.message : String(error)}); status reports it missing until the next up starts the space on an empty store`, { target: { space, root, storeDir: path }, changed });
+  }
+}
+
 /** Whether the root's maintenance journal fences this stack. A settled active controller restore of
  *  this same stack does not; its attempt is returned so the caller names it
  *  in its result. Any other journal fences. The journal is only read. */
@@ -391,9 +407,12 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
-    let holder: number | undefined;
-    try { holder = (decodeLocalJson(readLocalRecordSource(paths.lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground `cotal up` holds the root only while it starts" });
+    const held = readMaintenanceLockHolder(root);
+    const holder = held?.owner.pid;
+    const remedy = held?.operation === "foreground up"
+      ? `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`
+      : "run the command again after that operation finishes";
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${holder !== undefined ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(holder !== undefined ? { holderPid: holder } : {}) }, remedy });
   }
   // An exit through process.exit skips the caller's release, so the lock is checked here as well.
   process.once("exit", (code) => {
