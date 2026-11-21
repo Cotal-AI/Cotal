@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { journalRecordedElsewhere } from "../lib/stack-journal.js";
@@ -73,7 +73,7 @@ export async function use(args: ParsedArgs): Promise<void> {
       if (found?.recordedRoot === p.root && found.journal.space === p.space) moved = found;
     } catch { /* An unusable journal does not identify a moved project. */ }
   }
-  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd) ?? null };
+  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd) ?? folderSpaceHeld(cwd)?.space ?? null };
   const warnings: OutputWarning[] = current !== null && name === undefined && !m && !p
     ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: current }, message: `the selected space "${current}" is not registered here - select another with \`cotal use <name>\`` }]
     : [];
