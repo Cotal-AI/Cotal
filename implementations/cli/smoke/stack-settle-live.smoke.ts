@@ -86,7 +86,7 @@
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
  *     exits 0 and keeps the delivery credential, and the reset preview then names `cotal up` and
- *     `cotal down`. That `up` waits out the killed daemon's lease and starts delivery.
+ *     `cotal down`. That `up` starts a new delivery daemon that acquires the shard after the old lease expires.
  *  5. An unconfirmed native manager stop. The manager is frozen when its stop request is published,
  *     so the first `down` reports the stop unknown and the manager record stays `stopping` under that
  *     request. While the manager runs, `down` refuses `LIFECYCLE_BLOCKED` naming the instance and the
@@ -197,8 +197,9 @@ import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 import { execWords } from "../src/lib/exec-words.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -281,6 +282,18 @@ const track = (space: string) => {
 };
 const gone = (space: string, definition: string) => serviceInstances(space, definition).every((row) => observeServiceProcess(row.record.value) !== "running");
 const exited = (child: ChildProcess) => new Promise<void>((done) => child.exitCode !== null || child.signalCode !== null ? done() : child.once("exit", () => done()));
+
+const shardZero = async (root: string, space: string) => {
+  const creds = await workspaceSecretStore(root).get(deliveryCredsKey(space, { injected: false, root }));
+  if (creds === undefined) return undefined;
+  const nc = await connect({ servers: findMesh(space)!.server, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}` });
+  try {
+    const row = await (await openDeliveryRegistry(nc, space)).get(leaseKey(0));
+    if (row?.operation !== "PUT") return undefined;
+    const { holder, acquiredAt, ready } = row.json<DeliveryLeaseInfo>();
+    return { holder, acquiredAt, ready, own: holder === deliveryLeaseHolderFor(creds), expiresAt: row.created.getTime() + LEASE_TTL_MS };
+  } finally { await nc.close(); }
+};
 
 const prepare = (space: string): string => {
   const root = join(projects, space);
@@ -1292,7 +1305,13 @@ try {
     const again = cli(root, "up", "--json");
     track(space);
     check("bare up starts the stack again", again.status === 0, shown(again));
-    const members = ["stack-broker", "stack-delivery", "stack-manager"].map((definition) => runningPidOf(space, definition));
+    const deliveryBefore = runningPidOf(space, "stack-delivery");
+    if (deliveryBefore !== null) process.kill(deliveryBefore, "SIGKILL");
+    const deliveryGone = deliveryBefore !== null && await until(() => gone(space, "stack-delivery"), 10_000);
+    // Read the final row after the daemon cannot renew it and before killing its broker.
+    const deadLease = await shardZero(root, space);
+    check("the crashed delivery daemon left its ready lease", deliveryGone && deadLease?.own === true && deadLease.ready, { deliveryBefore, deadLease });
+    const members = ["stack-broker", "stack-manager"].map((definition) => runningPidOf(space, definition));
     for (const pid of members) if (pid !== null) process.kill(pid, "SIGKILL");
     await until(() => members.every((pid) => pid === null || !alive(pid)), 10_000);
     const settled = cli(root, "down", "--yes", "--json");
@@ -1313,13 +1332,16 @@ try {
     } finally { releaseMaintenanceLock(held); }
     const stillOffered = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("...and those refusals removed nothing", stillOffered.status === 0 && (stillOffered.env?.result?.applyVerdict as { offered?: boolean } | undefined)?.offered === true, shown(stillOffered));
-    // The killed daemon never released shard 0. That down kept its credential, so the repair up
-    // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
+    // That down kept the killed daemon's credential. The lease can expire during the reset checks
+    // or broker startup. In either case the replacement must acquire shard 0 after its expiry.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);
     const recovered = cli(root, "up");
     track(space);
-    const delivery = pidOf(space, "stack-delivery");
-    check("up after the crash and down waits out the dead daemon's lease and starts delivery", recovered.status === 0 && recovered.stderr.includes("shard 0 is still leased to this folder's previous delivery daemon") && delivery !== null && alive(delivery), shown(recovered));
+    const delivery = runningPidOf(space, "stack-delivery");
+    const replacementLease = recovered.status === 0 ? await shardZero(root, space) : undefined;
+    check("up after the crash and down starts a different delivery daemon that acquires the expired shard", recovered.status === 0 && delivery !== null && delivery !== deliveryBefore && deadLease?.own === true
+      && replacementLease?.own === true && replacementLease.ready && replacementLease.holder !== deadLease.holder
+      && replacementLease.acquiredAt !== undefined && replacementLease.acquiredAt >= deadLease.expiresAt, { ...shown(recovered), delivery, deliveryBefore, deadLease, replacementLease });
     const recoveredDown = cli(root, "down", "--yes", "--json");
     check("down --yes stops the recovered stack and removes the credential", recoveredDown.status === 0 && recoveredDown.env?.result?.cleanup === "delivery-credential-and-registration-removed", shown(recoveredDown));
   }
@@ -1688,20 +1710,32 @@ try {
 
   // 9. A down killed mid-stop, once the named member's record reads `stopping`.
   const killDownAt = async (root: string, space: string, definition: string): Promise<string | undefined> => {
-    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env });
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env, stdio: "ignore" });
+    const broker = definition === "stack-broker";
+    const childEnv = broker ? { ...env, COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL: "1" } : env;
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env: childEnv });
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env: childEnv, stdio: "ignore" });
     // A read that meets down's own write of the record refuses CONFLICT; the poll takes that as not yet.
     const read = () => {
       try { return serviceInstances(space, definition)[0]?.record.value; }
       catch (error) { if (isCommandFailure(error) && error.code === "CONFLICT") return undefined; throw error; }
     };
-    const end = Date.now() + 120_000;
-    let seen = read();
-    while (Date.now() < end && child.exitCode === null && seen?.state !== "stopping") { await sleep(2); seen = read(); }
-    const request = seen?.state === "stopping" ? seen.requestId : undefined;
+    let request: string | undefined;
+    if (broker) {
+      // Wait for the real stop signal to take effect while down is held before it records the exit.
+      await until(() => {
+        const seen = read();
+        if (seen?.state === "stopping" && observeServiceProcess(seen) === "gone") request = seen.requestId;
+        return request !== undefined || child.exitCode !== null || child.signalCode !== null;
+      }, 120_000);
+    } else {
+      const end = Date.now() + 120_000;
+      let seen = read();
+      while (Date.now() < end && child.exitCode === null && seen?.state !== "stopping") { await sleep(2); seen = read(); }
+      request = seen?.state === "stopping" ? seen.requestId : undefined;
+    }
     child.kill("SIGKILL");
     await exited(child);
-    return request;
+    return child.signalCode === "SIGKILL" ? request : undefined;
   };
   {
     const space = "killedbroker";
@@ -1711,7 +1745,6 @@ try {
     track(space);
     check(`${space}: up starts the stack`, started.status === 0, shown(started));
     const request = await killDownAt(root, space, "stack-broker");
-    await until(() => gone(space, "stack-broker"), 10_000);
     check(`${space}: the killed down left the broker stopping under its request, with its process gone`, request !== undefined && serviceInstances(space, "stack-broker")[0]?.record.value.state === "stopping" && gone(space, "stack-broker"), { request });
     const status = cli(root, "status", "--space", space, "--json");
     const block = (status.env?.result?.folder as { stackBlock?: { definition?: string; reason?: string; route?: { kind?: string; requestId?: string } } | null } | undefined)?.stackBlock;
