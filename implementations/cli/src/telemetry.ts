@@ -9,6 +9,7 @@ import {
   effectiveTelemetry,
   extensionProvides,
   homeCotalDir,
+  isCommandFailure,
   loadExtensionsManifest,
   markTelemetryInstallEvent,
   markTelemetryNoticeShown,
@@ -73,11 +74,13 @@ export function scrubStack(stack: string): string {
 }
 
 interface ErrorText {
-  readonly message: string;
+  readonly message: string | null;
   readonly stack: string | null;
 }
 
-function errorText(error: unknown): ErrorText {
+export function telemetryErrorText(command: string, error: unknown): ErrorText {
+  // A native spawn diagnostic can include terminal output. Neither it nor its stack is analytics data.
+  if (command === "spawn" && isCommandFailure(error) && error.native !== undefined) return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
@@ -168,7 +171,7 @@ export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode, error?
 /** Record the error a command threw, once: the first one recorded is the original, and a wrapper
  *  the kernel builds from it afterwards does not replace it. */
 export function recordTelemetryError(error: unknown): void {
-  if (pending && !pending.error) pending.error = errorText(error);
+  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error);
 }
 
 /**
