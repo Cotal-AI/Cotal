@@ -255,6 +255,7 @@ Serving there is follow-up work.
 
 The agent owner's interactive session can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
 It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
+It stops the agent's running turn with `interrupt`, so a command queued behind a turn that hangs can run.
 No one else can call them: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
 The agent cannot run a command on itself: `command` from the agent's own identity is `permission-denied`.
 
@@ -263,6 +264,7 @@ A connector hands `MeshAgent` a dispatcher as the `commands` option:
 - `targets` names what it runs: `command`, `skill`, or both.
 - `list()` returns every command and skill the harness runs now as `{ name, target, description?, inputHint? }`, each named as `dispatch` names it. A rejection reaches the caller as `unavailable`, never as an empty list.
 - `dispatch({ target, name, args })` starts one and resolves once the harness accepted it. A command that runs the model runs as a turn of its own, and some, such as OpenCode's `goal clear`, run no turn. It throws `CommandRefused` with `not-found` or `failed-precondition` when the harness refused it and nothing started. Any other throw leaves the outcome unknown.
+- `interrupt()`, optional, stops the turn the harness is running and resolves `interrupted`, or `idle` when none ran. The connector then ends that turn as one its user stopped, so the next queued command starts. Without it, `interrupt` is `unimplemented`. A throw reaches the caller as `internal` with the outcome unknown.
 
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.

@@ -20,7 +20,10 @@
  * without starting a turn reads `started` and frees the session 5 s after OpenCode answered, and that
  * bound never frees a later submission; a POST OpenCode answers only after 12 s reads `taken` past
  * 10 s, and `started` once OpenCode answered with the plugin still waiting, so the command runs; and
- * the broker refuses a sibling agent of the same owner.
+ * the broker refuses a sibling agent of the same owner. A command queued behind a turn that never
+ * ends stays queued until the owner's `interrupt`, which POSTs `/api/session/:id/interrupt` once and
+ * answers `interrupted`; OpenCode's `session.execution.interrupted` then frees the session, and the
+ * command runs. With no turn running, `interrupt` answers `idle`.
  *
  * Run: pnpm smoke:opencode2-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -112,6 +115,7 @@ const PERSONA = "You are Cody, a careful reviewer who explains every finding.";
 let mode: "ok" | "bad-text" | "crash" | "stall" = "ok";
 let slow: { answered: boolean; clientLeft: boolean } | undefined;
 let failSkills = false;
+let turnRunning = false; // a turn the fake holds open, which only an interrupt ends
 const calls: string[] = [];
 const bodies: Record<string, unknown>[] = [];
 const unexpected: string[] = [];
@@ -147,6 +151,15 @@ const oc = createServer((req, res) => {
         }, 12_000);
       }
       return void res.writeHead(204).end();
+    }
+    if (req.method === "POST" && req.url === `/api/session/${SID}/interrupt`) {
+      // As 2.2.5 answers: `{ interrupted }`, and a stopped execution ends as `session.execution.interrupted`.
+      calls.push("interrupt");
+      const was = turnRunning;
+      turnRunning = false;
+      json(res, 200, { interrupted: was });
+      if (was) setTimeout(() => feed("session.execution.interrupted"), 50);
+      return;
     }
     if (req.method === "POST" && req.url === `/api/session/${SID}/prompt`) {
       const skill = body.skills?.[0]?.id;
@@ -357,6 +370,27 @@ try {
   await runAndEndTurn();
   await until(() => calls.length > held + 1);
   await runAndEndTurn();
+
+  {
+    const beforeHang = calls.length;
+    feed("session.execution.started");
+    turnRunning = true;
+    const stuck = await queue({ target: "command", name: "review" });
+    await sleep(6000);
+    const behind = (await readState(stuck.id)).label;
+    check("a command sent while a turn runs that never ends still reads queued 6 s later, and OpenCode got nothing",
+      stuck.verdict === "ok" && behind === "queued" && calls.length === beforeHang, [stuck.verdict, behind, calls.slice(beforeHang)]);
+    const stop = await call(webEp, "interrupt");
+    const freed = await settle(stuck.id);
+    check("the owner's interrupt answers interrupted after exactly 1 POST /interrupt, and the queued command then runs: it reads started",
+      stop.ok && stop.value.ok && same(stop.value.data, { state: "interrupted" }) && freed.label === "started" && same(calls.slice(beforeHang), ["interrupt", "command review"]),
+      [verdict(stop), stop.ok && stop.value.ok ? stop.value.data : undefined, freed.label, calls.slice(beforeHang)]);
+    await runAndEndTurn();
+    const idle = await call(webEp, "interrupt");
+    check("with no turn running, interrupt asks OpenCode once and answers idle",
+      idle.ok && idle.value.ok && same(idle.value.data, { state: "idle" }) && same(calls.slice(beforeHang), ["interrupt", "command review", "interrupt"]),
+      [verdict(idle), calls.slice(beforeHang)]);
+  }
 
   mode = "stall";
   const beforeStall = calls.length;
