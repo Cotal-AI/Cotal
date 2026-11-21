@@ -579,9 +579,10 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
+  const holdPath = join(mesh, ".cotal", "stack-foreground.hold");
   const foreground = (args: string[], pauseBeforeHold = false) => {
     const preload = pauseBeforeHold ? ["--import", join(import.meta.dirname, "_foreground-hold-pause.ts")] : [];
-    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: [pauseBeforeHold ? "pipe" : "ignore", "pipe", "pipe"] });
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const io = { out: "", err: "" };
     child.stdout?.on("data", (b: Buffer) => { io.out += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
@@ -592,15 +593,15 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
   try {
     if (!otherHome) {
       await until(() => holder.io.err.includes("Ready to publish foreground hold") || holder.state.exited, 30_000, () => holder.io.err);
-      assert.ok(!holder.state.exited && !existsSync(join(mesh, ".cotal", "stack-foreground.hold")), holder.io.err); passed++;
-      const contender = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"]);
+      assert.ok(!holder.state.exited && !existsSync(holdPath), holder.io.err); passed++;
+      const contender = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
       writeFileSync(join(root, "startup-refusal.log"), contender.out + contender.err, { mode: 0o600 });
       assert.equal(contender.code, 2, contender.out + contender.err); passed++;
       assert.match(contender.err, /LIFECYCLE_BLOCKED/); passed++;
       assert.ok(contender.err.includes(`holds this root (pid ${holder.child.pid})`), contender.err); passed++;
       assert.match(contender.err.replace(/\s+/g, " "), /keeps the stack once startup finishes.*`cotal status`.*Ctrl-C in that terminal/); passed++;
       assert.doesNotMatch(contender.err, /run the command again after that operation finishes/); passed++;
-      holder.child.stdin!.end("\n");
+      writeFileSync(`${holdPath}.test-release`, "", { mode: 0o600 });
     }
     await until(() => {
       if (holder.state.error) throw holder.state.error;
@@ -633,7 +634,7 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
     process.kill(holder.child.pid, "SIGKILL");
     await until(() => holder.state.exited, 10_000, () => "the killed foreground up did not exit");
     await waitForOwnedChild(() => holder.state.closed, 3_000, `${root}: holder streams drained`);
-    assert.ok(existsSync(join(mesh, ".cotal", "stack-foreground.hold")) && await portOpen(port), "the killed holder left its record and the running stack"); passed++;
+    assert.ok(existsSync(holdPath) && await portOpen(port), "the killed holder left its record and the running stack"); passed++;
     taker = foreground([]);
     await until(() => {
       if (taker!.state.error) throw taker!.state.error;
@@ -643,7 +644,7 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
     assert.ok(taker.io.out.includes("This stack is already running, and this terminal now takes over its lifetime") && taker.io.out.indexOf("takes over its lifetime") < taker.io.out.indexOf("Controller stack already running"), `a foreground up over the running stack says it takes it over before it blocks: ${taker.io.out}`); passed++;
     assert.ok(taker.child.pid); process.kill(taker.child.pid, "SIGTERM");
     await until(() => taker!.state.exited, 120_000, () => taker!.io.err.slice(-3000));
-    assert.ok(taker.state.code === 143 && !(await portOpen(port)) && !existsSync(join(mesh, ".cotal", "stack-foreground.hold")), `SIGTERM there stops the whole stack and removes the hold record: ${taker.state.code} ${taker.io.err.slice(-1500)}`); passed++;
+    assert.ok(taker.state.code === 143 && !(await portOpen(port)) && !existsSync(holdPath), `SIGTERM there stops the whole stack and removes the hold record: ${taker.state.code} ${taker.io.err.slice(-1500)}`); passed++;
     console.log(`PASS foreground-up-signals ${name}`);
   } finally {
     try {
