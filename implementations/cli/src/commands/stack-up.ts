@@ -773,7 +773,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
     throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode) });
-  const mode: StackMode = previous?.journal.mode ?? request.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
+  // An adopted journal has no started members here, but a bare up still uses its recorded mode.
+  const mode: StackMode = previous?.journal.mode ?? request.mode ?? unstarted?.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
