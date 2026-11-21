@@ -24,7 +24,18 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
       const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
       const node = realpathSync(process.execPath);
       writeFileSync(launcher, `#!/bin/sh
-if command -v node >/dev/null 2>&1; then
+node_supported() {
+  version=$("$1" --version 2>/dev/null) || return 1
+  major=\${version%%.*}
+  version=\${version#*.}
+  minor=\${version%%.*}
+  [ "\${major#v}" -gt ${minMajor} ] 2>/dev/null ||
+    { [ "\${major#v}" -eq ${minMajor} ] && [ "$minor" -ge ${minMinor} ]; } 2>/dev/null
+}
+
+if command -v node >/dev/null 2>&1 && {
+  [ ! -x ${quote(node)} ] || node_supported node || ! node_supported ${quote(node)}
+}; then
   node=node
 elif [ -x ${quote(node)} ]; then
   node=${quote(node)}
