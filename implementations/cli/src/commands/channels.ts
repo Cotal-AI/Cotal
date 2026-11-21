@@ -22,6 +22,7 @@ import { deniedWrite } from "../lib/denied-write.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
 import { channelHistoryCommand } from "../lib/history-command.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { declaredFrom } from "./send.js";
 
 export const channelFlags = [
@@ -123,7 +124,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
     const registry = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
-    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, registryView);
+    writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open"));
     return;
   }
   if (action === "remove") await refuseUnknownChannel(name!, values, target, "remove");
@@ -245,7 +246,7 @@ function policyFields(config: ChannelConfig | undefined, defaults: ChannelRegist
   ];
 }
 
-function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }): Report {
+function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean): Report {
   const { registry, name } = result;
   const bad = (key: string) => registry.undecodable?.find((entry) => entry.key === key);
   if (result.action === "show") {
@@ -254,7 +255,13 @@ function registryView(result: { action: string; name?: string; space: string; re
     return { sections: [
       { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch members ${name}`, description: "Read broker-observed membership" }, { command: channelHistoryCommand(name!), description: "Read retained messages within your grant" }] }] },
+      { title: "Next", blocks: [
+        ...(open ? [{ kind: "lines" as const, lines: ["Broker-observed channel membership is unavailable on open meshes."] }] : []),
+        { kind: "commands", items: [
+          ...(open ? [] : [{ command: `cotal ch members ${shellWord(name!)}`, description: "Read broker-observed membership" }]),
+          { command: channelHistoryCommand(name!), description: "Read retained messages within your grant" },
+        ] },
+      ] },
     ] };
   }
   if (result.action === "defaults") {

@@ -804,6 +804,13 @@ try {
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
   {
+    const openCard = await run(["channel", "show", "general", "--space", openSpace, "--plain"]);
+    check("channel show explains unavailable membership on an open mesh and still suggests history",
+      openCard.status === 0 && openCard.stdout.includes("Broker-observed channel membership is unavailable on open meshes.")
+      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes("cotal history '#general'"), shown(openCard));
+    const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
+    check("channel show still suggests membership on the auth mesh",
+      authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
     const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
