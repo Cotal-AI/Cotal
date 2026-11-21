@@ -428,7 +428,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && typeof bareRuntimesRow?.error === 'string'
         && bareRuntimesRow.error.includes(`@cotal-ai/tmux is ${pair.targetVersion} and this cotal is ${pair.followOnVersion} - run \`cotal update --self\` to reconcile this installation`);
       const gateRefusal = archivedBare.launchGateRefusal;
-      const gateRefusalOk = gateRefusal?.command?.exit === 1
+      const gateRefusalOk = gateRefusal?.command?.exit === 2
         && gateRefusal.command.signal === null
         && gateRefusal.command.timeout === false
         && /run `cotal update --self` to reconcile this installation/.test(String(gateRefusal.command.stdout ?? '') + String(gateRefusal.command.stderr ?? ''))
