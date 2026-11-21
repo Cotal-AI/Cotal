@@ -57,6 +57,32 @@ try {
   const corrupt = boot(cfg);
   check("unprovable marker still refuses", corrupt.status !== 0 && /mid-flight/.test(corrupt.stderr), corrupt);
 
+  if (process.platform !== "win32") for (const args of [["ext", "seed"], ["ext", "seed", "--repair"]]) {
+    const cfg = track(freshCfg());
+    const invocation = args.join(" ");
+    const command = spawn(process.execPath, [BIN, ...args], {
+      env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1", DO_NOT_TRACK: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "", stderr = "", signalled = false;
+    command.stdout.on("data", chunk => { stdout += chunk; });
+    command.stderr.on("data", chunk => {
+      stderr += chunk;
+      if (!signalled && stderr.includes("seed store payload (claude)")) signalled = command.kill("SIGTERM");
+    });
+    const status = await new Promise<number | null>((resolve, reject) => {
+      command.once("error", reject);
+      command.once("close", resolve);
+    });
+    check(`SIGTERM to ${invocation} exits 143 before starting a second install`, signalled && status === 143 &&
+      stderr.includes("Reconciling built-in claude@") && !stderr.includes("Reconciling built-in opencode@") &&
+      stderr.includes(`Connector seed interrupted. Run \`cotal ${invocation}\` to finish seeding.`) &&
+      !stdout.includes("connectors reconciled") && !existsSync(join(seedDir(cfg), "stamp.json")), { status, stdout, stderr });
+    const retry = cotal(cfg, args);
+    check(`retry completes a cancelled ${invocation}`, retry.status === 0 && retry.stderr.includes("Reconciling built-in opencode@") &&
+      retry.stdout.includes("connectors reconciled"), retry);
+  }
+
   if (process.platform === "linux") for (const signal of ["SIGKILL", "SIGTERM"] as const) {
     const cfg = track(freshCfg());
     const npmMarker = join(cfg, "cotal", ".extensions.lock.npm-child");

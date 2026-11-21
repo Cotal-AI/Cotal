@@ -847,6 +847,10 @@ A seed that fails names the connector and the reason, such as npm missing from P
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
 the last seed failed, and why, or was interrupted.
 
+If `cotal ext seed` receives SIGTERM during an install, it waits for that install to finish,
+starts no further installs, and exits 143. Run `cotal ext seed` again to finish after a verified
+install. If the install could not be verified, run `cotal ext seed --repair` instead.
+
 When a newer `cotal` advances the operator-global seed store to its generation, it prints one
 migration line naming the old and new generations, the exact CLI entry that wrote the store, the
 commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in the stamp, so a later
