@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, recordMesh, removeMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 
@@ -205,6 +205,24 @@ try {
   const chatAfter = await state(chatStream(space));
   check("the channel mint remedy produces a credential that stores on the requested channel", recovered.status === 0 && recovered.envelope?.result?.stored === true
     && chatAfter.messages === chatBefore.messages + 1 && chatAfter.last_seq === chatBefore.last_seq + 1, { reply: shown(recovered), chatBefore, chatAfter });
+  const brokerOnlyArgs = ["send", "--channel=--audit", "registered broker with explicit creds", "--server", servers, "--creds", credsPath("audit_poster"), "--json"];
+  const brokerOnly = run(brokerOnlyArgs, empty);
+  check("--server with --creds and no --space stores in the broker's registered space", brokerOnly.status === 0
+    && brokerOnly.envelope?.target?.space === space && brokerOnly.envelope.result?.stored === true, shown(brokerOnly));
+
+  const extra = { space: `${space}-other`, server: servers, root: empty, mode: "auth" as const, ts: new Date().toISOString() };
+  recordMesh(extra);
+  try {
+    const multiple = run(brokerOnlyArgs, empty);
+    check("multiple registrations at the broker keep the raw credential target at main", multiple.status === 2
+      && multiple.envelope?.target?.space === DEFAULT_SPACE && multiple.envelope.error?.code === "PERMISSION_DENIED", shown(multiple));
+  } finally { removeMesh(extra.space); }
+  removeMesh(space);
+  try {
+    const unregistered = run(brokerOnlyArgs, empty);
+    check("no registration at the broker keeps the raw credential target at main", unregistered.status === 2
+      && unregistered.envelope?.target?.space === DEFAULT_SPACE && unregistered.envelope.error?.code === "PERMISSION_DENIED", shown(unregistered));
+  } finally { recordMesh({ space, server: servers, root, mode: "auth", ts: new Date().toISOString() }); }
 
   const quotedCreds = credsPath("poster's credential");
   copyFileSync(credsPath("poster"), quotedCreds);
