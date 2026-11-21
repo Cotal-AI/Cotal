@@ -145,6 +145,8 @@ folder. The terminal gets the refusal's report, with the mesh it resolved and it
 `--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
 Both records include `target.space` when a space resolved. `target.requestedSpace` holds the
 explicit `--space` value, or `null` when no space was requested.
+After a controller stack stops cleanly, the next step is `cotal up --no-manager` in its project
+folder if the stop records no manager or the broker's payload limit is too low to start one.
 
 
 ### Observer stream [#observer-stream]

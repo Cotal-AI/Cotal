@@ -743,6 +743,8 @@ folder reach that stack until then.
 
 A prepared space whose controller stack ran and was stopped reads as stopped, with its last
 operation and how it ended, such as `` `cotal down`, completed ``, and Next names `cotal up` in its root.
+After a completed stop, Next names `cotal up --no-manager` instead if the stop records no manager
+or the broker's payload limit is too low to start one.
 If the recorded broker address is occupied after a completed stop, `status` and `history` name the
 address and explain how to free it before restarting. The stack keeps its address.
 A space that never started still reads as prepared but not started. A recorded file-store cap does not
