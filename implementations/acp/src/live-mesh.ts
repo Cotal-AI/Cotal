@@ -140,7 +140,18 @@ function plain(e: unknown): Error {
   return e.code === "AUTH_REQUIRED" || noSpace ? new SignInRequired(message) : new Error(message);
 }
 
-export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
+/** The space connection: its target, the observer that reads it and, on a user-auth space, the
+ *  person's sign-in. */
+interface Connected {
+  readonly target: MeshTarget;
+  readonly observer: CotalEndpoint;
+  readonly events: string;
+  readonly started: { owner: string; actor: string; lifecycleUid: string } | undefined;
+  readonly signInNow: (() => Promise<string>) | undefined;
+  readonly ownManagers: (() => Promise<ManagerInstanceListing[]>) | undefined;
+}
+
+async function connect(options: LiveMeshOptions): Promise<Connected> {
   let target: MeshTarget;
   let observer: CotalEndpoint;
   /** The event channels the observer follows, as a subject: every agent's on a static or open
@@ -201,6 +212,12 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
   } catch (e) {
     throw plain(e);
   }
+  return { target, observer, events, started, signInNow, ownManagers };
+}
+
+/** The manager control calls, made as the person's sign-in when there is one. */
+function controls(options: LiveMeshOptions, c: Connected) {
+  const { target, observer, started, signInNow, ownManagers } = c;
   const ctx: ControlCtx = { space: target.space, server: target.server };
 
   const client: ControlClient = {
@@ -271,14 +288,16 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     own = new Set(plan.own);
     return plan;
   };
+  return { ctx, client, resolve, ask, seatCommand, choice, yourManagers, own: (): ReadonlySet<string> => own };
+}
 
-  const defaultPersona = resolvePreference("persona", { space: target.space }).value;
-  const defaultAgent = resolvePreference("harness", { space: target.space }).value;
+type Controls = ReturnType<typeof controls>;
 
+/** The reads a new thread's options come from, and the launch. */
+function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "manager" | "personas" | "spawn"> {
+  const { target, started } = c;
+  const { client, resolve, ask, choice, yourManagers } = p;
   return {
-    space: target.space,
-    ...(defaultAgent ? { defaultAgent } : {}),
-
     async catalogs(instanceId) {
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
       if (!status.ok) throw listFailure(status, "the manager did not report its applications");
@@ -348,7 +367,14 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       const { result } = readManagedLaunch(reply, { space: target.space, requestedModel: req.model ?? null, detached: true }, { space: target.space });
       return { name: result.name, ...principalOf(result.id), lifecycleUid: result.lifecycleUid, managerInstanceId: result.managerInstanceId };
     },
+  };
+}
 
+/** The agent list and the commands sent to one agent. */
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input"> {
+  const { started } = c;
+  const { ctx, client, ask, seatCommand, yourManagers } = p;
+  return {
     async seats() {
       let answered: { instanceId: string; rows: unknown[] }[];
       let silent: string[];
@@ -369,7 +395,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
           try {
             const reply = await ask("ps", undefined, instanceId);
             if (!reply.ok) {
-              if (namesDeregister("ps", instanceId, own, reply)) removable.push(instanceId);
+              if (namesDeregister("ps", instanceId, p.own(), reply)) removable.push(instanceId);
               throw failure(reply, "the manager did not list its agents");
             }
             return { instanceId, rows: (reply.data as unknown[] | undefined) ?? [] };
@@ -413,7 +439,13 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
       const reply = await seatCommand("input", seat, { name: seat.name, text, enter: true });
       if (!reply.ok) throw failure(reply, `${seat.name} did not get the prompt`);
     },
+  };
+}
 
+/** What the observer reads: the agents' frames and presence, the roster and the channels. */
+function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "roster" | "channels" | "close"> {
+  const { observer, events, started } = c;
+  return {
     followFrames(onFrame) {
       let live = true;
       observer.tap((_subject, msg) => {
@@ -451,5 +483,21 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     async close() {
       await observer.stop();
     },
+  };
+}
+
+export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
+  const c = await connect(options);
+  const { target } = c;
+  const p = controls(options, c);
+  const defaultPersona = resolvePreference("persona", { space: target.space }).value;
+  const defaultAgent = resolvePreference("harness", { space: target.space }).value;
+
+  return {
+    space: target.space,
+    ...(defaultAgent ? { defaultAgent } : {}),
+    ...launchCalls(c, p, defaultPersona),
+    ...seatCalls(options, c, p),
+    ...spaceReads(c),
   };
 }

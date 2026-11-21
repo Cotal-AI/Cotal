@@ -18,7 +18,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type SessionUpdate, type StopReason } from "@agentclientprotocol/sdk";
+import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
@@ -140,15 +140,26 @@ export function defaultName(): string {
   return `acp_${Array.from(randomBytes(10), (b) => alphabet[b & 31]).join("")}`;
 }
 
-export function cotalAgent(options: CotalAgentOptions): AgentApp {
+/** What every handler shares: the sessions, the space connection and the routing of frames. */
+interface Bridge {
+  readonly options: CotalAgentOptions;
+  readonly sessions: Map<string, Session>;
+  readonly send: (session: Session, update: SessionUpdate, replay?: boolean) => Promise<void>;
+  readonly mesh: () => Promise<Mesh>;
+  readonly bind: (session: Session, seat: SeatRef) => void;
+  readonly unbind: (session: Session) => void;
+  readonly sessionOf: (id: string) => Session;
+  readonly announce: (session: Session) => Promise<void>;
+  /** Fails the running prompts and closes the space, once the client disconnected. */
+  readonly close: () => Promise<void>;
+}
+
+function bridge(options: CotalAgentOptions): Bridge {
   const sessions = new Map<string, Session>();
   const byPrincipal = new Map<string, Session>();
   const unclaimed = new Map<string, { at: number; frames: SeatFrame[] }>();
   let opened: Promise<Mesh> | undefined;
   let stopFollowing: (() => void) | undefined;
-  const newName = options.newName ?? defaultName;
-  const startMs = options.waits?.startMs ?? START_MS;
-  const settleMs = options.waits?.settleMs ?? SETTLE_MS;
 
   const send = (session: Session, update: SessionUpdate, replay = false): Promise<void> =>
     session.client.notify(methods.client.session.update, { sessionId: session.id, update, ...(replay ? { _meta: { isReplay: true } } : {}) });
@@ -226,6 +237,25 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     session.open = new Map();
   };
 
+  const sessionOf = (id: string): Session => {
+    const s = sessions.get(id);
+    if (!s) throw RequestError.sessionNotFound(id);
+    return s;
+  };
+
+  const announce = async (session: Session): Promise<void> => {
+    await send(session, { sessionUpdate: "available_commands_update", availableCommands: COMMANDS.map((c) => ({ ...c })) });
+  };
+
+  const close = async (): Promise<void> => {
+    stopFollowing?.();
+    for (const s of sessions.values()) if (s.turn) s.turn.fail(new Error("the client disconnected"));
+    if (opened) await (await opened.catch(() => undefined))?.close();
+  };
+  return { options, sessions, send, mesh, bind, unbind, sessionOf, announce, close };
+}
+
+function launchOffers(options: CotalAgentOptions) {
   /** The offer of a thread opened without the launch lists: the seat's own application and model,
    *  nothing to launch with. Without the lists the bridge cannot tell whether the application has an
    *  event plane, so it follows the seat's channel, and a prompt the seat never starts on ends with
@@ -256,17 +286,13 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     if (channels.length >= MAX_CHOICES) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel option is not offered`);
     return { catalogs, personas, channels, managers, defaultAgent: catalogs.find((c) => c.agent === m.defaultAgent)?.agent };
   };
+  return { seatOffer, offerFor };
+}
 
-  const sessionOf = (id: string): Session => {
-    const s = sessions.get(id);
-    if (!s) throw RequestError.sessionNotFound(id);
-    return s;
-  };
+type Offers = ReturnType<typeof launchOffers>;
 
-  const announce = async (session: Session): Promise<void> => {
-    await send(session, { sessionUpdate: "available_commands_update", availableCommands: COMMANDS.map((c) => ({ ...c })) });
-  };
-
+function turnRunner(b: Bridge, startMs: number, settleMs: number) {
+  const { options, send } = b;
   /** Run one turn to its end. Every update is sent before this resolves. A `run` prompt belongs to the
    *  seat's first run. An `idle` prompt's runs are the ones that start once `start` is called, so a
    *  run that starts and ends before `start` resolves still counts. */
@@ -351,7 +377,11 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         if (turn.cancelled === "requested") interrupt();
       }, (e: Error) => turn.fail(e));
     });
+  return runTurn;
+}
 
+function slashCommands(b: Bridge) {
+  const { send, unbind } = b;
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
     const match = /^\/([a-z]+)\b\s*(.*)$/s.exec(text);
     if (!match || !COMMANDS.some((c) => c.name === match[1])) return undefined;
@@ -381,25 +411,15 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
     }
     return undefined;
   };
+  return slash;
+}
 
-  const app = agent({ name: "cotal" })
-    .onRequest(methods.agent.initialize, ({ params }) => ({
-      protocolVersion: PROTOCOL_VERSION,
-      agentInfo: { name: "cotal", title: "Cotal", version: options.version },
-      agentCapabilities: {
-        loadSession: true,
-        promptCapabilities: { image: false, audio: false, embeddedContext: false },
-        sessionCapabilities: { list: {}, delete: {} },
-      },
-      authMethods: params.clientCapabilities?.auth?.terminal
-        ? [{ type: "terminal" as const, id: "cotal-sign-in", name: "Sign in to Cotal", description: "Signs in to a hosted space, or sets up a local one.", args: ["--auth"] }]
-        : [],
-    }))
-    .onRequest(methods.agent.authenticate, async () => {
-      await mesh();
-      return {};
-    })
-    .onRequest(methods.agent.session.new, async ({ params, client }) => {
+/** The handlers that open a thread, change its options and run its prompts. */
+function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
+  const { sessions, mesh, bind, sessionOf, announce } = b;
+  const { offerFor } = offers;
+  return {
+    newSession: async (params: NewSessionRequest, client: AgentContext) => {
       const m = await mesh();
       const offer = await offerFor(m);
       const id = newName();
@@ -407,8 +427,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
       return { sessionId: id, configOptions: configOptions(offer, session.selection) };
-    })
-    .onRequest(methods.agent.session.setConfigOption, async ({ params }) => {
+    },
+    setConfigOption: async (params: SetSessionConfigOptionRequest) => {
       const session = sessionOf(params.sessionId);
       if (!("value" in params) || typeof params.value !== "string") throw RequestError.invalidParams(undefined, `option "${params.configId}" takes a select value`);
       // A thread that cannot start another agent has nothing a changed option would apply to.
@@ -433,8 +453,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       }
       session.selection = next;
       return { configOptions: configOptions(session.offer, session.selection) };
-    })
-    .onRequest(methods.agent.session.prompt, async ({ params }) => {
+    },
+    prompt: async (params: PromptRequest) => {
       const session = sessionOf(params.sessionId);
       if (session.turn) throw RequestError.invalidRequest(undefined, "a prompt is already running in this session");
       const text = promptText(params.prompt);
@@ -471,11 +491,16 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         bind(session, seat);
       });
       return { stopReason };
-    })
-    .onNotification(methods.agent.session.cancel, ({ params }) => {
-      sessions.get(params.sessionId)?.turn?.cancel();
-    })
-    .onRequest(methods.agent.session.list, async ({ params }) => {
+    },
+  };
+}
+
+/** The handlers that list, load and delete threads. */
+function historyHandlers(b: Bridge, offers: Offers) {
+  const { options, sessions, send, mesh, bind, unbind, announce } = b;
+  const { seatOffer, offerFor } = offers;
+  return {
+    list: async (params: ListSessionsRequest) => {
       const m = await mesh();
       const want = params.cwd ? canonical(params.cwd) : undefined;
       const hidden = options.hidden.read();
@@ -488,8 +513,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
           ...(row.uptimeMs !== undefined ? { updatedAt: new Date(Date.now() - row.uptimeMs).toISOString() } : {}),
         })),
       };
-    })
-    .onRequest(methods.agent.session.load, async ({ params, client }) => {
+    },
+    load: async (params: LoadSessionRequest, client: AgentContext) => {
       const m = await mesh();
       const listed = await m.seats();
       const matches = listed.rows.filter((row) => row.name === params.sessionId);
@@ -532,8 +557,8 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       bind(session, row);
       setImmediate(() => void announce(session).catch(() => {}));
       return { configOptions: configOptions(offer, session.selection) };
-    })
-    .onRequest(methods.agent.session.delete, async ({ params }) => {
+    },
+    delete: async (params: DeleteSessionRequest) => {
       const session = sessions.get(params.sessionId);
       if (session) {
         const seat = session.seat;
@@ -551,14 +576,45 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
       if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed);
       for (const row of rows) options.hidden.add(row.lifecycleUid);
       return {};
-    });
+    },
+  };
+}
+
+export function cotalAgent(options: CotalAgentOptions): AgentApp {
+  const b = bridge(options);
+  const { sessions } = b;
+  const offers = launchOffers(options);
+  const threads = threadHandlers(b, offers, turnRunner(b, options.waits?.startMs ?? START_MS, options.waits?.settleMs ?? SETTLE_MS), slashCommands(b), options.newName ?? defaultName);
+  const history = historyHandlers(b, offers);
+  const app = agent({ name: "cotal" })
+    .onRequest(methods.agent.initialize, ({ params }) => ({
+      protocolVersion: PROTOCOL_VERSION,
+      agentInfo: { name: "cotal", title: "Cotal", version: options.version },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        sessionCapabilities: { list: {}, delete: {} },
+      },
+      authMethods: params.clientCapabilities?.auth?.terminal
+        ? [{ type: "terminal" as const, id: "cotal-sign-in", name: "Sign in to Cotal", description: "Signs in to a hosted space, or sets up a local one.", args: ["--auth"] }]
+        : [],
+    }))
+    .onRequest(methods.agent.authenticate, async () => {
+      await b.mesh();
+      return {};
+    })
+    .onRequest(methods.agent.session.new, ({ params, client }) => threads.newSession(params, client))
+    .onRequest(methods.agent.session.setConfigOption, ({ params }) => threads.setConfigOption(params))
+    .onRequest(methods.agent.session.prompt, ({ params }) => threads.prompt(params))
+    .onNotification(methods.agent.session.cancel, ({ params }) => {
+      sessions.get(params.sessionId)?.turn?.cancel();
+    })
+    .onRequest(methods.agent.session.list, ({ params }) => history.list(params))
+    .onRequest(methods.agent.session.load, ({ params, client }) => history.load(params, client))
+    .onRequest(methods.agent.session.delete, ({ params }) => history.delete(params));
 
   app.onConnect((connection) => {
-    void connection.closed.finally(async () => {
-      stopFollowing?.();
-      for (const s of sessions.values()) if (s.turn) s.turn.fail(new Error("the client disconnected"));
-      if (opened) await (await opened.catch(() => undefined))?.close();
-    });
+    void connection.closed.finally(b.close);
   });
   return app;
 }
