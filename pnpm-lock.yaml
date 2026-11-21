@@ -634,6 +634,9 @@ importers:
       '@nats-io/jetstream':
         specifier: 3.4.0
         version: 3.4.0
+      '@nats-io/jwt':
+        specifier: 0.0.10-5
+        version: 0.0.10-5
       '@nats-io/kv':
         specifier: 3.4.0
         version: 3.4.0
@@ -665,9 +668,6 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
-      '@nats-io/jwt':
-        specifier: 0.0.10-5
-        version: 0.0.10-5
       '@nats-io/nkeys':
         specifier: 2.0.3
         version: 2.0.3
