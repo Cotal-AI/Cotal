@@ -365,6 +365,10 @@ Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCK
 
 ### Live deletion
 
+`space delete <name>` checks the local registration before requiring confirmation. If the exact
+name is neither registered nor prepared, it refuses with `TARGET_NOT_FOUND`, exit 2, without
+contacting a broker.
+
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. Its question, and the message under a wrong answer, wrap to the
 terminal with each continuation line under the prompt's bar. A script supplies the exact

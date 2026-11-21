@@ -95,8 +95,7 @@ function liveStackRefusal(entry: MeshEntry, space: string, preview = false): Com
     : `stop it with \`cotal down\` from ${entry.root}, then remove its stored streams with \`cotal clean store --force\` there` });
 }
 
-/** A finite native observation. It does not authorize deletion or form an atomic impact plan. */
-async function readSpaceDeletion(name: string) {
+function resolveSpaceDeletionEntry(name: string): MeshEntry {
   let entry: ReturnType<typeof findMesh>;
   try { entry = findMesh(name); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registry could not be read; no live space deletion target was inferred", { target: { space: name } }); }
@@ -135,6 +134,11 @@ async function readSpaceDeletion(name: string) {
     }
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
   }
+  return entry;
+}
+
+/** A finite native observation. It does not authorize deletion or form an atomic impact plan. */
+async function readSpaceDeletion(name: string, entry = resolveSpaceDeletionEntry(name)) {
   if (entry.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "this native deletion inventory has no supported user-auth view; no open or static identity was substituted", { target: { space: name } });
   try {
     const selected = resolveNativeServiceTarget(entry.root, name, entry.server);
@@ -363,17 +367,16 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     return;
   }
   const yes = args.values.yes === true;
-  // A running local stack refuses before any broker connection or prompt.
-  let registered: ReturnType<typeof findMesh>;
-  try { registered = findMesh(name); } catch { registered = undefined; }
-  const blocked = registered && liveStackRefusal(registered, name);
+  // Refuse a missing target or running local stack before any broker connection or prompt.
+  const registered = resolveSpaceDeletionEntry(name);
+  const blocked = liveStackRefusal(registered, name);
   if (blocked) throw blocked;
   if (!yes && (!canPrompt() || presentation === "json"))
     throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect \`cotal space delete ${name} --dry-run\` first, then run \`cotal space delete ${name} --yes\`` });
   // From here an interrupt says what the deletion left, as `progress` records it.
   const progress: DeletionProgress = { acknowledged: [], alreadyAbsent: [], submitted: null, postReadStarted: false };
   const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));
-  const initial = await readSpaceDeletion(name);
+  const initial = await readSpaceDeletion(name, registered);
   if (!yes) {
     process.stderr.write(`${renderReport({ ...previewView(initial.result), space: name }, presentation === "plain" ? "plain" : "rich", process.stderr)}\n`);
     const pending = initial.result.runs.unfinished.length;

@@ -152,6 +152,12 @@ check("a space that never ran has no streams, so its remedy names only space for
 
 const unknown = run(["space", "delete", "nosuch", "--dry-run", "--json"]);
 check("control: a name nothing records is still not found, exit 2", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
+const unknownApply = run(["space", "delete", "no-such-space", "--plain"]);
+const unknownPreview = run(["space", "delete", "no-such-space", "--dry-run", "--plain"]);
+check("noninteractive apply of a missing name gives the same refusal as dry-run without asking for confirmation",
+  unknownApply.status === 2 && unknownPreview.status === 2 && unknownApply.stderr === unknownPreview.stderr
+    && /Code: +TARGET_NOT_FOUND/.test(unknownApply.stderr) && unknownApply.stderr.includes("no broker was contacted"),
+  { apply: shown(unknownApply), preview: shown(unknownPreview) });
 
 const help = run(["help", "space", "delete"]);
 check("delete help describes -y without the add text first", help.status === 0 && /a delete must name the exact space/.test(help.stdout) && !/add: skip terminal confirmation/.test(help.stdout), shown(help));

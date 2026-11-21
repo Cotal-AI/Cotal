@@ -548,6 +548,8 @@ const project = join(home, "proj");
 mkdirSync(project, { mode: 0o700 });
 const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
 check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
+const deleteTarget = run(["space", "add", "delete-target", "--root", project, "--mode", "open", "--server", "nats://127.0.0.1:43028", "--force", "--yes"]);
+check("space delete confirmation uses a registered target", deleteTarget.status === 0, shown(deleteTarget));
 mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
@@ -555,7 +557,7 @@ const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string
 for (const [args, message, remedy] of [
   [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with `cotal persona remove p1 --yes`"],
   [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with `cotal history clear --dms --yes`"],
-  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run `cotal space delete nosuch --yes`"],
+  [["space", "delete", "delete-target"], /live space deletion requires a terminal/, "then run `cotal space delete delete-target --yes`"],
   [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run `cotal reset store nosuch --yes`"],
   [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run `cotal reset space nosuch --yes`"],
 ] as const) {
