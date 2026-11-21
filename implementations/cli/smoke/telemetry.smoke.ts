@@ -171,7 +171,7 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const status = await s.run(["telemetry", "--json"], { DO_NOT_TRACK: "1" });
   await settled();
   const result = status.envelope?.result as Body | undefined;
-  check("cotal telemetry under DO_NOT_TRACK reports off by that variable with no install id, and sends nothing", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === url, { ...shown(status), result });
+  check("cotal telemetry under DO_NOT_TRACK reports off by that variable with no install id or intake URL, and sends nothing", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === null, { ...shown(status), result });
 
   // Under an environment opt-out the file is neither read nor created, so a level saves nothing.
   for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY_DISABLED: "1" }, { COTAL_TELEMETRY: "off" }]) {
@@ -229,10 +229,8 @@ for (const { level, extra, name } of [
     const badUrl = await s.run(["version", "--json"], { COTAL_TELEMETRY_URL: intakeUrl });
     check(`COTAL_TELEMETRY_URL=${intakeUrl} refuses USAGE_INVALID before the command runs`, badUrl.status === 1 && badUrl.envelope?.outcome === "refused" && (badUrl.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY_URL must be an http or https URL/.test(JSON.stringify(badUrl.envelope)), shown(badUrl));
   }
-  const badUrlOff = await s.run(["telemetry"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
-  check("…cotal telemetry refuses it even while the environment keeps telemetry off", badUrlOff.status === 1 && /COTAL_TELEMETRY_URL must be an http or https URL/.test(badUrlOff.stderr), shown(badUrlOff));
   const unusedUrl = await s.run(["version"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
-  check("…and another command runs, since nothing is sent to it", unusedUrl.status === 0, shown(unusedUrl));
+  check("a command runs with an invalid intake URL when nothing is sent to it", unusedUrl.status === 0, shown(unusedUrl));
   mkdirSync(join(s.home, ".cotal"), { recursive: true });
   writeFileSync(s.settingsPath, '{"v":1,"level":"loud"}');
   const malformed = await s.run(["version"]);
@@ -244,6 +242,28 @@ for (const { level, extra, name } of [
     await settled();
     check(`under ${Object.keys(extra)[0]} a malformed telemetry.json stops nothing, and is left as it was`, optedOut.status === 0 && optedOut.sent.length === 0 && readFileSync(s.settingsPath, "utf8") === '{"v":1,"level":"loud"}', shown(optedOut));
   }
+}
+
+// ---- an invalid intake cannot block off or a report of off ----
+{
+  const s = sandbox();
+  const bad = { COTAL_TELEMETRY_URL: "ftp://localhost/telemetry" };
+  const optedOut = { ...bad, DO_NOT_TRACK: "1" };
+  const status = await s.run(["telemetry", "--plain"], optedOut);
+  check("status under DO_NOT_TRACK reports off without displaying the invalid intake", status.status === 0 && /level:\s+off/.test(status.stdout) && !status.stdout.includes("sent to:") && !existsSync(s.settingsPath), shown(status));
+  const noop = await s.run(["telemetry", "off", "--json"], optedOut);
+  check("off under DO_NOT_TRACK is a no-op without creating a file even with an invalid intake", noop.status === 0 && noop.envelope?.outcome === "no-op" && (noop.envelope.warnings as Body[] | undefined)?.[0]?.code === "ENVIRONMENT_OPT_OUT" && !existsSync(s.settingsPath), shown(noop));
+
+  const active = await s.run(["telemetry", "--json"], bad);
+  check("status at the default active level refuses the invalid intake before creating settings", active.status === 1 && (active.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && !existsSync(s.settingsPath), shown(active));
+  const off = await s.run(["telemetry", "off", "--json"], { ...bad, COTAL_TELEMETRY: "minimal" });
+  const result = off.envelope?.result as Body | undefined;
+  check("off saves the file despite an invalid intake and still reports the environment's level", off.status === 0 && result?.level === "minimal" && result?.source === "COTAL_TELEMETRY" && result?.url === null && s.settings().level === "off", shown(off));
+  const savedOff = await s.run(["telemetry", "--json"], bad);
+  const saved = savedOff.envelope?.result as Body | undefined;
+  check("status also reports off from the file despite the invalid intake", savedOff.status === 0 && saved?.level === "off" && saved?.source === "file" && saved?.url === null, shown(savedOff));
+  const enable = await s.run(["telemetry", "regular", "--json"], bad);
+  check("enabling still refuses the invalid intake and leaves the file off", enable.status === 1 && (enable.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && s.settings().level === "off", shown(enable));
 }
 
 // ---- an intake that never answers, and one that is not there ----

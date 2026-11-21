@@ -19,7 +19,7 @@ a hashed account identifier can also link usage across machines. You can turn it
 | `regular` (default) | The `command` event with the registered subcommand, flag names, typed error code, the failure's error text with values and paths masked, whether stdout is a terminal, and the shell and terminal program names; plus one `install` event per UTC day with the installed connectors, extensions, runtimes and mesh count. |
 
 ```bash
-cotal telemetry            # the level in force, where it comes from, the install id and the URL
+cotal telemetry            # the level in force, where it comes from, and the active intake if any
 cotal telemetry off
 cotal telemetry minimal
 cotal telemetry regular    # the default; `on` is an alias
@@ -81,10 +81,11 @@ One `command` event is posted as the CLI process exits, whatever the exit path. 
 first command of each UTC day also posts an `install` event first. Each is one `POST` of JSON,
 `content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The command and install
 posts share one 1.5 second send deadline, with no retry. Send failures are ignored and do not
-change the command's exit code; the exit hook waits at most 1.5 seconds for delivery. `COTAL_TELEMETRY_URL` points a self-hosted intake. It must be an `http` or
-`https` URL, because a send to anything else fails and that failure is ignored too. Any other value
-refuses with `USAGE_INVALID` before the command runs whenever the level in force sends events, and
-`cotal telemetry` refuses it at every level, since it reports that URL.
+change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
+`COTAL_TELEMETRY_URL` points to a self-hosted intake. An invalid value refuses with `USAGE_INVALID`
+when a command would send events, when `cotal telemetry` reports an active level, or when you set
+a sending level without an environment opt-out. `cotal telemetry off` and reports of `off` do not
+validate or display the URL. The environment still takes precedence over the saved level.
 
 When the settings file selects `regular`, the first run with a terminal on stderr prints
 one notice and records it. A non-terminal run can send events without printing the notice;

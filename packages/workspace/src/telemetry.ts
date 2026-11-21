@@ -119,10 +119,15 @@ export function telemetryLevelFromEnv(env: NodeJS.ProcessEnv): { level: Telemetr
 
 /** The level in force and where it comes from, with the settings file that holds the install id
  *  and whether this read created that file. The file is neither read nor created when the
- *  environment forces `off`, so a machine that opts out by environment keeps no install id. */
-export function effectiveTelemetry(env: NodeJS.ProcessEnv): { level: TelemetryLevel; source: TelemetrySource; settings?: TelemetrySettings; created?: boolean } {
+ *  environment forces `off`, so a machine that opts out by environment keeps no install id.
+ *  Pass `false` to resolve the level without creating a missing file. */
+export function effectiveTelemetry(env: NodeJS.ProcessEnv, create = true): { level: TelemetryLevel; source: TelemetrySource; settings?: TelemetrySettings; created?: boolean } {
   const forced = telemetryLevelFromEnv(env);
   if (forced?.level === "off") return forced;
+  if (!create) {
+    const settings = readFile();
+    return { level: forced?.level ?? settings?.level ?? "regular", source: forced?.source ?? "file", settings };
+  }
   const { settings, created } = readOrCreate();
   return forced ? { ...forced, settings, created } : { level: settings.level, source: "file", settings, created };
 }

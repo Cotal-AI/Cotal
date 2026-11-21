@@ -26,7 +26,7 @@ export interface TelemetryResult {
   readonly installId: string | null;
   /** The account hash sent at `regular` (see docs/telemetry.mdx); `null` otherwise. */
   readonly account: string | null;
-  readonly url: string;
+  readonly url: string | null;
   readonly file: string;
 }
 
@@ -42,11 +42,13 @@ export function validateTelemetryArguments(args: ParsedArgs): void {
 export async function telemetry(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const wanted = args.positionals[0] as TelemetryLevel | undefined;
-  // The intake is checked at every level, before a level is saved, since this report names it.
-  const url = telemetryUrl();
-  const before = effectiveTelemetry(process.env);
-  const optedOut = wanted !== undefined && before.source !== "file" && before.level === "off";
-  const noOp = optedOut || (wanted !== undefined && !before.created && before.settings?.level === wanted);
+  // Check the intake before the settings can be created or changed, unless this action does not
+  // need an intake. An explicit off can still be saved when the environment selects another level.
+  const current = effectiveTelemetry(process.env, false);
+  const optedOut = current.source !== "file" && current.level === "off";
+  const url = optedOut || (wanted ?? current.level) === "off" ? null : telemetryUrl();
+  const before = current.settings || optedOut ? current : effectiveTelemetry(process.env);
+  const noOp = wanted !== undefined && (optedOut || (!before.created && before.settings?.level === wanted));
   if (wanted !== undefined && !noOp) setTelemetryLevel(wanted);
   const state = wanted === undefined || noOp ? before : effectiveTelemetry(process.env);
   const result: TelemetryResult = {
@@ -58,7 +60,7 @@ export async function telemetry(args: ParsedArgs): Promise<void> {
     url,
     file: telemetrySettingsPath(),
   };
-  const warnings = optedOut
+  const warnings = optedOut && wanted !== undefined
     ? [{ code: "ENVIRONMENT_OPT_OUT", target: { file: result.file }, message: `${before.source} keeps telemetry off and the settings file untouched, so ${wanted} was not saved; unset ${before.source} to save a level` }]
     : [];
   writeResult(presentation, { command: "telemetry", target: null, result, noOp, warnings }, view);
@@ -84,7 +86,7 @@ function view(r: TelemetryResult): Report {
               ["set by", SOURCE_TEXT[r.source]],
               ["install id", r.installId ?? { text: "none", tone: "hint" }],
               ["account", r.account ?? { text: "none", tone: "hint" }],
-              ["sent to", r.url],
+              ...(r.url === null ? [] : [["sent to", r.url] as [string, string]]),
               ["file", r.file],
             ],
           },
