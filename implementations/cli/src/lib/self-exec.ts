@@ -52,7 +52,7 @@ function runsCliEntry(): boolean {
  *  the smoke harness: `startManagerDetached` unrefs its child on purpose, so nothing that owns the
  *  suite's children can own it. It is a THROW rather than a skipped spawn, because a re-exec that
  *  silently does not happen reports a healthy control plane over nothing. */
-export function selfArgv(): string[] {
+export function selfArgv(persisted = false): string[] {
   const entry = process.argv[1];
   if (entry === undefined || !runsCliEntry())
     throw new Error(
@@ -62,7 +62,7 @@ export function selfArgv(): string[] {
     );
   // The daemon heap flags belong to the daemon a launcher started, not to the CLI's invocation, so
   // a daemon's own re-exec of an ordinary command does not pass them on.
-  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), entry];
+  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), (persisted ? logicalExecutionEntry() : undefined) ?? entry];
 }
 
 /** The node flags every daemon launcher puts on the daemon it starts: the manager, delivery and

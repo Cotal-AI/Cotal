@@ -602,6 +602,7 @@ const composed: Command = { ...command, async run(args) {
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
   if (!currentPackages) await collectConnectorSets();
+  if (logicalExecutionEntry() && !updateRuntime.checkout() && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {

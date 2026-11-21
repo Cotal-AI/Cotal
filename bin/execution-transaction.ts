@@ -102,6 +102,14 @@ export function publishExecutionTransaction(installed: string, path: string, res
 
 export function completeExecutionTransaction(installed: string, path: string): void {
   const record = readExecutionTransaction(installed, path);
+  const descriptorPath = executionDescriptorPath(installed);
+  const selected = lstatSync(descriptorPath, { throwIfNoEntry: false }) && executionRecord(descriptorPath) as ExecutionDescriptor;
+  if (process.platform === "linux" && selected && selected.generation.id === record.target.id) {
+    const previous = record.previous.descriptor?.generation.id;
+    if (previous !== undefined && (!/^[a-f0-9]{32}$/.test(previous) || !lstatSync(join(executionStore(installed), previous), { throwIfNoEntry: false })?.isDirectory()))
+      throw new Error("the previous execution generation could not be verified");
+    atomicFile(join(dirname(record.target.root), ".execution-previous"), `${previous ?? "none"}\n`, 0o600, true);
+  }
   atomicFile(path, JSON.stringify({ ...record, completed: true }), 0o600);
 }
 

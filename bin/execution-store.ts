@@ -3,7 +3,8 @@ import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirS
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
-import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
+import { collectExecutionGeneration } from "./execution-collection.js";
+import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionReadersName, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
 export interface RetainedExecutionGeneration {
   id: string;
@@ -77,6 +78,9 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
       throw new Error("retained execution package has no declared bootstrap and program");
     const inventorySha256 = executionSha256(JSON.stringify(before));
     writeFileSync(join(staging, "inventory.json"), JSON.stringify(before), { mode: 0o600, flag: "wx" });
+    if (process.platform === "linux" && privateExecutionStore(store) && [root, installedRoot].every(packageRoot =>
+      readFileSync(join(packageRoot, "dist/cotal.js"), "utf8").includes(executionReadersName)))
+      mkdirSync(join(staging, executionReadersName), { mode: 0o700 });
     if (shared) { chmodSync(join(staging, "inventory.json"), 0o644); chmodSync(staging, 0o755); }
     const id = randomBytes(16).toString("hex");
     renameSync(staging, join(store, id));
@@ -85,6 +89,18 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
     rmSync(staging, { recursive: true, force: true });
     throw error;
   }
+}
+
+function privateExecutionStore(store: string): boolean {
+  const uid = process.getuid?.();
+  if (uid === undefined || uid === 0 || realpathSync.native(store) !== store) return false;
+  let privateAncestor = false;
+  for (let path = store; path !== dirname(path); path = dirname(path)) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || (stat.uid !== uid && stat.uid !== 0) || ((stat.mode & 0o022) !== 0 && !(stat.uid === 0 && (stat.mode & 0o1000) !== 0))) return false;
+    if (stat.uid === uid && (stat.mode & 0o077) === 0) privateAncestor = true;
+  }
+  return privateAncestor;
 }
 
 /** Build a record for a later locked transaction. Creating it publishes or cleans up nothing. */
@@ -281,8 +297,44 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
         rmSync(path, { recursive: true, force: true });
       } catch (error) { warn(error); }
     };
+    const collectPrograms = process.platform === "linux" && privateExecutionStore(store);
     for (const name of names) {
       if (/^\.(?:installing|preparing)-[A-Za-z0-9]+$/.test(name)) remove(join(store, name));
+      if (collectPrograms && /^\.retired-[a-f0-9]{32}$/.test(name)) {
+        const retired = join(store, name), entry = lstatSync(retired, { throwIfNoEntry: false });
+        if (!entry?.isDirectory() || entry.uid !== uid) continue;
+        const fence = lstatSync(join(retired, ".collecting"), { throwIfNoEntry: false });
+        if (fence?.isDirectory() && fence.uid === uid && (fence.mode & 0o077) === 0) remove(retired);
+      }
+    }
+    if (!unreadableJournals.length && collectPrograms) {
+      const keep = new Set<string>();
+      const descriptors = names.filter(name => /^\.active-[a-f0-9]{64}\.json$/.test(name));
+      let canCollect = descriptors.length > 0;
+      for (const name of descriptors) {
+        const path = join(store, name), record = executionRecord(path) as ExecutionDescriptor;
+        if (lstatSync(path).uid !== uid || record.v !== 1) throw new Error("unproven execution descriptor");
+        const active = generation(record.generation).id;
+        keep.add(active);
+        const previous = join(store, active, ".execution-previous");
+        const info = lstatSync(previous, { throwIfNoEntry: false });
+        if (info) {
+          protectedExecutionEntry(previous);
+          if (!info.isFile() || info.uid !== uid || ![5, 33].includes(info.size)) throw new Error("unproven previous execution generation");
+          const boundary = readFileSync(previous, "utf8");
+          if (boundary !== "none\n") {
+            const previousId = boundary.slice(0, -1);
+            if (!boundary.endsWith("\n") || !id.test(previousId)) throw new Error("invalid previous execution generation");
+            keep.add(previousId);
+          }
+        } else canCollect = false;
+      }
+      for (const { record, finished } of transactions) {
+        const selected = keep.has(record.target.id);
+        if (!finished) keep.add(record.target.id);
+        if ((!finished || selected) && record.previous.descriptor) keep.add(record.previous.descriptor.generation.id);
+      }
+      if (canCollect) for (const name of names) if (id.test(name) && !keep.has(name)) collectExecutionGeneration(join(store, name), uid, remove);
     }
     for (const row of transactions.filter(row => row.finished && row.path !== protectedJournal)) remove(row.directory);
     }

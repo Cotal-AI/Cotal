@@ -682,7 +682,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     const provider = await connectorSetupProvider(candidate.connector);
     const entry = findMesh(inputs.space);
     const signedIn = provider?.connector && entry?.mode === "user" ? await signedInSpace(entry) : undefined;
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), wrote, ...(signedIn ? { signedIn } : {}) }, provider));
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(true), wrote, ...(signedIn ? { signedIn } : {}) }, provider));
     // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
     const share = await connectorSetupProvider(candidate.connector);
     if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));
@@ -1181,7 +1181,7 @@ export async function refreshConnectorInstalls(): Promise<string[]> {
     if (refresh) {
       const started = Date.now();
       console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(true), skills: connectorSkillsInput() })}`);
       console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
     }
   }
