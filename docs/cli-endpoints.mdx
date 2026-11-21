@@ -356,7 +356,8 @@ plus those of `inspect` when `--name` names a manager target. `--args` is a JSON
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
 `--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
 endpoint answers but the deadline runs out before the command is published, during the contract read or after it, the
-call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`.
+call fails with `OPERATION_FAILED` and names the deadline. Rerun the original command with the
+suggested `--timeout` and leave all other arguments and flags unchanged.
 If the invocation may have been sent and its outcome cannot be confirmed before the deadline,
 including with a short `--timeout`, it reports `OPERATION_UNKNOWN` and exits 3. This does not prove
 that the command did not run. Inspect the original endpoint and request before another invocation;
@@ -500,7 +501,8 @@ and give it 10 seconds. When no instance answers that read within its deadline, 
 with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
 Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
 names it, because a deadline that short can also end before a served endpoint answers, and its Next
-adds a rerun with a longer `--timeout`. Nothing was invoked or issued.
+suggests rerunning the original command with a longer `--timeout` and all other arguments and
+flags unchanged. Nothing was invoked or issued.
 
 A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
