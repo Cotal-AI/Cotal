@@ -144,7 +144,8 @@ differ, the receipt warns `REPLACED_GRANTS_CHANGED`, naming both and the
 mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
 `doctor auth --space <space>` to inspect their state and the guidance for each file, and the
 space's root to run it in, since `doctor auth` reads the root it runs in.
-`--replace` takes no `--out`. An exported file stays outside
+`--replace` takes no `--out`. To re-mint an existing export in place, omit `--replace` and pass
+the same file to `--out` and `--identity`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile, public key and whether `--provision` ran, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files

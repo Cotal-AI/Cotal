@@ -153,6 +153,8 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
   if (values["expires-at"] !== undefined && Number(values["expires-at"]) <= Math.floor(Date.now() / 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-at is not in the future, so the credential would already be expired; nothing was written", { remedy: "give a later Unix time in seconds, or a lifetime with --expires-in <seconds>" });
-  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out; an --out file is re-minted with its matching --identity", { remedy: "drop --out to replace the standing credential, or pass the --out file's own --identity" });
+  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out", {
+    remedy: "drop --out to replace the standing credential, or drop --replace to re-mint an existing export using the same file for --out and --identity",
+  });
   for (const key of ["identity", "out"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !values[key].trim() || /[\u0000-\u001f\u007f]/u.test(values[key]))) throw new CommandFailure("refused", "USAGE_INVALID", "credential paths must be nonempty and contain no terminal controls");
 }

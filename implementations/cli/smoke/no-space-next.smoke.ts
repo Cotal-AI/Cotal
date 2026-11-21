@@ -1,6 +1,7 @@
 /**
  * With no space to act on, `cotal auth mint` and `cotal doctor auth` name the next step. `auth mint`
  * refuses with TARGET_NOT_FOUND (exit 2) and says how to find local static signing authority.
+ * Combining `--replace` with `--out` refuses before space lookup and gives both ways to retry.
  * `doctor auth` in a folder whose root holds no space reports a partial result (exit 4) whose
  * remedy says to run it in a space's root, in JSON and in the text report; in the root of a space
  * registered as open it is a no-op, with or without `--fix`, that says the space issues no
@@ -90,14 +91,27 @@ try {
   {
     const wt = resolve(import.meta.dirname, "../../..");
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
-      HOME: join(base, "home"), COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(base, "xdg") };
-    const result = spawnSync(join(wt, "node_modules", ".bin", "tsx"), [join(wt, "bin", "cotal.ts"), "auth", "mint", "alice", "--plain"], { cwd: bare, env, encoding: "utf8", timeout: 30_000 });
+      HOME: join(base, "home"), COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(base, "xdg"), XDG_RUNTIME_DIR: join(base, "runtime") };
+    const mint = (flags: string[]) => spawnSync(join(wt, "node_modules", ".bin", "tsx"), [join(wt, "bin", "cotal.ts"), "auth", "mint", "alice", ...flags], {
+      cwd: bare, env, encoding: "utf8", timeout: 30_000,
+    });
+    const result = mint(["--plain"]);
     const out = `${result.stdout}${result.stderr}`.replace(/\s+/g, " ");
     assert.equal(result.status, 2, `auth mint with no mesh exits 2: ${out}`);
     assert.match(out, /Code:\s+TARGET_NOT_FOUND/, "auth mint with no mesh refuses the target");
     assert.match(out, /local static-auth space with `cotal up`.*`--space <name>`.*signing trust on this machine/, "auth mint names both ways to select local signing authority");
     assert.doesNotMatch(out, /cotal login|--server/, "auth mint does not suggest a login or bare broker address");
     assert.deepEqual(readdirSync(bare), [], "auth mint with no mesh writes nothing");
+
+    for (const identity of [[], ["--identity", "./example.creds"]]) {
+      const refused = mint(["--replace", "--out", "./example.creds", ...identity, "--json"]);
+      assert.equal(refused.status, 1, `--replace and --out refuse even with no mesh: ${refused.stdout}${refused.stderr}`);
+      const envelope = JSON.parse(refused.stdout) as { outcome: string; error: { code: string; remedy: string } };
+      assert.equal(envelope.outcome, "refused");
+      assert.equal(envelope.error.code, "USAGE_INVALID");
+      assert.equal(envelope.error.remedy, "drop --out to replace the standing credential, or drop --replace to re-mint an existing export using the same file for --out and --identity");
+      assert.deepEqual(readdirSync(bare), [], "conflicting output flags write nothing");
+    }
   }
 
   // 1b. persona with nothing selected: its catalog is offline, so the refusal names the missing
