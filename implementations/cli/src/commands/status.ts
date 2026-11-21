@@ -162,6 +162,7 @@ import {
   stackOperationBlock,
   stackRootGone,
   unfinishedStackOperation,
+  unusableStackJournal,
   type StackJournal,
   type StackOperationBlock,
   type StackRole,
@@ -1473,13 +1474,6 @@ function readStackStoreWarnings(root: string, gaps: Gaps, hints: string[], space
   }
 }
 
-/** The refusal of the stack journal at `root` when it is one no command can use, as `up` and `down`
- *  refuse it. Undefined when it reads or is absent. */
-function unusableStackJournal(root: string): CommandFailure | undefined {
-  try { readStackJournal(root); return undefined; }
-  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
-}
-
 /** The refusal of `space`'s service instance records when one is a record no command can use, as
  *  `up` and `down` refuse it. Undefined when they read. */
 function unusableServiceInstances(space: string): CommandFailure | undefined {
@@ -2236,6 +2230,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
+  let restartBlock: CommandFailure | undefined;
   const noApplication = !setUpApplications(r.machine).length;
   if (!r.selected.resolved && !r.meshes.items.length && !r.meshes.unreadable.length) {
     items.push({ command: `${cmd} login`, description: "Sign in to Cotal Cloud" });
@@ -2253,14 +2248,14 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   if (r.selected.resolved) {
     const s = r.selected;
     const reachable = s.connection === "ok" || s.connection === "reachable";
-    // Name what fixes the default persona alone; setup does far more than that.
+    const scope = { space: s.source === "flag-server" ? undefined : s.space, server: s.source === "flag-server" || s.source === "flag-space-override" ? s.server : undefined };
     if (!noApplication) {
-      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
-      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: `${cmd} spawn`, description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
+      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: onRerun(`${cmd} persona show default`, scope), description: "See what is wrong with the default persona" });
+      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: onRerun(`${cmd} spawn`, scope), description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
     }
-    if (reachable) items.push({ command: `${cmd} who`, description: "See the live roster" });
+    if (reachable) items.push({ command: onRerun(`${cmd} who`, scope), description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
-      items.push({ command: `${cmd} ps`, description: "List managed agents" });
+      items.push({ command: onRerun(`${cmd} ps`, scope), description: "List managed agents" });
   }
   if (r.selected.resolved || !noApplication) {
     items.push({ command: `${cmd} space`, description: "List the spaces on this machine" });
@@ -2325,7 +2320,8 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
   } else if (!elsewhere && legacy && dialed.mode === "open" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
-    items.unshift({ command: `${cmd} down --yes`, description: "Stop this folder's broker so the exited manager can be restarted" }, { command: `${cmd} up --foreground`, description: "Then start the stack with its manager" });
+    restartBlock = channelSeedRestartBlock(dialed.root);
+    if (!restartBlock) items.unshift({ command: `${cmd} down --yes`, description: "Stop this folder's broker so the exited manager can be restarted" }, { command: `${cmd} up --foreground`, description: "Then start the stack with its manager" });
   } else if (!storeBlocked && !seedBlocksRestart && local && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
@@ -2384,7 +2380,8 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   // The broker keeps serving a store it found damage in, from what it can still read there.
   if (r.store?.state === "damaged" && r.selected.resolved && r.services?.instances?.some((row) => row.definition === STACK_DEFINITION.broker))
     items.unshift({ command: `${cmd} service logs stack-broker${own ? "" : ` --space ${shellWord(r.selected.space)}`}`, description: "Read what the broker logged about the damage it found in its store; history holds only what it could still read" });
-  return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
+  const first = restartBlock ? [{ kind: "lines" as const, lines: [cell(`Restart blocked: ${restartBlock.message}. ${restartBlock.remedy}`, "hint")] }] : [];
+  return { title: "Next", blocks: [...first, { kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
 function ownedServicesOverview(services: OwnedServiceStatus | undefined): Section | undefined {
@@ -2969,8 +2966,10 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
 async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
-    const e = selected.error;
-    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+    const error = selected.error;
+    const e = isWorkspaceTargetError(error) && error.code === "not-started" && error.details.root !== undefined && !error.details.rootMissing
+      ? unusableStackJournal(error.details.root) ?? error : error;
+    if (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED")) {
       printComponent({ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] });
       process.exitCode = COMPONENT_EXIT.refused;
       return;

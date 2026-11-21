@@ -1,5 +1,6 @@
 import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import {
+  brokerUrlKey,
   codeSpan,
   CommandFailure,
   findMesh,
@@ -26,6 +27,7 @@ import {
   resolveControlTarget,
   resolveMeshTarget,
   spaceRootTarget,
+  stoppedStack,
   workspaceErrorParts,
   connectOrThrow,
 } from "@cotal-ai/workspace";
@@ -39,7 +41,7 @@ import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type Attach
 import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
+import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
@@ -602,6 +604,10 @@ export async function ps(args: ParsedArgs): Promise<void> {
     on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
     census = await readSeats(v, command, on);
   } catch (e) {
+    if (v.server === undefined && isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
+      const journal = unusableStackJournal(e.details.root);
+      if (journal) throw new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
+    }
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
       const block = channelSeedRestartBlock(parts.restartRoot);
@@ -787,16 +793,22 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   try {
     t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
   } catch (e) {
-    // A stopped local stack cannot restart until its store is writable. Keep an explicit server
-    // override's own refusal, since it need not be the broker this root started.
-    if (v.server === undefined && isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
-      const store = rootStoreProblem(e.details.root);
-      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: { space: e.details.space ?? null, root: e.details.root }, remedy: store.remedy });
+    // A stopped local stack cannot restart until its store is writable. Diagnose its store
+    // for an explicit server only when it matches the broker recorded for this space and root.
+    if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
+      const { root, space } = e.details;
+      const sameServer = v.server === undefined || (typeof space === "string" && stoppedStack(root, space, v.server) !== undefined);
+      const store = sameServer ? rootStoreProblem(root) : undefined;
+      if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: { space: space ?? null, root }, remedy: store.remedy });
     }
-    if (v.server === undefined && isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && typeof e.target?.root === "string") {
-      const entry = typeof e.target.space === "string" ? findMesh(e.target.space) : undefined;
+    if (isConnectRefusal(e) && e.code === "TARGET_UNAVAILABLE" && typeof e.target?.root === "string") {
+      const { root, space } = e.target;
+      const entry = typeof space === "string" ? findMesh(space) : undefined;
       const stopped = isWorkspaceTargetError(e.cause) && e.cause.code === "not-started";
-      const store = stopped || entry?.origin === "up" ? rootStoreProblem(e.target.root) : undefined;
+      const sameServer = v.server === undefined || (entry
+        ? entry.root === root && brokerUrlKey(entry.server) === brokerUrlKey(v.server)
+        : stopped && typeof space === "string" && stoppedStack(root, space, v.server) !== undefined);
+      const store = sameServer && (stopped || entry?.origin === "up") ? rootStoreProblem(root) : undefined;
       if (store) throw new CommandFailure("refused", "PERMISSION_DENIED", store.message, { target: e.target, remedy: store.remedy });
     }
     // The exchange refused to pick one of your several live managers and named them, so each is

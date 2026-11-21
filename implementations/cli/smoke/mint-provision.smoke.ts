@@ -115,6 +115,16 @@ async function runCotal(words: string[]): Promise<{ out: string; code: number }>
 }
 const runMint = (argv: string[]) => runCotal(["auth", "mint", ...argv]);
 
+async function hasDurableMember(space: string, principal: string): Promise<boolean> {
+  for (const deadline = Date.now() + 15_000; Date.now() < deadline; await wait(500)) {
+    const census = await runCotal(["channel", "members", "general", "--space", space, "--json"]);
+    const line = census.out.split("\n").find((text) => text.startsWith('{"schemaVersion"'));
+    const report = line ? JSON.parse(line) as { result?: { members: { id: string; live: boolean; durable: boolean }[] } } : undefined;
+    if (census.code === 0 && report?.result?.members.some((m) => m.id === principal && m.live && m.durable)) return true;
+  }
+  return false;
+}
+
 /** What a client recovers from the credential without connecting: the principal tag and the
  *  lifecycle uid its dm/dlv/chathist grants are named for (SPEC 13.1). */
 function facts(creds: string): { principal?: string; uids: string[]; subAllow: string[] } {
@@ -909,7 +919,8 @@ try {
         expRow?.state === "expired" && expRow.repair?.includes("--provision") === true && expRow.repair.includes(`'${spacedJoinCreds}'`), expRow);
       const remintedProv = await runMint(["j_exp", "--provision", "--identity", spacedJoinCreds, "--out", spacedJoinCreds, "--json"]);
       const remintLine = remintedProv.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
-      const newUid = remintLine ? (JSON.parse(remintLine) as { result?: { lifecycleUid?: string | null } }).result?.lifecycleUid ?? "" : "";
+      const remint = JSON.parse(remintLine ?? "{}").result as { lifecycleUid: string; principal: string } | undefined;
+      const newUid = remint?.lifecycleUid ?? "";
       check("#7541: re-minting with --provision allocates and provisions a new lifecycleUid",
         remintedProv.code === 0 && /^[a-z0-9]{26,32}$/.test(newUid), remintedProv.out);
       const joinChild = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "alice", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"], { stdio: ["ignore", "pipe", "pipe"] });
@@ -920,12 +931,19 @@ try {
       const joined = await until(() => joinOut.includes("holding presence in offlinecheck"), 15_000);
       const dm = await runCotal(["send", "--to", "alice", "renewed-inbox-proof"]);
       const received = await until(() => joinOut.includes("renewed-inbox-proof"), 10_000);
+      const durable = remint !== undefined && await hasDurableMember("offlinecheck", remint.principal);
       joinChild.kill("SIGTERM");
       await joinClosed;
       check("#7541: renewed provisioned credential binds its new inbox and receives a DM",
         joined && dm.code === 0 && received && !/dm-durable-missing/i.test(joinOut), { joinOut, dm });
+      check("the renewed credential establishes durable membership on general",
+        durable && !/resolves to .* live lifecycle rows|boot durable self-join not yet established/.test(joinOut), joinOut);
 
       const complete = readFileSync(spacedJoinCreds, "utf8");
+      const early = await runMint(["j_exp", "--provision", "--identity", spacedJoinCreds, "--out", spacedJoinCreds, "--json"]);
+      check("renewing a provisioned credential before expiry leaves it in place and names a fresh-key alternative",
+        early.code === 2 && /CONFLICT/.test(early.out) && /mint a fresh key/.test(early.out)
+          && readFileSync(spacedJoinCreds, "utf8") === complete, early.out);
       const seedAt = complete.indexOf("-----BEGIN USER NKEY SEED-----");
       assert.ok(seedAt > 0, "minted credential must contain a user seed block");
       writeFileSync(spacedJoinCreds, complete.slice(0, seedAt));

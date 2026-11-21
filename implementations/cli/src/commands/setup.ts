@@ -663,7 +663,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     spaceState = plan.space.state;
   }
 
-  const persona = seedDefaultPersona(inputs.project);
+  const persona = prepareDefaultPersona(inputs, spaceState, written);
   if (persona) wrote(persona.what, persona.path);
   if (opts.demo) {
     const agents = personaDir(inputs.project);
@@ -785,6 +785,21 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     }
   }
   writeResult(opts.presentation, { command: "setup", target, result, warnings, ...(partial ? { partial } : { noOp: !startup.requested && written.length === 0 && actions.ran.length === 0 }) }, setupView);
+}
+
+function prepareDefaultPersona(inputs: SetupInputs, spaceState: SetupResult["spaceState"], written: readonly Written[]): ReturnType<typeof seedDefaultPersona> {
+  try { return seedDefaultPersona(inputs.project); }
+  catch (error) {
+    const dir = personaDir(inputs.project);
+    const native = error instanceof Error ? error as NodeJS.ErrnoException : undefined;
+    const blocked = native?.code === "EEXIST" && native.path === dir;
+    const partial = written.length > 0;
+    const saved = spaceState === "created" ? `prepared space "${inputs.space}" is saved, but ` : partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not write the default persona: ${native?.message ?? String(error)}`, {
+      target: { space: inputs.space, path: blocked ? dir : join(dir, "default.md") }, changed: written, cause: error,
+      remedy: `${blocked ? `move the file at ${dir} aside` : `check and repair the persona path in ${dir}`}, then run the same setup again`,
+    });
+  }
 }
 
 /**

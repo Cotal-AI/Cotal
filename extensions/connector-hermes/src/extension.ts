@@ -90,6 +90,11 @@ export const hermesConnector: Connector = {
     // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
+    if (opts.validateOnly) {
+      if (!adoptHome && !opts.model)
+        throw new Error("A managed Hermes profile needs a model. Set one with --model or the agent file's model: field, or use your own profile with COTAL_HERMES_ADOPT_HOME=$HOME/.hermes.");
+      return { command: "", args: [] };
+    }
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
     // The fork's provenance is the seat's own record of it, which the launcher writes into the seat's
     // profile when it forks. The launcher refuses a profile that is not where this names it.
@@ -114,7 +119,6 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;
     }
-    if (opts.validateOnly) return { command: "", args: [] };
     const artifacts: string[] = [];
     try {
       // The exit watcher owns the socket directory and the single carrier even on a forced stop.

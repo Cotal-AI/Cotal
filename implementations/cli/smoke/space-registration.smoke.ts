@@ -851,7 +851,7 @@ if (process.platform === "linux") {
     const brokerOnly = await run(["status", "--plain"], {}, pinned);
     const absent = await json(["ps"], pinned);
     check("broker-only status points to the live roster, not the unavailable managed-agent list",
-      brokerOnly.status === 0 && /cotal who\s+See the live roster/.test(brokerOnly.stdout) && !/^\s*(?:pnpm )?cotal ps\s/m.test(brokerOnly.stdout)
+      brokerOnly.status === 0 && /cotal who --space pinned\s+See the live roster/.test(brokerOnly.stdout) && !/^\s*(?:pnpm )?cotal ps\s/m.test(brokerOnly.stdout)
         && roster.status === 0 && /^\s*roster-peer.*\bno\b/m.test(roster.stdout) && refused(absent, 2, "TARGET_UNAVAILABLE"),
       { status: brokerOnly, who: roster, ps: shown(absent) });
 
@@ -864,7 +864,7 @@ if (process.platform === "linux") {
     check("status identifies the answering manager outside a broker-only stack",
       ps.status === 0 && instanceId !== undefined && outside.status === 0
         && outside.stdout.includes(`answering - instance ${instanceId} - outside this stack`)
-        && !outside.stdout.includes("bare `cotal up` adds it") && /cotal ps\s+List managed agents/.test(outside.stdout)
+        && !outside.stdout.includes("bare `cotal up` adds it") && /cotal ps --space pinned\s+List managed agents/.test(outside.stdout)
         && observation?.endpoint === "answered" && observation.instanceId === instanceId,
       { status: outside, ps, observation });
   } finally {
@@ -1542,7 +1542,7 @@ if (process.platform === "linux") {
       explicit.env?.target?.space === "demo" && explicit.env.target.root === fresh &&
       explicit.env.error.message === stoppedHistory.env?.error.message && explicit.env.error.remedy === stoppedHistory.env?.error.remedy &&
       explicit.env.error.message === '"demo" is stopped; its last operation, `cotal down`, completed' &&
-      explicit.env.error.remedy === `start it again with \`cotal up\` in ${fresh}`, shown(explicit));
+      explicit.env.error.remedy === `start it again with \`cotal up --no-manager\` in ${fresh}`, shown(explicit));
   }
   const stoppedHistoryOverride = await json(["history", "news", "--space", "demo", "--server", DEAD], elsewhere);
   check("history at a different address still refers to that address, not the stopped stack",
@@ -1560,13 +1560,13 @@ if (process.platform === "linux") {
       badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
         status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
         status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
-        statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up\``) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
+        statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
         refused(ps, 2, "TARGET_UNAVAILABLE") && ps.env?.error?.message?.includes(diagnosis) && ps.env.error.remedy === seedRemedy &&
         readFileSync(defaultSeed, "utf8") === seed, { up: shown(badUp), status: status.env?.result?.hints, text: shown(statusText), ps: shown(ps) });
   }
   writeFileSync(defaultSeed, "{}\n");
   const repairedPs = await json(["ps", "--space", "demo"], fresh);
-  check("repairing the seed restores ordinary restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`${launcher} up\` in ${fresh}`, shown(repairedPs));
+  check("repairing the seed restores broker-only restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`${launcher} up --no-manager\` in ${fresh}`, shown(repairedPs));
   unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and effective broker inputs. A different --server
   // or --host refuses before anything is written, naming the recorded value and the bare up

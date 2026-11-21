@@ -260,7 +260,7 @@ import {
   type StackUpNative,
   unparsableDaemonCredsNotice,
 } from "./stack-up.js";
-import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
+import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
@@ -304,6 +304,7 @@ import {
   rearmUnboundRestore,
   replacePreparedDeadRestoreListener,
   restoreComposition,
+  restoreInterruptNotice,
   restoreNextStep,
   restoreOnlyCopy,
   type PreparedRestore,
@@ -1596,28 +1597,25 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // A bare one in a folder holding the records of a space registered for another folder does not take
   // that name over, as `down` there does not stop it.
   if (!values.file && values.space === undefined) await refuseRecordsElsewhere(meshRoot);
-  if (values.json || values.plain) {
-    // `up -f` always takes the retained launcher, so the controller route is no remedy there. Its
-    // manifest is checked first, so a manifest that does not validate gets its own refusal.
-    if (values.file) {
-      const path = resolve(values.file);
-      try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
-      throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
-    }
-    throw retainedStartupPresentationRefusal(meshRoot);
-  }
+  if (!values.file && (values.json || values.plain)) throw retainedStartupPresentationRefusal(meshRoot);
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; the additive team deploy route is separate.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
   // port / runtime / auth without editing it. Its space is its target: `--space` may only repeat it.
   if (values.file) {
+    const path = resolve(values.file);
+    // Structured and plain manifest refusals report file errors before checking startup support.
+    if (values.json || values.plain) {
+      try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
+    }
     // A manifest start takes the legacy launcher, which never runs beside a controller stack, running
     // or stopped, so a dry run refuses as the start would.
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: controllerManifestRemedy(meshRoot, controller.journal.space, resolve(values.file)),
+      remedy: controllerManifestRemedy(meshRoot, controller.journal.space, path),
     });
+    if (values.json || values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
     if (values["dry-run"]) {
       await upManifest(values.file, {
         transport,
@@ -2409,11 +2407,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     if (!resumeAttempt) process.exit(1);
   });
-  // The control plane is coupled to the broker: stop the detached manager AND the delivery daemon
-  // (AND the space's user-auth service) when this `up` stops (Ctrl-C), so none outlives the broker
-  // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
-  // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
-  // auth service's pid is space-scoped so no other space's daemon can ever be hit.
+  // Stop the detached manager, delivery daemon and space's user-auth service before their broker,
+  // so none outlives it. The auth service's process record is space-scoped.
   // The manager goes first, in `cotal down`'s order, through the stop `cotal down` runs (#1307): it
   // holds the stop reservation, asserts the exact manager can spare its seats before any signal,
   // reports the seats left behind, and escalates a wedged manager to SIGKILL. When that stop throws
@@ -2426,10 +2421,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
   // signalled, so it never races a broker that is already going away.
   let stopping = false;
-  // The signal that asked for the stop. The broker is then signalled SIGTERM, so its own exit
-  // status is not the command's: SIGINT exits 130 and SIGTERM exits 143, as a controller stack's
-  // foreground stop does.
+  // The operator's signal sets the command's exit status, not the broker's SIGTERM.
   let stopSignal: "SIGINT" | "SIGTERM" | undefined;
+  let stoppedListener = false;
   let teardown: Promise<void> | undefined;
   const stop = (signal: "SIGINT" | "SIGTERM") => {
     if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
@@ -2450,15 +2444,13 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       }
       await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
       await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-      child.kill("SIGTERM");
+      stoppedListener = child.kill("SIGTERM");
     })();
   };
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
   restored?.releaseInterruptNotice?.();
-  // The broker is gone. Drop the registration this stop recorded, and the `current` pointer when it
-  // names that registration, so a later `cotal spawn` does not join a dead mesh. A space named after
-  // its folder keeps both, as `cotal down` does, so the name stays the folder's.
+  // On exit, drop only this stop's registration and matching `current` pointer, unless folder-named.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
     removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
@@ -2518,7 +2510,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     }
   });
 
-  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener });
+  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener }).catch((error: unknown) => {
+    if (!restored || !stoppedListener || !stopSignal || (child.exitCode === null && child.signalCode === null)) throw error;
+    releaseStartupLock();
+    exitInterrupted(stopSignal, restoreInterruptNotice(restored.root, restored.attemptId));
+  });
   listenerReady = true;
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once

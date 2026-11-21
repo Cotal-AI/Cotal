@@ -247,6 +247,12 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
+/** The refusal for a malformed or unreadable journal. A missing journal does not block startup. */
+export function unusableStackJournal(root: string): CommandFailure | undefined {
+  try { readStackJournal(root); return undefined; }
+  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
+}
+
 /** The stack journal at `root` that another folder recorded, as a copy or a moved folder keeps it, with
  *  that folder. Undefined when `root` has no journal or recorded it itself. */
 export function journalRecordedElsewhere(root: string): { journal: StackJournal; recordedRoot: string; sha256: string } | undefined {

@@ -511,6 +511,10 @@ an empty object if the entry is absent or cannot be decoded. `result.registry.un
 decode errors for the defaults and named channel when present. The command does not apply
 inheritance or fill in built-in defaults. Use `channel --json` for the full inventory.
 
+`channel defaults --json` with no settings reports only the space defaults. It returns saved,
+decodable defaults in `result.registry.defaults` or reports a defaults-key decode error in
+`result.registry.undecodable`. It does not include channel entries or fill in built-in defaults.
+
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed

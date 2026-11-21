@@ -1,10 +1,11 @@
 import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readdirSync, readSync, realpathSync, type Stats } from "node:fs";
 import { join } from "node:path";
-import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
+import { boundedValue, DEFAULT_SERVER, DEFAULT_SPACE, MANAGER_START_PAYLOAD_FLOOR, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
 import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootControlProblem, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { readBrokerPolicy } from "./broker-policy.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { CommandFailure, isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
@@ -13,11 +14,11 @@ import {
   canonicalRoot,
   brokerUrlKey,
   findMesh,
-  getCurrent,
   readCurrentSelection,
   homeCotalDir,
   loadMeshes,
   pruneMesh,
+  type CurrentSelection,
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
@@ -180,8 +181,8 @@ export interface MeshTargetErrorDetails {
    *  configured, which a bare `cotal up` there starts again. */
   lastRun?: boolean;
   /** For `not-started` on a prepared space whose controller stack launched a member and was
-   *  stopped: its last recorded operation, and the file store cap it recorded, if any. */
-  stopped?: { operation: string; outcome: string; storeCap?: number };
+   *  stopped: its last operation, whether to restart without a manager, and its store cap. */
+  stopped?: { operation: string; outcome: string; noManager?: true; storeCap?: number };
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
@@ -480,7 +481,15 @@ export function preparedNeverStarted(d: MeshTargetErrorDetails): d is MeshTarget
 const OPERATION: Record<string, string> = { up: codeSpan("cotal up"), down: codeSpan("cotal down"), preserve: `a preserving ${codeSpan("cotal down")}`, resume: "a resume" };
 const OUTCOME: Record<string, string> = { completed: "completed", failed: "failed", refused: "was refused", partial: "applied in part", unknown: "has an unknown outcome", applying: "did not finish", planned: "did not finish" };
 
-/** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
+/** A retained manager row does not permit a manager to start below the broker's recorded limit. */
+function brokerPayloadRequiresNoManager(root: string): boolean {
+  try {
+    const payload = readBrokerPolicy(root)?.maxPayload;
+    return payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR;
+  } catch { return false; }
+}
+
+/** The last operation and recorded restart details of `space`'s controller stack at `root`, when its
  *  journal names a member it launched. Undefined for a stack that never launched one, or a journal
  *  this read cannot use; the commands that act on the journal check it fully. With `cleanStopAt`,
  *  require this root's completed `down` at that broker URL. */
@@ -488,13 +497,16 @@ export function stoppedStack(root: string, space: string, cleanStopAt?: string):
   try {
     const path = stackJournalPath(root), file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; server?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
-    if (journal?.space !== space || !Array.isArray(journal.members) || !journal.members.some((row) => typeof (row as { instanceId?: unknown } | null)?.instanceId === "string")) return undefined;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; server?: unknown; members?: ({ role?: unknown; state?: unknown; instanceId?: unknown } | null)[]; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
+    const members = journal?.members;
+    if (journal?.space !== space || !Array.isArray(members) || !members.some((row) => typeof row?.instanceId === "string")) return undefined;
     if (cleanStopAt !== undefined && (journal.root !== canonicalRoot(root) || journal.operation?.kind !== "down" || journal.operation.phase !== "completed" || typeof journal.server !== "string" || brokerUrlKey(journal.server) !== brokerUrlKey(cleanStopAt))) return undefined;
     const operation = OPERATION[String(journal.operation?.kind)], outcome = OUTCOME[String(journal.operation?.phase)];
     if (operation === undefined || outcome === undefined) return undefined;
     const cap = journal.broker?.maxFileStore;
-    return { operation, outcome, ...(Number.isSafeInteger(cap) && Number(cap) > 0 ? { storeCap: Number(cap) } : {}) };
+    const noManager = journal.operation?.kind === "down" && journal.operation.phase === "completed" &&
+      (members.some((row) => row?.role === "manager" && row.state === "not-attempted") || brokerPayloadRequiresNoManager(root));
+    return { operation, outcome, ...(noManager ? { noManager: true } : {}), ...(Number.isSafeInteger(cap) && Number(cap) > 0 ? { storeCap: Number(cap) } : {}) };
   } catch { return undefined; }
 }
 
@@ -863,10 +875,9 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * A root with several running spaces, none of them the selection, keeps the selection and says so
  * before the command acts, with the `--space` that targets one of them instead.
  */
-function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
-  const explicit = readCurrentSelection()?.source === "explicit";
+function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
   const folder = folderSpaces(cwd, meshes);
-  if (explicit) {
+  if (source === "explicit") {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
       const names = [...folder.registered, ...(folder.prepared ? [folder.prepared] : [])];
       if (names.length) recordOperationSpaceNote(current, `the selected space applies here; this folder's space ${names.map(s => `"${s}"`).join(", ")} is reached with ${names.map(space => `--space ${shellPath(space)}`).join(" or ")} or \`cotal use --clear\``);
@@ -1000,11 +1011,14 @@ export function folderSpaceStopped(cwd: string, current: string): { space: strin
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
  *  `--space` targets there while it runs, or, with none registered, the space of the root's own half
  *  started or half stopped stack ({@link unfinishedStackSpace}). Undefined outside a project and where
- *  the root has none or several. A space prepared here and never started is not one: see
+ *  the root has none or several. A caller inspecting the folder itself can refuse an ambiguous
+ *  registration instead. A space prepared here and never started is not one: see
  *  {@link folderSpaceHeld}. */
-export function folderSpace(cwd: string): string | undefined {
-  const folder = folderSpaces(cwd, loadMeshes());
+export function folderSpace(cwd: string, { refuseAmbiguous = false } = {}): string | undefined {
+  const meshes = loadMeshes();
+  const folder = folderSpaces(cwd, meshes);
   if (!folder) return undefined;
+  if (refuseAmbiguous && folder.registered.length > 1) registrationAt(folder.root, meshes);
   return folder.registered.length === 1 ? folder.registered[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
 }
 
@@ -1030,7 +1044,7 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
-      `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
+      `this folder has ${rootMatches.length} registered spaces: ${rootMatches.map((m) => m.space).join(", ")}`,
       { available: rootMatches.map((m) => `${m.space} (${m.root})`), spaces: rootMatches.map((m) => m.space) },
     );
   return rootMatches[0];
@@ -1045,11 +1059,11 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
  * it with.
  */
 export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
+  const current = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
   // Offline by design: a credential goes to the broker its caller paired it with, and this reads no
   // liveness, so a space registered for this folder is taken as running here.
-  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current, selected: true };
+  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current.space, selected: true };
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   assertRootIsSingleTenant(root);
@@ -1063,15 +1077,15 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
  *  probe then. It follows the same precedence and records nothing. */
 export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boolean {
   if (flags.space || flags.server) return false;
+  const current = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
   if (current) {
-    if (readCurrentSelection()?.source === "explicit") return false;
+    if (current.source === "explicit") return false;
     // With a selection, liveness answers one question: does a space this folder has registered still
     // run, and so capture the command instead of the selection? A folder that registers the
     // selection itself resolves without it.
     const folder = folderSpaces(cwd, meshes);
-    if (!folder || folder.registered.includes(current) || folder.prepared === current) return false;
+    if (!folder || folder.registered.includes(current.space) || folder.prepared === current.space) return false;
     if (folder.registered.length) return true;
     // This folder registers nothing. A root holding its own stopped stack is still what a read
     // discovers here, so it falls through to the registration check below.
@@ -1187,9 +1201,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return local;
   }
 
+  const selection = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
-  if (current && selectionTargetsHere(cwd, current, meshes, offline)) {
+  if (selection && selectionTargetsHere(cwd, selection, meshes, offline)) {
+    const current = selection.space;
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current, cwd);

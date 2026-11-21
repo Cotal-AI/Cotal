@@ -115,13 +115,45 @@ const QUESTION = "Which one?";
   const env1 = envelope(script);
   check("a script with an ambiguous target is TARGET_AMBIGUOUS, exit 2", script.status === 2 && env1?.error?.code === "TARGET_AMBIGUOUS", shown(script));
   check("its message names the running spaces and its remedy says how to pick one",
-    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && /--space <name>/.test(env1?.error?.remedy ?? "") && !/--space <name>/.test(env1?.error?.message ?? ""), env1?.error);
+    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && !/--space/.test(env1?.error?.message ?? "") &&
+      ["alpha", "beta"].every((space) => env1?.error?.remedy?.includes(` who --json --space ${space}\``)), env1?.error);
   const identity = run(["whoami", "--json"]);
   const env2 = envelope(identity);
   check("a command that resolves its own target refuses the same way, its remedy apart from its message",
-    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space <name>/.test(env2?.error?.remedy ?? "") && !/--space <name>/.test(env2?.error?.message ?? ""), env2?.error);
+    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space alpha.*--space beta/.test(env2?.error?.remedy ?? "") && !/--space/.test(env2?.error?.message ?? ""), env2?.error);
   const human = run(["who"]);
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
+}
+
+// A folder can hold several registrations without having a single default space to inspect.
+{
+  const root = join(home, "beta");
+  recordMesh({ space: "gamma", server: B, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  try {
+    const who = run(["who", "--plain"], root);
+    const next = who.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check("who in a shared folder refuses before opening the roster and names both exact reads",
+      who.status === 2 && /Code:\s+TARGET_AMBIGUOUS/.test(who.stderr) && /this folder has 2 registered spaces: beta, gamma/.test(who.stderr) &&
+        commands.length === 2 && commands[0]?.endsWith(" who --plain --space beta") && commands[1]?.endsWith(" who --plain --space gamma"), shown(who));
+    for (const space of ["beta", "gamma"]) {
+      const picked = run(["who", "--plain", "--space", space], root);
+      check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
+      const show = run(["space", "show", space, "--json"], root);
+      check(`space show ${space} still reads the named space`, show.status === 0 && envelope(show)?.target?.space === space, shown(show));
+    }
+    for (const selected of [undefined, "alpha"]) {
+      if (selected !== undefined) setAdoptedCurrent(selected);
+      const show = run(["space", "show", "--json"], root);
+      const error = envelope(show)?.error;
+      check(`bare space show refuses a shared folder with ${selected === undefined ? "no" : "an unrelated adopted"} selection`,
+        show.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /registered spaces: beta, gamma/.test(error.message) &&
+          ["beta", "gamma"].every((space) => error.remedy?.includes(` space show ${space}\``)) && !error.remedy.includes("space show alpha") && getCurrent() === selected, shown(show));
+    }
+  } finally {
+    clearCurrent();
+    removeMesh("gamma");
+  }
 }
 
 // Equivalent URLs keep identity and unchecked registrations keep their caveat.
@@ -183,6 +215,60 @@ const QUESTION = "Which one?";
     removeMesh("upcoming");
     recordMesh({ space: "beta", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
     await nc.close();
+  }
+}
+
+// A damaged selection refuses even with exactly one live fallback.
+{
+  const beta = findMesh("beta")!;
+  const prepared = join(home, "prepared-selection");
+  const pointer = join(env.COTAL_HOME!, "current-mesh");
+  removeMesh("beta");
+  mkdirSync(prepared);
+  recordPreparedSpace({ space: "planned", root: prepared, ts: new Date(0).toISOString() });
+  try {
+    const selected = run(["use", "planned", "--plain"]);
+    const stopped = run(["who", "--json"]);
+    check("an intact selection names the prepared space and refuses instead of reading the running one",
+      selected.status === 0 && stopped.status === 2 && envelope(stopped)?.error?.code === "TARGET_UNAVAILABLE" && envelope(stopped)?.target?.space === "planned", shown(stopped));
+
+    writeFileSync(pointer, "");
+    const use = run(["use", "--plain"]), who = run(["who", "--plain"]);
+    check("bare who and use give the same refusal for an empty selection, without a roster",
+      use.status === 1 && who.status === 1 && who.stdout === "" && who.stderr === use.stderr &&
+      who.stderr.includes(`${pointer} is empty`) && who.stderr.includes("SCHEMA_INVALID") && who.stderr.includes("`cotal use --clear`"), shown(who));
+    const local = run(["who", "--json"], join(home, "alpha"));
+    check("an empty selection does not fall back to the running project either",
+      local.status === 1 && envelope(local)?.error?.code === "SCHEMA_INVALID" && envelope(local)?.target?.file === pointer && envelope(local)?.target?.space === undefined, shown(local));
+    for (const flags of [["--space", "alpha"], ["--server", A]]) {
+      const explicit = run(["who", ...flags, "--json"]);
+      check(`${flags[0]} still targets the named mesh with an empty saved selection`,
+        explicit.status === 0 && envelope(explicit)?.target?.space === "alpha", shown(explicit));
+    }
+
+    run(["use", "planned"]);
+    const marker = `${pointer}.adopted`;
+    mkdirSync(marker);
+    writeFileSync(join(marker, "keep"), "");
+    const unreadable = run(["who", "--json"]);
+    check("an unreadable selection marker is named and does not permit fallback",
+      unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
+    const reselected = run(["use", "planned", "--json"]);
+    check("selecting again repairs an unreadable marker without losing its directory contents",
+      reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&
+      readdirSync(env.COTAL_HOME!).some(name => name.startsWith("current-mesh.adopted.corrupt.") && existsSync(join(env.COTAL_HOME!, name, "keep"))), shown(reselected));
+    mkdirSync(marker);
+    const clearedMarker = run(["use", "--clear", "--plain"]);
+    check("clearing an unreadable marker clears the saved selection", clearedMarker.status === 0 && !existsSync(pointer) && !existsSync(marker), shown(clearedMarker));
+
+    writeFileSync(pointer, "");
+    const cleared = run(["use", "--clear", "--plain"]), fallback = run(["who", "--json"]);
+    check("deliberately clearing the damaged selection restores the single-space fallback",
+      cleared.status === 0 && fallback.status === 0 && envelope(fallback)?.target?.space === "alpha", shown(fallback));
+  } finally {
+    clearCurrent();
+    removePreparedSpace("planned");
+    recordMesh(beta);
   }
 }
 

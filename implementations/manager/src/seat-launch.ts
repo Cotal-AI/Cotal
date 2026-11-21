@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { isAbsolute, sep } from "node:path";
-import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
+import { isAbsolute, join, sep } from "node:path";
+import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type EpServeGrant, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation, type SpaceAuth } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
@@ -478,9 +478,9 @@ export class SeatLaunch {
       }
       return { ref, def: inline.def, agent: resolveAgentType({ flag: opts.agent, pin: undefined, callerDefault: opts.defaultAgent }), inline: { save: inline.save } };
     }
-    // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
-    // `--config` path is validated by existsSync below instead.
-    if (!opts.config) {
+    // A catalog key ending in .md is still one filename stem. Only config selects a file path.
+    const dottedCatalogKey = /^[A-Za-z0-9_][A-Za-z0-9_.-]*\.md$/.test(ref);
+    if (!opts.config && !dottedCatalogKey) {
       const refErr = this.deps.nameError(ref);
       if (refErr) return { error: refErr };
     }
@@ -497,7 +497,7 @@ export class SeatLaunch {
       configPath = agentFilePath(this.deps.workspaceRoot(), opts.config);
       if (!existsSync(configPath)) return { error: `agent file not found: ${configPath}` };
     } else {
-      configPath = agentFilePath(this.deps.workspaceRoot(), ref);
+      configPath = join(personaDir(this.deps.workspaceRoot()), `${ref}.md`);
       if (!existsSync(configPath))
         return { error: `no persona "${ref}" in the catalog of manager ${this.deps.managerInstanceId()} on host ${hostname()}: ${configPath} not found; create it there` };
     }

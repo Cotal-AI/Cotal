@@ -210,7 +210,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     // With no name it is about this folder: the space it has registered, or the one it holds
     // prepared or stopped, which `show` names even though every other command here targets the
     // selection. Then the selection.
-    const registered = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
+    const registered = rest[0] === undefined ? folderSpace(process.cwd(), { refuseAmbiguous: true }) : undefined;
     // A journal without a matching local record does not name a space to show.
     const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
     const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
