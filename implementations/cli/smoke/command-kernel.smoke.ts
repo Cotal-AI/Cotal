@@ -592,6 +592,33 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
 }
 
+{
+  const { EP_ENVELOPE_V } = await import("@cotal-ai/core");
+  const { endpointFailure, NativeReplyError } = await import("../src/lib/endpoint-errors.js");
+  const detail = { kind: "ai.cotal.manager.absolute-directory-required" };
+  const remedy = "pass an absolute path on the manager host";
+  const message = "arbitrary remote diagnostic with an argument value";
+  const classify = (endpoint: string, command: string, options: {
+    detail?: boolean; outcome?: "not-executed" | "executed"; phase?: "invocation" | "target-inspection"; code?: string;
+  } = {}) => endpointFailure(new NativeReplyError({
+    reply: { v: EP_ENVELOPE_V, id: "request", ok: false, error: {
+      code: options.code ?? "failed-precondition", message, ...(options.detail === false ? {} : { details: [detail] }), outcome: options.outcome,
+    } }, responder: { endpoint, instanceId: "instance", epoch: 1 },
+  }, options.phase ?? "invocation"), { endpoint, command }, true);
+  const refused = classify("manager", "resolve-cwd", { outcome: "not-executed" });
+  assert.equal(refused.remedy, remedy);
+  assert.ok(!JSON.stringify(refused.detail()).includes(message));
+  assert.equal(classify("manager", "resolve-cwd", { detail: false, outcome: "not-executed" }).remedy, undefined);
+  assert.equal(classify("manager", "resolve-cwd", { outcome: "not-executed", phase: "target-inspection" }).remedy, undefined);
+  assert.equal(classify("manager", "resolve-cwd", { outcome: "not-executed", code: "permission-denied" }).remedy, undefined);
+  assert.equal(classify("com.example.directory", "resolve-cwd", { outcome: "not-executed" }).remedy, undefined);
+  assert.equal(classify("manager", "spawn", { outcome: "not-executed" }).remedy, undefined);
+  const unknown = classify("manager", "resolve-cwd");
+  assert.equal(unknown.outcome, "unknown");
+  assert.notEqual(unknown.remedy, remedy);
+  assert.equal(classify("manager", "resolve-cwd", { outcome: "executed" }).outcome, "failed");
+}
+
 // --- a contract read no instance answered says so, and names how to start what serves it ----------
 // `auth mint --endpoint`, `ep describe` and `ep invoke` read the contract first, and with nothing
 // serving the endpoint that read used to end as a failed read with no Next.
