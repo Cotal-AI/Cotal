@@ -807,7 +807,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
         if (refusal) throw refusal;
         if (!brokerOnly) deferSeedToLaunch();
-      } else await reconcileSeededConnectors();
+      } else await reconcileSeededConnectors(cmd?.name === "setup");
     } catch (e) {
       // The seed runs before the command reaches its own failure path. A structured command still
       // reports the same outcome and exit status in every presentation.
