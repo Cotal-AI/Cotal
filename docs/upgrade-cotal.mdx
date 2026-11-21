@@ -511,16 +511,21 @@ If a recorded npm install child is still running, `cotal update --self` skips pr
 cleanup and can wait for the child to finish. Run the command again only if it stops and asks
 you to retry.
 
-`cotal update --self` restores an interrupted update when its snapshot is a valid directory of
-this installation. If the snapshot is absent, outside this configuration, or not a plain directory,
-the command checks the recorded owner. A dead or reused owner lets it retain the unusable records
-and continue installation and reconciliation. A live owner blocks the update and names its pid.
+If an interrupted self-update already selected its target, `cotal update --self` verifies that
+installation and finishes reconciliation before looking for another release. The built-in connectors
+can reconcile without a registry. If the command cannot finish, it reports the pending work and
+keeps the recovery record for the next retry.
+
+For rollback, the updater accepts a plain snapshot directory in this configuration or the recorded
+previous connector generation of this installation. If a rollback snapshot is absent or invalid,
+a dead or reused owner lets the updater retain the unusable records and continue installation and
+reconciliation. A live owner blocks the update and names its pid.
 An unreadable owner process refuses with inspection guidance. A missing or malformed owner waits
 one hour from the first observed contents. Retrying does not reset that wait.
 
 Retired records stay in a timestamped `update-recovery-retained-<timestamp>-<suffix>` folder in the
 Cotal home, normally `~/.cotal`. The command prints that folder. It never changes the snapshot
-named by a retired record. The daemon uses the same rules, including unattended updates.
+named by a retired record. Daemon startup uses the same rules for restoring or retaining a rollback snapshot.
 
 If the interrupted update prevented `cotal up` from starting any member, run `cotal update --self`
 before trying `cotal up` again. The update can reconcile the installation without starting the
