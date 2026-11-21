@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.173.0
+
+### Patch Changes
+
+- 5beae54: Direct spawn selects catalog names ending in `.md` correctly, and spawn and local persona listings reject files with invalid UTF-8.
+- 871b5b3: Automatically select the only running space when an unchecked registration points to an open broker that does not serve it.
+- Updated dependencies [e268f34]
+- Updated dependencies [e489bae]
+- Updated dependencies [7bce605]
+- Updated dependencies [5beae54]
+  - @cotal-ai/core@0.173.0
+
 ## 0.172.2
 
 ### Patch Changes

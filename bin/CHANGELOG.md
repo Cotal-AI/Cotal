@@ -1,5 +1,56 @@
 # cotal-ai
 
+## 0.173.0
+
+### Patch Changes
+
+- 980dd2f: Reject invalid simulation clock durations before running the workflow, and keep the supplied arguments in the retry commands for `run answer` and `run check`.
+- 0db7477: Document every field in the workflow simulation JSON result, including how virtual elapsed time differs from CLI runtime.
+- a042b38: Document the digests and skipped verification checks in `cotal endpoint check --json`.
+- f79e065: Jcode startup failures report the full path to the private log, so you can open it from any directory on the host that ran Jcode.
+- 7adb660: When `cotal clean restore-fallback` finds no maintenance record, it asks you to check the original project folder and verify the attempt ID without claiming the restore has settled.
+- Updated dependencies [e268f34]
+- Updated dependencies [c2013e2]
+- Updated dependencies [e489bae]
+- Updated dependencies [980dd2f]
+- Updated dependencies [1373059]
+- Updated dependencies [a223165]
+- Updated dependencies [1012df9]
+- Updated dependencies [7bce605]
+- Updated dependencies [0f566cd]
+- Updated dependencies [a042b38]
+- Updated dependencies [b330b93]
+- Updated dependencies [1db7cda]
+- Updated dependencies [e8a6028]
+- Updated dependencies [f79e065]
+- Updated dependencies [780a9bf]
+- Updated dependencies [5e1c467]
+- Updated dependencies [dc60a3b]
+- Updated dependencies [5beae54]
+- Updated dependencies [871b5b3]
+- Updated dependencies [c20f63c]
+- Updated dependencies [1bd7817]
+- Updated dependencies [721c9ee]
+- Updated dependencies [7adb660]
+- Updated dependencies [3a33c68]
+- Updated dependencies [97bdb7d]
+- Updated dependencies [4ac75d7]
+- Updated dependencies [f4bbffa]
+- Updated dependencies [a08c4dd]
+- Updated dependencies [4b80fa0]
+- Updated dependencies [48ed7e4]
+- Updated dependencies [8087bea]
+  - @cotal-ai/core@0.173.0
+  - @cotal-ai/connector-core@0.173.0
+  - @cotal-ai/cli@0.173.0
+  - @cotal-ai/runtime@0.173.0
+  - @cotal-ai/seat@0.173.0
+  - @cotal-ai/manager@0.173.0
+  - @cotal-ai/workspace@0.173.0
+  - @cotal-ai/auth@0.173.0
+  - @cotal-ai/delivery@0.173.0
+  - @cotal-ai/registry@0.173.0
+
 ## 0.172.2
 
 ### Patch Changes
