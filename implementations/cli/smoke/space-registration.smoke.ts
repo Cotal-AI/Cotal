@@ -178,6 +178,13 @@ const bundle = (over: Record<string, unknown> = {}) => ({
 const file = join(home, "hosted.json");
 writeFileSync(file, JSON.stringify(bundle()));
 const userRoot = projectRoot("hosted-root");
+const emptyInventory = await run(["space", "--plain"]);
+const registrationTemplate = /^[ \t]*(cotal space add <name> --server <url>[^\n]*?)[ \t]{2,}Register an existing broker/m;
+const emptyCommand = registrationTemplate.exec(emptyInventory.stdout)?.[1];
+const outsideCommand = "cotal space add <name> --server <url> --root <dir>";
+check("empty inventory outside a project names the required root and which folder to use",
+  emptyInventory.status === 0 && emptyCommand === outsideCommand &&
+    emptyInventory.stdout.includes("any existing folder for an open space") && emptyInventory.stdout.includes(".cotal/auth"), shown(emptyInventory));
 recordMesh({ space: "keep", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
 setCurrent("keep");
 
@@ -220,7 +227,14 @@ setCurrent("keep");
 
 // ── Adding a space from --server ───────────────────────────────────────────────────────────────────────
 {
-  const added = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
+  const outside = await run(["space", "--plain"]);
+  const inside = await run(["space", "--plain"], {}, root);
+  check("nonempty inventory names --root only when the project cannot be inferred",
+    outside.status === 0 && registrationTemplate.exec(outside.stdout)?.[1] === outsideCommand &&
+    inside.status === 0 && registrationTemplate.exec(inside.stdout)?.[1] === "cotal space add <name> --server <url>", { outside: shown(outside), inside: shown(inside) });
+  if (!emptyCommand) throw new Error(`inventory printed no registration command: ${emptyInventory.stdout}`);
+  const args: Record<string, string> = { "<name>": "open1", "<url>": LIVE, "<dir>": root };
+  const added = await json(emptyCommand.split(" ").slice(1).map((arg) => args[arg] ?? arg));
   const r = added.env?.result;
   check("an open broker is added: ok, verified, not a replacement", added.status === 0 && added.env?.outcome === "ok" && r?.kind === "space-added" && r.verified === true && r.replaced === false, shown(added));
   check("its record is the space show detail: open, manual, reachable", r?.space?.space === "open1" && r.space.mode === "open" && r.space.origin === "manual" && r.space.check === "reachable" && r.space.root === root, r?.space);
@@ -342,8 +356,18 @@ setCurrent("keep");
   const listedUnchecked = await json(["space"]);
   check("space --json marks that mode unchecked and a checked one checked",
     listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  setCurrent("dead1");
   const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
-  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  check("space show tells the user to wait for an offline broker without forgetting it",
+    shownUnchecked.status === 0 && /broker:\s+unreachable/.test(shownUnchecked.stdout) && /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) &&
+    shownUnchecked.stdout.includes("wait for the broker to answer") && !shownUnchecked.stdout.includes("cotal space forget"), shown(shownUnchecked));
+  const beforeVerify = registryFiles();
+  const verifyOffline = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
+  const retarget = await json(["space", "add", "dead1", "--server", LIVE, "--root", root]);
+  check("offline verification preserves the registration and selection and cannot retarget it",
+    refused(verifyOffline, 2, "TARGET_UNAVAILABLE") && refused(retarget, 2, "CONFLICT") &&
+    JSON.stringify(registryFiles()) === JSON.stringify(beforeVerify) && getCurrent() === "dead1", { verify: shown(verifyOffline), retarget: shown(retarget) });
+  setCurrent("keep");
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
@@ -372,15 +396,17 @@ setCurrent("keep");
     const spacedRoot = projectRoot("registrations with 'quotes' and `backticks`");
     const unchecked = await json(["space", "add", "open5", "--server", LIVE, "--root", spacedRoot, "--mode", "open", "--force"]);
     check("a forced registration keeps a root with spaces and quotes", unchecked.status === 0 && unchecked.env?.result.space.root === spacedRoot && unchecked.env?.result.verified === false, shown(unchecked));
+    setCurrent("open5");
     const detail = await run(["space", "show", "open5", "--plain"]);
-    const hint = /check its mode by adding it again without --force: (`+)(cotal space forget .+?)\1, then (`+)(cotal space add .+?)\3$/m.exec(detail.stdout);
-    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]} && ${hint[4]}`], {
+    const hint = /check its mode without removing the registration: (`+)(cotal space add .+?)\1$/m.exec(detail.stdout);
+    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]}`], {
       cwd: home, env: runEnv, encoding: "utf8", timeout: 120_000,
     });
     const checked = await json(["space", "show", "open5"]);
-    check("the printed verification commands re-register and verify the exact root",
-      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot,
+    check("the printed verification command verifies the exact root and keeps the selection",
+      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot && checked.env?.result.current === true,
       { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
+    setCurrent("keep");
   }
 }
 

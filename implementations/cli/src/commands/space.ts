@@ -42,7 +42,7 @@ import { completingFlagValue } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
-import { SPACE_MODES } from "./meshes-add.js";
+import { checkRoot, SPACE_MODES } from "./meshes-add.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
 import { spaceExport } from "./space-export.js";
@@ -331,6 +331,9 @@ function movedPreparedRemedy(project: string, moved: NonNullable<ReturnType<type
 
 function spacesView(result: SpacesResult, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   const cmd = displayCmd();
+  const addBroker = checkRoot(undefined, process.cwd()).ok
+    ? { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }
+    : { command: "cotal space add <name> --server <url> --root <dir>", description: "Register an existing broker. Use any existing folder for an open space, or the folder whose .cotal/auth holds the space's trust for an auth space." };
   const movedRow = result.prepared.find((p) => moved?.recordedRoot === p.root && moved.journal.space === p.space);
   // A space that ran and was stopped says so, as `status` does, rather than reading as never started.
   const ran = result.prepared.some((p) => p.state !== "prepared");
@@ -353,7 +356,7 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
-    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Sign in to Cotal Cloud with `cotal login`, or prepare a local space.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [...(result.prepared.length ? [] : [{ command: "cotal login", description: "Sign in to Cotal Cloud" }]), { command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
+    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Sign in to Cotal Cloud with `cotal login`, or prepare a local space.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [...(result.prepared.length ? [] : [{ command: "cotal login", description: "Sign in to Cotal Cloud" }]), { command: "cotal setup", description: "Choose a local or self-hosted space" }, addBroker] }] }] };
   const root = canonicalRoot(process.cwd());
   const occupied = movedRow !== undefined || [...result.items, ...result.prepared].some((s) => canonicalRoot(s.root) === root) || listSpaceAccounts(authDir(root)).length > 0;
   return {
@@ -384,7 +387,7 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
       occupied
         ? { command: "cotal space create <name> --root <dir>", description: "Prepare another local space in another folder" }
         : { command: "cotal space create <name>", description: "Prepare another local space in this folder" },
-      { command: "cotal space add <name> --server <url>", description: "Register an existing broker" },
+      addBroker,
     ] }] }],
   };
 }
@@ -439,7 +442,14 @@ function spaceView(s: SpaceDetail): Report {
   const space = shellWord(s.space);
   const hints: Cell[] = s.current ? [] : [{ text: `select it with ${codeSpan(`cotal use ${space}`)}`, tone: "hint" }];
   if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with ${codeSpan(`${displayCmd()} down --space ${space} --yes`)}`, tone: "waiting" });
-  if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: ${codeSpan(`cotal space forget ${space}`)}, then ${codeSpan(`cotal space add ${space} --server ${shellWord(s.server)} --root ${shellWord(s.root)}`)}`, tone: "hint" });
+  if (!s.modeChecked && s.origin === "manual" && s.mode !== "user") {
+    if (s.check === "reachable") {
+      const flags = `${s.tlsRequired ? " --tls" : ""}${s.unencryptedOverlay ? " --allow-unencrypted-overlay" : ""}`;
+      hints.push({ text: `check its mode without removing the registration: ${codeSpan(`cotal space add ${space} --server ${shellWord(s.server)} --root ${shellWord(s.root)} --mode ${s.mode}${flags}`)}`, tone: "hint" });
+    } else {
+      hints.push({ text: `wait for the broker to answer, then run ${codeSpan(`cotal space show ${space}`)} again to see how to check its mode`, tone: "hint" });
+    }
+  }
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
 
