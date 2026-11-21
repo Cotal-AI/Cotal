@@ -104,6 +104,22 @@ try {
     && preview.stdout.includes("Broker log rotation size limit: 1048576 bytes")
     && preview.stdout.includes("Maximum broker log files: 3"), preview);
 
+  const seedWarning = "--channels is not used with -f. Set channels and defaults in the manifest.";
+  const warnedOnce = (stderr: string) => stderr.split(/\r?\n/).filter((line) => line.startsWith("! ") && line.includes("--channels")).join("\n") === `! ${seedWarning}`;
+  writeFileSync(join(root, "seed.json"), JSON.stringify({ channels: { "from-seed": { deliveryClass: "live" } } }));
+  writeFileSync(join(root, "malformed-seed.json"), "not JSON");
+  for (const seed of ["seed.json", "missing-seed.json", "malformed-seed.json"]) {
+    const seedPreview = cli("up", "-f", "manifests/mesh.yaml", "--channels", seed, "--server", SERVER, "--dry-run", ...rotation);
+    ok(`preview ignores ${seed} and prints the unchanged manifest plan with one warning`, seedPreview.status === 0
+      && seedPreview.stdout === preview.stdout && warnedOnce(seedPreview.stderr), seedPreview);
+  }
+  const seedJson = cli("up", "--file", manifest, "--channels", "missing-seed.json", "--dry-run", "--json");
+  const envelope = JSON.parse(seedJson.stdout);
+  ok("existing JSON refusal carries the ignored seed warning only in its warnings field", seedJson.status === 2
+    && envelope.error?.code === "UNSUPPORTED" && envelope.warnings?.length === 1
+    && envelope.warnings[0].code === "MANIFEST_CHANNEL_SEED_IGNORED" && envelope.warnings[0].message === seedWarning
+    && seedJson.stderr === "", seedJson);
+
   const unavailableArgs = ["up", "-f", manifest, "--server", SERVER, "--runtime", "example-uninstalled-runtime"];
   const unavailablePreview = cli(...unavailableArgs, "--dry-run");
   const unavailableApply = cli(...unavailableArgs);
@@ -120,8 +136,8 @@ try {
     && missing.stdout === "" && missing.stderr.includes("require --log-file or broker.logFile"), missing);
 
   // 1) fresh up -f with a --server OVERRIDE (the manifest declares the decoy port; the flag wins).
-  const up = cli("up", "-f", manifest, "--server", SERVER, "--logfile-size-limit", "1048576");
-  ok("up -f reports the mesh is up", up.stdout.includes(`mesh "${SPACE}" up`), up.stdout + up.stderr);
+  const up = cli("up", "-f", manifest, "--channels", "malformed-seed.json", "--server", SERVER, "--logfile-size-limit", "1048576");
+  ok("up -f starts with an ignored malformed seed and warns once", up.status === 0 && up.stdout.includes(`mesh "${SPACE}" up`) && warnedOnce(up.stderr), up.stdout + up.stderr);
   ok("up -f reports seeded channels", /seeded 2 channel/.test(up.stdout), up.stdout);
   const brokerConfig = readFileSync(join(root, ".cotal/server-open.conf"), "utf8");
   ok("live manifest start renders the CLI rotation limit and writes the log beside the manifest", existsSync(logFile)
@@ -142,7 +158,7 @@ try {
   const { readChannelRegistry } = await import("@cotal-ai/core");
   const reg = await readChannelRegistry({ servers: SERVER, space: SPACE });
   ok("#general seeded with its description", reg.channels?.general?.description === "Open coordination.", reg.channels);
-  ok("#decisions seeded", Boolean(reg.channels?.decisions), reg.channels);
+  ok("only manifest channels were seeded in the live registry", Boolean(reg.channels?.decisions) && reg.channels?.["from-seed"] === undefined, reg.channels);
 
   // 3) the launch spec was written 0600 under .cotal/run.
   const runDir = join(root, ".cotal", "run");
