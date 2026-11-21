@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { lookup } from "node:dns/promises";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
@@ -53,6 +53,7 @@ import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
+import { collectUpdateCaches } from "./update-caches.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { selfArgv } from "../lib/self-exec.js";
@@ -1386,64 +1387,6 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
   }
-}
-
-/** Only caches with recorded custody can be reclaimed. A worker cannot open its cache before its
- * process group is recorded, and the owner cannot start new workers after it exits. */
-function collectUpdateCaches(parent: string): void {
-  if (process.platform !== "linux" && process.platform !== "darwin") return;
-  try { parent = realpathSync(parent); }
-  catch { return; }
-  const uid = process.getuid!();
-  const privateDirectory = (path: string) => {
-    const info = lstatSync(path);
-    return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
-  };
-  const deadOwner = (cache: string): boolean => {
-    const file = join(cache, ".owner");
-    const info = lstatSync(file);
-    if (!info.isFile() || info.uid !== uid || info.size > 256 || (info.mode & 0o077) !== 0) return false;
-    const owner = /^([1-9]\d*)\n([^\r\n]+)\n$/.exec(readFileSync(file, "utf8"));
-    const pid = Number(owner?.[1]);
-    return !!owner && Number.isSafeInteger(pid) && pid > 1 && recoveryProcessStartToken(pid) !== owner[2];
-  };
-  const absentGroup = (pid: number): boolean => {
-    if (!Number.isSafeInteger(pid) || pid < 2) return false;
-    try {
-      process.kill(-pid, 0);
-      if (process.platform !== "linux") return false;
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      return /^[ZX] /.test(stat.slice(stat.lastIndexOf(") ") + 2)) && processGroupMembers(pid).length === 0;
-    }
-    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-  };
-  function sweep(directory: string): void {
-    for (const name of readdirSync(directory)) {
-      const staged = process.platform === "linux" && /^cotal-update-npm-[a-zA-Z0-9]{6}$/.test(name);
-      if (!staged && !/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
-      const cache = join(directory, name);
-      try {
-        if (!privateDirectory(cache)) continue;
-        protectedLocalDirectory(cache, "the update cache");
-        if (!deadOwner(cache)) continue;
-        const workers = readdirSync(cache).filter(name => name.startsWith(".worker-"));
-        if (staged && workers.length !== 1) continue;
-        if (workers.every(worker => {
-          const match = /^\.worker-([1-9]\d*)$/.exec(worker);
-          return !!match && absentGroup(Number(match[1]));
-        })) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
-      } catch { /* Unprovable or already collected scratch is left alone. */ }
-    }
-  }
-  try {
-    sweep(parent);
-    for (const name of readdirSync(parent)) {
-      if (!/^cotal-update-[a-zA-Z0-9]{6}$/.test(name)) continue;
-      const scratch = join(parent, name);
-      try { if (privateDirectory(scratch)) sweep(scratch); }
-      catch { /* Another command can retire its scratch during the scan. */ }
-    }
-  } catch { /* Temporary storage cleanup is best effort. */ }
 }
 
 class ReleaseNotAvailable extends Error {}

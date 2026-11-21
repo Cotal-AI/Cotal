@@ -219,7 +219,7 @@ import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { channelsReads, readChannelsFile, readDefaultChannelsFile } from "../lib/channel-seed.js";
-import { detachedNext, renderDetachedSummary } from "../lib/up-report.js";
+import { controllerManifestRemedy, detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { seedBeforeLaunch, seedMoveNote } from "../seed/launch.js";
 import { seedDir } from "../seed/paths.js";
@@ -1663,7 +1663,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: `inspect the recorded stack with ${codeSpan(`cotal service --space ${shellWord(controller.journal.space)}`)} or start it with ${codeSpan(`cotal up --root ${shellWord(meshRoot)} --space ${shellWord(controller.journal.space)}`)}; to boot this manifest without using that stack, prepare a separate project root and space`,
+      remedy: controllerManifestRemedy(meshRoot, controller.journal.space, resolve(values.file)),
     });
     if (values["dry-run"]) {
       await upManifest(values.file, {

@@ -5,7 +5,7 @@ import { shellWord } from "./endpoint-errors.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
-import { findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
+import { assertManagerStartOptions, findServicePreset, presetStartFlags, servicePresetDefinition } from "./service-presets.js";
 import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
@@ -153,6 +153,7 @@ export function resolvePresetService(space: string, root: string, requested: str
   });
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
+  if (definition.launch.type === "adapter" && definition.launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, definition.launch.options);
   store.commit(requested, undefined, validateServiceDefinition(definition, space));
   return { requested, name: requested, preset: preset.name, saved: { kind: "created", options } };
 }
@@ -183,7 +184,7 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   // dashboard keeps its --posting-creds, a pair the dashboard's launch refuses (#7589).
   if (launch.adapter === WEB_SERVICE_ADAPTER && changed.includes("read-only") && merged["read-only"] === true && typeof merged["posting-creds"] === "string")
     throw new CommandFailure("refused", "CONFLICT", `--read-only would keep the saved ${row.name} definition's --posting-creds, and the dashboard posts only with --no-read-only; nothing was changed`, { target: { space, name: row.name }, remedy: `remove it with \`cotal service remove ${row.name} --space ${space} --yes\`, then run \`cotal service add ${row.name} --preset ${preset.name} --space ${space} --read-only\`` });
-  if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${row.name}`}\`, then start it again with the new ${shown}` });
+  if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${shellWord(row.name)}`} --space ${shellWord(space)}\`, then start it again with the new ${shown}` });
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
   const checked = validateServiceDefinition(next, space);
@@ -192,6 +193,7 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   const consoleHost = merged["console-host"];
   if (launch.adapter === STACK_ADAPTER.manager && changed.includes("console-host") && typeof consoleHost === "string" && /[\u0000- \u007f]/u.test(consoleHost))
     throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; nothing was changed", { target: { space, name: row.name }, selfContained: true });
+  if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, merged);
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   let retired: string[] = [];

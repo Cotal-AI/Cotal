@@ -657,7 +657,8 @@ try {
     check(`${args.join(" ")} on a root that holds a controller stack refuses CONFLICT, exit 2, naming inspection and ordinary startup`,
       beside.status === 2 && /CONFLICT/.test(beside.stderr) && /holds the controller stack of space upusagejournal/.test(beside.stderr)
         && beside.stderr.includes("cotal service --space upusagejournal") && beside.stderr.includes(`cotal up --root ${journalRoot} --space upusagejournal`)
-        && !/cotal team (deploy|boot)/.test(beside.stderr) && !started(journalRoot), shown(beside));
+        && beside.stderr.includes(`cotal team boot ${join(journalRoot, "cotal.yaml")} --dry-run`)
+        && !beside.stderr.includes("cotal team deploy") && !started(journalRoot), shown(beside));
   }
 
   // A bare up whose folder names a space that runs from another folder names a separate space for

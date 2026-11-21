@@ -199,6 +199,7 @@ import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { execWords } from "../src/lib/exec-words.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -384,11 +385,33 @@ try {
     const startRunning = cli(root, "manager", "start", "--space", space, "--json");
     check("manager start on the running stack reports its manager running, exit 0, and starts nothing",
       startRunning.status === 0 && startRunning.env?.outcome === "no-op" && pidOf(space, "stack-manager") === managerPid, shown(startRunning));
-    const restartRunning = cli(root, "manager", "restart", "--space", space, "--yes", "--json");
-    check("manager restart --yes on it refuses LIFECYCLE_BLOCKED, stops nothing, and names manager stop then up",
+    const elsewhere = join(projects, "unrelated");
+    mkdirSync(elsewhere);
+    const otherSpace = "otherselected";
+    prepare(otherSpace);
+    const picked = cli(elsewhere, "use", otherSpace);
+    check("fixture: a different space is selected outside both projects", picked.status === 0, shown(picked));
+    const restartRunning = cli(elsewhere, "manager", "restart", "--space", space, "--yes", "--json");
+    const remedy = restartRunning.env?.error?.remedy?.match(/^stop it with `([^`]+)`, then run `([^`]+)` to start it again with its stack$/);
+    const stopWords = remedy?.[1] ? execWords(remedy[1]) : [];
+    const upWords = remedy?.[2] ? execWords(remedy[2]) : [];
+    const scoped = JSON.stringify(stopWords) === JSON.stringify(["cotal", "manager", "stop", "--space", space, "--yes"])
+      && JSON.stringify(upWords) === JSON.stringify(["cotal", "up", "--root", realpathSync(root), "--space", space]);
+    check("manager restart from another folder refuses without stopping, and both remedy commands pin the original target",
       restartRunning.status === 2 && restartRunning.env?.error?.code === "LIFECYCLE_BLOCKED"
-        && restartRunning.env.error.remedy === "stop it with `cotal manager stop --yes`, then run `cotal up` to start it again with its stack"
+        && scoped
         && managerPid !== null && pidOf(space, "stack-manager") === managerPid && alive(managerPid), shown(restartRunning));
+    if (scoped) {
+      const stopped = cli(elsewhere, ...stopWords.slice(1), "--json");
+      const brokerPid = pidOf(space, "stack-broker");
+      check("the printed stop stops only the named space's manager", stopped.status === 0 && stopped.env?.target?.space === space && gone(space, "stack-manager") && brokerPid !== null && alive(brokerPid), shown(stopped));
+      const broughtUp = cli(elsewhere, ...upWords.slice(1), "--json");
+      track(space);
+      const replacement = pidOf(space, "stack-manager");
+      check("the printed up restarts that manager from the explicit project root", broughtUp.status === 0 && pidOf(space, "stack-broker") === brokerPid && replacement !== null && replacement !== managerPid && alive(replacement), shown(broughtUp));
+    }
+    const cleared = cli(elsewhere, "use", "--clear");
+    check("fixture: the alternate selection is cleared", cleared.status === 0, shown(cleared));
     // The rows followed the store's order, by random instance ID, so they moved whenever a member
     // started under a new one.
     const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
@@ -570,6 +593,25 @@ try {
     track(other);
     check("its next up starts at another address", moved.status === 0, shown(moved));
     const launcher = launcherAt(second);
+    const confirmation = cli(second, "down", "--space", other, "--json");
+    const retry = `${launcher} down --space ${other} --json`;
+    const remedy = confirmation.env?.error?.remedy;
+    check("the whole-stack confirmation and preview keep the explicit space and JSON",
+      confirmation.status === 1 && confirmation.env?.outcome === "refused" && confirmation.env.error?.code === "USAGE_INVALID"
+      && launcher !== undefined && remedy === `run \`${retry} --yes\` to stop it. \`${retry} --dry-run\` shows what it stops`, shown(confirmation));
+    if (launcher !== undefined && remedy?.startsWith(`run \`${retry} --yes\``)) {
+      const follow = (command: string) => cli(second, ...command.slice(launcher.length + 1).split(" "));
+      const commands = [...remedy.matchAll(/`([^`]+)`/g)].map((match) => match[1]!);
+      const preview = follow(commands[1]!);
+      check("the printed preview produces JSON for the same space without signalling",
+        preview.status === 0 && preview.env?.target?.space === other && preview.env.result?.signalled === false && !gone(other, "stack-broker"), shown(preview));
+      const confirmed = follow(commands[0]!);
+      check("the printed confirmation produces a JSON stop receipt for the same space",
+        confirmed.status === 0 && confirmed.env?.target?.space === other && confirmed.env.result?.kind === "controller-stack-stop" && gone(other, "stack-broker"), shown(confirmed));
+      const restarted = cli(second, "up", "--no-manager", "--json");
+      track(other);
+      check("restart the broker-only stack for the text stop receipt", restarted.status === 0, shown(restarted));
+    }
     const down = cli(second, "down", "--yes", "--plain");
     const restart = /^  (.+?) {2}Start the stack again from its journal and saved definitions$/m.exec(down.stdout)?.[1];
     const expectedRestart = `${launcher} up --no-manager`;
@@ -586,6 +628,19 @@ try {
       check("the printed restart starts the same broker without a manager", resumed.status === 0 && pidOf(other, "stack-broker") !== null && pidOf(other, "stack-manager") === null, shown(resumed));
       check("down --yes stops the restarted stack", cli(second, "down", "--yes", "--json").status === 0);
     }
+
+    const brokerOnly = "broker-only";
+    const brokerRoot = prepare(brokerOnly);
+    const normalPayload = cli(brokerRoot, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-payload", "1048576", "--json");
+    track(brokerOnly);
+    const normalStop = cli(brokerRoot, "down", "--yes", "--json");
+    const repeated = cli(brokerRoot, "down", "--yes", "--plain");
+    const stoppedPreview = cli(brokerRoot, "down", "--space", brokerOnly, "--dry-run", "--plain");
+    const noOpRestart = (run: Run) => /^  (.+?) {2}Start the stack without a manager$/m.exec(run.stdout)?.[1];
+    check("repeated down and its stopped preview keep the broker-only restart even when the payload permits a manager",
+      normalPayload.status === 0 && normalStop.status === 0 && repeated.status === 0 && stoppedPreview.status === 0
+      && noOpRestart(repeated) === expectedRestart && noOpRestart(stoppedPreview) === expectedRestart,
+      { start: shown(normalPayload), stop: shown(normalStop), repeated: repeated.stdout, preview: stoppedPreview.stdout });
 
     const occupant = createServer();
     await listenOn(occupant, movedPort);
@@ -1302,7 +1357,7 @@ try {
     check("while the frozen manager runs, down refuses naming its instance and request", names(whileRunning) && pid !== null && alive(pid) && held(), shown(whileRunning));
     // A public start on the live retained instance refuses before any readiness probe or record write.
     const serviceStart = cli(root, "service", "start", "stack-manager", "--space", space, "--json");
-    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === 'start the stack with `cotal up`' && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
+    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === `start the stack with \`cotal up --root ${realpathSync(root)} --space ${space}\`` && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
     const abandonLive = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     check("while the frozen manager runs, down --abandon-stop refuses and abandons nothing", abandonLive.status === 2 && abandonLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(abandonLive.env.error.message.includes("still runs")) && pid !== null && alive(pid) && held(), shown(abandonLive));
     if (pid !== null) process.kill(pid, "SIGKILL");

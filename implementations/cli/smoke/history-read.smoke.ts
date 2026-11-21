@@ -23,6 +23,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
@@ -32,6 +34,8 @@ import {
   chatStream,
   chatSubject,
   createSpaceAuth,
+  credsClaims,
+  credsFromJwt,
   dialerFor,
   dmStream,
   idFromCreds,
@@ -475,6 +479,51 @@ try {
   prefill.child.kill("SIGINT");
   await prefill.exited;
   check("a follow prints its window in the same form as its live lines", prefilled && prefill.lines.some((l) => scriptShape(l, "\\S+", "#general", ".+")) && !prefill.lines.some((l) => /^TIME\s+WHERE/.test(l)), prefill.lines);
+
+  const scopedAll = follow(["history", "--follow", "--json", "--creds", agentCreds]);
+  const scopedNamed = follow(["history", "general", "--follow", "--json", "--creds", agentCreds]);
+  try {
+    const hasSnapshot = (line: string) => line.includes('"type":"snapshot"');
+    const snapshots = await Promise.all([scopedAll, scopedNamed].map((f) => f.until(hasSnapshot)));
+    await bob.multicast("outside scoped follow", { channel: "ops" });
+    await alice.multicast("inside scoped follow", { channel: "general" });
+    await Promise.all([scopedAll, scopedNamed].map((f) => f.until((line) => line.includes('"text":"inside scoped follow"') || line.includes('"type":"error"'))));
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+    const codes = await Promise.all([scopedAll.exited, scopedNamed.exited]);
+    for (const [i, f] of [scopedAll, scopedNamed].entries()) {
+      const records = f.lines.map((line) => JSON.parse(line) as { type: string; data: { text?: string; reason?: string } });
+      check(`a scoped credential follows ${i === 0 ? "all granted channels" : "a named channel"} without subscription errors or out-of-scope events`,
+        snapshots[i] && codes[i] === 143 && records.map((r) => r.type).join() === "snapshot,event,end" && records[1]?.data.text === "inside scoped follow" && records[2]?.data.reason === "terminated", f.lines);
+    }
+  } finally {
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+  }
+  const noFollow = await run(["history", "--follow", "--json", "--creds", ungranted]);
+  const noFollowRecords = noFollow.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; data: { code?: string; reason?: string } });
+  check("an all-channel follow with no channel read grant refuses without opening a feed",
+    noFollow.status === 2 && noFollowRecords.map((r) => r.type).join() === "error,end" && noFollowRecords[0]?.data.code === "PERMISSION_DENIED" && noFollowRecords[1]?.data.reason === "setup-failed", shown(noFollow));
+
+  // A raw credential can have a broader retained read than live read. The broker's live denial
+  // must still end the all-channel follow, rather than leave an apparently running feed.
+  const retainedReader = newIdentity();
+  const { pub, sub } = credsClaims(await mintCreds(auth, retainedReader, "observer")).nats!;
+  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  const restricted = join(home, "retained-reader.creds");
+  try {
+    const chat = chatSubject(space, "*", "*", "general");
+    const jwt = await encodeUser("observer", fromPublic(retainedReader.id), fromPublic(auth.account.pub), {
+      pub,
+      sub: { allow: [...(sub?.allow ?? []).filter((row) => !row.startsWith(`cotal.${space}.chat.`)), chat] },
+    }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
+    writeFileSync(restricted, credsFromJwt(jwt, retainedReader), { mode: 0o600 });
+  } finally { signer.clear(); }
+  const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
+  try {
+    const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));
+    const records = refusedFollow.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; remedy?: string; reason?: string } });
+    check("a broker denial of the live wildcard ends the follow and says to name a channel",
+      ended && await refusedFollow.exited === 2 && records.map((r) => r.type).join() === "error,end" && records[0]?.data.code === "PERMISSION_DENIED" && records[0]?.data.remedy?.includes("name a channel") === true && records[1]?.data.reason === "setup-failed", refusedFollow.lines);
+  } finally { await killAndAwaitExit(refusedFollow.child, "SIGTERM"); }
 
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
   const brief = join(home, "brief.creds");

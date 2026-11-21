@@ -252,7 +252,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<Re
     // spawnSync cannot dispatch a signal. Poll before looking at it or starting another install.
     for (let turn = 0; turn < 2; turn++) await new Promise((resolve) => setImmediate(resolve));
     if (interrupted === undefined) return;
-    // A verified ordinary install no longer needs crash recovery. Maintenance can have an earlier
+    // A verified ordinary install needs no crash recovery. Maintenance can have an earlier
     // recovery obligation, so keep its journals for a retry of that maintenance command.
     if (mode === "auto") {
       if (verifiedInstall) clearCursor();
