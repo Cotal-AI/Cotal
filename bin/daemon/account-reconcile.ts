@@ -4,9 +4,9 @@ import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount } from
 import { importAccountComputerSpace, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
-import { findMesh, readMeshRegistry } from "@cotal-ai/workspace";
+import { findMesh, readMeshRegistry, resolveNativeMigration } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
-import { knownMachineAccounts } from "@cotal-ai/auth";
+import { fetchIdpJwt, knownMachineAccounts, loadIdpSession, pinnedJwksResolver, verifyIdpToken } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
@@ -72,6 +72,18 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     if (snapshot.spaces.some(row => !Number.isSafeInteger(bindingRevisions[row.id]) || bindingRevisions[row.id]! <= 0 || bindingRevisions[row.id]! > revision)) throw new Error("invalid binding revisions");
     const desired = new Set(snapshot.spaces.map(row => row.slug));
     desiredByOwner.set(account.ownerKey, desired);
+    const migrationProofs = new Map<string, Promise<string | undefined>>();
+    const proveMigration = async (pins: { url: string; issuer: string; audience: string }) => {
+      try {
+        const endorsed = await resolveNativeMigration(pins);
+        if (endorsed.bundle.userAuth.idp.url !== account.idpUrl) return;
+        const session = loadIdpSession(home, account.idpUrl);
+        if (!session || session.sub !== account.sub) return;
+        const jwt = await fetchIdpJwt(account.idpUrl, session.token, signal);
+        const proof = await verifyIdpToken(jwt, { issuer: pins.issuer, audience: pins.audience, key: pinnedJwksResolver(`${pins.url}/jwks`) });
+        if (proof.sub === account.sub) return session.token;
+      } catch { /* An unproved sign-in address cannot replace the holder. */ }
+    };
     for (const [space, state] of Object.entries(saved.spaces)) {
       if (state.owner !== account.ownerKey || desired.has(space) || Date.now() < (retryAt.get(space) ?? 0)) continue;
       if (state.removedAt !== undefined) { if (fresh) { delete saved.spaces[space]; persist(); } continue; }
@@ -83,12 +95,30 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     for (const row of snapshot.spaces) {
       signal?.throwIfAborted();
       const prior = saved.spaces[row.slug];
+      if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
+      let previousOwner: string | undefined;
       if (prior && prior.owner !== account.ownerKey) {
         const holder = knownMachineAccounts(home).find(item => item.ownerKey === prior.owner);
-        refusals.set(row.slug, `The local space connection is held by ${holder?.idpUrl ?? "an unknown account"}.`);
-        continue;
+        const entry = findMesh(row.slug);
+        const pins = entry?.userAuth?.idp;
+        if (holder && pins && holder.issuer === account.issuer && holder.sub === account.sub
+          && pins.url === holder.idpUrl && pins.issuer === holder.issuer
+          && entry.origin === "catalog" && entry.catalogOwner === prior.owner && entry.catalogId === prior.id && prior.id === row.id
+          && !("unavailable" in row) && row.registration.server === entry.server
+          && row.registration.userAuth.idp.audience === pins.audience) {
+          const key = JSON.stringify([pins.url, pins.issuer, pins.audience]);
+          const proof = migrationProofs.get(key) ?? proveMigration(pins);
+          migrationProofs.set(key, proof);
+          const provedSession = await proof;
+          if (provedSession && loadIdpSession(home, account.idpUrl)?.token === provedSession
+            && JSON.stringify(findMesh(row.slug)) === JSON.stringify(entry)) previousOwner = prior.owner;
+        }
+        signal?.throwIfAborted();
+        if (!previousOwner) {
+          refusals.set(row.slug, `The local space connection is held by ${holder?.idpUrl ?? "an unknown account"}.`);
+          continue;
+        }
       }
-      if (prior?.removedAt !== undefined && (!fresh || bindingRevisions[row.id]! <= prior.removedAt)) continue;
       if (prior && prior.removedAt === undefined && !findMesh(row.slug)) {
         prior.removedAt = prior.revision; persist();
         try { await disconnect(row.slug); }
@@ -99,7 +129,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       try {
         if ("unavailable" in row) throw new Error("account space is currently unavailable");
         const legacy = !prior && connectedHere(row.slug);
-        importAccountComputerSpace(account, row);
+        importAccountComputerSpace(account, row, previousOwner);
         if (legacy) continue;
         // Persist custody before the first operation, so restart knows which spaces it may remove.
         saved.spaces[row.slug] = { owner: account.ownerKey, id: row.id, revision: bindingRevisions[row.id]! }; persist();

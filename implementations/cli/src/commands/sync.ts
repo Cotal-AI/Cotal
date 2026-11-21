@@ -184,11 +184,12 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: M
   };
 }
 
-/** Import one desired account space without treating the desired set as the full catalog. */
-export function importAccountComputerSpace(account: AuthSpaceCatalogAccount, row: CatalogSpace): void {
+/** Import one desired account space. Only an independently verified migration supplies a previous owner. */
+export function importAccountComputerSpace(account: AuthSpaceCatalogAccount, row: CatalogSpace, previousOwner?: string): void {
   validateCatalogSnapshot({ v: 1, account, spaces: [row] }, account);
   const prior = readMesh(row.slug);
-  if (prior && (prior.origin !== "catalog" || prior.catalogOwner !== account.ownerKey))
+  if ((previousOwner !== undefined && (!prior || prior.catalogId !== row.id))
+    || (prior && (prior.origin !== "catalog" || prior.catalogOwner !== (previousOwner ?? account.ownerKey))))
     throw new Error("a different local registration owns this space name");
   const next = entryFor(account, row, prior, new Date().toISOString());
   writeCatalogCredential(next, row);

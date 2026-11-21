@@ -86,6 +86,7 @@
  */
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
 import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -120,6 +121,22 @@ import { unitReceiptFile } from "../daemon/install.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
+const custodyTls = process.argv.includes("--endorsed-custody");
+const custodyCert = process.env.COTAL_SMOKE_CUSTODY_CERT;
+const custodyOtherSubject = process.argv.includes("--different-custody-subject");
+if (custodyTls && !custodyCert) {
+  const dir = mkdtempSync(join(scratchParent, "custody-ca-"));
+  try {
+    const cert = join(dir, "cert.pem");
+    const issued = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", `${cert}.key`, "-out", cert, "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"]);
+    assert.equal(issued.status, 0, String(issued.stderr ?? issued.error));
+    const child = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+      env: { ...process.env, COTAL_SMOKE_CUSTODY_CERT: cert, NODE_EXTRA_CA_CERTS: cert }, stdio: "inherit",
+    });
+    process.exitCode = child.status ?? 1;
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  process.exit();
+}
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
@@ -295,8 +312,25 @@ let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | u
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
 let custodyOldFails = false;
-const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+const tlsOptions = custodyTls ? { cert: readFileSync(custodyCert!), key: readFileSync(`${custodyCert}.key`) } : undefined;
+let custodyAlias = "";
+let custodyEndorsed = false;
+const handleIdp = async (req: IncomingMessage, res: ServerResponse) => {
+  const requestOrigin = `${custodyTls ? "https" : "http"}://${req.headers.host}`;
+  const custodyRequest = process.argv.includes("--account-custody-repro");
+  const subject = custodyOtherSubject && requestOrigin === custodyAlias ? "other-owner" : "machine-owner";
+  const aliasCatalog = (row: any) => {
+    const aliasRow = structuredClone(row);
+    const auth = aliasRow.registration.userAuth;
+    auth.idp.url = `${requestOrigin}/api/auth`;
+    for (const field of ["url", "agentProvisioningUrl", "managerAuthorityUrl"]) if (auth.endpoints[field]) auth.endpoints[field] = auth.endpoints[field].replace(idpOrigin, requestOrigin);
+    return aliasRow;
+  };
   res.setHeader("content-type", "application/json");
+  if (custodyTls && req.url === "/.well-known/cotal-mesh" && catalog) {
+    const first = (catalog as { spaces: any[] }).spaces.at(-1)!;
+    return void res.end(JSON.stringify({ ...aliasCatalog(first).registration, ...(requestOrigin === idpOrigin && custodyEndorsed ? { nativeMigration: { version: 1, origin: custodyAlias } } : {}) }));
+  }
   if (req.url === "/api/auth/sign-out") {
     signOutRequests++;
     if (req.method !== "POST") { res.writeHead(405); res.end("{}"); return; }
@@ -348,17 +382,13 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     const spaces = accountDesired ? snapshot.spaces.map(row => {
       if (!process.argv.includes("--account-custody-repro") || req.headers.host === new URL(idpOrigin).host) return row;
       if (process.env.CUSTODY_RELEASE_ENTRY) return { id: row.id, slug: row.id, name: row.id, kind: "team", role: "owner", unavailable: "fixture authority unavailable" };
-      const aliasRow = JSON.parse(JSON.stringify(row));
-      const auth = aliasRow.registration.userAuth;
-      auth.idp.url = `http://${req.headers.host}/api/auth`;
-      for (const field of ["url", "agentProvisioningUrl", "managerAuthorityUrl"]) if (auth.endpoints[field]) auth.endpoints[field] = auth.endpoints[field].replace(idpOrigin, `http://${req.headers.host}`);
-      return aliasRow;
+      return aliasCatalog(row);
     }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth` } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: custodyRequest ? { ...(snapshot.account as object), idpUrl: `${requestOrigin}/api/auth`, sub: subject } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth` } } : catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(custodyRequest && requestOrigin !== idpOrigin ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `${requestOrigin}/api/auth`, sub: subject }, ...(custodyTls ? { spaces: (catalog as { spaces: any[] }).spaces.map(aliasCatalog) } : {}) } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -398,17 +428,23 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     await tokenGate?.(res);
     if (res.destroyed) return;
-    if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
+    if (catalog) res.setHeader("link", `<${custodyTls ? requestOrigin : idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
+    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject(subject).setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
   res.writeHead(401); res.end("{}");
-});
+};
+const idp = tlsOptions ? createHttpsServer(tlsOptions, handleIdp) : createHttpServer(handleIdp);
 await new Promise<void>((r) => idp.listen(0, "127.0.0.1", () => r()));
-idpOrigin = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
+idpOrigin = `${custodyTls ? "https" : "http"}://127.0.0.1:${(idp.address() as AddressInfo).port}`;
 const idpUrl = `${idpOrigin}/api/auth`;
+const aliasIdp = tlsOptions && createHttpsServer(tlsOptions, handleIdp);
+if (aliasIdp) {
+  await new Promise<void>(resolve => aliasIdp.listen(0, "127.0.0.1", resolve));
+  custodyAlias = `https://127.0.0.1:${(aliasIdp.address() as AddressInfo).port}`;
+}
 
 // Count every request reaching each public face's authority route, through a counting relay.
 const hits: Array<{ space: string; method: string; path: string; operation?: string; status?: number; state?: string }> = [];
@@ -1983,6 +2019,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
+      if (custodyTls) env.NODE_EXTRA_CA_CERTS = custodyCert;
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
       if (claudeWakeOnly || process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
@@ -2688,10 +2725,11 @@ process.stdin.once('data', () => {
             await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
           } finally { await stopStatusPoll?.(); }
           if (process.argv.includes("--account-custody-repro")) {
-            const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
+            const alias = custodyTls ? `${custodyAlias}/api/auth` : idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
             const session = loadIdpSession(home, idpUrl)!;
             custodyOldFails = true;
-            saveIdpSession(home, alias, { ...session, sub: undefined });
+            if (custodyTls) assert.equal((await cli("login", "--idp", alias)).code, 0);
+            else saveIdpSession(home, alias, { ...session, sub: undefined });
             const refreshed = await cli("spaces", "--refresh");
             console.log("custody alias refresh", JSON.stringify(refreshed));
             await sleep(6500);
@@ -2713,7 +2751,15 @@ process.stdin.once('data', () => {
             const { signedInMachineAccounts } = await import("@cotal-ai/auth");
             const accounts = signedInMachineAccounts(home);
             const holder = accounts.find(account => account.idpUrl === idpUrl)!;
-            const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            const current = accounts.find(account => account.idpUrl === new URL(alias).href)!;
+            if (custodyOtherSubject) {
+              custodyEndorsed = true;
+              await sleep(6500);
+              const next = await observed();
+              const nextCustody = JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8"));
+              check("different subject remains refused even at an endorsed address", holder.sub !== current.sub && nextCustody.spaces[ON]?.owner === holder.ownerKey && findMesh(ON)?.catalogOwner === holder.ownerKey && next.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), next.account);
+              return;
+            }
             check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
             check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
             check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);
@@ -2721,6 +2767,13 @@ process.stdin.once('data', () => {
             check("same account computer is listed once", status.account.accounts.length === 1 && status.account.accounts[0].machineId === status.account.machineId, status.account);
             const human = await plainCommand("status");
             check("CLI lists same account computer once and names the holder", human.code === 0 && human.out.split("Account computer:").length === 2 && human.out.includes(`The local space connection is held by ${idpUrl}.`), human);
+            if (custodyTls) {
+              custodyEndorsed = true;
+              await sleep(6500);
+              const next = await observed();
+              const nextCustody = JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8"));
+              check("issuer endorsement moves custody for the same subject", nextCustody.spaces[ON]?.owner === current.ownerKey && findMesh(ON)?.catalogOwner === current.ownerKey && next.account.spaces.some((row: any) => row.space === ON && row.observed === "connected" && !row.lastRefusal), { status: next.account.spaces, custody: nextCustody.spaces[ON] });
+            }
             return;
           }
           const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;
@@ -4847,6 +4900,7 @@ process.exit(result.status ?? 93);
   for (const h of handles) await h.close().catch(() => {});
   for (const r of relays) r.close();
   idp.close();
+  aliasIdp?.close();
   if (nats) await killAndAwaitExit(nats, "SIGTERM").catch(() => {});
   release?.();
   if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
