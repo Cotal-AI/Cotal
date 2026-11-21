@@ -64,25 +64,26 @@ refuses and names that state and its space. A create during a restore that still
 to wait for it. A create that finds the root's maintenance lock held, such as by another
 `backup create`, names the operation that holds it, its pid and since when it has held the lock.
 Neither refusal journaled anything, so it names no attempt of its own. A destination that already exists is a `CONFLICT`
-refusal, because create writes only a new directory. A destination whose folder does not exist
-refuses `TARGET_NOT_FOUND` (exit 2) and names that folder; create makes only the artifact's own
-folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a symbolic-link loop
-(`ELOOP`) refuses `USAGE_INVALID` (exit 1), naming the destination and its parent. Choose a destination
-with a directory parent; no attempt was started and the preservation journal is unchanged.
-A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
-inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
-folder, because that cleanup would remove the backup with them. One in a
-folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder.
+refusal, because create writes only a new artifact directory. If parents are missing, create checks
+the nearest existing directory for write access and protection against other local writers. It
+makes the missing parents private after the backup preconditions pass. A non-directory parent
+(`ENOTDIR`), a symbolic-link loop (`ELOOP`), or a dangling parent link refuses `USAGE_INVALID`
+(exit 1). No attempt was started and the preservation journal is unchanged.
+A destination inside the preserved store or the maintenance attempts directory refuses
+`USAGE_INVALID` (exit 1). So does one inside a path `clean all` removes, such as `.cotal/auth`
+or the space's `.cotal/space.<hex>` folder, because that cleanup would remove the backup with them.
+If this account cannot write to the nearest existing directory, create refuses
+`PERMISSION_DENIED` (exit 2) and names that directory.
 Its Next gives a shell-quoted `chmod` command when the path can be displayed unchanged, or you can
 choose a writable folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
 says to stop the process that listens there and run the same `backup create` again. Any other
 refusal or failure shows the check's own sentence as its native detail.
-A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
-`backup create` to run again once that cause is fixed.
+A failure that cleans up the attempt leaves the preserved cut ready, and its Next names the same
+`backup create` to run again once that cause is fixed. Newly created parent directories may remain.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
-what it wrote and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
+the partial artifact and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
 writing: the store copy under `.cotal/maintenance/attempts`, or the backup in its destination. It
 also says that no backup was published and that the preserved cut is still ready. Its Next frees
 space on that disk and runs the same `backup create` again.

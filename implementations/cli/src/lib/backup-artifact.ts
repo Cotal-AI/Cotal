@@ -17,7 +17,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import {
   hardenPrivate,
   eventPayloadStream,
@@ -142,6 +142,19 @@ function sameDirectoryIdentity(path: string, identity: { dev: bigint; ino: bigin
     return stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === identity.dev && stat.ino === identity.ino;
   } catch {
     return false;
+  }
+}
+
+/** Make only the missing parents under the destination's checked physical ancestor. */
+export function createArtifactParents(ancestor: string, folder: string): void {
+  if (ancestor === folder) return;
+  let parent = ancestor;
+  for (const name of relative(ancestor, folder).split(sep)) {
+    const child = join(parent, name);
+    mkdirSync(child, { mode: 0o700 });
+    hardenPrivate(child, "dir");
+    fsyncDirectory(parent);
+    parent = child;
   }
 }
 

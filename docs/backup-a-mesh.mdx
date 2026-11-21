@@ -37,7 +37,8 @@ Run these commands from the supported mesh's project folder:
    cotal backup create ./space-backup
    ```
 
-   This creates a full backup by default. Keep the stack down throughout the backup.
+   This creates a full backup by default. If the destination needs new parent directories, Cotal
+   creates them as private directories. Keep the stack down throughout the backup.
 
 Backup does not stop or restart the mesh for you. It reads an isolated copy rather than opening the original store.
 The artifact contains no credentials or trust secrets.

@@ -2,9 +2,9 @@
  *  chunk-handoff timeout. Both halves assert the same contract from opposite ends: a failed attempt
  *  publishes nothing, keeps nothing, and leaves the cut retryable at the SAME destination. A restore
  *  or create interrupted by Ctrl-C inside its claim names its recovery, which works once its
- *  processes are gone, before the claim deadline. A create into a missing folder and a restore of a
- *  missing path refuse TARGET_NOT_FOUND before any lock, and so are a destination inside the store
- *  and one in a folder this account cannot write. A `--store-dir` that is not the cut's store
+ *  processes are gone, before the claim deadline. Create makes missing parents private; a restore
+ *  of a missing path still refuses TARGET_NOT_FOUND. A destination inside the store or in a folder
+ *  this account cannot write is refused before any lock. A `--store-dir` that is not the cut's store
  *  refuses CONFLICT naming both. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -145,15 +145,21 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
 
-    // A path that names nothing is refused before any lock, saying whether its folder or the
-    // artifact is missing.
+    const destination = join("nested", "private", "artifact");
+    must("create with two missing parents", run("backup", "create", destination, "--plain"));
+    if (process.platform !== "win32") {
+      for (const path of ["nested", join("nested", "private")])
+        assert.equal(lstatSync(join(root, path)).mode & 0o777, 0o700, `${path} was created private`);
+    }
+    const verified = run("backup", "verify", destination, "--plain");
+    must("verify the nested artifact", verified);
+    assert.match(verified.stdout, /Backup file integrity matched/);
+    const exists = run("backup", "create", destination, "--plain");
+    assert.equal(exists.status, 2, exists.stderr);
+    assert.match(exists.stderr, /Code:\s+CONFLICT/);
+
+    // Restore is read-only for a missing path, saying whether its folder or artifact is missing.
     const nowhere = join(root, "no-such-folder", "artifact");
-    const createMissing = run("backup", "create", nowhere, "--json");
-    assert.equal(createMissing.status, 2, `a create into a missing folder refuses, exit 2\n${createMissing.stdout}${createMissing.stderr}`);
-    const created = JSON.parse(createMissing.stdout) as { error?: { code?: string; message?: string }; target?: { missing?: string } };
-    assert.equal(created.error?.code, "TARGET_NOT_FOUND", "a create into a missing folder is TARGET_NOT_FOUND");
-    assert.equal(created.target?.missing, "folder", "it says the folder is missing");
-    assert.match(created.error?.message ?? "", /there is no folder \S*no-such-folder to create the backup in/, "it names that folder");
     if (process.platform !== "win32") {
       const notFolder = join(root, "parent-file"), loop = join(root, "loop-a");
       writeFileSync(notFolder, "owned fixture");
@@ -161,7 +167,7 @@ async function backupStageFaultScenario(): Promise<void> {
       symlinkSync("loop-a", join(root, "loop-b"));
       const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const prior = createHash("sha256").update(readFileSync(journal)).digest("hex");
-      for (const [destination, code] of [[join(notFolder, "backup"), "ENOTDIR"], [join(loop, "backup"), "ELOOP"]] as const) {
+      for (const [destination, code] of [[join(notFolder, "nested", "backup"), "ENOTDIR"], [join(loop, "nested", "backup"), "ELOOP"]] as const) {
         const refused = run("backup", "create", destination, "--json");
         const reply = JSON.parse(refused.stdout) as { error?: { code?: string; message?: string; cause?: { code?: string } }; target?: { directory?: string; folder?: string } };
         assert.ok(refused.status === 1 && reply.error?.code === "USAGE_INVALID" && reply.error.cause?.code === code && reply.target?.directory === destination, `an invalid destination traversal names ${code}, not the preserved cut\n${refused.stdout}${refused.stderr}`);
@@ -169,6 +175,11 @@ async function backupStageFaultScenario(): Promise<void> {
       }
       const plain = run("backup", "create", join(notFolder, "backup"));
       assert.ok(plain.status === 1 && plain.stderr.includes("ENOTDIR") && !plain.stderr.includes("Usage"), `the path refusal prints no command help\n${plain.stderr}`);
+      symlinkSync("absent-link-target", join(root, "dangling"));
+      const dangling = run("backup", "create", join("dangling", "nested", "backup"), "--plain");
+      assert.equal(dangling.status, 1, dangling.stderr);
+      assert.match(dangling.stderr, /Code:\s+USAGE_INVALID/);
+      assert.ok(!existsSync(join(root, "absent-link-target")), "a dangling parent link creates nothing at its target");
 
       symlinkSync("self-loop", join(root, "self-loop"));
       const beforeAttempts = attemptResidue(root).sort();
@@ -222,16 +233,23 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.ok(inside.status === 1 && insideEnvelope.error?.code === "USAGE_INVALID" && (insideEnvelope.error.message ?? "").includes(`is inside the preserved store ${sourcePath}`), `a destination inside the store is a usage refusal\n${inside.stdout}${inside.stderr}`);
     const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
     assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
+    for (const [parent, reason] of [[sourcePath, "preserved store"], [join(root, ".cotal", "maintenance", "attempts"), "maintenance attempt directory"]] as const) {
+      const nested = join(parent, "must-not-be-created");
+      const denied = run("backup", "create", join(nested, "artifact"), "--plain");
+      assert.equal(denied.status, 1, denied.stderr);
+      assert.ok(denied.stderr.includes(reason), denied.stderr);
+      assert.ok(!existsSync(nested), "an overlapping destination leaves its missing parent absent");
+    }
     // So is one inside the space's material folder, which `clean all` removes with whatever it
     // holds, named directly or through a link outside `.cotal`.
     const material = readdirSync(join(root, ".cotal")).find((entry) => entry.startsWith("space."));
     assert.ok(material, "the open space keeps its material folder under .cotal");
     symlinkSync(join(root, ".cotal", material), join(root, "material-link"));
-    for (const destination of [join(root, ".cotal", material, "bk"), join(root, "material-link", "bk2")]) {
+    for (const destination of [join(root, ".cotal", material, "bk"), join(root, "material-link", "missing", "bk2")]) {
       const cleaned = run("backup", "create", destination, "--json");
       const cleanedEnvelope = JSON.parse(cleaned.stdout) as { error?: { code?: string; message?: string } };
       assert.ok(cleaned.status === 1 && cleanedEnvelope.error?.code === "USAGE_INVALID" && (cleanedEnvelope.error.message ?? "").includes(`is inside ${join(root, ".cotal", material)}, which \`cotal clean all\` removes`), `a destination ${destination} that clean all removes is a usage refusal\n${cleaned.stdout}${cleaned.stderr}`);
-      assert.ok(!existsSync(join(root, ".cotal", material, "bk")) && !existsSync(join(root, ".cotal", material, "bk2")), `that refusal writes nothing in ${material}`);
+      assert.ok(!existsSync(join(root, ".cotal", material, "bk")) && !existsSync(join(root, ".cotal", material, "missing")), `that refusal writes nothing in ${material}`);
     }
     rmSync(join(root, "material-link"));
     if (process.getuid && process.getuid() !== 0) {
@@ -256,16 +274,18 @@ async function backupStageFaultScenario(): Promise<void> {
       }
       const invisible = join(root, "read\u200donly");
       mkdirSync(invisible, { mode: 0o500 });
-      const denied = run("backup", "create", join(invisible, "archive"), "--plain");
+      const denied = run("backup", "create", join(invisible, "nested", "archive"), "--plain");
       assert.equal(denied.status, 2, denied.stderr);
       assert.match(denied.stderr, /make that folder writable, or name a destination/);
+      assert.ok(!existsSync(join(invisible, "nested")), "an unwritable ancestor leaves its missing parent absent");
     }
     // A --store-dir that is not the cut's store is a conflict naming both stores.
     const emptyStore = join(root, "empty-store");
     mkdirSync(emptyStore);
-    const mismatched = run("backup", "create", join(root, "bkw"), "--store-dir", emptyStore, "--json");
+    const mismatched = run("backup", "create", join(root, "missing-bkw", "bkw"), "--store-dir", emptyStore, "--json");
     const mismatchedEnvelope = JSON.parse(mismatched.stdout) as { error?: { code?: string; message?: string } };
     assert.ok(mismatched.status === 2 && mismatchedEnvelope.error?.code === "CONFLICT" && (mismatchedEnvelope.error.message ?? "").includes(`--store-dir ${emptyStore} is not this cut's preserved store ${sourcePath}`), `a mismatched --store-dir is a conflict naming both stores\n${mismatched.stdout}${mismatched.stderr}`);
+    assert.ok(!existsSync(join(root, "missing-bkw")), "a mismatched --store-dir leaves the destination parent absent");
     assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 
