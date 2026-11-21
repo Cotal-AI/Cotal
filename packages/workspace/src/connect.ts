@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hostname, userInfo } from "node:os";
-import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
   DEV_OWNER,
@@ -914,7 +913,7 @@ export function readCredsFile(path: string, options?: { malformedRemedy?: string
     // Another local account that can write a folder on its path can swap the file, so it is refused
     // as auth mint refuses to write one there. POSIX only, as the file-mode warning below is.
     if (localRecordAccess() === "posix") {
-      try { protectedLocalDirectory(dirname(resolve(path)), "its path"); }
+      try { protectedLocalDirectory({ parentOf: path }, "its path"); }
       catch (error) {
         if (error instanceof CommandFailure && error.code === "PERMISSION_DENIED") throw refuse(`${path} cannot be used: ${error.message}`, "PERMISSION_DENIED", error.remedy ?? "move it to a folder only you can write");
         throw error;
