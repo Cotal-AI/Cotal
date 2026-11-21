@@ -504,8 +504,11 @@ defaults or the built-in policy. The inventory uses the same mark for replay and
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
 
-`channel show --json` returns the raw registry entries for the space defaults (`result.registry.defaults`)
-and the named channel (`result.registry.channels`). It does not apply inheritance or fill in built-in defaults.
+`channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
+saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or
+an empty object if the entry is absent or cannot be decoded. `result.registry.undecodable` reports
+decode errors for the defaults and named channel when present. The command does not apply
+inheritance or fill in built-in defaults. Use `channel --json` for the full inventory.
 
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.
