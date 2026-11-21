@@ -208,6 +208,8 @@ export interface StackUpResult {
   journal: StackJournal;
   changed: unknown[];
   allReused: boolean;
+  /** The broker's effective limit when it is below the manager's startup floor. */
+  insufficientManagerPayload?: number;
   /** The manager's pinned launch spec, when this call defined one. */
   launch?: { path: string; sha256: string };
   /** A settled active restore of this stack that its retained journal did not fence. */
@@ -484,12 +486,31 @@ export function keptOnUp(space: string, kept: string): string {
     : `"${space}" up; "${kept}" stays automatically selected outside this folder - \`cotal use ${space}\` selects this space in every folder`;
 }
 
+function managerPayloadRestart(cmd: string): string {
+  return `from the stack's project root, run ${codeSpan(`${cmd} down --yes`)}, then ${codeSpan(`${cmd} up --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}`)}`;
+}
+
+function stackUpNext(root: string, space: string, managed: boolean, invokedRoot: string | undefined, insufficientManagerPayload: number | undefined): Report["sections"][number] {
+  const cmd = displayCmd();
+  const elsewhere = invokedRoot !== undefined && invokedRoot !== canonicalRoot(root);
+  const down = { command: `${cmd} down`, description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" };
+  if (!managed && insufficientManagerPayload !== undefined) return { title: "Next", blocks: [
+    { kind: "lines", lines: [`The broker's payload limit is ${insufficientManagerPayload} bytes, below the manager's minimum of ${MANAGER_START_PAYLOAD_FLOOR} bytes. To add a manager, stop and restart the broker: ${managerPayloadRestart(cmd)}.`] },
+    { kind: "commands", items: [down] },
+  ] };
+  // A bare spawn targets the selected space, which this up does not change when one is set.
+  const start = managed
+    ? { command: `${cmd} spawn --space ${space}`, description: "Launch your default agent" }
+    : { command: `${cmd} up${elsewhere ? ` --root ${shellWord(root)}` : ""}`, description: "Add the manager to this stack" };
+  return { title: "Next", blocks: [{ kind: "commands", items: [start, down] }] };
+}
+
 /** `cotal up`'s controller route: start, seed the default persona into the root, then write its
  *  own receipt, which names the saved services it does not start. The stack is up by then, so a
  *  persona that cannot be written, or saved services that cannot be listed, is a warning. */
 export async function stackUp(request: StackUpRequest, native: StackUpNative): Promise<void> {
   const before = usableSelection();
-  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation, storeShared, storeWarnings, clearedRecords } = await startControllerStack(request, native);
+  const { journal, changed, allReused, admittedRestore, settled, brokerExecutable, streamsRecreated, rotation, storeShared, storeWarnings, clearedRecords, insufficientManagerPayload } = await startControllerStack(request, native);
   const { root, space, server, mode } = journal;
   const managed = journal.members.some((row) => row.role === "manager" && (row.state === "started" || row.state === "reused"));
   // The receipt says when the start selected its space, and when another space stays selected.
@@ -533,13 +554,7 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
       ...(exposed ? [{ kind: "lines" as const, lines: [{ text: exposed, tone: "waiting" as const }] }] : []),
     ] }];
     const view: Report = { ...members, sections: [...members.sections, ...listening, ...(result.written.length ? [{ blocks: [{ kind: "fields" as const, rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] : [])] };
-    // `down` stops only the stack of the folder it runs in, so from another folder the Next says where.
-    const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
-    const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
-      // A bare spawn targets the selected space, which this up does not change when one is set.
-      managed ? { command: `${displayCmd()} spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `${displayCmd()} up --root ${shellWord(root)}` : `${displayCmd()} up`, description: "Add the manager to this stack" },
-      { command: `${displayCmd()} down`, description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
-    ] }] }];
+    const next = request.foreground ? [] : [stackUpNext(root, space, managed, request.invokedRoot, insufficientManagerPayload)];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
     const kept: Report["sections"] = selection ? [{ blocks: [{ kind: "lines", lines: [{ text: selection, tone: "hint" }] }] }] : [];
     const saved: Report["sections"] = result.savedServices.length ? [{ blocks: [{ kind: "lines", lines: [
@@ -787,9 +802,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (request.authTimeout !== recordedTimeout && brokerIsRunning())
       throw new CommandFailure("refused", "CONFLICT", `--auth-timeout ${request.authTimeout} differs from the running broker's (${recordedTimeout === undefined ? "nats-server's default" : `${recordedTimeout} seconds`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --auth-timeout ${request.authTimeout}\`` });
   }
+  // A running broker keeps the limit it was started with, which the same record carries.
+  const recordedPayload = readBrokerPolicy(root)?.maxPayload;
   if (request.maxPayload !== undefined) {
-    // A running broker keeps the limit it was started with, which the same record carries.
-    const recordedPayload = readBrokerPolicy(root)?.maxPayload;
     if (request.maxPayload !== (recordedPayload ?? NATS_DEFAULT_MAX_PAYLOAD) && brokerIsRunning())
       throw new CommandFailure("refused", "CONFLICT", `--max-payload ${request.maxPayload} differs from the running broker's (${recordedPayload === undefined ? "nats-server's default" : `${recordedPayload} bytes`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up${request.noManager ? " --no-manager" : ""} --max-payload ${request.maxPayload}\`` });
   }
@@ -804,12 +819,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // The broker this start uses, whether it is about to be prepared or already serving. A manager
   // publishes its contract on that limit, so the floor applies before any member starts, including
   // when a bare up adds a manager to a broker an earlier --no-manager left running.
-  const effectivePayload = request.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
-  if (!request.noManager && effectivePayload !== undefined && effectivePayload < MANAGER_START_PAYLOAD_FLOOR)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${effectivePayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, {
+  const effectivePayload = request.maxPayload ?? recordedPayload ?? NATS_DEFAULT_MAX_PAYLOAD;
+  const insufficientManagerPayload = effectivePayload < MANAGER_START_PAYLOAD_FLOOR ? effectivePayload : undefined;
+  if (!request.noManager && insufficientManagerPayload !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", `--max-payload ${insufficientManagerPayload} is below ${MANAGER_START_PAYLOAD_FLOOR} bytes, the least the space's manager starts on: it publishes its contract artifacts, one message each, and the largest is bounded at ${CONTRACT_ARTIFACT_MAX_BYTES} bytes with ${MANAGER_START_PAYLOAD_FLOOR - CONTRACT_ARTIFACT_MAX_BYTES} more for the publish; nothing was started`, {
       target: { root, space },
       remedy: brokerIsRunning()
-        ? `from the stack's project root, run \`cotal down --yes\`, then \`cotal up --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}\`, or keep it broker-only with \`cotal up --no-manager\``
+        ? `${managerPayloadRestart("cotal")}, or keep it broker-only with \`cotal up --no-manager\``
         : `pass --max-payload ${MANAGER_START_PAYLOAD_FLOOR} or more, or pass --no-manager to start the broker without a manager`,
     });
   const admittedRestore = stackPreflight({ ...request, root, space }, previous?.journal);
@@ -1226,7 +1242,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       : "the user stack's other members were already running and were reused; the manager was not attempted because no signed-in, granted login exists. This is not whole-stack readiness", { target: detail, changed, native: { code: "AUTH_REQUIRED", outcome: "refused", detail: loginBlock.message }, ...(loginBlock.remedy ? { remedy: loginBlock.remedy } : {}) });
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
-  return { journal, changed, allReused, ...(storeTenants.length ? { storeShared: { path: storePath, tenants: storeTenants } } : {}), ...(storeWarnings.length ? { storeWarnings } : {}), ...(clearedRecords.length ? { clearedRecords } : {}), ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(rotation ? { rotation } : {}) };
+  return { journal, changed, allReused, ...(insufficientManagerPayload !== undefined ? { insufficientManagerPayload } : {}), ...(storeTenants.length ? { storeShared: { path: storePath, tenants: storeTenants } } : {}), ...(storeWarnings.length ? { storeWarnings } : {}), ...(clearedRecords.length ? { clearedRecords } : {}), ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(rotation ? { rotation } : {}) };
 }
 
 /** Stop a broker this call started, through its exact kernel stop, and read whether its log says it

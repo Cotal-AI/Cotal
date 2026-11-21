@@ -17,7 +17,7 @@
  *  3. `down`, then a PLAIN `up` with no flag renders and serves N again from the record.
  *  4. Open legacy and controller starts serve and retain the limit without adding authentication,
  *     and accept a replacement limit once stopped.
- *  5. An open broker-only start accepts a low limit, but adding a manager refuses before launch.
+ *  5. An open broker-only start accepts a low limit and explains the restart needed to add a manager.
  *
  * Sandboxes COTAL_HOME and a project root under a scratch base with proven-clean `.cotal` ancestry;
  * kills only its own children. Needs `nats-server` on PATH.
@@ -123,6 +123,7 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
     try {
       const started = await run(["up", "--open", ...args]);
       ok("open broker starts with no payload override", started.status === 0 && await servedMaxPayload(port) === 1048576, started.out);
+      if (mode === "open-controller") ok("the default limit permits the add-manager hint", /^ +.*cotal up +Add the manager to this stack$/m.test(started.out), started.out);
       const reuse = await run(["up", ...args, "--max-payload", "1048576"]);
       ok("explicit default payload reuses the running broker", reuse.status === 0 && /already running/.test(reuse.out), reuse.out);
       ok("reusing the default does not record an override", !existsSync(join(root, ".cotal", "broker-policy.json")));
@@ -205,6 +206,15 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
     const brokerOnly = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "8192"]);
     try {
       ok("a broker-only start accepts and serves 8192 bytes", brokerOnly.status === 0 && await servedMaxPayload(port) === 8192, brokerOnly.out);
+      if (mode === "open-controller") {
+        const reused = await run(["up", "--no-manager", "--server", server, "--plain"]);
+        ok("broker-only up reuses the low-payload broker", reused.status === 0 && reused.out.includes("Controller stack already running"), reused.out);
+        for (const [name, output] of [["fresh start", brokerOnly.out], ["reuse", reused.out]] as const) {
+          ok(`the ${name} receipt requires a restart to add a manager`,
+            !output.includes("Add the manager to this stack") && output.includes("8192 bytes, below the manager's minimum of 263168 bytes") &&
+            output.includes("cotal down --yes") && output.includes("cotal up --max-payload 1048576") && output.includes("Stop every recorded member"), output);
+        }
+      }
       const add = await run(["up", "--server", server]);
       ok("adding a manager refuses on the recorded floor before launch",
         add.status === 1 && add.out.includes("--max-payload 8192 is below 263168 bytes") &&

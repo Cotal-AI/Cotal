@@ -82,6 +82,8 @@ names the command to stop that instance and the retry retains both `--space` and
 
 A stopped controller stack that used the default bind accepts `--host 127.0.0.1` on restart without saving a bind override.
 A running broker that used the default payload limit accepts `--max-payload 1048576` without restarting.
+If a broker-only controller stack uses a limit below 263168 bytes, the `up` receipt explains how to
+stop and restart the broker with a higher limit before adding a manager.
 
 Ordinary startup and refresh start delivery before user-auth, then start the manager. Auth uses
 delivery to check whether a crashed predecessor has disconnected. Live or unknown holders remain
