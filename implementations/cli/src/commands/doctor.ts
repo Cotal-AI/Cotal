@@ -46,6 +46,7 @@ import {
   resolveMeshTarget,
   SHOWN_VALUE_MAX,
   spaceKey,
+  spaceNameTooLong,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -64,6 +65,7 @@ import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
 import { readStackJournal } from "../lib/stack-journal.js";
+import { checkSpaceName } from "./meshes-add.js";
 
 export const doctorFlags = [jsonFlag, plainFlag,
   { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds, or mint one again that holds no key while its broker does not answer; needs the local signer)" },
@@ -147,11 +149,8 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
   } catch { return undefined; }
 }
 
-/** Where to run doctor auth when this folder's root holds no signing trust for the scope it names:
- *  the root `space` is registered at, when that is another folder; the root `space` was prepared
- *  in, once `cotal up` there starts it, when no `up` has; or else a space's root. Without `space`,
- *  only the space this root prepared and never started is named. The report stays root-local, so
- *  the step names the folder instead of reading another root's trust. */
+/** The next step for a diagnostic scope this root holds no signing trust for. Known spaces can
+ *  name their root, while an explicitly unknown space needs a corrected name or preparation. */
 function trustRootStep(root: string, space: string | undefined, fix: boolean): string {
   const command = `cotal doctor auth${space === undefined ? "" : ` --space ${space}`}${fix ? " --fix" : ""}`;
   let named = space;
@@ -160,6 +159,12 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
   if (named !== undefined) {
     try { const target = resolveMeshTarget(root, { space: named, readOnly: true }); if (space !== undefined && canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
     catch (error) {
+      if (space !== undefined && error instanceof MeshTargetError && error.code === "unknown-space") {
+        const correct = `Unknown space ${JSON.stringify(boundedValue(space, SHOWN_VALUE_MAX))}. Run \`cotal space\` to check the name`;
+        return checkSpaceName(space).ok && !spaceNameTooLong(space)
+          ? `${correct}. For a new local space, run \`cotal space create ${space}\` in its project folder, then run \`cotal up\` there.`
+          : `${correct}.`;
+      }
       if (error instanceof MeshTargetError && error.code === "not-started") {
         if (error.details.rootMissing) registered = error.details.root;
         else if (preparedNeverStarted(error.details)) prepared = error.details.root;

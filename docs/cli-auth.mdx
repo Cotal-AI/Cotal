@@ -448,8 +448,11 @@ about what that broker enforces. A checked open space has no credentials to insp
 `--space` naming it. This is a local mode observation, not proof that a broker is running or accepts
 connections. With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
-no other root. Its next step names the folder that space is registered at, where the same command
-runs, or else a space's root, which `cotal space` lists. If the recorded folder no longer exists,
+no other root. If the name is neither registered nor prepared, the next step identifies it as
+unknown and points to `cotal space` to check the name. To start a new local space, run
+`cotal space create <name>` in its project folder, then run `cotal up` there.
+For a space registered at another root, the next step names the folder where the same command
+runs. If the recorded folder no longer exists,
 the step says so and names moving it back if it was renamed or `cotal space forget <space>` to
 remove its local record. For a space `cotal space create` prepared
 and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
