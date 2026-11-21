@@ -237,18 +237,32 @@ const misspelledStatus = run(["help", "service", "sttaus", "manager"]);
 check("explicit help still refuses a misspelled service subcommand before its operand",
   usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
 
+for (const [command, word, title] of [
+  ["history", "general", "cotal history"],
+  ["h", "general", "cotal history"],
+  ["history", "clear", "cotal history clear"],
+  ["history", "limit", "cotal history limit"],
+] as const) {
+  const explicit = run(["help", command, word]);
+  const flag = run([command, word, "--help"]);
+  check(`both help forms for ${command} ${word} show ${title}`,
+    explicit.status === 0 && flag.status === 0 && explicit.stderr === "" && flag.stderr === ""
+    && explicit.stdout === flag.stdout && explicit.stdout.startsWith(`${title}\n`),
+    { explicit: shown(explicit), flag: shown(flag) });
+}
+
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
 // --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
-// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+// After a real subcommand or a leaf's argument it prints the help.
 for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
 }
 const nearHelp = run(["space", "creat", "--help"]);
 check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
-for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+for (const args of [["space", "create", "--help"], ["team", "show", "anything", "--help"]] as const) {
   const r = run([...args]);
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
