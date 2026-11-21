@@ -465,7 +465,7 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
   const destination = resolve(args.positionals[1]!);
   const { what, directory } = observed.writing;
   const written = what === "backup" ? "it removed the partial backup and published none" : `it removed the partial copy and wrote nothing to ${destination}`;
-  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then ${retryCreateStep(args)}` });
+  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on that disk, then ${retryCreateStep(args)}` });
 }
 
 /** A displayed retry must name the same paths after terminal escaping. */

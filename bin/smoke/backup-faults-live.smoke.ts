@@ -36,7 +36,7 @@ const BACKUP_STAGES = {
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
   // A full disk names its cause and directory, what was and was not written, and a retry.
-  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run `cotal backup create [^\n]*artifact-nospace` again/,
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -271,8 +271,9 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
-      const destination = join(root, `artifact-${stage}`);
-      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination], {
+      const noSpace = stage === "nospace";
+      const destination = join(root, noSpace ? "disk`full\u2026 artifact-nospace" : `artifact-${stage}`);
+      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination, ...(noSpace ? ["--plain"] : [])], {
         cwd: root,
         env: { ...env, COTAL_SMOKE_FAIL_BACKUP_STAGE: stage },
         encoding: "utf8",
@@ -280,9 +281,10 @@ async function backupStageFaultScenario(): Promise<void> {
       });
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
-      // The cleanup completed, so the next step is the same create, not a recovery.
-      assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
-      if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
+      if (!noSpace) {
+        assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
+        assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
+      }
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
       assert.deepEqual(attemptResidue(root), [], `${stage} fault leaves no clone, config, or broker residue in the attempts dir`);
@@ -290,8 +292,19 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.equal(sourceAfter.dev, sourceBefore.dev, `${stage} fault leaves the preserved source device unchanged`);
       assert.equal(sourceAfter.ino, sourceBefore.ino, `${stage} fault leaves the preserved source inode unchanged`);
 
-      // The retry is the point: a faulted attempt must not poison its own destination path.
-      must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      if (noSpace) {
+        assert.equal(faulted.status, 5, `disk-full failure exits 5\n${faulted.stderr}`);
+        const next = faulted.stderr.split("\nNext\n")[1] ?? "";
+        const retry = /then run (`{2,})(cotal backup create .+?)\1 again/.exec(next)?.[2];
+        assert.ok(retry, `Next gives a copyable retry after freeing space\n${faulted.stderr}`);
+        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }\n${retry}`], {
+          cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
+        }));
+        must("verify at the original disk-full destination", run("backup", "verify", destination));
+        assert.match(next, /free space on that disk/);
+      } else {
+        must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      }
       assertValidManifest(destination, space, "full");
       assert.equal(journalState(root), "ready", `${stage} retry leaves the cut ready`);
       assert.deepEqual(attemptResidue(root), [], `${stage} retry leaves no attempt residue`);
