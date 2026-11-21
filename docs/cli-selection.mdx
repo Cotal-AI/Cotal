@@ -561,10 +561,11 @@ A copied or moved project folder keeps a stack journal that names the folder it 
 journal can be adopted, the refusal prints the exact `space create --adopt` command to run.
 `cotal status` lists the applicable recovery options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
-this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
-with the copied store. When that store directory is present under this folder, it refreshes the recorded store identity from
-it, so a moved or copied store gives no replacement warning before startup, while a missing store or a
-replacement made after adoption still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+this one, and records a stack that never ran here. Bare `cotal up` starts it from this folder with
+its recorded authentication mode and the copied store. When that store directory is present under
+this folder, adoption refreshes the recorded store identity from it, so a moved or copied store gives
+no replacement warning before startup, while a missing store or a replacement made after adoption
+still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
 link, when the recorded folder still holds the journal, when this machine records an instance of
 that stack, or when the space is prepared or registered on this machine. For a confirmed stopped
 stack at a missing path, follow the forget and adopt commands shown by `cotal status`. A copy brought from another machine and a

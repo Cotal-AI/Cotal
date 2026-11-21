@@ -756,17 +756,22 @@ try {
     check("down --yes stops it", last.status === 0, shown(last));
   }
 
-  // 14. A stack whose folder is renamed while it runs stops from another folder, and adopting the
-  // folder where it is now keeps its history.
+  // 14. An open stack whose folder is renamed while it runs stops from another folder. Adopting it
+  // keeps its mode, saved channel metadata and history.
   {
     const space = "tear14";
     const root = folder(space);
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     check("space create prepares a root that is then renamed", created.status === 0, shown(created));
     anchor(root);
-    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
-    const sent = cli(root, "send", "-c", "general", "kept across the move", "--json");
-    check("up starts the stack and a message is stored", started.status === 0 && sent.status === 0, { up: shown(started), send: shown(sent) });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--open", "--server", server, "--no-manager", "--json");
+    const channel = "moved.notes", description = "Notes kept across the move";
+    const saved = cli(root, "channel", "set", channel, "--desc", description);
+    const messages = ["first post across the move", "second post across the move"];
+    const sent = messages.map((message) => cli(root, "send", "-c", channel, message, "--json"));
+    check("open up starts the stack and stores channel metadata and two messages",
+      started.status === 0 && started.env?.result?.mode === "open" && saved.status === 0 && sent.every((post) => post.status === 0), { up: shown(started), channel: shown(saved), send: sent.map(shown) });
     anchors.delete(root);
     const moved = `${root}-moved`;
     renameSync(root, moved);
@@ -782,9 +787,15 @@ try {
     const adopted = cli(other, "space", "create", space, "--adopt", "--root", moved, "--json");
     anchor(moved);
     const restarted = cli(moved, "up", "--json");
-    const kept = cli(moved, "history", "general", "--json");
-    check("adopting the renamed folder keeps its history, and up starts it there",
-      adopted.status === 0 && restarted.status === 0 && ((kept.env?.result?.items ?? []) as { text?: string }[]).some((m) => m.text === "kept across the move"), { adopt: shown(adopted), up: shown(restarted), history: shown(kept) });
+    check("bare up starts the adopted stack in open mode on its original address",
+      adopted.status === 0 && restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env.result.server === server, { adopt: shown(adopted), up: shown(restarted) });
+    const channels = cli(moved, "channel", "--plain");
+    check("the adopted open stack lists the saved channel metadata",
+      channels.status === 0 && channels.stdout.includes(channel) && channels.stdout.includes(description), shown(channels));
+    const kept = cli(moved, "history", channel, "--limit", "20", "--json");
+    const retained = ((kept.env?.result?.items ?? []) as { text?: string }[]).map((item) => item.text);
+    check("the adopted open stack retains both posts",
+      kept.status === 0 && retained.length === messages.length && messages.every((message) => retained.includes(message)), shown(kept));
     const last = cli(moved, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }
