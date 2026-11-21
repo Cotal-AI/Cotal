@@ -43,9 +43,9 @@ export const OWN_REPLAY_ATTEMPTS = 3;
  *
  * `RunJournalReplayRaced` says another reader held the replay durable. Nothing is missing from the
  * journal and the run is not lost, which is why `activateRun` replays again on it. A drive reads
- * the same durable at every effect and at every poll of a parked pause, so its reads get the same
- * bounded retry, and a lost round is not handed to the program as the step's own `L4000`. Any other
- * failure, and the race on the last attempt, is raised unchanged.
+ * the same durable for effect authorization and when an idle cursor is invalidated, so those reads
+ * get the same bounded retry. A lost round is not handed to the program as the step's own `L4000`.
+ * Any other failure, and the race on the last attempt, is raised unchanged.
  */
 export async function replayOwnJournal(
   js: JetStreamClient,
@@ -53,10 +53,11 @@ export async function replayOwnJournal(
   space: string,
   runId: string,
   takeoverId: string,
+  retainTail = false,
 ): Promise<RunJournalReplay> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await replayRunJournal(js, jsm, space, runId, takeoverId);
+      return await replayRunJournal(js, jsm, space, runId, takeoverId, { retainTail });
     } catch (e) {
       if (!(e instanceof RunJournalReplayRaced) || attempt >= OWN_REPLAY_ATTEMPTS) throw e;
     }

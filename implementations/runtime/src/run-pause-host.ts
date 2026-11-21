@@ -40,7 +40,7 @@ export class PauseOverdue extends Error {
 }
 
 /** The trusted host derives subjects from the bound endpoint and attempt. An empty fire poll
- *  checks the journal tail, not its full prefix. A fact or fire still needs token authorization. */
+ *  checks for journal movement. A fact or fire still needs fresh token authorization. */
 export function createRunPauseHost(
   broker: RunHostPlanes,
   binding: {

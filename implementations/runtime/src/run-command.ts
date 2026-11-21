@@ -444,8 +444,8 @@ async function drive(
 ): Promise<void> {
   const { endpoint, runId, source, who, epoch, fencingToken, takeoverId } = a;
   const mediator = await openMediator(planes, { endpoint, runId, takeoverId, instanceId: who.instanceId, epoch });
+  const authority = createRunScopeAuthority(mediator, runId, { holder: who.id, epoch, fencingToken, takeoverId });
   try {
-    const authority = createRunScopeAuthority(mediator, runId, { holder: who.id, epoch, fencingToken, takeoverId });
     const admitted = a.admission.admission;
     if (admitted.space !== planes.space || admitted.endpoint !== endpoint || admitted.runId !== runId)
       throw new Error(`run ${runId}: the admission names ${admitted.space}/${admitted.endpoint}/${admitted.runId}; refused (SPEC 14.8)`);
@@ -484,6 +484,7 @@ async function drive(
     }
     reportOutcome(runId, out);
   } finally {
+    await authority.close();
     await drainAndClose(mediator.nc);
   }
 }

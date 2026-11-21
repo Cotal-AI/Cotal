@@ -61,9 +61,10 @@ The manager hosts runs. `cotal run start` hands the program to the manager of th
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
 moment the id prints. The run continues on the manager through every pause. On restart, the manager
 takes back eligible runs recorded as running, using the journal to continue under a new epoch.
-While a pause waits, the manager checks the journal tail for a takeover without replaying an
-unchanged journal. It checks the current journal before acting on a timer fire or using a
-settlement fact.
+While a sleep, checkpoint, or ask waits, empty timer polls check for takeovers without
+replaying an unchanged journal. Acting on a timer fire or using a settlement fact still
+requires fresh journal authorization. Polls for channel messages or idleness still replay
+the journal to authorize each fetch.
 If the startup scan fails, the manager keeps serving requests and retries the scan in the background.
 If it logs that retries are exhausted, use `cotal run resume <runId>` after the broker is reachable.
 
@@ -150,9 +151,6 @@ Local user-auth runs remain unavailable because a user bearer holds no run rows.
 hosts none either, since it issues no caller authority to admit a run under.
 
 ## Remote user-auth hosting [#remote-user-auth-hosting]
-
-Upgrade the issuing auth service before upgrading the manager for pause polling. The manager needs
-the journal tail read grant on its workflow mediator connection.
 
 Run listing on managers from 0.149.0 requires an auth service from 0.149.0 or later. Upgrade the
 space's auth service first. A denied batched list reports `failed-precondition`, names its missing

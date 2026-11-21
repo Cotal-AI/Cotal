@@ -189,12 +189,16 @@ recorded ownership flag must match its step-derived channel before registry writ
 
 The mediator retains endpoint-wide checkpoint rights and stream-wide leader reads as trusted
 host authority. Record reads exposed to the driver are restricted to its own run's keys. Reads
-that decide writes remain leader-served. An idle timer poll reads the run's journal tail and
-replays only if the sequence changed. It stops a superseded attempt without waiting for the timer
-or answer. Replay uses the run's filtered durable, including for the diagnostic for a journal
-with no run record. The durable is named after the takeover. Reads under one takeover run one at a time in
-the hosting process and a replay removes a durable of its own name that an interrupted earlier read
-left behind. A create failure permits this recovery only for a structured JetStream API error
+that decide writes remain leader-served. During an empty timer poll the mediator keeps the last
+delivery from a validated, run-filtered replay unacknowledged. The broker reports whether that
+delivery is still pending acknowledgement and whether more records are ready. A change or a
+lost consumer requires a fresh replay.
+This stops a superseded attempt without waiting for the timer or answer and needs no new grants.
+Channel message and idle waits still replay to authorize each channel fetch. Replay uses the
+run's filtered durable, including for the diagnostic for a journal with no run record. The
+durable is named after the takeover. Reads under one takeover run one at a time in the hosting
+process. Each full replay removes a retained or interrupted durable of its own name. A create
+failure permits this recovery only for a structured JetStream API error
 with code `10148`. Other errors propagate without deleting the durable, even if they carry that
 numeric or string code. A durable that survives a replay's own delete belongs to a reader the
 process cannot account for, and reading its tail is refused. A drive handles that refusal as a

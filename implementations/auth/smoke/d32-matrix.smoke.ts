@@ -959,7 +959,6 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
         `$JS.ACK.WFJ_${S}.wfj_${RUN}_${TK}.>`,
         `$JS.API.CONSUMER.DELETE.WFJ_${S}.wfj_${RUN}_${TK}`,
-        `$JS.API.STREAM.MSG.GET.WFJ_${S}`,
         `$KV.cotal_records_${S}.run.${EP}.${RUN}.>`,
         `$KV.cotal_records_${S}.program.${EP}.${RUN}`,
         `$KV.cotal_records_${S}.notice.${EP}.${RUN}.>`,
@@ -1006,8 +1005,8 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
     !rows.some((r) => /^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_(?:auth|records)_/.test(r) || /^\$JS\.ACK\.KV_cotal_(?:auth|records)_/.test(r)), rows);
   c("NO bare ephemeral-create form anywhere (the settle watcher polls the fact; it binds no EPF consumer)",
     !rows.some((r) => /^\$JS\.API\.CONSUMER\.CREATE\.[^.]+$/.test(r)), rows);
-  c("NO journal Direct Get or publish grant",
-    !rows.some((r) => r.startsWith(`$JS.API.DIRECT.GET.WFJ_${S}`) || r.startsWith(`cotal.${S}.wfj.`)), rows);
+  c("NO journal point read or publish grant",
+    !rows.some((r) => r === `$JS.API.STREAM.MSG.GET.WFJ_${S}` || r.startsWith(`$JS.API.DIRECT.GET.WFJ_${S}`) || r.startsWith(`cotal.${S}.wfj.`)), rows);
   c("NO destructive stream verb, NO auth-store read, NO goal fact publish, NO epj submission, NO chat publish",
     !rows.some((r) => DESTRUCTIVE_JS.test(r) || r.includes("KV_cotal_auth_") || /\.epf\.[^.]+\.goal\./.test(r) || r.includes(".epj.") || /\.chat\./.test(r)), rows);
   const other = runMediatorGrants(S, { endpoint: EP, runId: "run-bb22", takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);

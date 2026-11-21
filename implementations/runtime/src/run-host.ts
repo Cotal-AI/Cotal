@@ -353,7 +353,8 @@ export const cotalLangRunHost: RunHost = {
     // A program that FAILS is rethrown by the driver after its `failed` note; the host reads it as
     // an outcome, never as its own crash.
     const done = (req.mode === "new" ? startRun(planes.js, planes.jsm, driveReq) : driveRun(planes.js, planes.jsm, driveReq))
-      .then(outcomeOf, failureOf);
+      .then(outcomeOf, failureOf)
+      .finally(() => authority.close());
     return {
       done,
       release: (reason: string) => pause.pause(reason),

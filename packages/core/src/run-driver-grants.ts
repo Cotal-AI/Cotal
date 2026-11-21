@@ -11,7 +11,6 @@ import { admissionBucket } from "./run-admission.js";
 import {
   runDriverJournalGrants,
   runJournalReplayGrants,
-  wfjStreamName,
   recordsKvStreamName,
   epfStreamName,
   eptStreamName,
@@ -85,8 +84,7 @@ export const PLACED_LIFECYCLE_COMMANDS: readonly string[] = Object.freeze(["turn
 /** Trusted, per-run host connection. The endpoint-wide checkpoint writes and body-selected
  *  records/fact/timer/chat reads are its residual authority. The runtime confines those verbs
  *  behind journal-checked operations; this profile must never be given to the run driver.
- *  It reads this run's journal tail for pause currency and replays it to authorize effects.
- *  The tail read is body-selected and therefore also part of the host's residual authority. */
+ *  It can replay this run's journal to authorize effects, but cannot append a journal entry. */
 export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connId: string): { publish: string[]; subscribe: string[] } {
   const e = endpointToken(args.endpoint);
   const run = assertIdToken(args.runId, "runId");
@@ -100,7 +98,6 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
   const publish = [
     // Read this run's journal to authorize host operations.
     ...runJournalReplayGrants(space, run, args.takeoverId),
-    `$JS.API.STREAM.MSG.GET.${wfjStreamName(space)}`,
     // Run-owned state and the mediated checkpoint writer.
     `$KV.${records}.run.${e}.${run}.>`,
     `$KV.${records}.program.${e}.${run}`,

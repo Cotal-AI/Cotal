@@ -1,6 +1,5 @@
 import { Journal, atMostOnce, digest, holdRequestId, journalEntryKeyString, stepKeyString, type EffectContext, type JournalEntry } from "@cotal-ai/lang";
-import { lastActivation, wfjStreamName, wfjSubject, type RunHostPlanes, type RunHostLease, type RunJournalActivation } from "@cotal-ai/core";
-import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
+import { lastActivation, type RunHostPlanes, type RunHostLease, type RunJournalActivation, type RunJournalReplay } from "@cotal-ai/core";
 import { replayOwnJournal } from "./journal-store.js";
 import { pauseTokens } from "./pause-tokens.js";
 
@@ -8,6 +7,7 @@ interface RunScopeSnapshot {
   readonly entries: readonly JournalEntry[];
   readonly activation: RunJournalActivation | undefined;
   readonly lastSeq: number;
+  readonly cursor: RunJournalReplay["cursor"];
 }
 
 /** The reader and its replay durable are host-bound. No request selects another run. */
@@ -17,25 +17,14 @@ export function createRunScopeAuthority(
   lease: RunHostLease,
 ): RunScopeAuthority {
   const pinned = structuredClone(lease);
-  const stream = wfjStreamName(broker.space);
-  const subject = wfjSubject(broker.space, runId);
-  return new RunScopeAuthority(runId, async () => {
-    const replay = await replayOwnJournal(broker.js, broker.jsm, broker.space, runId, pinned.takeoverId);
+  return new RunScopeAuthority(runId, async (retainTail) => {
+    const replay = await replayOwnJournal(broker.js, broker.jsm, broker.space, runId, pinned.takeoverId, retainTail);
     return {
       entries: replay.records.flatMap(({ record }) => record.kind === "step" ? [record.entry as JournalEntry] : []),
       activation: lastActivation(replay.records),
       lastSeq: replay.lastSeq,
+      cursor: replay.cursor,
     };
-  }, async () => {
-    try {
-      const tail = await broker.jsm.streams.getMessage(stream, { last_by_subj: subject });
-      if (tail && (tail.subject !== subject || !Number.isSafeInteger(tail.seq) || tail.seq < 1))
-        throw new Error(`run ${runId}: invalid journal tail for ${subject}`);
-      return tail?.seq;
-    } catch (error) {
-      if (error instanceof JetStreamApiError && error.code === JetStreamApiCodes.NoMessageFound) return undefined;
-      throw error;
-    }
   }, pinned);
 }
 
@@ -97,16 +86,15 @@ export class RunScopeDenied extends Error {
   }
 }
 
-/** The readers are bound to one run's journal. Only an idle currency check can reuse a validated
- *  sequence, and only while the leader reports that same tail. Token decisions replay afresh. */
+/** Only idle currency checks reuse the cursor. Token decisions always replay afresh. */
 export class RunScopeAuthority {
   private reading: Promise<void> = Promise.resolve();
   private checkedSeq = 0;
+  private cursor: RunJournalReplay["cursor"];
 
   constructor(
     private readonly runId: string,
-    private readonly readJournal: () => Promise<RunScopeSnapshot>,
-    private readonly readTail: () => Promise<number | undefined>,
+    private readonly readJournal: (retainTail: boolean) => Promise<RunScopeSnapshot>,
     private readonly attempt: Pick<RunHostLease, "holder" | "epoch" | "fencingToken">,
   ) {}
 
@@ -119,24 +107,40 @@ export class RunScopeAuthority {
   /** A parked timer still detects a takeover even when the broker has nothing to deliver. */
   async assertCurrent(): Promise<void> {
     await this.serialize(async () => {
-      const seq = await this.readTail();
-      if (seq === undefined || seq < this.checkedSeq)
-        throw new RunScopeDenied(this.runId, "drive attempt", "use missing or truncated journal for");
-      if (seq !== this.checkedSeq) await this.readEntries(seq);
+      if (await this.cursor?.unchanged()) return;
+      await this.readEntries(true);
     });
+  }
+
+  async close(): Promise<void> {
+    // Never replace the drive's outcome if its connection is already gone. The idle consumer
+    // has a broker reaper for that case.
+    await this.serialize(async () => this.cursor?.close()).catch(() => undefined);
   }
 
   private entries(): Promise<readonly JournalEntry[]> {
     return this.serialize(() => this.readEntries());
   }
 
-  private async readEntries(minimumSeq = this.checkedSeq): Promise<readonly JournalEntry[]> {
-    const snapshot = await this.readJournal();
+  private async readEntries(retainTail = false): Promise<readonly JournalEntry[]> {
+    const snapshot = await this.readJournal(retainTail);
+    this.cursor = undefined;
+    try {
+      const entries = this.validateEntries(snapshot);
+      this.cursor = snapshot.cursor;
+      return entries;
+    } catch (error) {
+      await snapshot.cursor?.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private validateEntries(snapshot: RunScopeSnapshot): readonly JournalEntry[] {
     const active = snapshot.activation;
     if (active === undefined || active.run !== this.runId || active.holder !== this.attempt.holder
       || active.epoch !== this.attempt.epoch || active.fencingToken !== this.attempt.fencingToken)
       throw new RunScopeDenied(this.runId, "drive attempt", "use superseded host");
-    if (snapshot.lastSeq < minimumSeq) throw new RunScopeDenied(this.runId, "drive attempt", "use truncated journal for");
+    if (snapshot.lastSeq < this.checkedSeq) throw new RunScopeDenied(this.runId, "drive attempt", "use truncated journal for");
     const entries = new Journal({ run: this.runId, entries: snapshot.entries }).entries();
     for (const entry of entries) {
       if (entry.requestId === undefined || entry.state === "settled") continue;

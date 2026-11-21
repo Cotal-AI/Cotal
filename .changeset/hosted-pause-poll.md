@@ -5,4 +5,4 @@
 "cotal-ai": patch
 ---
 
-Hosted workflows stop replaying an unchanged journal while they wait for a timer or answer. The host checks the journal tail to detect takeovers and still authorizes each fire and settlement against the current journal.
+Hosted sleep, checkpoint, and ask steps stop replaying an unchanged journal on empty timer polls. The host uses the run's filtered consumer to detect takeovers and still authorizes each fire and settlement against the current journal.

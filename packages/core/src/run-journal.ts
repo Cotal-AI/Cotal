@@ -62,11 +62,12 @@
  * fence that fails open when misconfigured is worse than one coordinate less addressable.
  */
 import { randomBytes } from "node:crypto";
-import { jetstream, jetstreamManager, type ConsumerInfo, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type ConsumerInfo, type JetStreamClient, type JetStreamManager, type JsMsg } from "@nats-io/jetstream";
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { wfjStreamName, wfjSubject, runJournalConsumerConfig } from "./endpoint-binding.js";
 import { isCasLoss } from "./endpoint-records.js";
 import { isConsumerAlreadyExists, isConsumerNotFound } from "./jetstream-missing.js";
+import { journalPauseCursor } from "./journal-pause-cursor.js";
 
 /**
  * The successor's first act, and the only record the runtime layer writes that is not a step.
@@ -370,6 +371,8 @@ export interface RunJournalReplay {
   /** The run subject's last sequence, and therefore the expectation an activation must carry. 0
    *  when the run has never been appended to, which is the create-only expectation. */
   readonly lastSeq: number;
+  /** @internal An optional run-filtered witness for idle polls. It cannot authorize effects. */
+  readonly cursor?: { unchanged(): Promise<boolean>; close(): Promise<void> };
 }
 
 /**
@@ -390,18 +393,14 @@ async function dropReplayConsumer(jsm: JetStreamManager, stream: string, durable
   }
 }
 
-/** The replays still queued on one durable name, keyed `<stream>/<durable>`. */
+/** Operations queued on one replay durable, keyed `<stream>/<durable>`. */
 const replaysOnDurable = new Map<string, Promise<void>>();
 
 /**
- * One replay at a time per replay durable, in THIS process.
+ * Serialize replay and idle cursor operations on the same durable in this process.
  *
- * The name is unique per TAKEOVER, and the number of replays under one takeover is not one: a drive
- * re-reads its journal at every effect and at every poll of a parked pause, all under the takeover
- * id its credential was minted for. `RunScopeAuthority` serializes the reads it makes itself, and
- * nothing serializes them against the driver's own other readers on the same id — `activateRun`, the
- * no-record diagnostic, and a `RunHost.status` or `locate` handed the drive's lease id, which run on
- * the driver's connection rather than the mediator's. Two of those overlapping share one durable:
+ * Readers under the same takeover share one durable even when they use different connections.
+ * Two overlapping replays must not share that durable:
  * `add` hands the second the first's half-read consumer and each one's delete tears down the other's
  * fetch. Measured on a live broker at 17 records: overlapping by 1ms tore the fetch, and overlapping
  * at 0ms returned a silent EMPTY replay, which reads as a run with no history.
@@ -434,7 +433,9 @@ async function exclusively<T>(key: string, body: () => Promise<T>): Promise<T> {
  *
  * Both halves of that sentence are enforced here rather than assumed of the caller: one replay at a
  * time per durable in this process (see `exclusively`), and a durable of that name left behind by an
- * earlier replay is removed before this one reads (see below).
+ * earlier replay is removed before this one reads (see below). The idle-poll option retains the
+ * final delivery unacknowledged, so its cursor can check for movement without reading the prefix.
+ * The next replay discards that consumer and still starts from the beginning.
  */
 export async function replayRunJournal(
   js: JetStreamClient,
@@ -442,6 +443,7 @@ export async function replayRunJournal(
   space: string,
   runId: string,
   takeoverId: string,
+  options: { readonly retainTail?: boolean } = {},
 ): Promise<RunJournalReplay> {
   const stream = wfjStreamName(space);
   const subject = wfjSubject(space, runId);
@@ -451,7 +453,8 @@ export async function replayRunJournal(
   // the other's live fetch.
   const cfg = runJournalConsumerConfig(space, runId, takeoverId);
   const durable = cfg.durable_name as string;
-  return await exclusively(`${stream}/${durable}`, async () => {
+  const key = `${stream}/${durable}`;
+  return await exclusively(key, async () => {
     let created: ConsumerInfo | undefined;
     try {
       created = await jsm.consumers.add(stream, cfg);
@@ -476,10 +479,18 @@ export async function replayRunJournal(
       await dropReplayConsumer(jsm, stream, durable);
       created = await jsm.consumers.add(stream, cfg);
     }
+    let retained = false;
     try {
-      return await readReplay(js, stream, durable, created, subject, runId);
+      const { replay, anchor } = await readReplay(js, stream, durable, created, subject, runId, options.retainTail === true);
+      if (anchor === undefined) return replay;
+      const cursor = journalPauseCursor(jsm, created, anchor);
+      retained = true;
+      return { ...replay, cursor: {
+        unchanged: () => exclusively(key, cursor.unchanged),
+        close: () => exclusively(key, cursor.close),
+      } };
     } finally {
-      await dropReplayConsumer(jsm, stream, durable);
+      if (!retained) await dropReplayConsumer(jsm, stream, durable);
     }
   });
 }
@@ -494,10 +505,11 @@ async function readReplay(
   js: JetStreamClient,
   stream: string,
   durable: string,
-  created: { delivered: { consumer_seq: number }; num_ack_pending: number },
+  created: ConsumerInfo,
   subject: string,
   runId: string,
-): Promise<RunJournalReplay> {
+  retainTail: boolean,
+): Promise<{ replay: RunJournalReplay; anchor?: JsMsg }> {
   assertReplayConsumerFresh(runId, durable, created);
   // Belt and braces now that the name is unique: a consumer that has delivered anything is not the
   // one this replay just created, and reading a tail as if it were a run is the failure this exists
@@ -507,11 +519,13 @@ async function readReplay(
   // than a second round trip that a concurrent append could have moved under us.
   const pending = (await consumer.info(true)).num_pending;
   const records: StoredRunJournalRecord[] = [];
-  if (pending === 0) return { records, lastSeq: 0 };
+  if (pending === 0) return { replay: { records, lastSeq: 0 } };
+  let anchor: JsMsg | undefined;
   const iter = await consumer.fetch({ max_messages: pending, expires: 15_000 });
   for await (const m of iter) {
     records.push({ seq: m.seq, record: parseRunJournalRecord(m.json(), subject) });
-    m.ack();
+    if (retainTail && records.length === pending) anchor = m;
+    else m.ack();
     if (records.length >= pending) break;
   }
   if (records.length !== pending) throw new RunJournalReplayIncomplete(runId, pending, records.length);
@@ -533,7 +547,8 @@ async function readReplay(
   if (first.kind !== "activation" || first.replayedTo !== 0) {
     throw new RunJournalPrefixTruncated(runId, records[0]!.seq, 0, first.n);
   }
-  return { records, lastSeq: records[records.length - 1]!.seq };
+  const replay = { records, lastSeq: records[records.length - 1]!.seq };
+  return anchor === undefined ? { replay } : { replay, anchor };
 }
 
 /**

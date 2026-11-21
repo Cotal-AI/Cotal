@@ -11,8 +11,8 @@ import { promisify } from "node:util";
 import { jetstreamManager, type JetStreamManager, type NextMsgRequest } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import {
-  checkpointSettleSubject, createSpaceAuth, epfStreamName, eptStreamName, mintCreds, nativeNkeySigner,
-  newIdentity, setupSpaceStreams, standaloneConnectOpts, startTimerWriter, wfjStreamName,
+  checkpointSettleSubject, createSpaceAuth, epfStreamName, eptStreamName, isConsumerNotFound, mintCreds, nativeNkeySigner,
+  newIdentity, setupSpaceStreams, standaloneConnectOpts, startTimerWriter, wfjStreamName, wfjSubject,
   type RunStatusView, type SpaceAuth,
 } from "@cotal-ai/core";
 import { Manager } from "@cotal-ai/manager";
@@ -38,7 +38,11 @@ async function auditCreds(auth: SpaceAuth): Promise<string> {
   const id = newIdentity();
   const bytes = new TextEncoder();
   const jwt = await encodeUser("pause-poll-audit", fromPublic(id.id), fromPublic(auth.account.pub), {
-    pub: { allow: [`$JS.API.STREAM.MSG.GET.${eptStreamName(space)}`, `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`] },
+    pub: { allow: [
+      `$JS.API.STREAM.MSG.GET.${eptStreamName(space)}`, `$JS.API.STREAM.MSG.GET.${epfStreamName(space)}`,
+      `$JS.API.CONSUMER.INFO.${wfjStreamName(space)}.*`, `$JS.API.CONSUMER.DELETE.${wfjStreamName(space)}.*`,
+      `$JS.API.STREAM.PURGE.${wfjStreamName(space)}`,
+    ] },
     sub: { allow: [auditSubject, `_INBOX_${id.id}.>`] },
   }, { signer: nativeNkeySigner(bytes.encode(auth.account.signingSeed)), exp: Math.floor(Date.now() / 1000) + 120 });
   return new TextDecoder().decode(fmtCreds(jwt, fromSeed(bytes.encode(id.seed))));
@@ -56,8 +60,29 @@ function timerReads(calls: ApiCall[], stream: string, topic: string, code: numbe
     && JSON.parse(call.response ?? "{}").error?.err_code === code).length;
 }
 
-function journalCreates(calls: ApiCall[], run: string): number {
-  return calls.filter(call => call.subject.startsWith(`$JS.API.CONSUMER.CREATE.${wfjStreamName(space)}.wfj_${run}_`)).length;
+function journalCreates(calls: ApiCall[], run: string): ApiCall[] {
+  return calls.filter(call => call.subject.startsWith(`$JS.API.CONSUMER.CREATE.${wfjStreamName(space)}.wfj_${run}_`));
+}
+
+async function waitForCursor(calls: ApiCall[], run: string, jsm: JetStreamManager, after?: string) {
+  const stream = wfjStreamName(space);
+  const expires = Date.now() + 6_000;
+  let seen: string | undefined;
+  while (Date.now() < expires) {
+    const durable = journalCreates(calls, run)[0]?.subject.split(".")[5];
+    if (durable !== undefined) {
+      const info = await jsm.consumers.info(stream, durable).catch((error: unknown) => {
+        if (isConsumerNotFound(error)) return undefined;
+        throw error;
+      });
+      if (info?.num_ack_pending === 1 && info.num_pending === 0 && info.created !== after) {
+        if (seen === info.created) return info;
+        seen = info.created;
+      } else seen = undefined;
+    }
+    await wait(50);
+  }
+  throw new Error(`run ${run} did not install its journal cursor`);
 }
 
 function fireSubject(calls: ApiCall[]): string | undefined {
@@ -70,7 +95,7 @@ function settleSubject(fire: string): string {
   return checkpointSettleSubject(space, { endpoint: "manager", token: fire.split(".").at(-2)! });
 }
 
-async function verifyWaiting(start: (duration: string) => Promise<string>, show: (run: string) => Promise<RunStatusView>, calls: ApiCall[]) {
+async function verifyWaiting(start: (duration: string) => Promise<string>, show: (run: string) => Promise<RunStatusView>, calls: ApiCall[], jsm: JetStreamManager) {
   const firstCall = calls.length;
   const run = await start("30s");
   const pollBy = Date.now() + 5_000;
@@ -80,22 +105,35 @@ async function verifyWaiting(start: (duration: string) => Promise<string>, show:
     fire = fireSubject(calls.slice(firstCall));
   }
   assert.ok(fire, "the hosted sleep started polling its timer");
-  // The initial authorization can overlap the arm. Measure only subsequent polls, without run show.
-  await wait(500);
+  // Measure only after the cursor has its anchor, without run show touching this run.
+  const cursor = await waitForCursor(calls, run, jsm);
+  assert.equal(cursor.config.filter_subject, wfjSubject(space, run));
   const from = calls.length;
   await wait(5_000);
   const window = calls.slice(from);
   const stats = {
     fireMisses: timerReads(window, eptStreamName(space), fire, 10037),
     settleMisses: timerReads(window, epfStreamName(space), settleSubject(fire), 10037),
-    journalReplays: journalCreates(window, run),
+    journalReplays: journalCreates(window, run).length,
   };
   assert.ok(stats.fireMisses >= 2 && stats.settleMisses >= 2, `the pause was actively polled without a fire: ${JSON.stringify(stats)}`);
+  assert.equal(stats.journalReplays, 0, "an empty fire or settle poll must not replay the workflow journal");
+  console.log(`waiting hosted sleep: ${JSON.stringify(stats)}`);
+  // Traffic on a second run must not invalidate the first run's cursor.
+  const foreign = await start("1s");
+  await wait(3_000);
+  assert.equal((await show(foreign)).status?.state, "completed");
+  assert.equal((await jsm.consumers.info(wfjStreamName(space), cursor.name)).created, cursor.created,
+    "the cursor survives unrelated journal writes and empty polls");
   const pending = await show(run);
   assert.equal(pending.status?.state, "running");
   assert.ok(pending.journal.some(row => row.kind === "step" && row.step === "/sleep#0" && row.state === "pending"));
-  console.log(`waiting hosted sleep: ${JSON.stringify(stats)}`);
-  return { run, stats };
+  const deletedAt = calls.length;
+  assert.equal(await jsm.consumers.delete(wfjStreamName(space), cursor.name), true);
+  const recovered = await waitForCursor(calls, run, jsm, cursor.created);
+  assert.notEqual(recovered.created, cursor.created, "a deleted cursor is recreated after a fresh replay");
+  assert.ok(journalCreates(calls.slice(deletedAt), run).length > 0);
+  return { run, durable: recovered.name };
 }
 
 async function verifyTakeover(run: string, runCli: RunCli, show: (run: string) => Promise<RunStatusView>): Promise<void> {
@@ -129,6 +167,24 @@ async function verifyTakeover(run: string, runCli: RunCli, show: (run: string) =
   }
 }
 
+async function verifyPurged(start: (duration: string) => Promise<string>, calls: ApiCall[], jsm: JetStreamManager): Promise<void> {
+  const run = await start("40s");
+  const cursor = await waitForCursor(calls, run, jsm);
+  const stream = wfjStreamName(space);
+  const purgeAt = calls.length;
+  const purged = await jsm.streams.purge(stream, { filter: wfjSubject(space, run) });
+  assert.ok(purged.purged > 0);
+  const expires = Date.now() + 6_000;
+  while (Date.now() < expires) {
+    try { await jsm.consumers.info(stream, cursor.name); } catch (error) {
+      if (!isConsumerNotFound(error)) throw error;
+      if (journalCreates(calls.slice(purgeAt), run).length > 0) return;
+    }
+    await wait(100);
+  }
+  throw new Error(`run ${run} did not discard its cursor after journal purge`);
+}
+
 async function verifyPolling(root: string, runCli: RunCli, calls: ApiCall[], jsm: JetStreamManager): Promise<void> {
   const start = async (duration: string): Promise<string> => {
     const file = join(root, `${duration}.cotal.js`);
@@ -158,9 +214,10 @@ async function verifyPolling(root: string, runCli: RunCli, calls: ApiCall[], jsm
   assert.equal(fact.json<{ settle: string }>().settle, "expired");
   assert.equal(first.seq, fact.seq, "the short sleep wrote just one settlement fact");
   console.log("positive control: the broker fired and the short hosted sleep settled once with outcome ok");
-  const { run, stats } = await verifyWaiting(start, show, calls);
-  assert.equal(stats.journalReplays, 0, "an empty fire or settle poll must not replay the workflow journal");
+  const { run, durable } = await verifyWaiting(start, show, calls, jsm);
   await verifyTakeover(run, runCli, show);
+  await assert.rejects(jsm.consumers.info(wfjStreamName(space), durable), isConsumerNotFound);
+  await verifyPurged(start, calls, jsm);
 }
 
 async function main(): Promise<void> {
