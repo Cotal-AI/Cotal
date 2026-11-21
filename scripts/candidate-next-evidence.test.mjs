@@ -491,7 +491,7 @@ test('candidate evidence binds captured artifacts, public command receipts and d
         extensions: bExtensions,
         installedExtensions: bExtensions,
         launchGateRefusal: {
-          command: {exit: 1, signal: null, timeout: false, stdout: '', stderr: '✗ failed to reconcile @cotal-ai/tmux@1.2.3 - run `cotal update --self` to reconcile this installation\n'},
+          command: {exit: 2, signal: null, timeout: false, stdout: '', stderr: '✗ failed to reconcile @cotal-ai/tmux@1.2.3 - run `cotal update --self` to reconcile this installation\n'},
           extensions: bExtensions,
           installedExtensions: bExtensions,
         },
