@@ -19,8 +19,8 @@
  *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
- *     Its show and its `team remove` refusal offer `cotal down --space <space> --dry-run` with the
- *     space filled in, with no placeholder and no note that the stop is not integrated. After
+ *     Its show and both `team remove` forms offer `cotal down --space <space> --dry-run` with the
+ *     space filled in. The refusal also works after stop and directs callers to the recorded root. After
  *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and the earlier boot's ID,
  *     and that `cotal up` starts the stack again.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
@@ -51,7 +51,7 @@ const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.
 const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
 const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "b"), c = join(base, "c");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "c");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
 for (const dir of [home, configDir, s, b, c]) mkdirSync(dir, { mode: 0o700 });
 const sandboxes = new Map([s, b].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
@@ -223,14 +223,26 @@ try {
   const bootRefusal = envelope(removeBoot.stdout)?.error;
   check("team remove <boot id> refuses CONFLICT and offers cotal down with the space filled in",
     removeBoot.status === 2 && bootRefusal?.code === "CONFLICT" && bootRefusal.remedy === `stop the booted stack with \`cotal down\`; preview that stop with \`cotal down --space ${SPACE_B} --dry-run\``, removeBoot.out.slice(-800));
+  const applyBoot = cotal(b, "team", "remove", bootId, "--yes", "--json");
+  check("team remove <boot id> --yes gives the same fresh boot refusal and remedy as dry-run",
+    applyBoot.status === 2 && JSON.stringify(envelope(applyBoot.stdout)?.error) === JSON.stringify(bootRefusal), applyBoot.out);
+  const away = cotal(c, "team", "remove", bootId, "--space", SPACE_B, "--yes", "--json");
+  const awayRefusal = envelope(away.stdout)?.error;
+  const atBootRoot = `cd '${realpathSync(b)}' && `;
+  check("team remove from another folder offers both down commands at the quoted boot root",
+    away.status === 2 && awayRefusal?.code === "CONFLICT" && awayRefusal.remedy === `stop the booted stack with \`${atBootRoot}cotal down\`; preview that stop with \`${atBootRoot}cotal down --space ${SPACE_B} --dry-run\``, away.out);
   const freshJson = envelope(cotal(b, "team", "show", bootId, "--json").stdout)?.result;
   check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
   const freshList = cotal(b, "team");
   check("the inventory row names them in words", new RegExp(`${bootId}\\s+fresh boot\\s+boot returned\\s+inspect the stack`).test(freshList.stdout), freshList.stdout);
   check("the boot preview names the requested auth mode in words", /Auth mode request:\s+static auth\n/.test(cotal(b, "team", "boot", "boot.yaml", "--dry-run").stdout));
+  const stopped = cotal(b, "down", "--yes");
+  const applyStoppedBoot = cotal(b, "team", "remove", bootId, "--space", SPACE_B, "--yes", "--json");
+  check("the fresh boot refusal and remedy are unchanged after the separate whole-stack stop",
+    stopped.status === 0 && /Controller stack stopped/.test(stopped.stdout) && applyStoppedBoot.status === 2 &&
+      JSON.stringify(envelope(applyStoppedBoot.stdout)?.error) === JSON.stringify(bootRefusal), { down: stopped.out, remove: applyStoppedBoot.out });
   // A stopped stack that carried a team is not booted with another one. The refusal names the
   // earlier boot's ID and cotal up, which starts that stack again.
-  const stopped = cotal(b, "down", "--yes");
   const again = cotal(b, "team", "boot", "boot.yaml", "--json");
   const againError = envelope(again.stdout)?.error;
   check("a second team boot after down refuses LIFECYCLE_BLOCKED, naming cotal up and the earlier boot's ID",
