@@ -732,6 +732,8 @@ When linking siblings, only a missing package directory can be skipped with a wa
 without metadata, or a dangling package link, is damaged and still refuses.
 Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
 installed copies, rather than turning them into links to their source or the built-in seed store.
+Removal uses the same peer policy as installation. Cotal relinks its shared packages without npm
+looking up peer dependencies for the remaining extensions in the registry.
 
 One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
 `ext seed` or an update does that, a command that needs a connector waits for it. After one second
