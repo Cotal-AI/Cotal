@@ -1055,6 +1055,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         server: launch.server,
         host: launch.host,
         runtime: launch.runtime,
+        "max-file-store": launch.maxFileStore === undefined ? undefined : String(launch.maxFileStore),
         open: launch.mode === "open",
         "user-auth": launch.mode === "user",
       } };
