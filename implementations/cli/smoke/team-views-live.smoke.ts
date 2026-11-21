@@ -32,6 +32,8 @@
  *     as they were, and a removal after one of its cards was edited names that card.
  *  K. after `team remove --yes` of an 11-card deployment, `team show` lists each card's delete
  *     submission before its outcome, and the cards in manifest order, in text and JSON.
+ *  L. on an open mesh, apply and preview recommend live delivery and name the requirement for
+ *     durable channels. Setting the card to live lets the deployment succeed.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -53,7 +55,7 @@ const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
 const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "c");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
 for (const dir of [home, configDir, s, b, c]) mkdirSync(dir, { mode: 0o700 });
-const sandboxes = new Map([s, b].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
+const sandboxes = new Map([s, b, c].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1" });
@@ -84,7 +86,7 @@ manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
-let up = false, bUp = false;
+let up = false, bUp = false, openUp = false;
 try {
   const noApplications = join(base, "no-applications");
   mkdirSync(noApplications);
@@ -322,7 +324,40 @@ try {
   const rows = orderShow.stdout.split("\n").filter((line) => /^\s+#order\d+\s/.test(line)).map((line) => line.trim().replace(/\s+/g, " "));
   check("  and its text ends each card on its deletion, not on the submitted step",
     orderShow.status === 0 && rows.at(-1)?.startsWith("#order10 deleted at created revision") === true && rows.indexOf("#order0 delete submitted; outcome not implied none") < rows.findIndex((row) => row.startsWith("#order0 deleted at created revision")), rows);
+
+  console.log("\nL. live delivery guidance on an open mesh");
+  check("space create prepares the open project", cotal(c, "space", "create", OTHER).status === 0);
+  openUp = true;
+  const openStarted = cotal(c, "up", "--open", "--server", SERVER_OTHER);
+  check("up starts the open stack", openStarted.status === 0, openStarted.out);
+  if (openStarted.status !== 0) throw new Error("the open stack did not start");
+
+  const openOptions = { dir: c, server: SERVER_OTHER };
+  manifest("audit.yaml", OTHER, { "audit-team": "" }, openOptions);
+  const openRefused = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const openError = envelope(openRefused.stdout)?.error;
+  const openRemedy = "set `deliveryClass: live` on each card. Durable channels require a different authenticated mesh with a delivery service";
+  check("open apply names the live manifest fix and does not suggest a durable channel command",
+    openRefused.status === 2 && openError?.code === "UNSUPPORTED" && openError.remedy === openRemedy, openRefused.out);
+  const mixedRefused = cotal(c, "team", "deploy", "claude.yaml", "--json");
+  const mixedError = envelope(mixedRefused.stdout)?.error;
+  check("open mixed apply gives the same remedy before requesting a launch",
+    mixedRefused.status === 2 && mixedError?.code === "UNSUPPORTED" && mixedError.remedy === openRemedy, mixedRefused.out);
+  const openPreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json");
+  const openWarning = envelope(openPreview.stdout)?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
+  check("open preview offers the same guidance", openPreview.status === 0 && openWarning?.message.endsWith(`${openRemedy}.`) === true, openPreview.out);
+
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, openOptions);
+  const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const openResult = envelope(openApplied.stdout);
+  check("setting deliveryClass: live creates the card on the open mesh",
+    openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
+      openResult.result.createdChannels.some((card) => card.name === "audit-team"), openApplied.out);
 } finally {
+  if (openUp) {
+    const down = cotal(c, "down", "--yes");
+    check("down --yes stops the open stack", down.status === 0, down.out.slice(-600));
+  }
   if (bUp) {
     const down = cotal(b, "down", "--yes");
     check("down --yes stops the stack in b", down.status === 0, down.out.slice(-600));
