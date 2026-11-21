@@ -149,6 +149,26 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
 
     must("full backup", run("backup", "create", artifact));
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
+    if (mode === "open") {
+      const cold = mkdtempSync(join(tmpdir(), "cotal-backup-restore-cold-"));
+      try {
+        const project = join(cold, "project"), config = join(cold, "config");
+        mkdirSync(project);
+        const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("COTAL_")));
+        const refused = spawnSync(tsx, [cliPath, "backup", "restore", registryArtifact, "--plain"], {
+          cwd: project, encoding: "utf8", timeout: 30_000,
+          env: { ...cleanEnv, COTAL_HOME: join(cold, "home"), XDG_CONFIG_HOME: config, COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_offline: "true" },
+        });
+        const output = `${refused.stdout}\n${refused.stderr}`;
+        assert.equal(refused.status, 2, output);
+        assert.match(output, /restore requires stable ready maintenance state, found none/);
+        assert.match(output, /LIFECYCLE_BLOCKED/);
+        assert.deepEqual(readdirSync(project), [], "a refused restore leaves the project empty");
+        assert.equal(existsSync(join(config, "cotal")), false, "a refused restore leaves connector configuration untouched");
+      } finally {
+        rmSync(cold, { recursive: true, force: true });
+      }
+    }
     assert.ok(existsSync(join(artifact, "manifest.json")));
     const fullManifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
     assert.equal(fullManifest.format, "cotal-space-backup/v3");
