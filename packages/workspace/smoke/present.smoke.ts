@@ -208,14 +208,14 @@ const fits = (text: string, width: number) => text.split("\n").every((line) => d
 // A Next and the stopped-space note name their command in backticks after other words, so at 80
 // columns it keeps one line. Named bare, these split after `cotal`, as the control shows.
 const nextLines = (remedy: string) => renderReport(commandFailureReport(new CommandFailure("refused", "TARGET_UNAVAILABLE", "nothing answered", { remedy })), "plain", 80).split("\n");
-for (const [remedy, command] of [
-  ["rerun it with a longer --timeout and the same other flags, such as `cotal invoke manager ps --timeout 10000`", "`cotal invoke manager ps --timeout 10000`"],
-  ["start the service that serves nosuch, then run the command again; `cotal service --space stoppedspace-1028` lists this space's services", "`cotal service --space stoppedspace-1028`"],
-] as const) {
-  const lines = nextLines(remedy), bareLines = nextLines(remedy.replaceAll("`", ""));
-  check(`a Next keeps ${command} on one line at 80 columns, which it splits named bare`,
-    lines.some((line) => line.includes(command)) && fits(lines.join("\n"), 80) && !bareLines.some((line) => line.includes(command.replaceAll("`", ""))), { lines, bareLines });
-}
+const serviceCommand = "`cotal service --space stoppedspace-1028`";
+const serviceRemedy = `start the service that serves nosuch, then run the command again; ${serviceCommand} lists this space's services`;
+const serviceLines = nextLines(serviceRemedy), bareServiceLines = nextLines(serviceRemedy.replaceAll("`", ""));
+check("a Next keeps the service command on one line at 80 columns, which it splits named bare",
+  serviceLines.some((line) => line.includes(serviceCommand)) && fits(serviceLines.join("\n"), 80) && !bareServiceLines.some((line) => line.includes(serviceCommand.replaceAll("`", ""))), { serviceLines, bareServiceLines });
+const timeoutLines = nextLines(`start the service that serves nosuch, then run the command again, or rerun the original command with \`--timeout 10000\`, keeping all other arguments and flags unchanged. ${serviceCommand} lists this space's services`);
+check("timeout advice keeps the option and its value together and the service command on one line",
+  timeoutLines.some((line) => line.includes("`--timeout 10000`")) && timeoutLines.some((line) => line.includes(serviceCommand)) && fits(timeoutLines.join("\n"), 80), timeoutLines);
 const heldNote = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: heldSpaceNote({ space: "stoppedspace-1028", root: "/nonexistent-cotal-root", state: "stopped" }), tone: "hint" }] }] }] }, "plain", 80).split("\n");
 check("the stopped-space note keeps `cotal up` on one line at 80 columns", heldNote.length === 2 && heldNote[1] === "`cotal up`", heldNote);
 // A command wider than the line runs past it on one line. The exec-endpoint `next:` command and the
