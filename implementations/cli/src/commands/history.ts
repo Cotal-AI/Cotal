@@ -1,4 +1,5 @@
 import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { PermissionViolationError } from "@nats-io/transport-node";
 import {
   brokerAddressForDisplay,
   CommandFailure,
@@ -344,7 +345,7 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
   try {
     // A follow taps before it reads, so nothing sent between the read and the tap is lost; the
     // snapshot and the live feed are reconciled by message id.
-    const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms)) : undefined;
+    const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms), reader?.channels, target) : undefined;
     const { result, warnings } = await readWindow(ep, conn, { channel, dms: Boolean(v.dms), limit, since, from: v.from, grep: v.grep, target }).catch((e: unknown) => {
       if (e instanceof CommandFailure) throw e;
       throw new CommandFailure("failed", "OPERATION_FAILED", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });
@@ -361,6 +362,7 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
       : undefined;
     const completeness = partial ? "partial" : "complete";
     if (v.dms) await ep.waitForPresenceSnapshot(ROSTER_MS);
+    live?.checkTap();
     const names = new Map(ep.getRoster().filter((p) => p.card.name.trim()).map((p) => [p.card.id, p.card.name] as const));
     for (const item of result.items) if (item.from.name.trim()) names.set(item.from.id, item.from.name);
     if (live && presentation === "json") {
@@ -561,7 +563,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
 
 /** The live half of `--follow`: taps the selection's subjects and records connection gaps.
  *  A dropped connection whose credential can no longer connect ends it with that credential's refusal. */
-function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean) {
+function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean, granted: readonly string[] | undefined, target: unknown) {
   const queue: { item?: HistoryItem; gap?: string; error?: string; lost?: true }[] = [];
   let wake: (() => void) | undefined;
   const push = (entry: { item?: HistoryItem; gap?: string; error?: string; lost?: true }) => {
@@ -569,6 +571,10 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
     wake?.();
   };
   const prefix = spacePrefix(conn.space);
+  const chatSubjects = new Set(channel !== undefined ? [chatSubject(conn.space, "*", "*", channel)]
+    : granted === undefined ? [`${prefix}.chat.>`] : granted.map((ch) => chatSubject(conn.space, "*", "*", ch)));
+  if (chatSubjects.size === 0)
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not follow channel history in ${conn.space}: its history grant is no channel`, { target, remedy: "use a credential that grants read access to the channel you want to follow" });
   let down = false;
   const edge = (connected: boolean) => {
     if (!connected) {
@@ -591,16 +597,25 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
     rebinding = !connected;
     edge(connected);
   });
-  ep.on("error", (e: Error) => push({ error: e.message }));
-  ep.tap((subject, msg) => {
+  let tapRefusal: CommandFailure | undefined;
+  ep.on("error", (e: Error) => {
+    const permission = e instanceof PermissionViolationError ? e : e.cause;
+    if (channel === undefined && permission instanceof PermissionViolationError && permission.operation === "subscription" && chatSubjects.has(permission.subject)) {
+      tapRefusal ??= new CommandFailure("refused", "PERMISSION_DENIED", `this credential could not open the live channel feed in ${conn.space}: ${permission.message}`, { target, remedy: "name a channel this credential can read when following history" });
+      wake?.();
+    } else push({ error: e.message });
+  });
+  const receive = (subject: string, msg: CotalMessage | undefined) => {
     if (!msg) return;
     const p = parseSubject(subject);
     if (p?.kind === "chat") push({ item: itemOf(msg, { channel: p.rest }) });
     else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });
-  }, { subject: channel !== undefined ? chatSubject(conn.space, "*", "*", channel) : `${prefix}.chat.>` });
+  };
+  for (const subject of chatSubjects) ep.tap(receive, { subject });
   if (dms) ep.tap((subject, msg) => { if (msg && parseSubject(subject)?.kind === "inst") push({ item: itemOf(msg, {}) }); }, { subject: `${prefix}.inst.>` });
 
   return {
+    checkTap() { if (tapRefusal) throw tapRefusal; },
     async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, names: Map<string, string>, stopped: () => boolean): Promise<void> {
       const seen = new Set(snapshot.map((item) => item.id).filter((id) => id !== ""));
       const remember = (id: string) => {
@@ -655,18 +670,18 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
             else process.stderr.write(`${c.red(oneLine(`[${conn.space}] ! ${entry.error}`))}\n`);
           }
         }
-        if (refusal || ended || stopped()) break;
+        if (refusal || tapRefusal || ended || stopped()) break;
         await new Promise<void>((resolve) => (wake = resolve));
         wake = undefined;
       }
-      if (refusal && presentation !== "json") throw refusal.failure();
-      if (refusal) {
-        const failure = refusal.failure();
+      const failure = refusal?.failure() ?? tapRefusal;
+      if (failure && presentation !== "json") throw failure;
+      if (failure) {
         writeStreamRecord(streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
         process.exitCode = exitCode(failure.outcome, failure.code);
       }
-      if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: refusal ? "refused" : ended ?? "stopped" }));
-      if (!refusal && ended) process.exitCode = ended === "interrupted" ? 130 : 143;
+      if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: failure ? "refused" : ended ?? "stopped" }));
+      if (!failure && ended) process.exitCode = ended === "interrupted" ? 130 : 143;
     },
   };
 }
