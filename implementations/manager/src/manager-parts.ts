@@ -1,5 +1,6 @@
 import type { ConnectorInventory } from "./connector-inventory.js";
 import type { HarnessResolution } from "./harness-resolution.js";
+import type { LeaseKeeper } from "./lease-keeper.js";
 import type { SeatLaunch } from "./seat-launch.js";
 import type { ServePlane } from "./serve-plane.js";
 
@@ -9,6 +10,7 @@ import type { ServePlane } from "./serve-plane.js";
 export interface ManagerParts {
   connectorInventory: ConnectorInventory;
   harnessResolution: HarnessResolution;
+  lease: LeaseKeeper;
   seatLaunch: SeatLaunch;
   servePlane: ServePlane;
 }

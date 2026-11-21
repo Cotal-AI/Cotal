@@ -123,8 +123,7 @@ function managerWith(handles: FakeHandle[], wire: LeaseWire, opts: { resumeAttem
   const m = manager as unknown as {
     agents: Map<string, ManagedLike>;
     runtime: unknown; ep: unknown; attach: unknown;
-    leaseInfo?: Omit<ManagerLeaseInfo, "since">; leaseRevision?: number;
-    renewLease(): Promise<void>;
+    lease: { leaseInfo?: Omit<ManagerLeaseInfo, "since">; leaseRevision?: number; renewLease(): Promise<void> };
   };
   let acquires = 0;
   m.runtime = { kind: "fake", spawn: () => handles[0] };
@@ -141,8 +140,8 @@ function managerWith(handles: FakeHandle[], wire: LeaseWire, opts: { resumeAttem
     stop: async () => {},
   };
   m.attach = { stop: async () => {} };
-  m.leaseInfo = { holder: "local.manager", instanceId: "smoke-instance", runtime: "pty", root, pid: process.pid };
-  m.leaseRevision = 1;
+  m.lease.leaseInfo = { holder: "local.manager", instanceId: "smoke-instance", runtime: "pty", root, pid: process.pid };
+  m.lease.leaseRevision = 1;
   for (const h of handles) {
     m.agents.set(h.name, {
       id: `local.${h.name}`,
@@ -171,7 +170,7 @@ function managerWith(handles: FakeHandle[], wire: LeaseWire, opts: { resumeAttem
     console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
     (process as unknown as { exit: (c?: number) => never }).exit = (() => { exited = true; throw new Error("process.exit called"); }) as never;
     try {
-      await m.renewLease();
+      await m.lease.renewLease();
     } catch (e) {
       if (!exited) throw e;
     } finally {
@@ -180,7 +179,7 @@ function managerWith(handles: FakeHandle[], wire: LeaseWire, opts: { resumeAttem
     }
     return { exited, lines };
   };
-  return { manager, agents: m.agents, tick, revision: () => m.leaseRevision, acquires: () => acquires };
+  return { manager, agents: m.agents, tick, revision: () => m.lease.leaseRevision, acquires: () => acquires };
 }
 
 const timeout = async (): Promise<never> => { throw new Error("timeout"); };
