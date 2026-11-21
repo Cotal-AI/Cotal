@@ -335,7 +335,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     // The installed command owns any remaining activation and its exit result.
     rt.generationWaited = true;
   }
-  if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectArchiveCaches(dirname(scratch));
+  if (args.values.self === true && !process.exitCode && childBinding(rt).kind === "none") collectUpdateCaches(dirname(scratch));
 }
 
 async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<string | undefined> {
@@ -1390,7 +1390,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
 
 /** Only caches with recorded custody can be reclaimed. A worker cannot open its cache before its
  * process group is recorded, and the owner cannot start new workers after it exits. */
-function collectArchiveCaches(parent: string): void {
+function collectUpdateCaches(parent: string): void {
   if (process.platform !== "linux" && process.platform !== "darwin") return;
   try { parent = realpathSync(parent); }
   catch { return; }
@@ -1419,13 +1419,15 @@ function collectArchiveCaches(parent: string): void {
   };
   function sweep(directory: string): void {
     for (const name of readdirSync(directory)) {
-      if (!/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
+      const staged = process.platform === "linux" && /^cotal-update-npm-[a-zA-Z0-9]{6}$/.test(name);
+      if (!staged && !/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
       const cache = join(directory, name);
       try {
         if (!privateDirectory(cache)) continue;
-        protectedLocalDirectory(cache, "the release archive cache");
+        protectedLocalDirectory(cache, "the update cache");
         if (!deadOwner(cache)) continue;
         const workers = readdirSync(cache).filter(name => name.startsWith(".worker-"));
+        if (staged && workers.length !== 1) continue;
         if (workers.every(worker => {
           const match = /^\.worker-([1-9]\d*)$/.exec(worker);
           return !!match && absentGroup(Number(match[1]));
@@ -2047,6 +2049,12 @@ async function runGlobalProcess(
   let stopping: Promise<void> | undefined;
   try {
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
+    const recordCache = gated && staging !== undefined;
+    if (recordCache) {
+      const start = processStartToken(process.pid);
+      if (!start) throw new Error("cannot identify the staged npm cache owner");
+      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+    }
     if (staging !== undefined) {
       // npm is quiet during a download. Its private cache receives the archive bytes and
       // the private prefix changes as packages unpack. Neither depends on terminal output.
@@ -2080,6 +2088,8 @@ async function runGlobalProcess(
     permit?.on("error", (e) => { error = e.message; });
     if (child.pid !== undefined) {
       try {
+        // Publish cache custody before the gate permits npm to write to it.
+        if (recordCache) writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
         mutation.markLive(child.pid);
         published = true;
       } catch (e) {
