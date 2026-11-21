@@ -133,6 +133,18 @@ try {
     // ---- The manager: start, start again, status, logs, a conflicting start, stop ---------------
     const dry = cotal(["manager", "start", "--dry-run"]);
     check("cotal manager start --dry-run previews and saves nothing", dry.status === 0 && inventory().definitions.length === 0, out(dry));
+    const wrongServer = `nats://127.0.0.1:${await freePort()}`;
+    for (const [flag, value, code, message] of [
+      ["--server", wrongServer, "CONFLICT", `registered at ${SERVER}, not ${wrongServer}`],
+      ["--runtime", "definitely-unknown", "DEPENDENCY_UNAVAILABLE", 'unknown runtime "definitely-unknown"'],
+    ] as const) {
+      for (const mode of ["--dry-run", "--foreground"]) {
+        const refused = cotal(["manager", "start", mode, flag, value, ...(mode === "--dry-run" ? ["--json"] : [])]);
+        const records = inventory();
+        check(`manager start ${mode} refuses ${flag} without saving or starting a manager`,
+          refused.status === 2 && out(refused).includes(code) && out(refused).replaceAll('\\"', '"').includes(message) && records.definitions.length === 0 && records.running.length === 0, out(refused));
+      }
+    }
     const start = cotal(["manager", "start"]);
     managerUp = start.status === 0;
     check("cotal manager start with no flags saves the manager from its defaults and starts it",
@@ -152,7 +164,7 @@ try {
     check("cotal manager logs reads its log", logs.status === 0 && out(logs).length > 0, out(logs));
     const other = cotal(["manager", "start", "--runtime", "nosuchruntime"]);
     check("a start naming another runtime while it runs refuses and names the stop",
-      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --runtime") && out(other).includes("cotal manager stop"), out(other));
+      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --runtime") && out(other).includes(`cotal manager stop --space ${SPACE}`), out(other));
 
     // ---- A program of your own: add with --exec, start, status, logs, stop -----------------------
     const script = join(root, "hello.sh");

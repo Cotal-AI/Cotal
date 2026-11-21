@@ -199,6 +199,7 @@ import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { execWords } from "../src/lib/exec-words.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -384,11 +385,33 @@ try {
     const startRunning = cli(root, "manager", "start", "--space", space, "--json");
     check("manager start on the running stack reports its manager running, exit 0, and starts nothing",
       startRunning.status === 0 && startRunning.env?.outcome === "no-op" && pidOf(space, "stack-manager") === managerPid, shown(startRunning));
-    const restartRunning = cli(root, "manager", "restart", "--space", space, "--yes", "--json");
-    check("manager restart --yes on it refuses LIFECYCLE_BLOCKED, stops nothing, and names manager stop then up",
+    const elsewhere = join(projects, "unrelated");
+    mkdirSync(elsewhere);
+    const otherSpace = "otherselected";
+    prepare(otherSpace);
+    const picked = cli(elsewhere, "use", otherSpace);
+    check("fixture: a different space is selected outside both projects", picked.status === 0, shown(picked));
+    const restartRunning = cli(elsewhere, "manager", "restart", "--space", space, "--yes", "--json");
+    const remedy = restartRunning.env?.error?.remedy?.match(/^stop it with `([^`]+)`, then run `([^`]+)` to start it again with its stack$/);
+    const stopWords = remedy?.[1] ? execWords(remedy[1]) : [];
+    const upWords = remedy?.[2] ? execWords(remedy[2]) : [];
+    const scoped = JSON.stringify(stopWords) === JSON.stringify(["cotal", "manager", "stop", "--space", space, "--yes"])
+      && JSON.stringify(upWords) === JSON.stringify(["cotal", "up", "--root", realpathSync(root), "--space", space]);
+    check("manager restart from another folder refuses without stopping, and both remedy commands pin the original target",
       restartRunning.status === 2 && restartRunning.env?.error?.code === "LIFECYCLE_BLOCKED"
-        && restartRunning.env.error.remedy === "stop it with `cotal manager stop --yes`, then run `cotal up` to start it again with its stack"
+        && scoped
         && managerPid !== null && pidOf(space, "stack-manager") === managerPid && alive(managerPid), shown(restartRunning));
+    if (scoped) {
+      const stopped = cli(elsewhere, ...stopWords.slice(1), "--json");
+      const brokerPid = pidOf(space, "stack-broker");
+      check("the printed stop stops only the named space's manager", stopped.status === 0 && stopped.env?.target?.space === space && gone(space, "stack-manager") && brokerPid !== null && alive(brokerPid), shown(stopped));
+      const broughtUp = cli(elsewhere, ...upWords.slice(1), "--json");
+      track(space);
+      const replacement = pidOf(space, "stack-manager");
+      check("the printed up restarts that manager from the explicit project root", broughtUp.status === 0 && pidOf(space, "stack-broker") === brokerPid && replacement !== null && replacement !== managerPid && alive(replacement), shown(broughtUp));
+    }
+    const cleared = cli(elsewhere, "use", "--clear");
+    check("fixture: the alternate selection is cleared", cleared.status === 0, shown(cleared));
     // The rows followed the store's order, by random instance ID, so they moved whenever a member
     // started under a new one.
     const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
@@ -1334,7 +1357,7 @@ try {
     check("while the frozen manager runs, down refuses naming its instance and request", names(whileRunning) && pid !== null && alive(pid) && held(), shown(whileRunning));
     // A public start on the live retained instance refuses before any readiness probe or record write.
     const serviceStart = cli(root, "service", "start", "stack-manager", "--space", space, "--json");
-    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === 'start the stack with `cotal up`' && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
+    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === `start the stack with \`cotal up --root ${realpathSync(root)} --space ${space}\`` && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
     const abandonLive = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     check("while the frozen manager runs, down --abandon-stop refuses and abandons nothing", abandonLive.status === 2 && abandonLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(abandonLive.env.error.message.includes("still runs")) && pid !== null && alive(pid) && held(), shown(abandonLive));
     if (pid !== null) process.kill(pid, "SIGKILL");
