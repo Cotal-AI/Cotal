@@ -298,7 +298,7 @@ else `default`) is loaded from the target mesh's `.cotal/agents/` when it is a b
 For a direct launch or preview, a positional name ending in `.md` selects a matching catalog entry first.
 For example, `cotal spawn review.md` selects `.cotal/agents/review.md.md` if that entry exists.
 With no matching catalog entry, a positional `.md` name is read as a file relative to the mesh root.
-Use `--file <persona-file>` to select a file explicitly.
+A managed launch reads that positional `.md` name from the manager's catalog. Use `--file <persona-file>` to select a file explicitly.
 A reference with a path separator selects that file. A relative path resolves against the mesh root, except that
 a managed handoff, and an enrollment onto a mesh this machine has not registered yet, resolve the
 persona file against the working directory. A missing
@@ -314,8 +314,10 @@ reports the planned write without creating the file. A direct preview refuses ot
 personas with `TARGET_NOT_FOUND` (exit 2).
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
-to create there, and the Next gives the spawn again with `--on` for each of your other live managers
-whose catalog lists it. The launch flags
+to create there. The next step gives the spawn again with `--on` for each of your other live managers
+whose catalog lists it. If the default is missing and no other manager has it, the next step gives a complete
+`cotal persona create default` command to run in the displayed project on the manager's host. Run the
+spawn again after creating the persona. You do not need to restart the manager. The launch flags
 override the file. On a user-auth mesh the
 effective name is also the agent's actor token, so it must match the token grammar (no `-`) and stay
 within 64 characters; the spawn is refused with that explanation before any request is sent. A spawn runs the agent attached

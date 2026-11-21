@@ -538,6 +538,43 @@ try {
   // connectors together).
   const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
 
+  {
+    const agents = join(workspaceRoot, ".cotal", "agents");
+    writeFileSync(join(agents, "review.md.md"), "---\nname: reviewer\nagent: e2e\n---\nCatalog persona.\n");
+    writeFileSync(join(workspaceRoot, "review.md"), "---\nname: file-reviewer\nagent: e2e\n---\nExplicit file.\n");
+    const listed = await capture(() => run("persona", ["--plain", "--space", SPACE]));
+    ok("persona lists the dotted catalog key", /\breview\.md\s+/.test(listed), listed);
+    for (const [selector, name] of [[["review.md"], "reviewer"], [["--file", "review.md"], "file-reviewer"]] as const) {
+      const launched = await capture(() => run("spawn", [...selector, "--detach", "--no-events", "--space", SPACE]));
+      ok(`detached ${selector.join(" ")} joins as ${name}`, joinedAs(launched, name), launched);
+      const stoppedOut = await capture(() => run("stop", ["--name", name, "--space", SPACE]));
+      ok(`stopped ${name}`, stopped(stoppedOut, name), stoppedOut);
+    }
+  }
+
+  {
+    const defaultPath = join(workspaceRoot, ".cotal", "agents", "default.md");
+    const launch = ["--detach", "--no-events", "--harness", "e2e", "--space", SPACE];
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    let failure: unknown;
+    try { await capture(() => run("spawn", launch)); } catch (error) { failure = error; }
+    const refused = isCommandFailure(failure) ? failure : undefined;
+    const remedy = refused?.remedy ?? "";
+    const repair = ["persona", "create", "default", "--space", SPACE, "--prompt", "You are an agent on the Cotal mesh.", "--subscribe", ""];
+    ok("missing default names the manager project and gives a complete creation command without launching",
+      refused?.code === "LIFECYCLE_BLOCKED" && exitCode(refused.outcome, refused.code) === 2 && refused.message.includes(defaultPath)
+        && remedy.includes("on the manager's host")
+        && remedy.includes(`\`cotal persona create default --space ${SPACE} --prompt 'You are an agent on the Cotal mesh.' --subscribe ''\``), failure);
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    ok("a missing default leaves no seat", NO_AGENTS.test(ps), ps);
+    const created = spawnSync(process.execPath, [cli, ...repair], { cwd: workspaceRoot, env: subEnv, encoding: "utf8" });
+    ok("the command from the refusal writes the default persona", created.status === 0 && statSync(defaultPath).isFile(), created.stdout + created.stderr);
+    const retried = await capture(() => run("spawn", launch));
+    ok("the same manager launches the restored default", joinedAs(retried, "default"), retried);
+    const stoppedOut = await capture(() => run("stop", ["--name", "default", "--space", SPACE]));
+    ok("stopped the restored default seat", stopped(stoppedOut, "default"), stoppedOut);
+  }
+
   // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
   const tomb = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
     encoding: "utf8",
