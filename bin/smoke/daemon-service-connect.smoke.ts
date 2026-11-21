@@ -87,7 +87,7 @@
 import assert from "node:assert/strict";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
-import { mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, chmodSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -118,7 +118,8 @@ import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
 import { unitReceiptFile } from "../daemon/install.js";
 
-if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
+const desktopWindow = process.argv.includes("--desktop-window");
+if (process.platform !== "linux" && !desktopWindow) skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
 const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
@@ -167,6 +168,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, JSON.stringify(extra ?? "")?.slice(0, 600)); }
 };
 async function cell(title: string, body: () => Promise<void>): Promise<void> {
+  if (desktopWindow && !title.startsWith("H1")) return;
   if (process.argv.includes("--renewal-resume-only") && !/^(C1 |C2 |C15 |C6d |C14 |C8 |C11 |C10 )/.test(title)) return;
   if (process.argv.includes("--renewal-only") && !/^(C1 |C2 |C15 |C12 |C10 )/.test(title)) return;
   if (process.argv.includes("--retirement-only") && !/^(C1 |C2 |C15 |C3 |C5r |C10 )/.test(title)) return;
@@ -188,18 +190,33 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 }
 type Frame = Record<string, unknown>;
 let seq = 0;
-async function ask(socket: string, req: Frame, ms = 40_000): Promise<Frame> {
+type AskObservation = (phase: string, facts?: { id?: string; bytes?: number; hadError?: boolean; ok?: boolean; code?: string }) => void;
+async function ask(socket: string, req: Frame, ms = 40_000, observe?: AskObservation): Promise<Frame> {
   const sock = netConnect(socket);
   await new Promise<void>((res, rej) => { sock.once("connect", () => res()); sock.once("error", rej); });
   const id = `g${++seq}`;
+  observe?.("sending", { id });
   sock.write(`${JSON.stringify({ v: 1, id, ...req })}\n`);
   sock.setEncoding("utf8");
   let buf = "";
   try {
     return await new Promise<Frame>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`no reply within ${ms}ms; got ${buf.slice(0, 300)}`)), ms);
-      sock.on("data", (c: string) => { buf += c; const nl = buf.indexOf("\n"); if (nl !== -1) { clearTimeout(t); resolve(JSON.parse(buf.slice(0, nl)) as Frame); } });
+      const t = setTimeout(() => {
+        observe?.("deadline", { id, bytes: Buffer.byteLength(buf) });
+        reject(new Error(`no reply within ${ms}ms; got ${buf.slice(0, 300)}`));
+      }, ms);
+      sock.on("data", (c: string) => { buf += c; const nl = buf.indexOf("\n"); if (nl !== -1) { clearTimeout(t); observe?.("reply", { id, bytes: Buffer.byteLength(buf) }); resolve(JSON.parse(buf.slice(0, nl)) as Frame); } });
       sock.once("error", (e) => { clearTimeout(t); reject(e); });
+      if (observe) {
+        const peerClosed = (phase: "peer-ended" | "closed", hadError?: boolean) => {
+          const bytes = Buffer.byteLength(buf);
+          observe(phase, { id, bytes, hadError });
+          clearTimeout(t);
+          reject(new Error(`connection closed by daemon before reply to ${id}; received ${bytes} bytes`));
+        };
+        sock.once("end", () => peerClosed("peer-ended"));
+        sock.once("close", hadError => peerClosed("closed", hadError));
+      }
     });
   } finally { sock.destroy(); }
 }
@@ -236,7 +253,7 @@ class MemoryStore implements SecretStore /* the auth services' stores; the daemo
 }
 
 // ---------- owned sandbox ----------
-const root = mkdtempSync(join(scratchParent, process.argv.includes("--account-intent") ? "dcomp-" : process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-"));
+const root = realpathSync(mkdtempSync(join(scratchParent, process.argv.includes("--account-intent") ? "dcomp-" : process.argv.includes("--account-only") || process.argv.includes("--signin-parity") ? "dacct-" : "cdr-")));
 chmodSync(root, 0o700);
 const home = join(root, "home"), participant = join(root, "participant"), rtDir = join(root, "rt"), jsDir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}a2b2-js-`));
 for (const d of [home, participant, rtDir]) mkdirSync(d, { mode: 0o700 });
@@ -256,7 +273,8 @@ const key = await generateKeyPair("EdDSA");
 const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
-const accountOnly = process.argv.includes("--account-only");
+const desktopAccount = desktopWindow && process.argv.includes("--desktop-account");
+const accountOnly = process.argv.includes("--account-only") || desktopAccount;
 let accountDesired = false;
 let accountRevision = 1;
 let accountRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
@@ -284,6 +302,7 @@ let tokenFailure: "unreachable" | "unusable" | undefined;
 let recoverOnApproval = false;
 let deviceCodeRequests = 0;
 let deviceFailure: "denied" | "expired" | "unreachable" | undefined;
+let deviceApproved = !desktopWindow;
 let catalogUnavailable = false;
 let catalogAuthorityDown = false;
 let standingRenewals = 0;
@@ -307,6 +326,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   }
   if (req.url === "/api/auth/device/code") { deviceCodeRequests++; if (deviceFailure === "unreachable") { req.socket.destroy(); return; } return void res.end(JSON.stringify({ device_code: "daemon-smoke-device", user_code: "DAEMON", verification_uri: `${idpOrigin}/approve`, verification_uri_complete: `${idpOrigin}/approve?code=DAEMON`, expires_in: 60, interval: 1 })); }
   if (req.url === "/api/auth/device/token" && deviceFailure) { res.writeHead(400); return void res.end(JSON.stringify({ error: deviceFailure === "denied" ? "access_denied" : "expired_token" })); }
+  if (req.url === "/api/auth/device/token" && !deviceApproved) { res.writeHead(400); return void res.end(JSON.stringify({ error: "authorization_pending" })); }
   if (req.url === "/api/auth/device/token") {
     if (recoverOnApproval) idpRevoked = false;
     return void res.end(JSON.stringify({ access_token: SESSION, expires_in: 3600 }));
@@ -331,6 +351,7 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
     if (accountDesired !== intent.enabled) { accountDesired = intent.enabled; accountBindingRevision = ++accountRevision; }
     res.end(JSON.stringify({ v: 1, machineId: req.url.split("/")[3], revision: accountRevision })); return;
   }
+  if (desktopWindow && !desktopAccount && req.url?.startsWith("/api/cli/machines/")) { res.writeHead(404); res.end("{}"); return; }
   if (accountOnly && req.url?.startsWith("/api/cli/machines/")) {
     if (process.argv.includes("--account-custody-repro") && req.headers.host === new URL(idpOrigin).host && custodyOldFails) { res.writeHead(503); res.end("{}"); return; }
     const machineId = req.url.split("/")[4];
@@ -650,18 +671,25 @@ try {
     while (Date.now() - t0 < ms) { last = stateOf(await statusS(space)); if (want(last)) return last; await sleep(500); }
     return last;
   };
-  const approve = async (h: typeof host, space: string, owner: string) => {
+  const approve = async (h: typeof host, space: string, owner: string, socket?: string) => {
     const name = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-read", granter: operator,
       input: { endpoint: "ai.cotal.machine" } }) as { state: string; record?: { value: { revision: number } } };
     const bound = name.state === "present" ? { state: "bound", binding: name.record!.value }
       : await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "name-bind", granter: operator,
         input: { endpoint: "ai.cotal.machine", owner, expectedRevision: 0, claimReference: "connect-fixture-namespace" } } as never) as { state: string; binding?: { revision: number } };
-    const reg = await ask(paths.socket, { op: "register", space });
-    const pid = resultOf(reg).proposalId as string;
-    const p = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId: pid }, granter: operator } as never) as { record?: { revision: number } };
+    const reg = await ask(socket ?? paths.socket, { op: "register", space });
+    const registration = resultOf(reg);
+    if (socket) assert.ok(reg.ok && registration.outcome === "approval-required" && typeof registration.proposalId === "string"
+      && typeof registration.instanceId === "string" && registration.instanceId.length > 0,
+    `fixture approval requires a pending registration from the targeted daemon: ${JSON.stringify(reg)}`);
+    const pid = registration.proposalId as string;
+    const p = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "proposal-read", input: { proposalId: pid }, granter: operator } as never) as { record?: { revision: number; value: { owner: string; endpoint: string; instanceId: string } } };
+    if (socket) assert.ok(p.record?.value.owner === owner && p.record.value.endpoint === "ai.cotal.machine"
+      && p.record.value.instanceId === registration.instanceId, "fixture approval must match the targeted daemon's proposal");
     const decided = await h({ v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "decide", granter: { kind: "owner", owner },
       input: { proposalId: pid, expectedProposalRevision: p.record?.revision ?? 0, expectedNameRevision: bound.binding?.revision ?? 0, decision: "approve",
-        callerCeiling: [{ endpoint: "ai.cotal.machine", command: "machine-status", instanceId: identityOf(space)!.instanceId, instanceOnly: true }] } } as never) as { state: string; approval?: { assignment: { assignmentDigest: string } } };
+        callerCeiling: [{ endpoint: "ai.cotal.machine", command: "machine-status", instanceId: socket ? registration.instanceId : identityOf(space)!.instanceId, instanceOnly: true }] } } as never) as { state: string; approval?: { assignment: { assignmentDigest: string } } };
+    if (socket) assert.ok(decided.state === "approved", `fixture owner approval did not complete: ${JSON.stringify(decided)}`);
     return { bound, decided, pid };
   };
 
@@ -700,7 +728,9 @@ try {
     } finally { await caller.stop(); }
   };
 
-  let d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
+  // The window lane must let the app's first action install and start its own service.
+  let d!: Awaited<ReturnType<typeof serveDaemon>>;
+  if (!desktopWindow) d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
   let foreground: ChildProcess | undefined;
   let assignmentDigest = "";
   let approvedInstance = "";
@@ -1956,8 +1986,8 @@ try {
     });
 
     await cell("H1 shipped setup hosts an answering Manager independently of machine approval", async () => {
-      seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true);
-      await d.close();
+      if (!desktopWindow) seedUnitReceipt(join(repo, "bin/dist/cotal.js"), true);
+      if (!desktopWindow) await d!.close();
       // D0 already activated this interactive actor. Extend its grant without replacing its lifecycle.
       const cliLifecycle = grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: fixture.cliUid, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] }).lifecycleUid!;
       const original = findMesh(ON)!;
@@ -1980,6 +2010,74 @@ try {
       removeMesh(ON);
       check("H0 requested space is absent from local registry before setup", findMesh(ON) === undefined);
       deleteIdpSession(home, idpUrl);
+      if (desktopWindow) {
+        try {
+          const { firstRun } = await import("../../desktop/e2e/first-run.js");
+          await firstRun({ root, idpUrl, space: ON, catalogId: ON, approve: () => { deviceApproved = true; },
+            signIn: (outcome: "pending" | "denied" | "expired") => { deviceApproved = false; deviceFailure = outcome === "pending" ? undefined : outcome; },
+            requests: () => deviceCodeRequests,
+            ...(desktopAccount ? { account: {
+              enable: async daemonLog => {
+                accountDesired = true; accountBindingRevision = ++accountRevision;
+                const desktopSocket = daemonPaths({ XDG_RUNTIME_DIR: join(root, "grt") }).socket;
+                const deadline = Date.now() + 120_000;
+                let ready = false;
+                let last: Frame | undefined;
+                let poll = 0;
+                const output = process.platform === "darwin" && process.env.RUNNER_TEMP
+                  ? join(process.env.RUNNER_TEMP, "desktop-account-e2e", "mac-account-status-polls.jsonl") : undefined;
+                const control = output ? await import("../../desktop/e2e/mac-status-control.js") : undefined;
+                let controlStarted = false;
+                while (Date.now() < deadline) {
+                  const ordinal = ++poll;
+                  const observe: AskObservation | undefined = output ? (phase, facts) => {
+                    let daemonLogBytes: number | null = null;
+                    let daemonLogInode: number | null = null;
+                    try {
+                      const stat = statSync(daemonLog, { throwIfNoEntry: false });
+                      if (stat?.isFile()) { daemonLogBytes = stat.size; daemonLogInode = stat.ino; }
+                    } catch { /* A missing log offset stays unknown. */ }
+                    try { appendFileSync(output, `${JSON.stringify({ at: new Date().toISOString(), poll: ordinal, phase, ...facts, daemonLogBytes, daemonLogInode })}\n`, { mode: 0o600 }); }
+                    catch { /* Observations cannot decide acceptance or replace its original error. */ }
+                  } : undefined;
+                  let trigger: ReturnType<typeof setTimeout> | undefined;
+                  let stopControl: (() => void) | undefined;
+                  try {
+                    last = await ask(desktopSocket, { op: "status" }, 10_000, observe && ((phase, facts) => {
+                      observe(phase, facts);
+                      if (phase === "sending" && facts?.id && control && !controlStarted) {
+                        const id = `control-${facts.id}`;
+                        trigger = setTimeout(() => {
+                          controlStarted = true;
+                          try {
+                            stopControl = control.startMacStatusControl(desktopSocket, id, 8_000, ({ phase: controlPhase, ...controlFacts }) => observe(controlPhase, controlFacts));
+                          } catch { observe("control-error", { id }); }
+                        }, 2_000);
+                      }
+                    }));
+                  } finally {
+                    if (trigger !== undefined) clearTimeout(trigger);
+                    stopControl?.();
+                  }
+                  ready = last.ok === true && resultOf(last).managers?.some((manager: any) => manager.space === ON
+                    && manager.state === "answering" && typeof manager.instanceId === "string"
+                    && manager.connectors?.some((connector: any) => connector.state === "available"));
+                  if (ready) break;
+                  await sleep(500);
+                }
+                assert.ok(ready, `desktop account Manager did not become launch-ready within 120s: ${JSON.stringify(last)}`);
+                // Manager readiness and machine-service approval are separate. Register through
+                // the desktop daemon, then approve its returned proposal and service instance.
+                // Reconciliation replays that registration and connects after owner approval.
+                if (!process.argv.includes("--account-hosted")) await approve(host, ON, fixture.owner, desktopSocket);
+              },
+            } } : {}) });
+        } finally {
+          catalog = undefined; catalogSpace = undefined; catalogTarget = undefined;
+          await delivery.close();
+        }
+        return;
+      }
       const prefix = join(root, "config", "cotal", "extensions");
       const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
       mkdirSync(pkg, { recursive: true });
@@ -4860,7 +4958,8 @@ process.exit(result.status ?? 93);
     });
   } finally {
     if (foreground && foreground.exitCode === null && foreground.signalCode === null) await killAndAwaitExit(foreground, "SIGTERM");
-    await d.close(); brokerPath.close(); for (const s of pathSockets) s.destroy();
+    if (!desktopWindow) await d!.close();
+    brokerPath.close(); for (const s of pathSockets) s.destroy();
   }
 } catch (e) {
   fail++;
