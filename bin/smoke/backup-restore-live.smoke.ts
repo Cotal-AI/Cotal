@@ -798,7 +798,8 @@ async function missingPidfileListenerScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-home-")));
   const artifact = join(root, "registry 'backup' with `notes`");
-  const store = "-jetstream store";
+  const unicodeArtifact = join(root, "registry backup with heart ❤\uFE0F");
+  const store = "-jetstream ❤\uFE0F store";
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_missing_pid_listener";
@@ -824,25 +825,32 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
 
     foreign = await occupy(port);
-    const refusedBackup = run("backup", "create", artifact, "--only", "registry", `--store-dir=${store}`);
-    assert.equal(refusedBackup.status, 2, "backup refuses a pidless listener immediately before cloning, exit 2");
-    assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
-    assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
-    const retry = /then run (`+)(cotal backup create .+?)\1 again/.exec(refusedBackup.stderr)?.[2];
-    assert.ok(retry && refusedBackup.stderr.includes(`stop the process that listens on ${server}`), `its Next names the listener and the retry\n${refusedBackup.stderr}`);
-    assert.ok(retry.endsWith(` --only registry --store-dir='${store}'`), "the retry keeps the explicit store path and selection");
-    assert.equal(existsSync(artifact), false, "listener refusal happens before artifact creation");
-    assert.equal(readMaintenanceJournal(root)?.state, "ready", "listener refusal leaves the cut ready");
+    const retries = ([[artifact, "registry"], [unicodeArtifact, "full"]] as const).map(([destination, selection]) => {
+      const refusedBackup = run("backup", "create", destination, "--only", selection, `--store-dir=${store}`);
+      assert.equal(refusedBackup.status, 2, "backup refuses a pidless listener immediately before cloning, exit 2");
+      assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
+      assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
+      const command = /then run (`+)(cotal backup create .+?)\1 again/.exec(refusedBackup.stderr)?.[2];
+      assert.ok(command && refusedBackup.stderr.includes(`stop the process that listens on ${server}`), `its Next names the listener and the retry\n${refusedBackup.stderr}`);
+      assert.ok(command.includes(` --only ${selection} --store-dir=`), "the retry keeps the explicit store option and selection");
+      assert.ok(!command.includes("\uFE0F"), "the terminal command contains no invisible variation selector");
+      assert.equal(existsSync(destination), false, "listener refusal happens before artifact creation");
+      assert.equal(readMaintenanceJournal(root)?.state, "ready", "listener refusal leaves the cut ready");
+      return { command, destination, selection };
+    });
     await closeServer(foreign);
     foreign = undefined;
     if (process.platform !== "win32") {
-      const retried = spawnSync("sh", ["-c", `cli=$1; entry=$2\ncotal() { "$cli" "$entry" "$@"; }\n${retry}`, "backup-retry", tsx, cliPath], {
-        cwd: root, env, encoding: "utf8", timeout: 240_000,
-      });
-      assert.equal(retried.status, 0, `the printed retry works unedited\n${retried.stdout}${retried.stderr}`);
-      const verified = run("backup", "verify", artifact, "--json");
-      assert.equal(verified.status, 0, `the retried artifact verifies\n${verified.stdout}${verified.stderr}`);
-      assert.equal(JSON.parse(verified.stdout).result.selection, "registry", "the retry preserves --only registry");
+      for (const { command, destination, selection } of retries) {
+        const retried = spawnSync("sh", ["-c", `cli=$1; entry=$2\ncotal() { "$cli" "$entry" "$@"; }\n${command}`, "backup-retry", tsx, cliPath], {
+          cwd: root, env, encoding: "utf8", timeout: 240_000,
+        });
+        assert.equal(retried.status, 0, `the printed retry works unedited\n${retried.stdout}${retried.stderr}`);
+        assert.equal(existsSync(join(destination, "manifest.json")), true, "the artifact is published at the byte-exact destination");
+        const verified = run("backup", "verify", destination, "--json");
+        assert.equal(verified.status, 0, `the retried artifact verifies\n${verified.stdout}${verified.stderr}`);
+        assert.equal(JSON.parse(verified.stdout).result.selection, selection, "the retry preserves selection");
+      }
     }
   } finally {
     if (foreign) await closeServer(foreign).catch(() => {});

@@ -468,12 +468,21 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
   return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run ${retryCreateSpan(args)} again` });
 }
 
+/** Quote a retry path without putting invisible or control characters in the terminal command. */
+function retryPathWord(path: string): string {
+  if (oneLine(path) === path) return shellWord(path);
+  // POSIX substitution strips trailing newlines. Validated inputs have none, and a destination
+  // that resolves to an existing directory (such as the cwd) never reaches a create retry.
+  const octets = Array.from(Buffer.from(path), (byte) => `\\${byte.toString(8).padStart(3, "0")}`).join("");
+  return `"$(printf '${octets}')"`;
+}
+
 /** The same `backup create` as a copyable POSIX command, for a cut left ready to try again. */
 function retryCreateSpan(args: ParsedArgs): string {
   const { only, "store-dir": storeDir } = args.values as BackupValues;
-  const destination = shellWord(resolve(args.positionals[1]!));
+  const destination = retryPathWord(resolve(args.positionals[1]!));
   const selection = only === undefined ? "" : ` --only ${only}`;
-  const store = storeDir === undefined ? "" : ` --store-dir=${shellWord(storeDir)}`;
+  const store = storeDir === undefined ? "" : ` --store-dir=${retryPathWord(storeDir)}`;
   return codeSpan(`cotal backup create ${destination}${selection}${store}`);
 }
 
