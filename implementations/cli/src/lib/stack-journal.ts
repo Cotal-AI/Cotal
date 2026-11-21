@@ -15,6 +15,8 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
+import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { displayCmd } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -391,9 +393,12 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
-    let holder: number | undefined;
-    try { holder = (decodeLocalJson(readLocalRecordSource(paths.lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground `cotal up` holds the root only while it starts" });
+    const held = readMaintenanceLockHolder(root);
+    const holder = held?.owner.pid;
+    const remedy = held?.operation === "foreground up"
+      ? `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`
+      : "run the command again after that operation finishes";
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${holder !== undefined ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(holder !== undefined ? { holderPid: holder } : {}) }, remedy });
   }
   // An exit through process.exit skips the caller's release, so the lock is checked here as well.
   process.once("exit", (code) => {
