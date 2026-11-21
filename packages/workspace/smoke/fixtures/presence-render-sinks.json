@@ -4119,37 +4119,37 @@
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "of date`} · ${remedy}`, \"waiting\");\n}\n\n/** The nats-serve",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "one = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "na here is launchable\", \"waiting\")]);\n  } else if (f.laun",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "lected.personas.root}`, \"waiting\")]);\n      rows.push([\"→",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "gin --idp ${l.idp}`)}`, \"waiting\")]);\n    if (l?.subject)",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "{l.subject} --full`)}`, \"waiting\")]);\n      else if (l.ac",
       "class": "non-render/control"
@@ -5631,77 +5631,77 @@
       "rationale": "Stack up report line: \"waiting\" is the color tone for listeners exposed in plaintext, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "nes = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
       "class": "non-render/control",
       "rationale": "Status machine overview: maps integration check states to color tones; \"waiting\" is a tone, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n    }\n  // A",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a connector whose binaries are not on PATH, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": " m.nats === \"missing\" ? \"waiting\" : m.natsProblem ? \"fail",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a missing broker executable, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "de this folder\" : \"\"}`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status brokers section: \"waiting\" is the color tone for an unrecorded selected space, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "teCell(\"not signed in\", \"waiting\")]);\n    else {\n      ro",
       "class": "non-render/control",
       "rationale": "Status selected-space account row: \"waiting\" is the color tone for a signed-out account, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "tor === \"not-granted\" ? \"waiting\" : \"hint\")]);\n    }\n  }\n",
       "class": "non-render/control",
       "rationale": "Status selected-space grant row: \"waiting\" is the color tone for a grant that was not given, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (servedStack(r",
       "class": "non-render/control",
       "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "s ${s.personas.root}.`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status selected-space note: \"waiting\" is the color tone for the unused-personas warning, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "finitions unavailable\", \"waiting\")] });\n  if (services.in",
       "class": "non-render/control",
       "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service definitions, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "topped state inferred\", \"waiting\")] });\n  if (services.in",
       "class": "non-render/control",
       "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service instances, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "ss === \"foreign-host\" ? \"waiting\" : \"hint\"),\n    readines",
       "class": "non-render/control",
@@ -5715,14 +5715,14 @@
       "rationale": "HTTP response plumbing: the dashboard readiness probe's status code in a component fact; no agent presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "er.stackBlock.reason}`, \"waiting\")] });\n  const part = fo",
       "class": "non-render/control",
       "rationale": "Status folder line: \"waiting\" is the color tone for a blocked stack, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "re any member stopped\", \"waiting\")] });\n  return blocks;\n",
       "class": "non-render/control",
@@ -6653,7 +6653,7 @@
       "rationale": "Service inventory table: \"waiting\" is the color tone for a service that is not started or stopped, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "rsion}`).join(\" · \")}`, \"waiting\") : text;\n}\n\n/**\n * What",
       "class": "non-render/control",
