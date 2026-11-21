@@ -3,8 +3,8 @@ import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import {
-  acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, saveAgentFile, utf8Problem, writeSecretFile, writeSecretFileAtomic,
+  acquireLock, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
+  parseAgentFileSource, personaDir, saveAgentFile, utf8Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
@@ -77,10 +77,11 @@ export function personaNameProblem(name: string): string | undefined {
   return undefined;
 }
 
-export function personaPath(root: string, name: string): string {
-  const problem = personaNameProblem(name);
+export function personaPath(root: string, name: string, access: "show" | "write" = "write"): string {
+  const allowDots = access === "show" && name !== "." && name !== "..";
+  const problem = personaNameProblem(allowDots ? name.replaceAll(".", "_") : name);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
-  return agentFilePath(root, name);
+  return join(personaDir(root), `${name}.md`);
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */

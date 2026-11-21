@@ -37,7 +37,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string };
+  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -280,9 +280,23 @@ check("spawn --dry-run with no default persona previews the shipped default with
 
 const dottedCatalog = join(dirname(agentFilePath(root, "default")), "review.md.md");
 const dottedFile = join(root, "review.md");
-writeFileSync(dottedCatalog, "---\nname: reviewer\n---\n");
+const dottedSource = "---\nname: reviewer\n---\nReview this change.\n";
+writeFileSync(dottedCatalog, dottedSource);
 writeFileSync(dottedFile, "---\nname: other\n---\n");
 try {
+  const listed = cotal("persona", "--space", "opsp", "--plain");
+  check("persona lists the dotted name", listed.status === 0 && /^  review\.md\s/m.test(listed.stdout), shown(listed));
+  const show = cotal("persona", "show", "review.md", "--space", "opsp", "--json");
+  const card = show.envelope?.result;
+  check("persona show reads the listed dotted name from the catalog rather than the project file",
+    show.status === 0 && card?.name === "review.md" && card.path === dottedCatalog && card.definition?.name === "reviewer" && card.source === dottedSource, shown(show));
+  const legacyShow = cotal("personas", "show", "review.md", "--space", "opsp");
+  check("legacy personas show copies the dotted catalog source", legacyShow.status === 0 && legacyShow.stdout === dottedSource, shown(legacyShow));
+  const fileRef = cotal("persona", "show", "./review.md", "--space", "opsp", "--json");
+  check("persona show refuses a path", fileRef.status === 1 && fileRef.envelope?.error?.code === "USAGE_INVALID", shown(fileRef));
+  const create = cotal("persona", "create", "new.review", "--prompt", "Review this.", "--subscribe", "", "--space", "opsp", "--json");
+  check("persona create still refuses dotted names",
+    create.status === 1 && create.envelope?.error?.code === "USAGE_INVALID" && !existsSync(join(dirname(dottedCatalog), "new.review.md")), shown(create));
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));

@@ -199,7 +199,7 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
-  const path = personaPath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "show");
   const bytes = requirePersonaSource(path).bytes;
   validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
