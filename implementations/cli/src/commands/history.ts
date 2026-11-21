@@ -5,6 +5,9 @@ import {
   connectOrThrow,
   endpointAuth,
   exitCode,
+  isCommandFailure,
+  isConnectRefusal,
+  isMeshRegistryError,
   jsonFlag,
   oneLine,
   plainFlag,
@@ -34,6 +37,8 @@ import { listDeclaredChannels } from "../lib/personas.js";
 import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
+import { registryFailure } from "../lib/registry-errors.js";
+import { recordTelemetryFailure } from "../telemetry.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
@@ -294,6 +299,23 @@ export async function history(args: ParsedArgs): Promise<void> {
   const since = parseSince(v.since, now);
   if (since?.kind === "seq" && v.dms) throw usage("a sequence is a position in the chat stream, and DMs are another stream; give --since a time");
 
+  let snapshotWritten = false;
+  try {
+    await readHistory(v, channel, limit, since, presentation, () => { snapshotWritten = true; });
+  } catch (error) {
+    if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
+    // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
+    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : isMeshRegistryError(error) ? registryFailure(error)
+      : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
+    recordTelemetryFailure(failure.outcome, failure.code, error);
+    const target = failure.target ?? { space: v.space ?? null, channel: channel ?? null, dms: Boolean(v.dms) };
+    writeStreamRecord(streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
+    writeStreamRecord(streamRecord("history", "end", target, { reason: "setup-failed" }));
+    process.exitCode = exitCode(failure.outcome, failure.code);
+  }
+}
+
+async function readHistory(v: FlagValues<typeof historyFlags>, channel: string | undefined, limit: number, since: Since | undefined, presentation: ReturnType<typeof presentationOf>, markSnapshot: () => void): Promise<void> {
   const conn = await connectOrThrow(v, v.dms ? "admin" : "observer");
   const target = { space: conn.space, channel: channel ?? null, dms: Boolean(v.dms) };
   recordOperationSpace(conn.space);
@@ -344,6 +366,7 @@ export async function history(args: ParsedArgs): Promise<void> {
     if (live && presentation === "json") {
       // A follow's snapshot is its first record, and the exit says what `writeResult` would have.
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
+      markSnapshot();
       process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : exitCode("ok");
     } else {
       writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since, live !== undefined));
@@ -490,9 +513,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       message: `the chat stream of ${conn.space} is not on its broker, so channel history is not shown. Direct messages that are still stored are included`,
     });
   }
-  // A bare number past the newest sequence names no message; it is most often a year.
-  if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
+  // A sequence need not exist to be a cutoff. A likely mistyped calendar year still gets its hint.
+  if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq && yearShaped(req.since.input))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${req.since.input}-01-01` });
 
   // Each channel's replay policy, read from the registry: the endpoint's watch cache may not have
   // caught up this soon after start.
@@ -519,7 +542,8 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // oldest message is at or before the point asked for. Otherwise messages in between may be missing.
   const oldest = read[0];
   const before = (since: Since, item: HistoryItem) => (since.kind === "seq" ? item.seq !== null && item.seq <= since.seq + 1 : Date.parse(item.ts) <= since.ms);
-  const reachesSince = req.since === undefined ? null : olderRetained === false || (oldest !== undefined && before(req.since, oldest)) ? true : olderRetained === null ? null : false;
+  const atOrPastEnd = req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq >= lastSeq;
+  const reachesSince = req.since === undefined ? null : atOrPastEnd || olderRetained === false || (oldest !== undefined && before(req.since, oldest)) ? true : olderRetained === null ? null : false;
   return {
     warnings,
     result: {

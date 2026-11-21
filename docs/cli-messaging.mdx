@@ -631,10 +631,10 @@ reads the newest 2000 retained messages before applying filters. `result.window`
 messages exist that the window did not reach, and whether the window goes back to `--since`.
 With `--dms`, a full window alone does not prove that it left out older messages.
 The report names the local time and the ISO instant a time `--since` resolved to, or the chat
-stream sequence a bare number was read as. A four-digit
-number from 1900 to 2099 is still a sequence, and the report says to write a date in full. A bare
-number past the chat stream's newest sequence names no message, so it is a `USAGE_INVALID` refusal
-that names that sequence and how to write a date. An age outside the supported date range, a date
+stream sequence a bare number was read as. A cutoff past the chat stream's newest sequence returns
+an empty window. A four-digit number from 1900 to 2099 that is past the newest sequence is refused
+with `USAGE_INVALID`. The refusal names the newest sequence and shows how to write a date in full.
+An age outside the supported date range, a date
 that is not on the calendar, or a sequence that cannot be represented without rounding is a
 `USAGE_INVALID` refusal before connecting. A time is an ISO 8601 date such as `2026-10-23`, or a date and time such
 as `2026-10-23T09:00:00Z`, so `-5` and `10/23/2026` are refused. A date alone, or a date and time
@@ -746,14 +746,16 @@ credential gets, `AUTH_REQUIRED` or `PERMISSION_DENIED`, and its Next. Without `
 static-auth space the follow mints its own credential from the space's trust, so when the broker
 rejects it the Next says to run the follow again, which mints one from the current trust. With
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
-The first record is a `snapshot` holding the window, then one `event` per message that matches the
-filters. A time-based `--since` applies to both the snapshot and live messages. A sequence cutoff
-applies only to the snapshot because live events have no `seq`. To read on from a follow, give
+When the follow starts, it writes a `snapshot` holding the window, then one `event` per message
+that matches the filters. A time-based `--since` applies to both the snapshot and live messages.
+A sequence cutoff applies only to the snapshot because live events have no `seq`. To read on from a follow, give
 `--since` the last event's `ts`. An `error` record names a failure on the live feed, and a lost
 connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
-shown. An `end` record always closes the stream. The exit code is the snapshot's, the refusal's
-when the credential ended the follow, or 130 or 143 when SIGINT or SIGTERM ended it.
+shown. If the follow cannot open its target or read the snapshot, it writes an `error` with the code
+and any remedy, then an `end` with `reason: "setup-failed"`, without a snapshot. An `end` record closes
+the stream. The exit code is the snapshot's, the failure's when setup or the credential ends the
+follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 
 `history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
