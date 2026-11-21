@@ -1,6 +1,7 @@
 /** Hosting-folder shutdown reads infrastructure leases without an IdP session.
  * Runs the real CLI against isolated static and user-auth stacks, with a loopback JWKS fixture.
  * A missing delivery pidfile must still block shutdown while its real daemon renews its lease.
+ * Static mint refuses a per-user-auth project both before and after shutdown.
  * Needs nats-server on PATH. Run: pnpm smoke:down-host-auth:live (after pnpm build).
  */
 import assert from "node:assert/strict";
@@ -9,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSy
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid } from "@cotal-ai/workspace";
+import { agentSecretFilePaths, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, cotalPty } from "./_console-pty.js";
@@ -32,6 +33,23 @@ const idp = createServer((_req, res) => {
 await new Promise<void>((done) => idp.listen(0, "127.0.0.1", done));
 const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 let idpClosed = false;
+
+type Cli = (...args: string[]) => Promise<{ code: number | null; out: string }>;
+
+async function checkUserMint(cli: Cli, root: string, space: string, stage: "running" | "stopped"): Promise<void> {
+  const exported = join(root, "alice.creds");
+  const standing = agentSecretFilePaths(root, space, "alice").creds;
+  for (const format of ["--json", "--plain"] as const) {
+    const mint = await cli("auth", "mint", "alice", format, ...(format === "--plain" ? ["--out", exported] : []));
+    const receipt: { outcome: string; error?: { code: string }; target?: { space: string } } | undefined =
+      format === "--json" ? JSON.parse(mint.out) : undefined;
+    const unsupported = receipt === undefined ? /^\s*Code:\s+UNSUPPORTED$/m.test(mint.out)
+      : receipt.outcome === "refused" && receipt.error?.code === "UNSUPPORTED" && receipt.target?.space === space;
+    check(`${stage} user-auth: mint ${format} refuses with login guidance and writes no credential`,
+      mint.code === 2 && unsupported && mint.out.includes("login/enrollment") && !mint.out.includes("cotal up") &&
+      !existsSync(exported) && !existsSync(standing), mint.out);
+  }
+}
 
 async function cell(user: boolean): Promise<void> {
   const label = user ? "user" : "static";
@@ -73,6 +91,7 @@ async function cell(user: boolean): Promise<void> {
   check(`${label}: recorded infrastructure processes are alive`, stack.pids.length === (user ? 3 : 2) && stack.pids.every(alive));
   let leaseRefusal: { code: number | null; out: string } | undefined;
   if (user) {
+    await checkUserMint(cli, root, space, "running");
     await new Promise<void>((done, reject) => idp.close((error) => error ? reject(error) : done()));
     idpClosed = true;
     const before = requests;
@@ -157,6 +176,7 @@ async function cell(user: boolean): Promise<void> {
   if (leaseRefusal) check("user: live delivery without a pidfile refuses for its renewed lease", leaseRefusal.code === 2 && leaseRefusal.out.includes("LIFECYCLE_BLOCKED") && leaseRefusal.out.includes("still renewing a lease"));
   for (let end = Date.now() + 10_000; stack.pids.some(alive) && Date.now() < end; await wait(100));
   check(`${label}: every recorded process exited`, stack.pids.every((pid) => !alive(pid)));
+  if (user) await checkUserMint(cli, root, space, "stopped");
   const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);
 }
