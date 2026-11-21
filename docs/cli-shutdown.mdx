@@ -837,7 +837,9 @@ restore has settled and names `cotal status`. Without `--force`, `restore-attemp
 way, with `TARGET_NOT_FOUND`, for an attempt the record does not name, and with `LIFECYCLE_BLOCKED`
 for a recorded attempt past its pre-commit point, which recovers forward. Without `--attempt` both
 verbs refuse with `USAGE_INVALID`. Each refusal's Next names the attempt the root records and its
-step.
+step. After a successful `restore-attempt` rollback, resume with `cotal up` or retry with
+`cotal up --restore <dir>`, replacing `<dir>` with the original backup directory and repeating any
+restore options you used.
 
 
 ## reset [#reset]
