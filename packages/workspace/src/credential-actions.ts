@@ -148,7 +148,12 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   }
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
-  for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  // The provisioning path already checks its own minimum before resolving the root.
+  if (!values.provision && Number(values["expires-in"]) === 0) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-in must be at least 1 second for a file-only mint", {
+    remedy: "use --expires-in 1 or a larger whole number, or use --no-expiry instead to mint without an expiry",
+    selfContained: true,
+  });
   assertExpiryInRange(values);
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
