@@ -921,7 +921,12 @@ use `--json` and extract `result.body`. An unknown page is refused with `USAGE_I
 what the fetch did: `served`, `not-published` (the path has no copy) or `unreachable`. The bundled
 copy is served whenever the fetch does not succeed. `--refresh` applies only to a page.
 
-`--search` ranks sections by the words of the query. A search with no match is an empty result.
+`--search` ranks sections by the words of the query. With `--json`, the `result` object contains
+`kind` (`docs-search`), `version` (the bundled docs version), `query` (the search text with leading
+and trailing whitespace removed), and `hits` (the array of matching sections in ranked order).
+Each hit contains `slug` (the page name to pass to `cotal docs`), `page` (the page title), `heading`
+(the displayed heading, which includes the page title), and `text` (the section excerpt, which can be truncated).
+`result.hits` is `[]` when nothing matches. The search still succeeds, and the result keeps its metadata.
 
 
 ## config [#config]

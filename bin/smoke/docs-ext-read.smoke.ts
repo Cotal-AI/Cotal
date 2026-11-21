@@ -109,6 +109,10 @@ let specBody = "";
   const body = json.envelope?.result?.body;
   check("plain and redirected pages start with the source and version line", plain.status === 0 && plain.stdout.startsWith(`bundled v${VERSION}\n\n# Process supervision\n`) && piped.status === 0 && piped.stdout.startsWith(`bundled v${VERSION}\n\n# CLI installation\n`), { plain: shown(plain), piped: shown(piped) });
   check("the bundled reference explains the banner and how to export only the Markdown", json.status === 0 && typeof body === "string" && body.startsWith("# CLI installation\n") && /starts with a source and version\s+line/.test(body) && /use `--json` and extract `result\.body`/.test(body), shown(json));
+  const searchDocs = typeof body === "string" ? body.split(/^## docs(?: \[#docs\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const searchFields = ["result.hits", "kind", "docs-search", "version", "query", "slug", "page", "heading", "text"];
+  check("the bundled docs reference describes the JSON search fields and successful empty hit array",
+    json.status === 0 && searchFields.every((field) => searchDocs.includes(`\`${field}\``)) && /`result\.hits` is `\[\]` when nothing matches/.test(searchDocs), searchDocs.slice(-600));
 }
 
 {
@@ -165,8 +169,12 @@ let specBody = "";
   check("--search returns matching sections and excerpts from each named page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && matchingSections === true, r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
   const plain = run(["docs", "--search", "allowSubscribe", "--plain"]);
   check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: `cotal docs [^\s`]+`/.test(plain.stdout), shown(plain));
-  const none = run(["docs", "--search", "zzqqxxnomatch", "--json"]);
-  check("a search with no match is an empty, complete result", none.status === 0 && none.envelope?.completeness === "complete" && (none.envelope.result as { hits: unknown[] }).hits.length === 0, shown(none));
+  const none = run(["docs", "--search", "no-such-page", "--json"]);
+  const empty = none.envelope?.result;
+  check("a search with no match succeeds with metadata and an empty hit array",
+    none.status === 0 && none.envelope?.outcome === "ok" && none.envelope.completeness === "complete" &&
+    empty?.kind === "docs-search" && empty.version === VERSION && empty.query === "no-such-page" &&
+    Array.isArray(empty.hits) && empty.hits.length === 0, shown(none));
 }
 
 // ── docs: usage ──────────────────────────────────────────────────────────────────────────────────
