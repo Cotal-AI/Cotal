@@ -60,7 +60,7 @@ try {
   console.log("A. open mesh: the first send makes the operator a roster peer agents can reply to");
   const space = `part-${randomUUID().slice(0, 8)}`;
   await setupSpaceStreams({ servers: OPEN, space });
-  const alice = new CotalEndpoint({ space, servers: OPEN, card: { name: "alice", kind: "agent", role: "worker" }, channels: ["general"], heartbeatMs: 500, ttlMs: 3000 });
+  const alice = new CotalEndpoint({ space, servers: OPEN, card: { name: "alice", kind: "agent", role: "worker" }, channels: ["general", "other"], heartbeatMs: 500, ttlMs: 3000 });
   alice.on("error", () => {});
   alice.on("message", (m: CotalMessage) => {
     if (m.to === alice.card.id) void alice.unicast(m.from.id, "reply:" + m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""));
@@ -151,6 +151,13 @@ try {
   check("before the operator sends anything, the console has put nobody on the roster", operators().length === 0, seats());
 
   let mk = cs.mark();
+  await cs.command("msg #other");
+  check("a typed channel without a message shows usage", await cs.waitFor("usage: msg [#channel] <text>", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
+  const generalHistory = await watcher.channelHistory("general");
+  const otherHistory = await watcher.channelHistory("other");
+  check("the incomplete message is not sent to either channel", generalHistory.length === 0 && otherHistory.length === 0, { generalHistory, otherHistory });
+
+  mk = cs.mark();
   await cs.compose("from-the-console");
   const joined = await until(() => (operators().length === 1 ? true : undefined), 12_000);
   check("the console's FIRST send activates participant mode by itself", joined === true, seats());
@@ -169,9 +176,9 @@ try {
   await cs.command("DM alice Keep DM Case");
   const dm = await until(() => readPaletteMessage("Keep DM Case"), 4000);
   check("uppercase DM sends the unchanged body to alice", dm?.to === alice.card.id && dm?.text === "Keep DM Case", dm ?? clean(cs.out).slice(-500));
-  await cs.command("MSG #general Keep Channel Case");
+  await cs.command("MSG #other Keep Channel Case");
   const msg = await until(() => readPaletteMessage("Keep Channel Case"), 4000);
-  check("uppercase MSG sends the unchanged body to #general", msg?.channel === "general" && msg?.text === "Keep Channel Case", msg ?? clean(cs.out).slice(-500));
+  check("uppercase MSG sends the unchanged body to #other", msg?.channel === "other" && msg?.text === "Keep Channel Case", msg ?? clean(cs.out).slice(-500));
 
   // Idempotence is NOT visible as a second roster row: a duplicate peer registers under the same
   // card id, so the roster still shows one. What it is visible as is an ORPHAN. Without the guard
