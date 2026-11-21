@@ -222,10 +222,22 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       }
       const corrupt = '{"v":2,"futureSelection":true}\n';
       const record = JSON.stringify({ v: 1, entry: realpathSync(entry), version: previous, root: graph });
+      writeFileSync(local, corrupt, { mode: 0o400 });
+      writeFileSync(current, JSON.stringify({ ...JSON.parse(record), root: generation }), { mode: 0o600 });
+      armed = false;
+      const noNewer = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert.equal(noNewer.code, 0, noNewer.output);
+      assert.match(noNewer.output, /No newer CLI version\. No connector reconciliation was run\./);
+      assert.match(noNewer.output, /connector retention selection.*unreadable.*cotal ext seed --repair/);
+      assert.equal(readFileSync(local, 'utf8'), corrupt);
+      armed = true;
       // Use only a damaged lineage in the rollback case, and a readable lineage in the success case.
       const unreadable = rollback ? current : local;
-      if (!rollback) writeFileSync(current, record, { mode: 0o600 });
-      writeFileSync(unreadable, corrupt, { mode: 0o400 });
+      if (rollback) {
+        rmSync(local);
+        writeFileSync(current, corrupt);
+        chmodSync(current, 0o400);
+      } else writeFileSync(current, record);
       const started = Date.now();
       const result = await run(process.execPath, [entry, 'update', '--self'], 180000);
       const elapsedMs = Date.now() - started;

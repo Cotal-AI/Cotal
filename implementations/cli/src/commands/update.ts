@@ -673,8 +673,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       return code;
     }
     if (unreadableSelection) {
-      if (!repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line))) return 1;
-      rt.out("No newer CLI version.");
+      const repaired = repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line));
+      rt.out(repaired ? "No newer CLI version." : "No newer CLI version. No connector reconciliation was run.");
       reportVersion(current, latest.version, rt, false);
       return 0;
     }

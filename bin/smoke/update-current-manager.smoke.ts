@@ -209,7 +209,6 @@ console.log('LEGACY_READS=' + legacyReads);
           assert.match(down.stdout, /stopped nats-server/);
         }
         assert.equal(readFileSync(selection, "utf8"), unknown);
-        console.log("unknown connector selection: installed version, status and down remain available");
         // Leave one trusted pointer at a time. Repair must keep the existing connector graph.
         for (const record of [selection, current]) {
           writeFileSync(record, unknown, { mode: 0o600 });
@@ -247,27 +246,34 @@ console.log('LEGACY_READS=' + legacyReads);
           const root = JSON.parse(saved.toString()).root;
           const manifest = join(root, "extensions", "extensions.json");
           const inventory = readFileSync(manifest);
-          writeFileSync(selection, damaged);
+          writeFileSync(selection, unknown);
           writeFileSync(current, JSON.stringify({ ...JSON.parse(savedCurrent.toString()), root: project }));
           try {
             const refused = await selfUpdate();
-            assert.equal(refused.code, 1, refused.output);
+            assert.equal(refused.code, 0, refused.output);
             assert.match(refused.output, /connector retention selection.*unreadable.*cotal ext seed --repair/);
-            assert.equal(readFileSync(selection, "utf8"), damaged);
+            assert.match(refused.output, /invalid previous connector retention selection/);
+            assert.match(refused.output, /No newer CLI version\. No connector reconciliation was run\./);
+            assert.match(refused.output, /Registry latest:/);
+            assert.equal(readFileSync(selection, "utf8"), unknown);
           } finally { writeFileSync(current, savedCurrent); }
+          console.log("unknown connector selection: installed version, status, self-update and down remain available");
 
+          writeFileSync(selection, damaged);
           writeFileSync(manifest, damaged);
           try {
             const refused = await selfUpdate();
-            assert.equal(refused.code, 1, refused.output);
+            assert.equal(refused.code, 0, refused.output);
             assert.match(refused.output, /connector retention selection.*unreadable.*cotal ext seed --repair/);
             assert.match(refused.output, /corrupt extensions manifest/);
-            assert.doesNotMatch(refused.output, /No newer CLI version/);
+            assert.match(refused.output, /No newer CLI version\. No connector reconciliation was run\./);
+            assert.match(refused.output, /Registry latest:/);
           } finally { writeFileSync(manifest, inventory); }
 
           writeFileSync(selection, damaged);
           const repaired = await selfUpdate();
           assert.equal(repaired.code, 0, repaired.output);
+          assert.match(repaired.output, /^No newer CLI version\.$/m);
           const backup = /^Set aside unreadable connector selection: (.+)$/m.exec(repaired.output)?.[1];
           assert.ok(backup, repaired.output);
           const path = JSON.parse(backup) as string;

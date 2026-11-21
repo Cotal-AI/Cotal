@@ -289,9 +289,9 @@ beside the replacement with a `.corrupt.` suffix. If no readable record identifi
 connector set, repair seeds a new set without deleting the old files.
 `cotal update --self` repairs an unreadable selection and reports where it saved the original
 record. When no newer release is available, the command verifies that it can read the connector
-inventory before reporting success. If it cannot repair the selection or read the inventory, it
-exits with an error and names the repair command. When a newer release is available, the selection
-repair runs before the command replaces packages.
+inventory after repairing the selection. If it cannot repair the selection or read the inventory,
+it reports the error, names the repair command, and exits with status 0. When a newer release is
+available, the selection repair runs before the command replaces packages.
 If the update fails and restores the previous CLI, it restores the repaired connector state and
 keeps the original record beside the replacement.
 If the connector seed store is newer than the running CLI, reconciliation refuses before creating
