@@ -601,9 +601,10 @@ stdin, and overwrites an existing persona only with `--force`. Its local writes 
 draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
 `PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
 than reporting it empty. It lists malformed files alongside readable definitions and exits 4 if any
-definition could not be read. It
-escapes control characters in the names, fields and bodies it prints, as `persona show` does, and
-shows each persona's description or first prompt line whole, wrapped to the terminal's width. Its
+definition could not be read. A YAML error names the file and its line and column when known,
+without quoting the YAML. The list escapes control characters in the names, fields and bodies it
+prints, as `persona show` does, and shows each persona's description or first prompt line whole,
+wrapped to the terminal's width. Its
 `show` does the same on a terminal, under the file's path, and writes only the file, byte for byte,
 when its output is piped or redirected, so
 `personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
