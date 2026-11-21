@@ -34,7 +34,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string; broker?: string } | null;
-  result: { kind?: string; streams?: string[]; purged?: boolean; authorization?: string; retainedCounts?: string } | null;
+  result: { kind?: string; streams?: string[]; items?: { channel: string; text: string }[]; purged?: boolean; authorization?: string; retainedCounts?: string } | null;
   error?: { code: string; message: string; remedy?: string };
 }
 
@@ -49,7 +49,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 process.env.COTAL_HOME = join(home, ".cotal");
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 const run = (args: string[]) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -80,6 +80,11 @@ const stop = () => {
 try {
   const up = run(["up", "--open", "--no-manager", "--server", server, "--json"]);
   check("fixture: the prepared project starts a broker", up.status === 0, shown(up));
+  const sent = run(["send", "-c", "general", "hello retained history", "--space", "hcdry", "--json"]);
+  check("fixture: a channel message is stored", sent.status === 0, shown(sent));
+  const read = run(["history", "general", "--space", "hcdry", "--limit", "10", "--grep", "hello", "--json"]);
+  check("omitting only --force reads the requested channel with its filters intact", read.status === 0
+    && read.envelope?.result?.items?.some((item) => item.channel === "general" && item.text === "hello retained history") === true, shown(read));
   const down = stop();
   check("fixture: down completes the stop", down.status === 0 && down.envelope?.outcome === "ok", shown(down));
   for (const args of [[], ["--space", "hcdry"], ["--space", "hcdry", "--server", server]]) {
@@ -103,8 +108,35 @@ check("control: the preview names its space and chat stream and purges nothing",
 const previewPlain = run(["history", "clear", "--dry-run", "--space", "hcother", "--plain"]);
 check("control: the plain preview begins with Mesh: <space>", previewPlain.status === 0 && previewPlain.stdout.split("\n")[0] === "Mesh: hcother", shown(previewPlain));
 
-const force = run(["history", "clear", "--force"]);
-check("the old --force spelling is a usage refusal, exit 1, and names --yes", force.status === 1 && `${force.stdout}${force.stderr}`.includes("cotal history clear --yes"), shown(force));
+for (const [args, guidance] of [
+  [["general"], "Omit --force"],
+  [["general", "--space", "hcdry", "--limit", "10", "--grep", "hello"], "Omit --force"],
+  [["clear", "--space", "hcother", "--dms"], "Replace --force with --yes"],
+  [["clear", "--space", "hcother", "--dms", "--dry-run"], "Omit --force"],
+  [["clear", "--space", "hcother", "--dms", "--yes"], "Omit --force"],
+  [["limit", "--space", "hcother"], "Omit --force"],
+  [["limit", "--space", "hcother", "--per-sender", "10"], "Replace --force with --yes"],
+] as const) {
+  const force = run(["history", ...args, "--force", "--json"]);
+  check(`history ${args.join(" ")}: --force refuses without changing the operation`,
+    force.status === 1 && force.stderr === "" && force.envelope?.outcome === "refused"
+      && force.envelope.error?.code === "USAGE_INVALID"
+      && force.envelope.error.message === `--force is not supported. ${guidance} and keep the other arguments.`, shown(force));
+}
+
+const plainRead = run(["history", "general", "--force", "--plain"]);
+const plainRefusal = plainRead.stderr.split("\n\n", 1)[0] ?? "";
+check("plain history read refusal tells the user to omit --force", plainRead.status === 1
+  && plainRefusal.includes("Omit --force and keep the other arguments.") && !plainRefusal.includes("--yes"), shown(plainRead));
+
+const scopedClear = run(["history", "clear", "general", "--force", "--json"]);
+check("an invalid selective clear does not suggest confirmation", scopedClear.status === 1
+  && scopedClear.envelope?.error?.message.includes("history clear takes no channel") === true
+  && !scopedClear.stdout.includes("--yes"), shown(scopedClear));
+
+const rootHelp = run(["history", "--help"]);
+const forceHelp = rootHelp.stdout.split("\n").find((line) => line.trimStart().startsWith("--force ")) ?? "";
+check("history help tells reads and previews to omit --force", rootHelp.status === 0 && forceHelp.includes("Omit it from reads and previews") && !forceHelp.includes("--yes"), shown(rootHelp));
 
 const help = run(["history", "clear", "--help"]);
 check("help for history clear lists --yes, --dry-run and its structured outputs", help.status === 0 && help.stdout.includes("--yes") && help.stdout.includes("--dry-run") && help.stdout.includes("Structured output: json, plain"), help.stdout.slice(0, 1600));

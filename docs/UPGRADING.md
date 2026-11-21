@@ -2038,10 +2038,10 @@ path. A separate broker or manager can stay running.
 
 ### What stops working
 
-- Replace a script's `cotal history --force` with `cotal history clear --yes`. `--force` is refused
-  on every `history` form, `history clear` included, and clears nothing. Add `--dms` to the
-  explicit clear command only when the purge should include direct messages and the identity holds
-  that authority.
+- `--force` is refused on every `history` form and clears nothing. For a history read or preview,
+  remove `--force` and keep the other arguments. For a script that intentionally purges history,
+  use `cotal history clear --yes` and keep the target options. Include `--dms` only when the purge
+  should include direct messages and the identity holds that authority.
 - `history clear` accepts no channel argument, read filters, or `--follow`. It purges every channel
   in the selected space. These inputs are refused. They are not treated as a selective purge.
 - Bare `history` reads channels within the caller's read grant. It never clears stored messages.
@@ -2051,10 +2051,10 @@ path. A separate broker or manager can stay running.
 
 ### Before the upgrade
 
-Find scripts that pass `--force` to `history` and change their explicit purge invocation. No stored
-state or credential backup is needed for this CLI-only transition. Before an intentional history
-purge, follow the deployment's usual backup procedure. Reads do not make a backup, and they do not
-restore data that retention has already removed.
+Find scripts that pass `--force` to `history` and update them according to the operation they
+intend. No stored state or credential backup is needed for this CLI-only transition. Before an
+intentional history purge, follow the deployment's usual backup procedure. Reads do not make a
+backup, and they do not restore data that retention has already removed.
 
 ## Status output in 0.91.0
 

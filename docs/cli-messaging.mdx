@@ -704,6 +704,9 @@ With no limit flag, `history limit` only reads. It prints the limit each of the 
 writes nothing, and asks for no `--yes`. `result.kind` is `history-limits`, and each
 `result.streams[]` entry names its stream and the `holds` limit, with `null` for no age or no count.
 
+`--force` is refused. Omit it from history reads, including reads of the current limits. When
+setting limits, use `--yes` to confirm without prompting and keep the target and limit flags.
+
 Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
 root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
 space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
@@ -839,7 +842,8 @@ candidate IDs and refusals in one receipt. Without `--json`, it keeps its earlie
 folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
 history under the existing purger authority. In a terminal, confirmation names the space, broker
 and space-wide scope and defaults to cancellation. Scripts
-and `--json` require `--yes`. The old `--force` spelling refuses with the replacement.
+and `--json` require `--yes`. If you passed `--force` to confirm a purge, replace it with `--yes` and
+keep the target and scope options. For a preview, omit `--force` and keep `--dry-run`.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
 caller credential, connects nowhere and does not check authorization or retained message counts.
