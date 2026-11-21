@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "claim absent KV entry as deleted on repeated deprovision",
-      "file": "packages/core/src/streams.ts",
+      "file": "packages/core/src/deprovision.ts",
       "find": "if (before.missing) return { outcome: \"absent\", status: \"missing\" };",
       "replace": "if (before.missing) return { outcome: \"deleted\", status: \"won\" };",
       "expectRed": "MISSING ACCOUNTING: non-existent candidate resources report zero deleted and all absent",
