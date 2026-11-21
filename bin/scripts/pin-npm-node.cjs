@@ -23,7 +23,18 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
       const launcher = join(root, "dist", "cotal-npm");
       const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
       const node = realpathSync(process.execPath);
-      writeFileSync(launcher, `#!/bin/sh
+      // Linux's cwd link names the current inode even after its directory entry is removed.
+      // Give it to sh before startup, then restore the caller's PWD without changing directories.
+      const shell = process.platform === "linux"
+        ? `#!/usr/bin/env -S COTAL_NPM_PWD=\${PWD} PWD=/proc/self/cwd /bin/sh
+if [ "\${COTAL_NPM_PWD#/}" != "$COTAL_NPM_PWD" ] && [ "$COTAL_NPM_PWD" -ef . ]; then
+  PWD=$COTAL_NPM_PWD
+else
+  PWD=$(pwd -P 2>/dev/null) || unset PWD
+fi
+unset COTAL_NPM_PWD`
+        : "#!/bin/sh";
+      writeFileSync(launcher, `${shell}
 if command -v node >/dev/null 2>&1; then
   node=node
 elif [ -x ${quote(node)} ]; then

@@ -84,7 +84,7 @@ try {
   mkdirSync(join(npmPackage, "dist"));
   mkdirSync(join(npmPackage, "scripts"));
   copyFileSync(join(binRoot, postinstall), join(npmPackage, postinstall));
-  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--entry" ? process.argv[1] : "cotal-ai 0.0.0");\n', { mode: 0o755 });
+  writeFileSync(join(npmPackage, "dist/cotal.js"), '#!/usr/bin/env node\nconst output = { "--entry": process.argv[1], "--cwd": JSON.stringify([process.cwd(), process.env.PWD]) };\nconsole.log(output[process.argv[2]] ?? "cotal-ai 0.0.0");\n', { mode: 0o755 });
   const installation = readFileSync(resolve(import.meta.dirname, "../../../docs/installation.mdx"), "utf8");
   assert(installation.includes("`wget` instead of `curl`") && installation.includes("wget -qO- https://get.cotal.ai | sh -s -- --no-setup"), "the install guide offers the wget bootstrap");
   const shellLauncher = join(npmHome, ".local", "bin", "cotal");
@@ -131,6 +131,17 @@ try {
   const launched = spawnSync(npmLauncher, ["--entry"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
+  if (process.platform === "linux") {
+    const projectAlias = join(root, "project alias's");
+    symlinkSync(npmHome, projectAlias);
+    for (const pwd of [projectAlias, undefined, root]) {
+      const project = spawnSync(npmLauncher, ["--cwd"], {
+        cwd: npmHome, env: { ...npmEnv, PATH: dirname(npmLauncher), PWD: pwd }, encoding: "utf8", timeout: 10_000,
+      });
+      assert.equal(project.status, 0, output(project));
+      assert.deepEqual(JSON.parse(project.stdout), [realpathSync(npmHome), pwd === projectAlias ? pwd : realpathSync(npmHome)]);
+    }
+  }
   const daemonDir = join(npmHome, "cotal", "daemon");
   const receipt = join(daemonDir, "service-unit.json");
   // The defaults no longer collide. Explicitly point the installer at npm's bin to test refusal.
