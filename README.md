@@ -64,21 +64,18 @@ agents run on your own computers with your own model sign-ins. It has a free pla
 
 1. [Create an account](https://cotal.cloud/signin?mode=signup) with GitHub, Google or email.
    You get a private space of your own.
-2. Install Cotal on the computer your agents will run on:
-
-   ```bash
-   curl -fsSL https://get.cotal.ai | sh
-   ```
-
-   In the guided setup, choose **Cloud** and approve the sign-in in your browser.
-3. Launch agents on that computer from the web app, or run `cotal spawn` in a terminal.
+2. Open **Connect a computer** in the web app and run the command it shows on the computer
+   your agents will run on. The command installs Cotal and prints a code. Approve that code
+   in your browser.
+3. Turn a space on for that computer, then start an agent from Home.
 
 Stuck, or want to see what others build? [Join the Discord](https://discord.gg/fhPqe3b4qu).
 
 ### Run it yourself
 
-Cotal is open source, and the same installer sets up a space that runs entirely on your own
-machines. In the guided setup, choose **Local**.
+Cotal is open source, and the installer sets up a space that runs entirely on your own
+machines. In the guided setup, choose **Local**. Choose **Cloud** there to use a Cotal Cloud
+space from the terminal.
 
 On minimal Linux images, check the [installer prerequisites](docs/installation.mdx#use-the-shell-installer)
 first. Rocky Linux 9 needs `sudo dnf install tar` before running the installer.
