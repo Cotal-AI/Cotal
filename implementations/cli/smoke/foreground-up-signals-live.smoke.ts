@@ -4,9 +4,10 @@
  * Ready static stacks are probed through public status/ps. A bounded startup-refusal cell suspends
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
  * A manager killed before readiness, without a stop request, must still report a degraded startup.
- * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
- * and again as it writes its start receipt. A foreground `team boot` gets SIGTERM at the broker's
- * readiness announcement. Another cell cuts a ready stack's stop as a closed terminal
+ * A controller-route cell checks the refusal from a competing `up` while the foreground start holds
+ * the startup lock, then interrupts the start. Another interrupts it as it writes its start receipt.
+ * A foreground `team boot` gets SIGTERM at the broker's readiness announcement.
+ * Another cell cuts a ready stack's stop as a closed terminal
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
@@ -416,7 +417,20 @@ async function controllerStartupCell(kind: "up" | "receipt" | "team" = "up"): Pr
       }, 90_000, () => err.slice(-3000));
       assert.ok(child.pid);
       if (kind === "team") process.kill(child.pid, "SIGTERM");
-      else process.kill(-child.pid, "SIGINT");
+      else {
+        // Pause only our launcher so the competing start can reach the live lock before release.
+        process.kill(child.pid, "SIGSTOP");
+        try {
+          const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"]);
+          assert.equal(second.code, 2, second.out + second.err); passed++;
+          assert.match(second.err, /LIFECYCLE_BLOCKED/); passed++;
+          assert.match(second.err.replace(/\s+/g, " "), /the other foreground terminal keeps the stack once startup finishes.*`(?:pnpm )?cotal status`.*Ctrl-C in that terminal before starting it here/); passed++;
+          assert.doesNotMatch(second.err, /run the command again/); passed++;
+          process.kill(-child.pid, "SIGINT");
+        } finally {
+          process.kill(child.pid, "SIGCONT");
+        }
+      }
     }
     await until(() => { if (state.error) throw state.error; return state.exited; }, 120_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: startup-interrupt owner streams drained`);

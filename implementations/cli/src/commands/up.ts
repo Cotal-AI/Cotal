@@ -1569,7 +1569,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       return `${failure.message} ${failure.remedy}`;
     });
     try {
-      const stackLock = acquireStackOperationLock(meshRoot);
+      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : undefined);
       const native = controllerStackNative();
       // A foreground terminal holds the start as well, so a signal during it stops what it started.
       const start = async () => {
