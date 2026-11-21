@@ -551,7 +551,8 @@ persona is one: its file is `default.md` and its agents launch as `default_agent
 reserved, so a create under it is refused with `USAGE_INVALID`.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
-preferences). A value that is the path of an existing file runs as that program, spaces and all.
+preferences). You can open a draft to repair invalid frontmatter in an existing persona file.
+A value that is the path of an existing file runs as that program, spaces and all.
 Any other value runs as a shell command. With no editor set, or one that cannot be found or run,
 editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. The draft's private folder is made in the temporary directory
@@ -584,9 +585,10 @@ refuse it with `PERMISSION_DENIED`, and the list marks it unreadable and names i
 `PERMISSION_DENIED` warning, exit 4.
 
 List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
-Show explicitly returns the full definition and source. List does not return the body or launch
-options. A malformed entry produces a partial inventory (exit 4) and a warning with the file and
-the validation reason. An unreadable catalog refuses
+Show explicitly returns the full definition and source. In the local show card, `Read` lists
+`allowSubscribe` or, when that field is empty or omitted, `subscribe`. List does not return the
+body or launch options. A malformed entry produces a partial inventory (exit 4) and a warning with
+the file and the validation reason. An unreadable catalog refuses
 with `PERMISSION_DENIED` (exit 2) rather than reporting it empty. A catalog folder that lists its
 file names but cannot be searched, such as one set to mode 0600, is refused the same way, empty or
 not, and its personas are not reported as malformed. Its next step is

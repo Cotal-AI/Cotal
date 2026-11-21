@@ -115,6 +115,50 @@ function refused(name: string, r: Run, reason: RegExp): void {
 /** Skips the connector seed, for runs whose question is not whether they seed. */
 const noSeed = { COTAL_SKIP_CONNECTOR_SEED: "1" };
 
+function personaReadAcl(): void {
+  for (const [label, field, expected] of [
+    ["omitted", "", "general"],
+    ["empty", "allowSubscribe: []\n", "general"],
+    ["explicit", "allowSubscribe: [general, review]\n", "general, review"],
+  ]) {
+    const result = cotal(["persona", "show", "reader", "--plain"], home => {
+      const agents = join(home, "..", ".cotal", "agents");
+      mkdirSync(agents, { recursive: true });
+      writeFileSync(join(agents, "reader.md"), `---\nname: reader\nsubscribe: [general]\n${field}---\n`);
+    }, noSeed);
+    check(`persona show reports effective read channels with ${label} allowSubscribe`,
+      result.status === 0 && /^  Read: +(.+)$/m.exec(result.stdout)?.[1] === expected, shown(result));
+  }
+}
+
+function personaRepair(): void {
+  const original = "---\nname: broken\nrole: 42\n---\nBefore repair.\n";
+  const repaired = original.replace("role: 42", "role: check");
+  for (const [action, replacement, exit] of [["repair", repaired, 0], ["invalid", original.replace("role: 42", "role: 43"), 0], ["cancel", repaired, 1]] as const) {
+    let file = "", marker = "";
+    const result = cotal(["persona", "edit", "broken", "--json"], home => {
+      const agents = join(home, "..", ".cotal", "agents");
+      mkdirSync(agents, { recursive: true });
+      file = join(agents, "broken.md");
+      marker = join(home, "..", "opened-draft");
+      writeFileSync(file, original);
+      writeFileSync(join(home, "..", "editor.sh"), `#!/bin/sh\nset -eu\ncmp "$1" .cotal/agents/broken.md\nprintf '%s\\n' "$1" > opened-draft\nprintf '%s' '${replacement}' > "$1"\nexit ${exit}\n`, { mode: 0o755 });
+    }, { ...noSeed, VISUAL: "./editor.sh", EDITOR: "./editor.sh" });
+    const draft = existsSync(marker) ? readFileSync(marker, "utf8").trim() : undefined;
+    const privateDraft = draft !== undefined && draft !== file && dirname(draft).startsWith(join(tmpdir(), "cotal-persona-"));
+    if (privateDraft) cleanup.push(dirname(draft));
+    const draftHandled = privateDraft && (action === "repair" ? !existsSync(draft) : existsSync(draft) && readFileSync(draft, "utf8") === replacement);
+    const outcome = action === "repair" ? result.status === 0 && result.stdout.includes('"kind":"persona-written"') :
+      action === "invalid" ? result.status === 1 && result.stdout.includes('"code":"SCHEMA_INVALID"') :
+      result.status === 0 && result.stdout.includes('"code":"USER_CANCELLED"');
+    check(`persona edit can ${action === "invalid" ? "reject an invalid draft of" : action} a malformed definition`,
+      draftHandled && outcome && readFileSync(file, "utf8") === (action === "repair" ? repaired : original), shown(result));
+  }
+}
+
+personaReadAcl();
+personaRepair();
+
 const commands = registry.all<Command>("command");
 const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ alias, cmd })));
 
