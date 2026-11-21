@@ -1,12 +1,13 @@
 // The dynamic subscription region of CotalEndpoint (join, leave, channel listing and the membership
 // feed watches), as an internal component. Moved verbatim from endpoint.ts; the endpoint keeps the
 // public methods and forwards to them. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { ClosedConnectionError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager, JetStreamApiCodes, type ConsumerInfo, type JetStreamManager, type JsMsg, type PushConsumer } from "@nats-io/jetstream";
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
-import { isPublishPermissionDenied } from "./endpoint.js";
+import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import type { IssuedSubjectPermission } from "./issued-authority.js";
 import type { ChannelMember } from "./endpoint-options.js";
 import type { EndpointPresence } from "./endpoint-presence.js";
@@ -14,7 +15,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, subjectMatches } from "./subjects.js";
-import type { AgentCard, ChannelConfig, ChannelDefaults, ChannelMembership, DeliveryClass, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
+import type { ChannelConfig, ChannelDefaults, ChannelMembership, DeliveryClass, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
@@ -54,11 +55,8 @@ export type MembershipFeedWatch = {
 export interface EndpointSubscriptionsDeps {
   nc: () => NatsConnection | undefined;
   jsm: () => JetStreamManager | undefined;
-  space: () => string;
-  card: () => AgentCard;
   stopped: () => boolean;
   authed: () => boolean;
-  channels: () => string[];
   channelConfigs: () => Map<string, ChannelConfig>;
   channelDefaults: () => ChannelDefaults;
   chatSubDenied: () => Set<string>;
@@ -91,15 +89,12 @@ export interface EndpointSubscriptionsDeps {
  *  listings, and the membership feed's snapshot read and watches with their consumer cleanup.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointSubscriptions {
-  constructor(private readonly deps: EndpointSubscriptionsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointSubscriptionsDeps) {}
 
   private get nc() { return this.deps.nc(); }
   private get jsm() { return this.deps.jsm(); }
-  private get space() { return this.deps.space(); }
-  private get card() { return this.deps.card(); }
   private get stopped() { return this.deps.stopped(); }
   private get authed() { return this.deps.authed(); }
-  private get channels() { return this.deps.channels(); }
   private get channelConfigs() { return this.deps.channelConfigs(); }
   private get channelDefaults() { return this.deps.channelDefaults(); }
   private get chatSubDenied() { return this.deps.chatSubDenied(); }
@@ -129,7 +124,7 @@ export class EndpointSubscriptions {
 
   /** The channels this endpoint is currently subscribed to (live — reflects join/leave). */
   joinedChannels(): string[] {
-    return [...this.channels];
+    return [...this.identity.channels];
   }
 
   /**
@@ -145,7 +140,7 @@ export class EndpointSubscriptions {
     channel: string,
   ): Promise<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
-    if (this.channels.includes(channel))
+    if (this.identity.channels.includes(channel))
       return { joined: false, backfilled: 0, durable: this.plane3Channels.has(channel) };
     // The delivery class below comes from the cache, so a seat reads it current before joining.
     if (this.readsChannelsOnDemand) await this.readChannels();
@@ -171,7 +166,7 @@ export class EndpointSubscriptions {
       this.unsubscribeChat(channel);
       throw new Error(`cannot join "${channel}": not within this agent's read ACL (allowSubscribe)`);
     }
-    this.channels.push(channel);
+    this.identity.channels.push(channel);
     // Durable backstop. The live core-sub above already delivers (manager-free). For a `durable`-class
     // channel, request a Plane-3 per-member backstop from the server-side delivery daemon (durableJoin via ctl.delivery) so a post reaches a
     // busy/offline turn — the core-sub stays as the live wake-hint, dedup-coalesced with the Plane-3
@@ -212,7 +207,7 @@ export class EndpointSubscriptions {
    *  remedy when membership discovery predates lifecycle support, without changing the refusal. */
   async leaveChannel(channel: string, legacyDiscoveryMessage?: string): Promise<{ left: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
-    let left = this.channels.includes(channel);
+    let left = this.identity.channels.includes(channel);
     // A concrete channel or family may still have a Plane-3 membership regardless of its current policy.
     // Discover the channel's rows across this principal's lifecycles, including memberships absent
     // from the local mirror. Keep each row's generation guard. fetchMemberships throws on a
@@ -235,8 +230,8 @@ export class EndpointSubscriptions {
       if (memberships !== undefined) this.plane3Channels.delete(channel);
     }
     this.unsubscribeChat(channel);
-    const i = this.channels.indexOf(channel);
-    if (i >= 0) this.channels.splice(i, 1);
+    const i = this.identity.channels.indexOf(channel);
+    if (i >= 0) this.identity.channels.splice(i, 1);
     return { left };
   }
 
@@ -254,7 +249,7 @@ export class EndpointSubscriptions {
     const mgr = await jetstreamManager(this.nc);
     let info;
     try {
-      info = await mgr.streams.info(chatStream(this.space), { subjects_filter: ">" });
+      info = await mgr.streams.info(chatStream(this.identity.space), { subjects_filter: ">" });
     } catch (e) {
       // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
@@ -283,7 +278,7 @@ export class EndpointSubscriptions {
   async dmStreamPresent(): Promise<boolean> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     try {
-      await (await jetstreamManager(this.nc)).streams.info(dmStream(this.space));
+      await (await jetstreamManager(this.nc)).streams.info(dmStream(this.identity.space));
       return true;
     } catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
@@ -302,7 +297,7 @@ export class EndpointSubscriptions {
     // each channel's counts regardless of who published.
     const counts = new Map<string, number>();
     try {
-      const info = await mgr.streams.info(chatStream(this.space), { subjects_filter: ">" });
+      const info = await mgr.streams.info(chatStream(this.identity.space), { subjects_filter: ">" });
       if (info.state.subjects) {
         for (const [subject, count] of Object.entries(info.state.subjects)) {
           const p = parseSubject(subject);
@@ -390,7 +385,7 @@ export class EndpointSubscriptions {
    *  two names look alike, so this one is explicitly "feed". Read-only here; agents hold no grant. */
   private async membershipFeedRegistry(): Promise<KV> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    this.membershipFeedKv ??= await new Kvm(this.nc).open(membershipBucket(this.space));
+    this.membershipFeedKv ??= await new Kvm(this.nc).open(membershipBucket(this.identity.space));
     return this.membershipFeedKv;
   }
 
@@ -416,7 +411,7 @@ export class EndpointSubscriptions {
     } catch (e) {
       if (!isPublishPermissionDenied(e)) throw e;
       throw new Error(
-        `membership read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${membershipBucket(this.space)}, the membership feed read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
+        `membership read refused for ${this.identity.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${membershipBucket(this.identity.space)}, the membership feed read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
         { cause: e },
       );
     }

@@ -1,12 +1,12 @@
 // The boot durable memberships of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { isChannelFamily, isConcreteChannel } from "./subjects.js";
 import type { ControlReply, DeliveryClass } from "./types.js";
 
 /** What the boot-membership component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointBootMembershipsDeps {
-  channels: () => string[];
   plane3Channels: () => Map<string, number>;
   stopped: () => boolean;
   requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
@@ -30,9 +30,8 @@ export class EndpointBootMemberships {
    *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
   private readonly pendingBootJoins = new Set<string>();
 
-  constructor(private readonly deps: EndpointBootMembershipsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointBootMembershipsDeps) {}
 
-  private get channels() { return this.deps.channels(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
   private get stopped() { return this.deps.stopped(); }
   private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number) { return this.deps.requestDelivery(op, args, timeoutMs); }
@@ -69,7 +68,7 @@ export class EndpointBootMemberships {
    *  the daemon recovers, not left silently live-only. Until a membership exists the channel renders
    *  degraded in `cotal_channels` ({@link hasDurableMembership}). */
   async armBootDurableMemberships(): Promise<void> {
-    for (const channel of this.channels) {
+    for (const channel of this.identity.channels) {
       if (this.plane3Channels.has(channel)) continue;
       // A family (`review.>`) asks for its row whatever the default class: each channel under it decides
       // its own at fan-out (#5404). Any other pattern has no durable membership.
@@ -102,7 +101,7 @@ export class EndpointBootMemberships {
     this.pendingBootJoins.add(channel);
     for (let attempt = 0; ; attempt++) {
       await this.membershipPause(attempt);
-      if (this.stopped || !this.channels.includes(channel) || this.plane3Channels.has(channel)) {
+      if (this.stopped || !this.identity.channels.includes(channel) || this.plane3Channels.has(channel)) {
         this.pendingBootJoins.delete(channel);
         return; // stopped, left, or another path established it
       }
