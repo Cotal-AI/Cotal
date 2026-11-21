@@ -12,7 +12,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const repo = join(import.meta.dirname, "..", "..", "..");
 const cli = join(repo, "bin", "dist", "cotal.js");
@@ -83,17 +83,7 @@ const cursor = { nonce: "issue-1336-upgrade", package: "claude", phase: "add" } 
 
 let broker: ChildProcess | undefined;
 let manager: ChildProcess | undefined;
-let pass = 0;
-let fail = 0;
-function check(name: string, condition: boolean, extra?: unknown): void {
-  if (condition) {
-    pass += 1;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail += 1;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 try {
   const installed = spawnSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", npmPrefix, "cotal-ai@0.33.1"], {
@@ -185,5 +175,5 @@ try {
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log(`seed-upgrade-resume smoke: ${pass} passed, ${fail} failed`);
-process.exitCode = fail ? 1 : 0;
+console.log(`seed-upgrade-resume smoke: ${passed()} passed, ${failed()} failed`);
+finish();

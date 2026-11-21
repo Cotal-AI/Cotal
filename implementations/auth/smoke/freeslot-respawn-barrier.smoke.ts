@@ -66,7 +66,7 @@
  * Run: pnpm smoke:freeslot-barrier:live   (pnpm build first — Manager + the agent child load
  * dist; needs nats-server + node on PATH)
  */
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 // ---------- SELF-DISPATCH (must be the FIRST thing that runs) ----------
 // The manager builds the agent's bearer argv from `process.argv[1]`, which in this in-process
@@ -183,11 +183,7 @@ function launchEnv(): Record<string, string> {
   return out;
 }
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SELF = process.argv[1];
@@ -1051,9 +1047,9 @@ try {
     await staticNc.drain().catch(() => {});
   }
 
-  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
+  console.log(`\nFREESLOT RESPAWN BARRIER ${failed() === 0 ? "OK ✅" : "RED ❌"}  (${passed()} passed, ${failed()} failed)`);
 
-  if (fail) process.exitCode = 1;
+  finish();
 } catch (e) {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;

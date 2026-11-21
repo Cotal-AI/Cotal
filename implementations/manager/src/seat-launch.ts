@@ -6,8 +6,9 @@ import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, reso
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
 import { listDirectory } from "./list-dir.js";
-import { MANAGER_ENDPOINT, type ManagerConnectorStatus } from "./manager-service-contract.js";
+import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { RunHosting } from "./run-hosting.js";
 import type { Runtime } from "./runtime/index.js";
 import { SeatStart } from "./seat-start.js";
@@ -165,7 +166,6 @@ export interface SeatLaunchDeps {
   managerInstanceId: () => string;
   serviceServe: () => { grant: EpServeGrant } | undefined;
   runHosting: () => RunHosting | undefined;
-  connectorStatuses: () => readonly ManagerConnectorStatus[];
   execution: () => "runtime" | "none";
   requiredRuntime: () => Runtime;
   meshMode: () => "open" | "static" | "user";
@@ -198,7 +198,6 @@ export interface SeatLaunchDeps {
   provisionUserAgent: (...args: Parameters<Manager["provisionUserAgent"]>) => ReturnType<Manager["provisionUserAgent"]>;
   readerRemedy: (...args: Parameters<Manager["readerRemedy"]>) => ReturnType<Manager["readerRemedy"]>;
   readinessTimeoutMs: () => Manager["readinessTimeoutMs"];
-  refreshUnavailableConnectors: (...args: Parameters<Manager["refreshUnavailableConnectors"]>) => ReturnType<Manager["refreshUnavailableConnectors"]>;
   remoteAuthority: () => Manager["remoteAuthority"];
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retirement: () => Manager["retirement"];
@@ -234,7 +233,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     managerInstanceId: () => m["managerInstanceId"],
     serviceServe: () => m["serviceServe"],
     runHosting: () => m["runHosting"],
-    connectorStatuses: () => m["connectorStatuses"],
     execution: () => m["execution"],
     requiredRuntime: () => m["requiredRuntime"],
     meshMode: () => m["meshMode"],
@@ -268,7 +266,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
     readerRemedy: (...args) => m["readerRemedy"](...args),
     readinessTimeoutMs: () => m["readinessTimeoutMs"],
-    refreshUnavailableConnectors: (...args) => m["refreshUnavailableConnectors"](...args),
     remoteAuthority: () => m["remoteAuthority"],
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retirement: () => m["retirement"],
@@ -297,8 +294,8 @@ export class SeatLaunch {
   /** The agent-start path. Shares this component's deps, and calls back into it for its leaf steps. */
   private readonly seatStart: SeatStart;
 
-  constructor(private readonly deps: SeatLaunchDeps) {
-    this.seatStart = new SeatStart(deps, {
+  constructor(private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {
+    this.seatStart = new SeatStart(deps, parts, {
       checkSpawnCwd: (...args) => this.checkSpawnCwd(...args),
       harnessUnavailableError: (...args) => this.harnessUnavailableError(...args),
       onceRefusal: (...args) => this.onceRefusal(...args),
@@ -372,7 +369,7 @@ export class SeatLaunch {
    *  consume an unpinned request a sibling could serve. */
   classSpawnEnabled(): boolean {
     if (this.deps.execution() === "none") return false;
-    return this.deps.connectorStatuses().some((row) => row.state === "available");
+    return this.parts.connectorInventory.connectorStatuses.some((row) => row.state === "available");
   }
 
   omitClassCommands(): readonly string[] | undefined {

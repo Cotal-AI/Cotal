@@ -75,7 +75,7 @@ const oldPath = process.env.PATH;
 process.env.PATH = relative(process.cwd(), binDir);
 const manager = new Manager({ space: "harness-boot", servers, runtime: "pty", workspaceRoot, installedExtensions: true });
 const M = manager as unknown as {
-  connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }>;
+  connectorInventory: { connectorStatuses: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }> };
   managerStatusData(): { connectors: Array<{ agent: string; state: string; binaries: Record<string, string>; eventPlane: boolean; reason?: string }> };
 };
 let bootErr = "";
@@ -90,16 +90,16 @@ try {
   if (!(await isReachable(servers))) throw new Error("owned broker did not start");
   await manager.start();
 
-  const missing = M.connectorStatuses.find((row) => row.agent === "boot-missing");
-  const available = M.connectorStatuses.find((row) => row.agent === "boot-present");
+  const missing = M.connectorInventory.connectorStatuses.find((row) => row.agent === "boot-missing");
+  const available = M.connectorInventory.connectorStatuses.find((row) => row.agent === "boot-present");
   check(
     "manager boot surfaces the missing harness before any spawn is attempted",
     bootErr.includes("! manager boot: connector boot-missing unavailable - boot-missing harness needs harness-that-does-not-exist-965 on PATH - not found"),
     bootErr,
   );
-  check("manager boot continues so unrelated connectors remain usable", missing?.state === "unavailable" && available?.state === "available", M.connectorStatuses);
+  check("manager boot continues so unrelated connectors remain usable", missing?.state === "unavailable" && available?.state === "available", M.connectorInventory.connectorStatuses);
   check("declared inventory event-plane facts survive without importing connector packages",
-    missing?.eventPlane === false && available?.eventPlane === true, M.connectorStatuses);
+    missing?.eventPlane === false && available?.eventPlane === true, M.connectorInventory.connectorStatuses);
   check(
     "boot records the resolved absolute harness path from a relative PATH entry",
     available?.binaries["present-harness"] === present && isAbsolute(available.binaries["present-harness"]!),
@@ -173,7 +173,7 @@ try {
     const L = late as unknown as {
       runtime: unknown;
       managerStatusData(): ManagerStatus;
-      connectorStatuses: ManagerStatus["connectors"];
+      connectorInventory: { connectorStatuses: ManagerStatus["connectors"] };
     };
     L.runtime = (manager as unknown as { runtime: unknown }).runtime;
     const nc = await connect({ servers });
@@ -197,7 +197,7 @@ try {
         check(`${trigger} discovers the newly installed application over the live endpoint`, result.reply.ok === true, result.reply);
         if (trigger === "models") check("catalog uses the newly resolved absolute binary", catalogBinary === installed, catalogBinary);
       }
-      const row = L.connectorStatuses.find((r) => r.agent === "boot-missing");
+      const row = L.connectorInventory.connectorStatuses.find((r) => r.agent === "boot-missing");
       check(`${trigger}: stored row clears the refusal and keeps event-plane facts`, row?.state === "available" && row.reason === undefined && row.eventPlane === false && row.binaries["harness-that-does-not-exist-965"] === installed, row);
       const spawned = await call("spawn", { name: "late-probe", agent: "boot-missing", events: false });
       check(`${trigger}: class spawn executes the discovered application without restarting the Manager`, spawned.reply.ok === true && launchExec?.status === 0, spawned.reply);

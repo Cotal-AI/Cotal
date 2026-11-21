@@ -315,8 +315,7 @@ import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/br
 import { freePort, freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
-
-const pendingRestores = new Map<string, PreparedRestore>();
+import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
 
 /** What a guarded restore returned, for `backup restore` to report as its own receipt. `up --restore`
  *  never sets a sink and prints its own startup receipt. Delivered only after the native activation wrote
@@ -350,26 +349,6 @@ export async function startRestore(values: { restore: string; "restore-only"?: s
   }
   return returned;
 }
-interface PendingOrdinaryResume {
-  root: string;
-  attemptId: string;
-  space: string;
-  mode: "open" | "auth" | "user";
-  server: string;
-  storeDir: string;
-  /** The JetStream file storage cap the preserved launch recorded, re-rendered on resume. */
-  maxFileStore?: number;
-  runtime?: string;
-  detached: boolean;
-  inventory: JsonValue;
-  journalState: "resume-intent" | "resume-active" | "resume-committed" | "resume-degraded";
-  managerCommit?: ManagerCommitEvidence;
-  serverName: string;
-  serverNonce: string;
-  /** Present when a live bound listener from a prior coordinator should be adopted, not respawned. */
-  adoptProof?: ListenerProof;
-}
-const pendingOrdinaryResumes = new Map<string, PendingOrdinaryResume>();
 
 /** `cotal up` flags — colocated with the command (like `spawnFlags`) so its completion can read them. */
 export const upFlags: FlagSpec[] = [

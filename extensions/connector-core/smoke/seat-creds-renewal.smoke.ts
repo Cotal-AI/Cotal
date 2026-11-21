@@ -21,7 +21,7 @@ import {
   serverConfig,
   setupSpaceStreams,
 } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 import { configFromEnv } from "../src/config.js";
 import { MeshAgent } from "../src/agent.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
@@ -40,17 +40,7 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3_000): Promise<v
     setTimeout(resolve, timeoutMs);
   });
 
-let passed = 0;
-let failed = 0;
-const check = (name: string, condition: boolean, detail?: unknown): void => {
-  if (condition) {
-    passed++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    failed++;
-    console.log(`  ✗ FAIL: ${name}`, detail ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -211,11 +201,11 @@ try {
   }
 
   console.log(
-    failed === 0
-      ? `\nSEAT CREDS RENEWAL SMOKE OK ✅  (${passed} passed, ${failed} failed)`
-      : `\nSEAT CREDS RENEWAL SMOKE FAILED ❌  (${passed} passed, ${failed} failed)`,
+    failed() === 0
+      ? `\nSEAT CREDS RENEWAL SMOKE OK ✅  (${passed()} passed, ${failed()} failed)`
+      : `\nSEAT CREDS RENEWAL SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`,
   );
-  process.exitCode = failed === 0 ? 0 : 1;
+  finish();
 } finally {
   await staticAgent?.stop();
   await agent?.stop();

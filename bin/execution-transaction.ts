@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
-import { retainExecutionGeneration, type RetainedExecutionGeneration, unwritableInstallation, writeExecutionDescriptor } from "./execution-store.js";
+import { assertWritableExecutionDirectory, retainExecutionGeneration, type RetainedExecutionGeneration, writableExecutionStore, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
   v: 1;
@@ -22,17 +22,8 @@ export function assertExecutionDestination(installed: string): void {
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
-  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))]) {
-    const stat = lstatSync(path);
-    const owned = stat.uid === process.getuid?.();
-    try {
-      if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
-      accessSync(path, constants.W_OK);
-    } catch {
-      if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
-      throw unwritableInstallation(installed);
-    }
-  }
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))])
+    assertWritableExecutionDirectory(path, installed);
   selectExecutionProgram(installed);
 }
 
@@ -110,10 +101,7 @@ export function completeExecutionTransaction(installed: string, path: string): v
  *  an attempt that ended, and it is removed first. */
 export function executionStagingPrefix(installed: string): string {
   assertExecutionDestination(installed);
-  const store = executionStore(installed);
-  if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (executionShared(installed)) chmodSync(store, 0o755); }
-  if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
-  protectedExecutionEntry(store);
+  const store = writableExecutionStore(installed, executionShared(installed));
   return mkdtempSync(join(store, ".installing-"));
 }
 

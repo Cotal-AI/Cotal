@@ -33,13 +33,25 @@ if (["linux", "darwin"].includes(process.platform)) {
     writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", bin: { cotal: "./dist/cotal.js" } }));
     writeFileSync(join(source, "dist/cotal-program.js"), "console.log('new generation'); export const version = 'new';\n");
     const store = executionStore(installed);
+    const elsewhere = join(scratch, "elsewhere");
+    mkdirSync(elsewhere, { mode: 0o500 });
+    symlinkSync(elsewhere, store);
+    assert.throws(() => executionStagingPrefix(installed), /unsafe execution generation store/);
+    assert.throws(() => retainExecutionGeneration(installed, source), /unsafe execution generation store/);
+    assert.equal(lstatSync(elsewhere).mode & 0o777, 0o500);
+    assert.deepEqual(readdirSync(elsewhere), []);
+    rmSync(store);
     mkdirSync(join(store, ".installing-Zz9999/lib"), { recursive: true, mode: 0o700 });
     mkdirSync(join(store, ".preparing-Yy8888"), { mode: 0o700 });
     cleanupExecutionStore(installed);
+    chmodSync(store, 0o555);
     const staging = executionStagingPrefix(installed);
+    assert.equal(lstatSync(store).mode & 0o777, 0o755, "staging restores only owner write");
     assert.deepEqual(readdirSync(store), [staging.slice(store.length + 1)], "a new staging folder replaces the abandoned ones");
     rmSync(staging, { recursive: true });
+    chmodSync(store, 0o555);
     const generation = retainExecutionGeneration(installed, source);
+    assert.equal(lstatSync(store).mode & 0o777, 0o755, "retention restores only owner write");
     chmodSync(join(installed, "package.json"), 0o664);
     const journal = journalExecutionTransaction(installed, generation, join(installed, "dist/cotal.js"));
     assert.deepEqual(readdirSync(dirname(journal)), ["execution.json"]);
@@ -113,7 +125,10 @@ if (["linux", "darwin"].includes(process.platform)) {
       };
       try {
         let checked = false;
+        chmodSync(installed, 0o700);
+        chmodSync(store, 0o500);
         const staged = await prepareExecutionUpdate("0.2.0", join(scratch, "prefix/lib/node_modules"), receipt => { checked = true; assert.equal(receipt.admission.disposition, "deferred"); });
+        assert.equal(lstatSync(store).mode & 0o777, 0o700, "private generation staging keeps the store private");
         assert.throws(() => staged.publish(), /before target checks/);
         await staged.preflight({});
         assert.equal(checked, true, "verified target policy decides despite an installed native preflight refusal");
