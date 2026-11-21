@@ -10,7 +10,7 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
 } else if (process.platform === "linux" || process.platform === "darwin") {
   // Leave Windows shims, local installs and script-disabled npm installs alone. The JavaScript
   // entry remains the declared bin and the stable entry for daemons and retained generations.
-  const { mkdtempSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("fs");
+  const { existsSync, mkdtempSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } = require("fs");
   const { basename, dirname, join, relative, resolve } = require("path");
   const root = realpathSync(join(__dirname, ".."));
   const modules = dirname(root);
@@ -23,7 +23,23 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
       const launcher = join(root, "dist", "cotal-npm");
       const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
       const node = realpathSync(process.execPath);
-      writeFileSync(launcher, `#!/bin/sh
+      // Linux's cwd link names the current inode even after its directory entry is removed.
+      // Give it to sh before startup, then restore the caller's PWD without changing directories.
+      const split = 'COTAL_NPM_PWD=${PWD} PWD=/proc/self/cwd /bin/sh';
+      const supportsCwdLink = process.platform === "linux" && existsSync("/proc/self/cwd") &&
+        require("child_process").spawnSync("/usr/bin/env", ["-S", split, "-c", '[ "$PWD" = /proc/self/cwd ] && [ . -ef . ] && exit 0'], {
+          timeout: 1000, killSignal: "SIGKILL", stdio: "ignore",
+        }).status === 0;
+      const shell = supportsCwdLink
+        ? `#!/usr/bin/env -S ${split}
+if [ "\${COTAL_NPM_PWD#/}" != "$COTAL_NPM_PWD" ] && [ "$COTAL_NPM_PWD" -ef . ]; then
+  PWD=$COTAL_NPM_PWD
+else
+  PWD=$(pwd -P 2>/dev/null) || unset PWD
+fi
+unset COTAL_NPM_PWD`
+        : "#!/bin/sh";
+      writeFileSync(launcher, `${shell}
 if command -v node >/dev/null 2>&1; then
   node=node
 elif [ -x ${quote(node)} ]; then

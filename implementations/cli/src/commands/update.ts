@@ -680,11 +680,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   return reconcileCurrent(current, rt, target, (reconciled) => {
     const latest = latestVersion(rt);
-    if (!latest.ok) {
-      rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
-      return 1;
-    }
-    reportVersion(current, latest.version, rt, reconciled);
+    reportVersion(current, latest.ok ? latest.version : undefined, rt, reconciled);
     return reconciled ? 0 : 1;
   });
 }
@@ -1234,10 +1230,10 @@ function targetArgv(target: Record<string, unknown>): string[] {
   return argv;
 }
 
-function reportVersion(current: string, latest: string, rt: UpdateRuntime, reconciled: boolean): void {
-  const available = compareSemver(latest, current) > 0;
+function reportVersion(current: string, latest: string | undefined, rt: UpdateRuntime, reconciled: boolean): void {
+  const available = latest !== undefined && compareSemver(latest, current) > 0;
   rt.out(renderReport({ sections: [
-    { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
+    { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest ?? "not established"], ["Update", latest === undefined ? { text: "unknown", tone: "waiting" } : available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
     ...(reconciled ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] }] : []),
   ] }, "rich", process.stdout));
 }

@@ -278,6 +278,7 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+If reconciliation succeeds but the registry version cannot be read, `cotal update` succeeds and reports the latest version as unknown.
 A self-update inherits the extension state captured by the updating CLI, including added extensions
 and deliberate connector removals, even when that release has an older retained connector set.
 It reuses a matching retained copy or replaces an idle copy at the directory older releases expect.
