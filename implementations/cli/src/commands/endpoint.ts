@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { boundedValue, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, SHOWN_VALUE_MAX, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
 import { endpointDeregister, validateEndpointDeregisterArguments } from "./endpoint-deregister.js";
 import { endpointAuthoring, validateEndpointAuthoringArguments } from "./endpoint-authoring.js";
 import { readEndpointInventory } from "../lib/endpoint-inventory.js";
@@ -53,6 +53,14 @@ function selectedSpace(values: { space?: string }): string {
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
+    const requested = error.details.requested;
+    if (error.code === "unknown-space" && requested !== undefined) {
+      const name = oneLine(JSON.stringify(boundedValue(requested, SHOWN_VALUE_MAX)));
+      throw new CommandFailure("refused", targetErrorCode(error.code), `no space named ${name} is registered or prepared here. No other space was selected.`, {
+        target: { requested },
+        remedy: "run `cotal space` to find a valid name, then retry with `--space <name>`, for example `cotal endpoint --space <name> --json`",
+      });
+    }
     throw new CommandFailure("refused", targetErrorCode(error.code), "the selected reference space could not be resolved; no different space was selected");
   }
 }

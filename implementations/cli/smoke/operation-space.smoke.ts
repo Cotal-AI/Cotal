@@ -37,7 +37,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string };
+  result?: { requestedName?: string; kind?: string; liveCompleteness?: string; current?: string | null; items?: unknown[] } | null;
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -98,6 +98,36 @@ for (const args of [["reviewer", "Audit text"], ["--name", "reviewer", "--text=-
 
 const prepared = cotal("space", "create", "opsp", "--root", ".");
 check("fixture: the space is prepared and not started", prepared.status === 0, shown(prepared));
+
+const missingEndpointSpace = ["endpoint", "--space", "missing-space"];
+const missingEndpointJson = cotal(...missingEndpointSpace, "--json");
+const endpointRemedy = "run `cotal space` to find a valid name, then retry with `--space <name>`, for example `cotal endpoint --space <name> --json`";
+check("endpoint --json names the unresolved space and gives an explicit retry, without returning any inventory",
+  missingEndpointJson.status === 2 && missingEndpointJson.stderr === "" && missingEndpointJson.envelope?.outcome === "refused"
+  && missingEndpointJson.envelope.completeness === "not-checked" && missingEndpointJson.envelope.result === null
+  && same(missingEndpointJson.envelope.target, { requested: "missing-space" }) && missingEndpointJson.envelope.error?.code === "TARGET_NOT_FOUND"
+  && missingEndpointJson.envelope.error.message?.includes('"missing-space"') === true && missingEndpointJson.envelope.error.remedy === endpointRemedy, shown(missingEndpointJson));
+const missingEndpointPlain = cotal(...missingEndpointSpace, "--plain");
+check("endpoint --plain puts the unknown name and retry on stderr",
+  missingEndpointPlain.status === 2 && missingEndpointPlain.stdout === "" && missingEndpointPlain.stderr.includes('"missing-space"')
+  && /Code:\s+TARGET_NOT_FOUND/.test(missingEndpointPlain.stderr) && missingEndpointPlain.stderr.replace(/\s+/g, " ").includes(endpointRemedy), shown(missingEndpointPlain));
+const unusualName = "missing\u2028name";
+const unusual = cotal("endpoint", "--space", unusualName, "--json");
+check("endpoint preserves the requested value in JSON and escapes it in the diagnostic",
+  unusual.status === 2 && unusual.stderr === "" && same(unusual.envelope?.target, { requested: unusualName })
+  && unusual.envelope?.error?.message?.includes('"missing\\u2028name"') === true, shown(unusual));
+const preparedListing = cotal("space", "--plain");
+check("cotal space finds the prepared name to retry", preparedListing.status === 0 && preparedListing.stderr === ""
+  && /Prepared, not started/.test(preparedListing.stdout) && /\bopsp\b/.test(preparedListing.stdout), shown(preparedListing));
+const endpointRetry = cotal("endpoint", "--space", "opsp", "--json");
+const spacesAfterRetry = cotal("space", "--json");
+check("retrying the prepared name lists its saved references without selecting or starting a space",
+  endpointRetry.status === 0 && endpointRetry.stderr === "" && endpointRetry.envelope?.outcome === "ok"
+  && same(endpointRetry.envelope.target, { space: "opsp" }) && endpointRetry.envelope.result?.kind === "endpoint-references"
+  && endpointRetry.envelope.result.liveCompleteness === "not-checked" && spacesAfterRetry.status === 0
+  && spacesAfterRetry.envelope?.result?.current === null && spacesAfterRetry.envelope.result.items?.length === 0
+  && !existsSync(join(env.COTAL_HOME, "meshes.json")), { retry: shown(endpointRetry), spaces: shown(spacesAfterRetry) });
+
 const persona = agentFilePath(root, "rev");
 mkdirSync(dirname(persona), { recursive: true });
 writeFileSync(persona, "---\nname: rev\nrole: reviewer\n---\n");

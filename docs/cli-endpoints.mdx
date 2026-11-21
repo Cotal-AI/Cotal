@@ -483,6 +483,10 @@ complete endpoint namespace.
 shows the saved space, native class, full instance pin and storage revision. These commands do
 not connect to a broker or infer registrations from participant presence.
 
+If `endpoint --space` names an unknown space, it refuses without selecting another space. JSON
+reports the name in `target.requested`. Run `cotal space` to find a registered or prepared name,
+then retry with `cotal endpoint --space <name> --json`.
+
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
