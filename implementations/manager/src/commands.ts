@@ -1224,7 +1224,7 @@ const lifecycle = [
   { name: "restart", summary: "stop it, then start it again", examples: [{ command: "cotal manager restart", note: "stop the manager, then start it again" }], usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
   { name: "status", summary: "show whether it runs, and its process and endpoint", examples: [{ command: "cotal manager status", note: "show whether it runs, its process and endpoint" }], usage: "cotal manager status [--space <s>]" },
   { name: "logs", summary: "read what it logged", examples: [{ command: "cotal manager logs", note: "read what the manager logged" }, { command: "cotal manager logs --follow", note: "keep following it" }], usage: "cotal manager logs [--tail <n>] [--follow] [--space <s>]" },
-  { name: "install", summary: "start it at login with a systemd user unit", examples: [{ command: "cotal manager install", note: "start it at login with a systemd user unit" }, { command: "cotal manager install --dry-run", note: "show the unit it would install" }], usage: "cotal manager install [--dry-run] [--space <s>]" },
+  { name: "install", summary: "installing a manager unit is not supported. Use `cotal manager start --foreground` in a unit you write.", examples: [], usage: "cotal manager install [--space <s>]" },
   { name: "uninstall", summary: "remove that unit", examples: [{ command: "cotal manager uninstall", note: "remove its login unit" }], usage: "cotal manager uninstall [--yes|--dry-run] [--space <s>]" },
 ] as const;
 
