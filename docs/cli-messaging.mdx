@@ -483,7 +483,7 @@ session` and the one line about lost output, and the session ends the same way w
 cotal channel
 cotal channel set <name> [--replay | --no-replay] [--window <duration>] [--delivery <live|durable>] [--desc <text>] [--instructions <text>]
 cotal channel defaults [--replay | --no-replay] [--window <duration>] [--delivery <live|durable>]
-cotal channel show <name>
+cotal channel show <name> [--json | --plain]
 cotal channel members <name> [--follow] [--json | --plain]
 cotal channel remove <name> [--purge] [--yes]
 ```
@@ -494,11 +494,17 @@ under `Not decoded` with its key and the decode error, and the key is left in th
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that
 channel and `defaults` when the defaults key does not decode say the same. A `set` or `defaults`
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
-of that key removes the entry. `show` includes resolved replay, window and delivery settings.
+of that key removes the entry.
+
+The `channel show` text report, including `--plain`, shows the resolved replay, window and delivery settings.
 Each value with no per-channel override is marked `inherited`, whether it comes from space
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
+
+`channel show --json` returns the raw registry entries for the space defaults (`result.registry.defaults`)
+and the named channel (`result.registry.channels`). It does not apply inheritance or fill in built-in defaults.
+
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
