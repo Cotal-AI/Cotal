@@ -307,13 +307,14 @@ const QUESTION = "Which one?";
   check("chat --stdio there names the selection it joins and that note; away from any project it names neither",
     deltaChat.status === 0 && deltaChat.stderr.includes(`cotal chat: this session joins the selected space "alpha"; ${HELD}\n`) &&
       awayChat.status === 0 && !/this session joins|this folder holds/.test(awayChat.stderr), { here: shown(deltaChat), away: shown(awayChat) });
-  // The listing and `use` name no folder space there, because none is the target; `space show`, which
-  // is about the folder, still shows what it holds and says the selection applies until it runs.
+  // The listing marks no folder target. `space show` and `use` report what the folder holds.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
-  check("in that folder the listing and use name no folder space, and space show names what it holds",
+  const selection = envelope(used);
+  check("the listing marks no folder target, while space show and use report the prepared folder",
     envelope(listed)?.result?.folder === null && !/^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
       /^Mesh: delta\n {2}this folder's prepared space; commands here target the selected space "alpha" until it runs$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
-      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === null && !usedText.stdout.includes(`commands in this folder target its space "delta"`),
+      used.status === 0 && selection?.target?.space === "alpha" && selection.result?.current === "alpha" && selection.result.folder === "delta" &&
+      usedText.status === 0 && usedText.stdout.includes(`commands here target this folder's space "delta" while it runs; use --space alpha to reach the adopted selection`),
     { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
   // status reports the selection there, with what this folder holds and its `up` under the heading.
   const statusHere = run(["status", "--json"], delta), statusHereText = run(["status"], delta);
