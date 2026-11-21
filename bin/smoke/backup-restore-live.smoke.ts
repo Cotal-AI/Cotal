@@ -851,6 +851,50 @@ async function missingPidfileListenerScenario(): Promise<void> {
   }
 }
 
+async function undisplayableBackupRetryScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-retry-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-retry-home-")));
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const store = "./jetstream\u200d store";
+  const cases = [
+    { artifact: "./retry\u200b backup", flags: [] },
+    { artifact: "./retry backup", flags: ["--store-dir", store, "--plain"] },
+  ];
+  const { run } = sandboxRun(root, home);
+  const must = (result: SpawnSyncReturns<string>) => assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  try {
+    must(run("up", "--detach", "--open", "--server", server, "--space", "backup_undisplayable_retry", "--store-dir", store));
+    must(run("down", "--preserve-state", "--store-dir", store));
+    const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    const ready = readFileSync(journal, "utf8");
+    assert.equal(readMaintenanceJournal(root)?.state, "ready");
+    const occupied = await occupy(port);
+    try {
+      for (const { artifact, flags } of cases) {
+        const refused = run("backup", "create", artifact, "--only", "registry", ...flags);
+        assert.equal(refused.status, 2, `${refused.stdout}${refused.stderr}`);
+        assert.match(refused.stderr, /Code: +CONFLICT/);
+        const next = refused.stderr.split("\nNext\n")[1] ?? "";
+        assert.match(next, /stop the process .* then rerun your original backup command from the same folder/);
+        assert.doesNotMatch(next, /`+cotal backup create /, "no command names a changed path");
+        assert.equal(readFileSync(journal, "utf8"), ready);
+        assert.equal(existsSync(join(root, artifact)), false);
+      }
+    } finally {
+      await closeServer(occupied);
+    }
+    for (const { artifact, flags } of cases) {
+      must(run("backup", "create", artifact, "--only", "registry", ...flags));
+      must(run("backup", "verify", artifact));
+    }
+  } finally {
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** #7049: a preserved custom store that is lost is rebuilt at the path its cut records. With
  *  `--accept-missing-source` and no `--store-dir`, the restore chose `.cotal/nats` and failed
  *  `OPERATION_UNKNOWN` before staging. Another `--store-dir` is refused before staging. */
@@ -1310,6 +1354,7 @@ async function linkedStoreScenario(): Promise<void> {
 }
 
 await missingPidfileListenerScenario();
+await undisplayableBackupRetryScenario();
 await linkedStoreScenario();
 await missingCustomSourceScenario();
 await restoredStoreRestartScenario();
