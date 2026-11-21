@@ -346,8 +346,8 @@ try {
 // ── shipped doc comments state the contract rules without revision history ────────────────────
 const pidSrc = readFileSync(join(import.meta.dirname, "../src/pid.ts"), "utf8");
 const livenessSrc = readFileSync(join(import.meta.dirname, "../src/liveness.ts"), "utf8");
-const downFile = (rel: string): string => ["down", "down-preserve"]
-  .map((name) => readFileSync(join(import.meta.dirname, "../../../implementations/cli", rel.replace("down.", `${name}.`)), "utf8")).join("\n");
+const downFile = (rel: string): string => ["", "-preserve"]
+  .map((suffix) => readFileSync(join(import.meta.dirname, "../../../implementations/cli", rel.replace("down.", `down${suffix}.`)), "utf8")).join("\n");
 const downSrc = downFile("src/commands/down.ts");
 const pidSurfaces: Array<[label: string, text: string]> = [
   ["src/pid.ts", pidSrc],
