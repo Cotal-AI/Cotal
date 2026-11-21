@@ -150,6 +150,46 @@ function follow(args: string[]) {
   return { child, lines, exited, until, stderr: () => stderr };
 }
 
+async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
+  const args = ["history", "general", "--follow", "--json", "--grep", "resume boundary"];
+  const parse = (line: string) => JSON.parse(line) as { type: string; data: Item & { items?: Item[] } };
+  const original = follow(args);
+  let events: Item[] = [];
+  try {
+    const ready = await original.until((line) => parse(line).type === "snapshot");
+    const send = (sender: CotalEndpoint, text: string) => {
+      const now = Date.now;
+      Date.now = () => Date.parse(timestamp);
+      try { return sender.multicast(text, { channel: "general" }); }
+      finally { Date.now = now; }
+    };
+    await send(alice, "resume boundary one");
+    await send(bob, "resume boundary two");
+    const received = await original.until((line) => parse(line).data.text === "resume boundary two");
+    events = original.lines.map(parse).filter((record) => record.type === "event").map((record) => record.data);
+    check("the original follow emits both messages with the same timestamp and different IDs",
+      ready && received && events.length === 2 && events.every((item) => item.ts === timestamp)
+        && events.every((item) => Boolean(item.id)) && events[0]?.id !== events[1]?.id, events);
+  } finally {
+    await killAndAwaitExit(original.child, "SIGINT");
+  }
+  const [processed, unprocessed] = events;
+  if (!processed || !unprocessed) return;
+
+  const since = new Date(Date.parse(processed.ts) - 1).toISOString();
+  const resumed = follow([...args, "--since", since]);
+  try {
+    const ready = await resumed.until((line) => parse(line).type === "snapshot");
+    const items = resumed.lines.map(parse).find((record) => record.type === "snapshot")?.data.items ?? [];
+    const unseen = items.filter((item) => item.id !== processed.id);
+    check("a 1 ms overlap replays both boundary events and deduplication by ID keeps only the unread one",
+      ready && items.length === 2 && items.every((item) => item.ts === processed.ts)
+        && items.some((item) => item.id === processed.id) && unseen.length === 1 && unseen[0]?.id === unprocessed.id, items);
+  } finally {
+    await killAndAwaitExit(resumed.child, "SIGINT");
+  }
+}
+
 const endpoints: CotalEndpoint[] = [];
 let provisioner: CotalEndpoint | undefined;
 try {
@@ -476,6 +516,7 @@ try {
   const timedEvents = timed.lines.map((l) => JSON.parse(l) as { type: string; data: { text?: string } }).filter((r) => r.type === "event");
   check("a live follow excludes an event at the time cutoff and emits a later event",
     timedSnap && timedEvent && timedEvents.map((r) => r.data.text).join() === "after the cutoff", timed.lines);
+  await checkFollowResume(alice, bob, midpoint);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
   await fp.until((l) => /replay to new members/.test(l));
