@@ -6807,7 +6807,7 @@
       "rationale": "Spawn startup warning: names the launched seat and the manager's startup notice; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/up.ts",
+      "path": "implementations/cli/src/lib/up-broker-address.ts",
       "kind": "derived-output",
       "anchor": "reserved.add(key)",
       "class": "non-render/control",

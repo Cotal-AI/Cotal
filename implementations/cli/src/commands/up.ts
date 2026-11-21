@@ -312,6 +312,7 @@ import {
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { freePort, freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 
@@ -1612,18 +1613,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
           await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
-            retryAtAnotherAddress: async (host) => {
-              let server: string;
-              try { server = await freshStackServer(await serverWithFreePort(stackServer, host), host); }
-              catch { return undefined; }
-              // Replay the validated command, replacing only --server (both accepted spellings).
-              const words = [...args.raw];
-              const at = words.findIndex((word) => word === "--server" || word.startsWith("--server="));
-              if (at !== -1) words.splice(at, words[at] === "--server" ? 2 : 1, "--server", server);
-              else words.splice(words.includes("--") ? words.indexOf("--") : words.length, 0, "--server", server);
-              const command = `${displayCmd()} up ${words.map(shellWord).join(" ")}`;
-              return `start this stack at another address with ${codeSpan(command)} from ${shellWord(invokedFrom)}`;
-            },
+            retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
           }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
@@ -5083,57 +5073,6 @@ function refuseRegisteredAddress(server: string, space: string, elsewhere: strin
   throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
     remedy: `${elsewhere}, or free that one with \`cotal space forget ${held.space}\``,
-  });
-}
-
-/** Choose only a first implicit address. A saved or explicitly requested address is never moved.
- * The broker still validates and binds its own listener; this inspection cannot reserve the port. */
-async function freshStackServer(server: string, bindHost?: string): Promise<string> {
-  const url = new URL(server);
-  const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
-  const reserved = new Set<string>();
-  // A recorded address this cannot take apart reserves nothing: it names no host and port to avoid.
-  for (const mesh of loadMeshes()) {
-    const key = brokerAddressKey(mesh.server);
-    if (key !== undefined) reserved.add(key);
-  }
-  let candidate = server;
-  for (let attempt = 0; attempt < 16; attempt++) {
-    const address = new URL(candidate);
-    const key = brokerAddressKey(candidate);
-    if (key === undefined || !reserved.has(key)) {
-      try {
-        await freePort(host, Number(address.port) || 4222);
-        return candidate;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-      }
-    }
-    candidate = await serverWithFreePort(server, host);
-  }
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no unreserved local broker address could be selected; no broker was started");
-}
-
-async function serverWithFreePort(server: string, host: string): Promise<string> {
-  const url = new URL(server);
-  url.port = String(await freePort(host));
-  return url.toString();
-}
-
-function freePort(host: string, requestedPort = 0): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.unref();
-    srv.once("error", reject);
-    srv.listen(requestedPort, host, () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : undefined;
-      srv.close((err) => {
-        if (err) reject(err);
-        else if (port) resolve(port);
-        else reject(new Error("could not allocate a free port"));
-      });
-    });
   });
 }
 
