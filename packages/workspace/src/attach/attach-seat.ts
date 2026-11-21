@@ -694,7 +694,8 @@ async function runAttachLoop(
     }
     saidWhy = "";
     const from = est.resumedFrom ? ` (resumed from ${est.resumedFrom.host}:${est.resumedFrom.source})` : "";
-    notice({ tone: "status", text: first ? `attached to ${vv.name}${from} - ${key.label} to detach` : "[cotal: reconnected]" });
+    const detachHint = process.stdin.isTTY ? ` - ${key.label} to detach` : "";
+    notice({ tone: "status", text: first ? `attached to ${vv.name}${from}${detachHint}` : "[cotal: reconnected]" });
     first = false;
     let outcome;
     const startedAt = Date.now();

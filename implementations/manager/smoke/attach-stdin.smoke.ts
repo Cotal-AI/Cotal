@@ -65,6 +65,7 @@
  *   O. the one session lifecycle point the others miss: a session that dies BEFORE it is READY, so
  *      the handoff never runs, and pausing on the way out pauses a stream that session never took.
  *      Found by review reading the cleanup path, not by a cell.
+ *   P. stdin redirected from the null device detaches at EOF and hands back the session.
  *
  * THE UNIVERSE THIS GRADES, on two axes, because naming it is what found the hole in it. The stream
  * KIND (pty, pipe, file) runs across the cells. The session LIFECYCLE has three points:
@@ -91,9 +92,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect as netConnect, type Server, type Socket } from "node:net";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as pty from "@lydell/node-pty";
@@ -423,15 +424,16 @@ function attachPiped(root: string, extra: readonly string[] = []): Piped {
  *  `net.Socket`, both sockets with an `unref`, while a file gives `fs.ReadStream`, which has none. A
  *  parent that spawns with stdio "ignore" lands on the same `fs.ReadStream`, so this helper covers
  *  that route too; the file is the one an operator writes by hand. */
-function attachFromFile(root: string, contents: string, extra: readonly string[] = []): Piped {
-  const path = join(dir, `stdin-${randomUUID().slice(0, 8)}.txt`);
-  writeFileSync(path, contents);
+function attachFromFile(root: string, contents: string | undefined, extra: readonly string[] = []): Piped {
+  const path = contents === undefined ? devNull : join(dir, `stdin-${randomUUID().slice(0, 8)}.txt`);
+  if (contents !== undefined) writeFileSync(path, contents);
   const fd = openSync(path, "r");
   const child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1" },
     stdio: [fd, "pipe", "pipe"],
   });
+  closeSync(fd);
   let buf = "";
   let code: number | undefined;
   // The sibling spawn above passes a literal ["pipe","pipe","pipe"], which node's overloads type as
@@ -1175,6 +1177,16 @@ try {
       !sink().subarray(mark).includes(Buffer.from(n)),
       { got: sink().subarray(mark).toString("utf8").slice(-300), sessionsSinceTheCut: saidReconnected(a) - rec0 - 1 });
     await detachAndSettle(a, base, "O");
+  }
+  console.log("\nP. stdin redirected from the null device detaches at EOF");
+  {
+    const base = live();
+    const p = attachFromFile(root, undefined, ["--no-reconnect"]);
+    check("P: redirected attach exits cleanly without a keyboard shortcut",
+      await p.waitExit(15_000) && p.exit() === 0 && /\bDetached\b/.test(p.seen()) && !/to detach/.test(p.seen()),
+      { code: p.exit(), tail: p.seen().slice(-400) });
+    check("P: EOF returns the session and leaves the seat running", await settle(base, 5_000) === base && seatAlive(),
+      { base, now: live(), seatAlive: seatAlive() });
   }
 } catch (e) {
   fail++;

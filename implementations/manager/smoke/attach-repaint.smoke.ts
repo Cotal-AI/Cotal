@@ -227,9 +227,22 @@ async function testStdoutDrainBackpressure(): Promise<void> {
 
 async function main(): Promise<void> {
   await testPtyReconstruction();
-  await testDetachLeavesAltScreen();
-  await testWheelCoalescing();
-  await testStdoutDrainBackpressure();
+  // These cells drive a terminal with synthetic keypresses, not the runner's redirected stdin.
+  const { stdin } = process;
+  const oldTTY = Object.getOwnPropertyDescriptor(stdin, "isTTY");
+  const oldRaw = Object.getOwnPropertyDescriptor(stdin, "setRawMode");
+  Object.defineProperty(stdin, "isTTY", { value: true, configurable: true });
+  Object.defineProperty(stdin, "setRawMode", { value: () => stdin, configurable: true });
+  try {
+    await testDetachLeavesAltScreen();
+    await testWheelCoalescing();
+    await testStdoutDrainBackpressure();
+  } finally {
+    if (oldTTY) Object.defineProperty(stdin, "isTTY", oldTTY);
+    else Reflect.deleteProperty(stdin, "isTTY");
+    if (oldRaw) Object.defineProperty(stdin, "setRawMode", oldRaw);
+    else Reflect.deleteProperty(stdin, "setRawMode");
+  }
   console.log("\nATTACH REPAINT SMOKE OK ✅  (4 tests)");
 }
 
