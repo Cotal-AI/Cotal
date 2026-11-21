@@ -473,8 +473,8 @@ if (process.platform === "linux") {
   check("a real short write keeps the prepared space and warns how to recover the incomplete persona",
     short.status === 4 && partial.outcome === "partial" && partial.error?.code === "OPERATION_PARTIAL" &&
       partial.error.cause?.code === "EFBIG" && partial.error.message.includes("file may be incomplete") &&
-      partial.error.remedy.includes("raise the file-size limit") && partial.error.remedy.includes(`Check \`${persona}\``) &&
-      /repair it or move it aside if incomplete, then run the same setup again/.test(partial.error.remedy) &&
+      partial.error.remedy.startsWith(`Check \`${persona}\` and repair it or move it aside if incomplete.`) &&
+      partial.error.remedy.includes("raise the file-size limit") &&
       partial.target?.path === persona && statSync(persona).size === limit && prepared?.root === dir &&
       partial.result.written.map((w: { what: string }) => w.what).join() === "prepared space", shown(short));
   renameSync(persona, `${persona}.incomplete`);

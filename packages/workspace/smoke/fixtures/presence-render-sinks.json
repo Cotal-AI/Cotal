@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1105,
+    "total": 1106,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 883
+    "non-render/control": 884
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5391,6 +5391,13 @@
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Service set stop table: \"waiting\" is the color tone for a stop result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/setup.ts",
+      "kind": "status-token",
+      "anchor": " did not finish`, tone: \"waiting\", mark: \"!\" }\n    : r.st",
+      "class": "non-render/control",
+      "rationale": "Setup headline: the waiting tone reports incomplete local persona preparation, not peer presence."
     },
     {
       "path": "implementations/cli/src/commands/setup.ts",

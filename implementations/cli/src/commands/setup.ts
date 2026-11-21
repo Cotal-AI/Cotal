@@ -21,7 +21,7 @@ import {
   inputDisabledByFlag,
   jsonFlag,
   loadMeshes,
-  localWriteProblem,
+  localWriteFailure,
   manifestExtensionNames,
   meshFile,
   paintFor,
@@ -689,20 +689,21 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     }
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    const storage = localWriteProblem(error);
     const { code: nativeCode, path = personaPath, syscall } = error as NodeJS.ErrnoException;
-    const code = storage?.code ?? nativeCode;
+    let storage: CommandFailure | undefined;
+    try { storage = localWriteFailure(error, path); }
+    catch (cause) { if (cause !== error) throw cause; }
+    const code = storage?.native?.code ?? nativeCode;
     if (code === undefined) throw error;
     const blocked = (code === "EEXIST" && syscall === "mkdir") || code === "EISDIR";
     const mayBeIncomplete = storage !== undefined || syscall === "write" || syscall === "ftruncate" || syscall === "close";
     const entry = codeSpan(path);
-    const repair = blocked ? `move the blocking entry at ${entry} aside`
-      : mayBeIncomplete ? `${storage?.remedy ?? "fix the reported write error"}. Check ${entry} and repair it or move it aside if incomplete`
-      : `fix the reported problem at ${entry}`;
-    const detail = storage ? `${storage.reason} (${storage.code})` : error.message;
-    const remedy = `${repair}, then run the same setup again`;
+    const remedy = blocked ? `move the blocking entry at ${entry} aside, then run the same setup again`
+      : mayBeIncomplete ? `Check ${entry} and repair it or move it aside if incomplete. To finish setup, ${storage?.remedy ?? "fix the reported write error, then retry"}.`
+      : `fix the reported problem at ${entry}, then run the same setup again`;
+    const detail = storage?.message ?? `${entry}: ${error.message}`;
     const failureTarget = { ...target, path };
-    const failure = new CommandFailure("partial", "OPERATION_PARTIAL", `the space ${inputs.space} is saved, but persona preparation stopped at ${entry}: ${detail}${mayBeIncomplete ? ". The file may be incomplete" : ""}`, {
+    const failure = new CommandFailure("partial", "OPERATION_PARTIAL", `the space ${inputs.space} is saved, but persona preparation stopped: ${detail}${mayBeIncomplete ? ". The file may be incomplete" : ""}`, {
       target: failureTarget, changed: written, native: { code }, cause: error, remedy,
     });
     if (opts.start) startup.state = "preparation-incomplete";
