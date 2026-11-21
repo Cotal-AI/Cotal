@@ -1145,6 +1145,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
+  // A new project records no stack and no ledger, so there is no run ID to offer.
+  const fresh = cotal(["down", "-f", "old.yaml", "--dry-run"], (home) => writeFileSync(join(dirname(home), "old.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: fresh\nchannels: {}\n"), noSeed);
+  check("down -f in a root with no ledger and no stack says it holds none and names team remove and the stack preview, with no run ID",
+    fresh.status === 1 && fresh.stderr.includes("this root holds no ledger from the retired `spawn -f` deploy") && fresh.stderr.includes("`cotal team remove <id>`")
+      && fresh.stderr.includes("`cotal down --dry-run`") && !fresh.stderr.includes("--run <id>"), shown(fresh));
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────
