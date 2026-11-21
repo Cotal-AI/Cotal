@@ -1073,6 +1073,7 @@ async function restoreClaimRaceScenario(): Promise<void> {
     releaseMaintenanceLock(lock);
     const recovered = run("clean", "restore-attempt", "--attempt", "race-stale", "--force");
     assert.equal(recovered.status, 0, `stale attempt recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
+    assert.match(recovered.stdout, /retry with `cotal up --restore <dir>` \(replace <dir> with the backup directory/, "rollback names the required backup directory for a retry");
     assert.equal(readMaintenanceJournal(root)?.state, "ready", "explicit stale rollback returns the cut to ready");
     const resumed = run("up", "--detach", "--server", server, "--space", space);
     assert.equal(resumed.status, 0, `ordinary resume after recovery\nstdout:\n${resumed.stdout}\nstderr:\n${resumed.stderr}`);
