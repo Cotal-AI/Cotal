@@ -1,7 +1,7 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { ensureDirNoSymlink, globalConfigDir } from "@cotal-ai/core";
-import { connectorConfigDir, protectedResolvedDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { claimExtensionMutationLock, connectorConfigDir, protectedResolvedDirectory, readUpdateRecovery, updateSnapshotConfig, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { acquireReconcileLock } from "../seed/lock.js";
 
@@ -13,8 +13,10 @@ export interface UpdateSnapshot {
 
 /** Capture the seed and operator prefix under their native writer barriers. */
 export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
-  // An older updater captured the canonical prefix before the target selected a retained set.
-  const config = existing && dirname(resolve(existing)) === resolve(globalConfigDir()) ? globalConfigDir() : connectorConfigDir();
+  const recovery = existing ? readUpdateRecovery() : undefined;
+  const config = recovery && recovery.snapshot === existing ? updateSnapshotConfig(recovery)
+    : existing && dirname(resolve(existing)) === resolve(globalConfigDir()) ? globalConfigDir() : connectorConfigDir();
+  if (config === undefined) throw new Error("invalid update snapshot directory");
   const missing: string[] = [];
   let ancestor = config;
   while (!lstatSync(ancestor, { throwIfNoEntry: false })) {
@@ -26,13 +28,16 @@ export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
     ensureDirNoSymlink(ancestor, ...missing);
   }
   protectedResolvedDirectory(config, "the Cotal config folder");
-  const lock = acquireReconcileLock();
+  const recordedConfig = () => resolve(config) === resolve(connectorConfigDir()) ? undefined : config;
+  const claimWriter = (root: string | undefined) => root === undefined ? claimExtensionMutation({ waitMs: 30000 }) : claimExtensionMutationLock({ waitMs: 30000 }, root);
+  const snapshotRoot = recordedConfig();
+  const lock = acquireReconcileLock(snapshotRoot);
   let release = () => {};
   let path: string;
   const present = new Set<string>();
   try {
     if (existing && (dirname(resolve(existing)) !== resolve(config) || !basename(existing).startsWith(".update-snapshot-") || !lstatSync(existing).isDirectory() || lstatSync(existing).isSymbolicLink())) throw new Error("invalid update snapshot directory");
-    release = claimExtensionMutation({ waitMs: 30000 });
+    release = claimWriter(snapshotRoot);
     path = existing ?? mkdtempSync(join(config, ".update-snapshot-"));
     chmodSync(path, 0o700);
     for (const name of ["seed", "extensions"]) {
@@ -50,10 +55,11 @@ export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
     restore() {
       if (restored) throw new Error("update snapshot was already restored");
       // Keep the lock's original directory in place until its holder releases it.
-      const seedLock = acquireReconcileLock();
+      const restoreRoot = recordedConfig();
+      const seedLock = acquireReconcileLock(restoreRoot);
       let releaseWriter = () => {};
       try {
-        releaseWriter = claimExtensionMutation({ waitMs: 30000 });
+        releaseWriter = claimWriter(restoreRoot);
         const recovery = readUpdateRecovery();
         if (!recovery || recovery.snapshot !== path) throw new Error("update snapshot does not match its recovery journal");
         const renames = recovery.renames ? [...recovery.renames] : [];

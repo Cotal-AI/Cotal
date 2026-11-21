@@ -7,7 +7,7 @@ import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
 import { claimUpdateClosureAccess, liveUpdateClosureOwner } from "./update-closure.js";
-import { readUpdateRecovery } from "./updates.js";
+import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { readMeshRegistry } from "./mesh-registry.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
@@ -239,20 +239,40 @@ function previousConfig(id: { entry: string; path: string }, prepare?: (path: st
   return root;
 }
 
+/** Identify the snapshot's config root without following links inside a retained set. */
+export function updateSnapshotConfig(record: UpdateRecovery): string | undefined {
+  return snapshotConfig(record.snapshot, record.previous);
+}
+
+function snapshotConfig(path: string | undefined, previous?: string, selectedPath?: string): string | undefined {
+  if (!path || resolve(path) !== path || !basename(path).startsWith(".update-snapshot-")) return;
+  const config = dirname(path);
+  const base = resolve(globalConfigDir());
+  if (sameConfigPath(config, base)) return config;
+  const selected = selectedPath ?? identity()?.path;
+  const generation = dirname(config), version = basename(generation);
+  if (!selected || !sameConfigPath(dirname(generation), dirname(selected)) || (previous !== undefined && version !== previous) ||
+      !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(config))) return;
+  if (!lstatSync(base, { throwIfNoEntry: false })) return config;
+  protectedResolvedDirectory(base, "the connector config folder");
+  const expected = join(dirname(selected), version, basename(config));
+  let parent = base;
+  for (const part of relative(base, expected).split(sep)) {
+    parent = join(parent, part);
+    if (!lstatSync(parent, { throwIfNoEntry: false })) break;
+    ownedDirectory(parent);
+  }
+  return config;
+}
+
 function updateSnapshot(id: { entry: string; version: string; path: string }): string | undefined {
   // Extension validation temporarily selects its private stage through XDG_CONFIG_HOME.
   if (basename(dirname(globalConfigDir())) === "config" && basename(dirname(dirname(globalConfigDir()))).startsWith(".extensions.stage-")) return;
   if (process.env.COTAL_UPDATE_PARENT !== String(process.ppid)) return;
   const record = readUpdateRecovery();
   if (!record || record.phase !== "replacing" || record.target !== id.version || record.owner?.pid !== process.ppid || !liveUpdateClosureOwner(record) || !record.snapshot) return;
-  const snapshot = record.snapshot, source = dirname(snapshot);
-  const sets = dirname(id.path);
-  const retained = dirname(dirname(source));
-  if (!basename(snapshot).startsWith(".update-snapshot-")) throw new Error("update connector snapshot does not belong to this installation");
-  if (!sameConfigPath(source, resolve(globalConfigDir()))) {
-    if (!sameConfigPath(retained, sets) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(source))) throw new Error("update connector snapshot does not belong to this installation");
-    ownedAncestors(join(sets, basename(dirname(source)), basename(source)));
-  }
+  const snapshot = record.snapshot;
+  if (!snapshotConfig(snapshot, undefined, id.path)) throw new Error("update connector snapshot does not belong to this installation");
   ownedDirectory(snapshot);
   return snapshot;
 }

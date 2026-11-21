@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync, readdirSync, readlinkSync, renameSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 function inventory(root: string): { path: string; hash?: string; link?: string }[] {
   const rows: { path: string; hash?: string; link?: string }[] = [];
@@ -68,8 +70,91 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
   console.log(`installed execution update: ${input.current} to ${input.target}, ${probes.length} overlapping starts, canonical product unchanged`);
 }
 
-if (process.argv[2] === "--installed") {
+/** Run against a seeded, stopped Linux npm installation and a reachable target release. */
+async function interruptedExecutionUpdate(input: Parameters<typeof installedExecutionUpdate>[0]): Promise<void> {
+  assert.equal(process.platform, "linux", "the live child is confirmed through /proc");
+  const env: NodeJS.ProcessEnv = { ...input.env, COTAL_NO_UPDATE_CHECK: "1" };
+  assert(input.env.COTAL_HOME, "the smoke needs a private COTAL_HOME");
+  const recovery = join(input.env.COTAL_HOME, "update-recovery.json");
+  const marker = join(dirname(input.installed), ".cotal-update-child");
+  const read = (path: string) => {
+    try { return readFileSync(path, "utf8"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  };
+  const run = (args: string[]) => {
+    const child = spawn(input.cli, args, { cwd: input.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", bytes => { output += bytes.toString(); });
+    child.stderr.on("data", bytes => { output += bytes.toString(); });
+    const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null; output: string }>((resolve, reject) => {
+      const timer = setTimeout(() => child.kill("SIGKILL"), 240_000);
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal, output }); });
+    });
+    return { child, done };
+  };
+  const before = await run(["--version"]).done;
+  assert.equal(before.code, 0, before.output);
+  assert.equal(before.output.split("\n")[0], `cotal-ai ${input.current}`);
+  const updater = run(["update", "--self"]);
+  try {
+    const deadline = Date.now() + 220_000;
+    let pid: number | undefined;
+    while (updater.child.exitCode === null && Date.now() < deadline) {
+      const row = JSON.parse(read(marker) ?? "null");
+      if (row?.phase === "live" && row.operation === "global reconcile" && row.owner === updater.child.pid &&
+          read(`/proc/${row.pid}/cmdline`)?.split("\0")[2] === "update") { pid = row.pid; break; }
+      await delay(10);
+    }
+    if (!pid) assert.fail(`no published reconciliation child: ${(await updater.done).output}`);
+    updater.child.kill("SIGKILL");
+    assert.equal((await updater.done).signal, "SIGKILL");
+  } finally { if (updater.child.exitCode === null && updater.child.signalCode === null) updater.child.kill("SIGKILL"); }
+  const record = JSON.parse(read(recovery) ?? "null");
+  assert.equal(record.phase, "replacing");
+  assert.equal(record.target, input.target);
+  assert.equal(lstatSync(record.snapshot).mode & 0o777, 0o700);
+  const published = await run(["--version"]).done;
+  assert.equal(published.output.split("\n")[0], `cotal-ai ${input.target}`);
+  assert.match(published.output, /Reconciliation pending/);
+  let requests = 0;
+  const offline = createServer(socket => { requests++; socket.destroy(); });
+  await new Promise<void>((resolve, reject) => offline.once("error", reject).listen(0, "127.0.0.1", resolve));
+  try {
+    const address = offline.address();
+    assert(address && typeof address === "object");
+    Object.assign(env, { npm_config_registry: `http://127.0.0.1:${address.port}/` });
+    const aside = `${record.snapshot}.saved`;
+    renameSync(record.snapshot, aside);
+    try {
+      const pending = await run(["update", "--self"]).done;
+      assert.notEqual(pending.code, 0, pending.output);
+      assert.match(pending.output, /is still pending/);
+      assert.deepEqual(JSON.parse(read(recovery) ?? "null"), record);
+      assert.equal(requests, 0);
+    } finally { renameSync(aside, record.snapshot); }
+    const retry = await run(["update", "--self"]).done;
+    assert.equal(retry.code, 0, retry.output);
+    assert.match(retry.output, /in use and reconciled/);
+    assert.equal(requests, 0, "the published update must reconcile before consulting a registry");
+    assert.equal(JSON.parse(read(recovery) ?? "null"), null);
+    assert.equal(readdirSync(input.env.COTAL_HOME).filter(name => name.startsWith("update-recovery-retained-")).length, 0);
+    const after = await run(["--version"]).done;
+    const extensions = after.output.split("\n").slice(1).filter(line => /^\s+\S.*\s+\d+\.\d+\.\d+\s*$/.test(line));
+    assert.equal(extensions.length, 7, after.output);
+    assert(extensions.every(line => line.trim().split(/\s+/).at(-1) === input.target), after.output);
+    assert.doesNotMatch(after.output, /Reconciliation pending/);
+  } finally { await new Promise<void>((resolve, reject) => offline.close(error => error ? reject(error) : resolve())); }
+  env.npm_config_registry = input.env.npm_config_registry;
+  const plain = await run(["update"]).done;
+  assert.equal(plain.code, 0, plain.output);
+  assert.match(plain.output, /Registry latest:/);
+  console.log(`installed execution update: interrupted ${input.current} to ${input.target} reconciled all seven connectors offline`);
+}
+
+if (process.argv[2] === "--installed" || process.argv[2] === "--interrupted") {
   const [cli, installed, current, target, cwd] = process.argv.slice(3);
   if (!cli || !installed || !current || !target || !cwd) throw new Error("installed execution update needs CLI, package root, current, target and cwd");
-  await installedExecutionUpdate({ cli, installed, current, target, cwd, env: process.env });
+  const verify = process.argv[2] === "--interrupted" ? interruptedExecutionUpdate : installedExecutionUpdate;
+  await verify({ cli, installed, current, target, cwd, env: process.env });
 }

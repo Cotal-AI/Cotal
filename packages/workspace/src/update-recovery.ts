@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { globalConfigDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { join } from "node:path";
+import { writeSecretFileAtomic } from "@cotal-ai/core";
 import { processStartToken } from "./advisory-lock.js";
 import { homeCotalDir } from "./cotal-home.js";
 import type { UpdateRecovery } from "./updates.js";
 import { nativeWin32CreationToken } from "./win32-process.js";
+import { updateSnapshotConfig } from "./connector-retention.js";
 
 export const UPDATE_RECOVERY_WAIT_MS = 60 * 60 * 1000;
 export const updateRecoveryObservationName = "update-recovery-observed.json";
@@ -14,7 +15,7 @@ export const updateRecoveryObservationName = "update-recovery-observed.json";
 export function recoverySnapshotProblem(record: UpdateRecovery): string | undefined {
   const path = record.snapshot;
   if (!path) return "the interrupted update has no snapshot path";
-  if (!isAbsolute(path) || dirname(resolve(path)) !== resolve(globalConfigDir()) || !basename(path).startsWith(".update-snapshot-"))
+  if (!updateSnapshotConfig(record))
     return "the interrupted update snapshot does not belong to this configuration";
   const info = lstatSync(path, { throwIfNoEntry: false });
   if (!info) return "the interrupted update snapshot is missing";
