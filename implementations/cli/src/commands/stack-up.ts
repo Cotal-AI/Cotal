@@ -925,13 +925,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
   });
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
-  // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
-  // until the next whole-stack operation settles it from its members' evidence. It is written only
-  // once the broker address checks below pass, so a refusal there leaves the recorded outcome of
-  // the last whole-stack operation in place: a restart refused for a busy port must not discard
-  // proof that the stack already stopped cleanly. A first start with no recorded stack still
-  // records its refusal in the failure path below, so a later stop reports the no-op instead of
-  // a missing journal. Until the first write, settle and mark adjust only the in-memory plan.
+  // The whole scoped plan is durable before the first effect. It is written only once the broker
+  // address checks below pass, so a restart refused there keeps the proof that the stack stopped
+  // cleanly. Until that first write, settle and mark adjust only the in-memory plan.
   let snapshot: StackJournalSnapshot | undefined;
   const changed: unknown[] = [];
   const settle = (phase: StackJournal["operation"]["phase"]) => {
@@ -1017,7 +1013,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
-    // The journal is durable before the first effect, broker preparation below.
     snapshot = writeStackJournal(root, current ?? recorded, journal);
     settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
@@ -1187,9 +1182,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {
-    // A first start refused before the journal was written still records that the stack never
-    // started, so a later stop reports the no-op instead of a missing journal. A restart refused
-    // over a recorded stack leaves that record in place.
+    // A refused first start still records that the stack never started, so a later stop reports a no-op.
     if (snapshot === undefined && current === undefined) snapshot = writeStackJournal(root, current ?? recorded, journal);
     // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
     // leaves it, gets none back here; a broker start creates the missing ones.
