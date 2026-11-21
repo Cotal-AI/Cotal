@@ -1,5 +1,6 @@
 import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
+import { channelConfigReplySubject, channelConfigSubject } from "./subjects.js";
 import { spacePrefix, chatSubject, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
@@ -346,7 +347,7 @@ export function permissionsFor(
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const PAYLOAD = eventPayloadStream(space);
   const KV = `KV_${presenceBucket(space)}`;
-  const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
+  const CHKV = `KV_${channelBucket(space)}`;
   const MEMKV = `KV_${membershipBucket(space)}`; // derived graph membership feed (read-only — dashboard)
   const DLVKV = `KV_${deliveryBucket(space)}`; // delivery lease/readiness (read-only — Component 6 health)
   // Validate both principal tokens; the reply inbox keys on the connection nkey (see MintPrincipal).
@@ -475,7 +476,9 @@ export function permissionsFor(
   const chatHistD = chatHistDurable(pr.owner, pr.actor, uid), dmD = dmDurable(pr.owner, pr.actor, uid);
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only when channel-readable)
   const roles = taskRoles(opts.role, opts.capabilities);
+  const canConfigureChannel = opts.capabilities?.includes("channel-config");
   const pubAllow = [
+    ...(canConfigureChannel ? allowPublish.map((ch) => channelConfigSubject(space, `${pr.owner}.${pr.actor}`, ch)) : []),
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
     ...allowPublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
@@ -722,6 +725,7 @@ export function permissionsFor(
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
+  if (canConfigureChannel) epSub.push(channelConfigReplySubject(space, `${pr.owner}.${pr.actor}`, "*"));
   // Liveness answers (#1577) ride the probe's OWN request subtree, exactly like the delivery
   // control replies above and for the same reason: the responder answers without needing broad
   // inbox-publish. One row per plane, pinned to this agent's principal, so it can hear answers to

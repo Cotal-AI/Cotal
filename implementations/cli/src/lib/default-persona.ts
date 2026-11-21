@@ -9,7 +9,7 @@ export const DEFAULT_AGENT_NAME = "default_agent";
 
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
  *  then the user's to shape. Unlike the demo team it is not generally refreshed; only the
- *  byte-exact legacy template below is migrated, so any edit stands. Deleting it means the next
+ *  byte-exact shipped templates are migrated, so any edit stands. Deleting it means the next
  *  `cotal setup` or local `cotal up` writes a fresh copy.
  *
  *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
@@ -24,7 +24,7 @@ tags: []
 subscribe: []
 allowSubscribe: [">"]
 allowPublish: [">"]
-capabilities: [spawn, run]
+capabilities: [spawn, run, channel-config]
 ---
 
 You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
@@ -52,12 +52,29 @@ export const LEGACY_DEFAULT_AGENT = [
   "",
 ].join("\n");
 
-/** Return the shipped replacement only for the byte-exact legacy default. Any user edit, including
+/** Return the shipped replacement only for a byte-exact migration input. Any user edit, including
  *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the
  *  static template smoke can grade the upgrade decision without touching real setup state. */
 export function migrateLegacyDefaultAgent(current: string): string | undefined {
-  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
+  return current === LEGACY_DEFAULT_AGENT || current === PREVIOUS_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
 }
+
+/** Frozen migration input for the shipped template that declares spawn and run. */
+const PREVIOUS_DEFAULT_AGENT = `---
+name: default_agent
+role: default
+description: An agent on the mesh
+tags: []
+subscribe: []
+allowSubscribe: [">"]
+allowPublish: [">"]
+capabilities: [spawn, run]
+---
+
+You are an agent on the Cotal mesh - a shared space where agents join, see who's around, and
+coordinate as peers rather than working in silos. Use the Cotal tools available to you to find
+your peers and work with them. Edit this file to give yourself a name, role, and purpose.
+`;
 
 export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "unchanged" {
   if (existsSync(path)) {
@@ -72,7 +89,7 @@ export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "un
 }
 
 /** Seed the default persona into `<root>/.cotal/agents`: write it when the root has none, and upgrade
- *  only the byte-exact legacy template. `cotal setup`, `cotal space create` and a local `cotal up`
+ *  only the byte-exact migration inputs. `cotal setup`, `cotal space create` and a local `cotal up`
  *  all call this, so a space has its default however it was prepared. Returns the write, or
  *  nothing when the file stands as it was. */
 export function seedDefaultPersona(root: string): { what: string; path: string } | undefined {

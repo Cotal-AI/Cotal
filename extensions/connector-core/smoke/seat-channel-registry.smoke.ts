@@ -31,7 +31,7 @@ import { cotalToolSpecs } from "../src/tool-specs.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 21;
 const PORT = await pickFreePort();
 const MONITOR = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -94,10 +94,11 @@ try {
   const id = newIdentity();
   const lifecycleUid = mintLifecycleUid();
   const acl = ["general", "review.a", "live.ch", "late"];
-  const creds = await provisionAgent(prov, auth, id, { subscribe: ["general"], allowSubscribe: acl, allowPublish: acl, lifecycleUid });
+  const capabilities = ["channel-config"];
+  const creds = await provisionAgent(prov, auth, id, { subscribe: ["general"], allowSubscribe: acl, allowPublish: acl, lifecycleUid, capabilities });
   await prov.stop();
 
-  const cfg: AgentConfig = { space, name: "seat", servers, creds, subscribe: ["general"], allowSubscribe: acl, allowPublish: acl, kind: "agent", tls: false, id: id.id, lifecycleUid };
+  const cfg: AgentConfig = { space, name: "seat", servers, creds, subscribe: ["general"], allowSubscribe: acl, allowPublish: acl, kind: "agent", tls: false, id: id.id, lifecycleUid, capabilities };
   const agent = new MeshAgent(cfg);
   agent.on("error", () => {});
   stops.push(() => agent.stop());
@@ -154,6 +155,34 @@ try {
     const withWatcher = await registryConsumers();
     check("the broker counts a watching endpoint's registry consumer (control)", withWatcher === seatOnly + 1, { seatOnly, withWatcher });
     check("the connected seat holds no registry consumer", seatOnly === 0, { seatOnly });
+  }
+
+  {
+    const delivery = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false,
+      registerPresence: false, watchChannels: false, card: { name: "delivery", kind: "endpoint" } });
+    delivery.on("error", () => {});
+    await delivery.start();
+    stops.push(() => delivery.stop());
+    await delivery.startPlane3(() => []);
+    const channel = "live.ch";
+    const call = (input: Record<string, unknown>) => Promise.resolve(tool("cotal_channel_info").run(agent, cfg, { channel, ...input }));
+    const prior = await info(channel);
+    const rev = Number(/revision: (\d+)/.exec(prior)?.[1]);
+    check("the tool reads the operator's note and its revision", prior.includes("advisory note by operator") && rev > 0, prior);
+    const patch = { description: "seat note\nnext line", instructions: "advisory\ncontinuation", replay: false, replayWindow: "2h", deliveryClass: "live" };
+    const saved = await call({ set: patch, expectedRevision: rev });
+    check("the tool sets all configuration fields and reports the writer", !saved.isError && saved.text.includes(`local.${id.id}`), saved);
+    const current = await agent.channelState(channel);
+    assert.deepEqual(current.config, { ...patch, writer: `local.${id.id}` });
+    check("the broker confirms the saved fields and revision", current.revision > rev, current);
+    const rendered = await info(channel);
+    check("the tool contains agent text and attributes it", rendered.includes(`advisory note by local.${id.id}, purpose: seat note next line`) && rendered.includes("\n    continuation"), rendered);
+    check("the tool refuses a stale revision", (await call({ set: { description: "stale" }, expectedRevision: rev })).isError === true);
+    check("the tool refuses a channel outside the publish grant", (await call({ channel: "outside", set: patch, expectedRevision: 0 })).isError === true);
+    const removed = await call({ remove: true, expectedRevision: current.revision });
+    const after = await agent.channelState(channel);
+    check("removal keeps the writer and a new revision but no policy", !removed.isError && after.revision > current.revision && !after.config && after.writer === `local.${id.id}`, after);
+    check("recreation uses the removal revision", !(await call({ set: { description: "recreated" }, expectedRevision: after.revision })).isError);
   }
 
   if (pass + fail !== EXPECTED_CELLS) {

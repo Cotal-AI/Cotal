@@ -76,7 +76,9 @@ The working directory comes from the spawn request. Use `cotal spawn --cwd <dir>
 Attention settings are defaults for each instance and reset on restart; runtime changes do not rewrite the file.
 See [Attention](connect-claude.mdx#attention).
 
-The broker enforces control capabilities.
+The broker enforces control capabilities. The seeded default persona declares `channel-config`.
+It lets an agent set or remove saved configuration through `cotal_channel_info` for channels
+within `allowPublish`. It does not grant access, change space defaults, or purge history.
 Because `launchOptions` passes native application options through, `spawn` grants authority to launch applications with those options on the manager host.
 See the [Security model](security.mdx).
 

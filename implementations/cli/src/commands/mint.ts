@@ -188,6 +188,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       }
     }
     let allowSubscribe: string[] | undefined, allowPublish: string[] | undefined, role: string | undefined;
+    let capabilities: string[] | undefined;
     if (profile === "agent") {
       const path = agentFilePath(root, name);
       // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
@@ -200,6 +201,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
       allowPublish = parseCommaList(values["allow-publish"]) ?? carried?.post ?? definition?.allowPublish;
       role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
+      if (!carried && definition?.capabilities?.includes("channel-config")) capabilities = ["channel-config"];
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }
         catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`cotal persona edit ${name}\`, then mint again`); }
@@ -210,7 +212,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
     target = { ...target, identity: identity.id, ...(lifecycleUid === undefined ? {} : { lifecycleUid }) };
     // With no lifetime flag the credential gets the default lifetime; only --no-expiry leaves it unbounded.
     const defaultLifetime = values["expires-in"] === undefined && values["expires-at"] === undefined && !values["no-expiry"];
-    const options = { allowSubscribe, allowPublish, role, lifecycleUid, expiresInSeconds: values["expires-in"] !== undefined ? Number(values["expires-in"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]) };
+    const options = { allowSubscribe, allowPublish, role, capabilities, lifecycleUid, expiresInSeconds: values["expires-in"] !== undefined ? Number(values["expires-in"]) : defaultLifetime ? DEFAULT_LIFETIME_SECONDS : undefined, expiresAt: values["expires-at"] === undefined ? undefined : Number(values["expires-at"]) };
     const creds = await mintCreds(auth, identity, profile, options);
     const claims = credsClaims(creds);
     const checkProvisionedExpiry = () => {

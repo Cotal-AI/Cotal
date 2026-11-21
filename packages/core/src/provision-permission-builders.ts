@@ -5,6 +5,7 @@ import { eventPayloadStream } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
 import { BROKER_USER_INFO_SUBJECT } from "./broker-identity.js";
+import { channelConfigReplySubject, channelConfigSubject } from "./subjects.js";
 import { spacePrefix, chatSubject, principalKey, deprovisionTargetPrincipal, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY_ADMIN, artifactBucket, objectStoreStream, chatStream, dmStream, taskStream, dlvStream, inboxStream, dmDurable, dlvDurable, presenceBucket, channelBucket, membersBucket, aclBucket, aclKey, memberKey, assertLifecycleToken, type DeprovisionTarget, membershipBucket, deliveryBucket, managerBucket, MANAGER_LEASE_KEY, MANAGER_RENEWAL_LEASE_KEY, connzRequestSubject, accountConnectSubject, accountDisconnectSubject, MEMBERSHIP_INBOX_PREFIX, INBOX_READER_DURABLE, livenessServeFilter, livenessReplyGrant, isTransferStream, takeServeFilter, takeReplyGrant, anycastBucket } from "./subjects.js";
 import { epCallerGrantRows, epServeGrantRows, baselineCallerCapabilities, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, operatorInstrumentCapabilities, instanceOnlyManagerCapabilities, epDescribeAllGrantRow, BASELINE_LIFECYCLE_ENDPOINT, MANAGER_VITALS_COMMAND, MANAGER_VITALS_SCOPE, type EpCapability } from "./endpoint-grants.js";
 import { assertServeGrantMintable } from "./endpoint-service.js";
@@ -1281,6 +1282,8 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     "$JS.FC.>", // ordered-consumer flow control
     // Reads: presence (@mention resolve) + channel registry (delivery class) + members + ACL (re-auth).
     ...kvRead(PKV), ...kvRead(CHKV), ...kvRead(MKV), ...kvRead(AKV),
+    `$KV.${channelBucket(space)}.>`,
+    `$JS.API.DIRECT.GET.${CHKV}.>`,
     // Members-KV WRITE — the daemon is the durable-membership authority (join/leave/activate/catch-up).
     `$KV.${membersBucket(space)}.>`,
     // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys. The
@@ -1323,6 +1326,7 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     // The privileged delivery-admin rail: same replies-only shape. Requests reach the
     // daemon on the sub below; only the supervisor cred can PUBLISH them (nats-server is the boundary).
     `${p}.ctl.delivery-admin.*.*.reply.>`,
+    channelConfigReplySubject(space, "*.*", "*"),
     // LIVENESS REPLIES for the DELIVERY plane (#1577) — same replies-only shape as the two control
     // rails above. The daemon is the only process that can grade its own responder honestly: it
     // knows its own incarnation, so a predecessor's `ready:true` corpse in the lease classifies as
@@ -1350,6 +1354,7 @@ export function deliveryPermissions(space: string, pr: MintPrincipal): Record<st
     takeServeFilter(space), // serve anycast takes (queue-grouped; role + owner+actor caller slots)
     `${p}.ctl.delivery.*.*`, // serve the delivery control service (queue-grouped; owner+actor caller slots)
     `${p}.ctl.delivery-admin.*.*`, // serve the privileged admin rail (reloadCreds; eviction executor next)
+    channelConfigSubject(space, "*.*", ">"),
     // Serve the delivery plane's liveness probe (#1577), queue-grouped. Presence-only: the handler
     // reduces the lease row to one enum before replying, so this subscription lets the daemon ANSWER
     // a peer without any peer gaining a read of the lease.

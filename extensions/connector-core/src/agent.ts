@@ -1323,11 +1323,14 @@ export class MeshAgent extends EventEmitter {
 
   channelBriefing(): string | undefined { return this.channels.channelBriefing(); }
   async readChannels(): Promise<void> { return this.channels.readChannels(); }
-  channelInfo(channel: string): { description?: string; instructions?: string; replay: boolean; registered: boolean; event?: "own" | "agent" } { return this.channels.channelInfo(channel); }
+  channelInfo(channel: string): ReturnType<AgentChannels["channelInfo"]> { return this.channels.channelInfo(channel); }
+  channelState(channel: string): ReturnType<AgentChannels["channelState"]> { return this.channels.channelState(channel); }
+  configureChannel(...args: Parameters<AgentChannels["configureChannel"]>): ReturnType<AgentChannels["configureChannel"]> { return this.channels.configureChannel(...args); }
   async listChannels(): Promise<
     {
       channel: string;
       description?: string;
+      writer?: string;
       replay: boolean;
       joined: boolean;
       durableUnclosed: boolean;

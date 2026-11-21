@@ -1,5 +1,17 @@
 # Upgrading a running deployment
 
+## Agent channel configuration
+
+Upgrade the credential issuer and delivery host before minting `channel-config` credentials.
+Existing credentials do not gain grants by reconnecting. Setup and local `up` add the capability
+to unedited copies of the shipped default persona and preserve edited files. A user-auth actor
+also needs explicit ledger scope `channel-config`. `--full` does not grant it.
+
+Channel configuration records its last writer. Removal leaves a revision record that current
+readers treat as unconfigured. Upgrade readers together so older clients do not list these records
+as empty configured channels. Agent writes use `cotal_channel_info` with `set` or `remove` and the
+revision from a prior read. Space defaults and history purge remain operator actions.
+
 ## Tool permissions on the agent endpoint
 
 A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
