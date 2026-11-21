@@ -6592,21 +6592,21 @@
     {
       "path": "implementations/cli/src/lib/stack-journal.ts",
       "kind": "derived-output",
-      "anchor": "`${spaces.length === 1 ? \"another registration names\" : \"other registrations name\"} this stack's exact broker address (${spaces.map((space) => codeSpan(JSON.stringify(space))).join(\", \")}). The broker was not stopped`",
+      "anchor": "`${spaces.length === 1 ? \"another registration names\" : \"other registrations name\"} this stack's exact broker address (${spaces.map((space) => codeSpan(oneLine(JSON.stringify(space)))).join(\", \")}). The broker was not stopped`",
       "class": "non-render/control",
       "rationale": "Shared-broker stop refusal names registrations from the local registry, not peer presence."
     },
     {
       "path": "implementations/cli/src/lib/stack-journal.ts",
       "kind": "derived-output",
-      "anchor": "`inspect with ${commands(\"show\", spaces)}.`",
+      "anchor": "`Inspect with ${commands(\"show\", inspect)}.`",
       "class": "non-render/control",
       "rationale": "Shared-broker stop remedy points to registration inspection, not peer presence."
     },
     {
       "path": "implementations/cli/src/lib/stack-journal.ts",
       "kind": "derived-output",
-      "anchor": "commands(\"show\", spaces)",
+      "anchor": "commands(\"show\", inspect)",
       "class": "non-render/control",
       "rationale": "Builds inspection commands from local registry names, not peer presence."
     },

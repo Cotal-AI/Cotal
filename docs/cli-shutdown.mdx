@@ -201,8 +201,10 @@ which `down` stops the stack through its journal. While another registered space
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing.
 It names each blocking registration and points to `cotal space show -- <space>` to inspect it. Use
 `cotal space forget -- <space>` only if you no longer need that local registration and its space is
-not using the broker. A catalog registration can be removed only through its catalog. Retry
-`cotal down --yes` from the stack's folder after resolving all the sharing.
+not using the broker. For names the terminal must escape, `down` omits copyable commands and
+points to `cotal space --json` for the exact registrations. A catalog registration can be removed
+only through its catalog. Retry `cotal down --yes` from the stack's folder after resolving all the
+sharing.
 `down` never forgets those other registrations for you. It cannot rebuild its own registration for
 a user-auth stack and refuses `UNSUPPORTED` in that case. A stop that refuses or is cancelled
 before any member stops puts its own registration back as it was.

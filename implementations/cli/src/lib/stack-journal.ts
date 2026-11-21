@@ -6,7 +6,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, oneLine, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
@@ -1051,13 +1051,17 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   const cmd = displayCmd();
   const commands = (sub: "show" | "forget", names: string[]) => names.map((space) =>
     codeSpan(`${cmd} space ${sub} -- ${shellWord(space)}`)).join(", ");
-  const local = sharing.filter((mesh) => mesh.origin !== "catalog").map((mesh) => mesh.space);
-  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${spaces.length === 1 ? "another registration names" : "other registrations name"} this stack's exact broker address (${spaces.map((space) => codeSpan(JSON.stringify(space))).join(", ")}). The broker was not stopped`, {
+  // The terminal escapes some characters even inside command spans.
+  const copyable = sharing.filter(({ space }) => oneLine(space) === space);
+  const inspect = copyable.map((mesh) => mesh.space);
+  const local = copyable.filter((mesh) => mesh.origin !== "catalog").map((mesh) => mesh.space);
+  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${spaces.length === 1 ? "another registration names" : "other registrations name"} this stack's exact broker address (${spaces.map((space) => codeSpan(oneLine(JSON.stringify(space)))).join(", ")}). The broker was not stopped`, {
     target: { server: journal.server, spaces },
     remedy: [
-      `inspect with ${commands("show", spaces)}.`,
+      ...(inspect.length ? [`Inspect with ${commands("show", inspect)}.`] : []),
+      ...(inspect.length < spaces.length ? [`Names with escaped characters have no copyable command. Inspect their exact names and registrations with ${codeSpan(`${cmd} space --json`)}.`] : []),
       ...(local.length ? [`Only forget registrations that are no longer needed and whose spaces are not using the broker: ${commands("forget", local)}.`] : []),
-      ...(local.length < spaces.length ? [`For any stale catalog registration, ask its catalog owner to remove it, then run ${codeSpan(`${cmd} sync`)}.`] : []),
+      ...(sharing.some(({ origin }) => origin === "catalog") ? [`For any stale catalog registration, ask its catalog owner to remove it, then run ${codeSpan(`${cmd} sync`)}.`] : []),
       `Once the address is no longer shared, retry ${next}`,
     ].join(" "),
   });
