@@ -20,7 +20,7 @@
     },
     {
       "name": "the first pre-send guard consumes the kickoff before returning",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "    if (hostState.stopping || hostState.reconnecting || !hostState.initialized || hostState.driving || hostState.turnActive || !hostState.client || !hostState.sessionId) return;",
       "replace": "    if (hostState.stopping || hostState.reconnecting || !hostState.initialized || hostState.driving || hostState.turnActive || !hostState.client || !hostState.sessionId) { hostState.pendingKickoff = undefined; return; }",
       "expectRed": "idle completion delivers the startup kickoff without any inbox wake",
@@ -28,7 +28,7 @@
     },
     {
       "name": "the second pre-send guard consumes the kickoff after steering settles",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "    if (hostState.stopping || hostState.reconnecting || hostState.turnActive || !hostState.client || !hostState.sessionId) {\n      hostState.driving = false;",
       "replace": "    if (hostState.stopping || hostState.reconnecting || hostState.turnActive || !hostState.client || !hostState.sessionId) {\n      hostState.pendingKickoff = undefined;\n      hostState.driving = false;",
       "expectRed": "a startup kickoff survives native state changing while steering settles",
@@ -45,7 +45,7 @@
     },
     {
       "name": "bridge recovery ignores the owned startup kickoff when no inbox wake exists",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "      if (!hostState.stopping && hasDriveWork()) void drive();",
       "replace": "      if (!hostState.stopping && (agent.pendingWake() > 0 || hostState.wakeQueued)) void drive();",
       "expectRed": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
@@ -54,7 +54,7 @@
     },
     {
       "name": "the kickoff is consumed only after completion and duplicates across recovery",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "      hostState.pendingKickoff = undefined;\n",
       "replace": "\n",
       "expectRed": "a startup kickoff still pending before send is delivered once after recovery without an inbox wake",
@@ -64,7 +64,7 @@
     },
     {
       "name": "kickoff discards the wake for ordinary deferred dnd traffic",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "    hostState.wakeQueued = hostState.pendingKickoff !== undefined && agent.peekInbox(\"automatic\").length > 0;",
       "replace": "    hostState.wakeQueued = false;",
       "expectRed": "ordinary dnd traffic deferred by kickoff reaches the following turn without another wake",

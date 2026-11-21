@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "M1 restore the shipped defect: close exits the seat without recovery",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "    connected.on(\"close\", () => void recoverBridge(connected));",
       "replace": "    connected.on(\"close\", () => void shutdown(1));",
       "expectRed": "the recovery attempt deterministically loses its first attach race (#971)",
@@ -20,7 +20,7 @@
     },
     {
       "name": "M2 replace a disconnected client but forget the owned session",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "              replacement.attachSession(hostState.sessionId),",
       "replace": "              new Promise(() => {}),",
       "expectRed": "the recovery attempt deterministically loses its first attach race (#971)",
@@ -28,7 +28,7 @@
     },
     {
       "name": "M3 attach the replacement but leave the broken client active",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "          hostState.client = replacement;",
       "replace": "          /* mutant: replacement is never made active */",
       "expectRed": "recovered seat redrives the unacknowledged stalled turn (#781)",
@@ -36,7 +36,7 @@
     },
     {
       "name": "M4 restore the shipped losing-race exit: one transient replacement failure kills the seat",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "          writeJcodeDiagnostic(\n            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\\n`,\n          );\n          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));",
       "replace": "          throw error;",
       "expectRed": "provider disconnect survives a transient replacement loss inside the bounded recovery window (#971)",
@@ -44,7 +44,7 @@
     },
     {
       "name": "M5 retry without proving the failed replacement tree stopped",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "          await replacement?.close().catch(() => {});\n          if (!preserveInstance) await stopPrivateJcode();\n          if (hostState.stopping) return;",
       "replace": "          await replacement?.close().catch(() => {});\n          if (hostState.stopping) return;",
       "expectRed": "the failed transient replacement is stopped before the successful retry",
@@ -52,7 +52,7 @@
     },
     {
       "name": "M6 swallow terminal replacement teardown refusal",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "      await shutdown(1);\n    } finally {\n      hostState.reconnecting = false;",
       "replace": "      /* mutant: terminal recovery failure is swallowed */\n    } finally {\n      hostState.reconnecting = false;",
       "command": "pnpm smoke:jcode-provider-permanent-refusal",
