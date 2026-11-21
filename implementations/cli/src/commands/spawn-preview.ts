@@ -8,6 +8,7 @@ import { extensionNames, materializeExtension, preflightRuntime } from "../ext-l
 import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
+import { refuseUnmintableName } from "./spawn-managed-launch.js";
 import type { spawnFlags } from "./spawn.js";
 
 type Values = FlagValues<typeof spawnFlags>;
@@ -66,6 +67,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
   const target = { space, broker, authMode: targetMode };
   if (spawnUsesManager(values)) {
+    if (values.name !== undefined) refuseUnmintableName(values.name, targetMode === "user");
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.
     const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space);
