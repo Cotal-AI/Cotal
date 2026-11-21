@@ -250,10 +250,12 @@ check("message: an unreachable up record whose folder is gone says so and names 
   preflightMessage("unreachable", { ...T, root: join(home, "deleted-proj"), origin: "up" }, false));
 // A broker address `--server` supplied that is not the recorded one says nothing about the recorded
 // mesh: the sentence names that address, and the recorded broker only where one is recorded.
-check("message: an unreachable overriding --server names that address and the space's recorded broker", (() => {
-  const m = preflightMessage("unreachable", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false);
-  return m === `✗ nothing answered at ${DEAD}, the broker address --server named - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`;
-})(), preflightMessage("unreachable", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false));
+const recordedServer = "nats://127.0.0.1:14993";
+const overrideRemedy = `check that address, or retry without --server and with \`--space alpha\` to use the recorded broker at ${recordedServer}`;
+const overrideTarget = { ...T, source: "flag-space-override", recordedServer } as const;
+const unreachableOverride = preflightMessage("unreachable", overrideTarget, false);
+check("message: an unreachable overriding --server names the failed address and pins the retry to the recorded space",
+  unreachableOverride === `✗ nothing answered at ${DEAD}, the broker address --server named - ${overrideRemedy}`, unreachableOverride);
 check("message: an unreachable --server with no recorded broker names only that address, and no recorded mesh",
   preflightMessage("unreachable", { ...T, source: "flag-server" }, false) === `✗ nothing answered at ${DEAD}, the broker address --server named - check that address and that a broker runs there`,
   preflightMessage("unreachable", { ...T, source: "flag-server" }, false));
@@ -261,20 +263,19 @@ check("message: a --server that is the recorded broker still names the recorded 
   preflightMessage("unreachable", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("unreachable", T, false));
 // Credentials rejected at a `--server` that is not the recorded broker: that space still runs where it
 // is recorded, so the step is that address, never `cotal up` (#7320).
-check("message: credentials rejected at an overriding --server name that address and the space's recorded broker", (() => {
-  const m = preflightMessage("creds-rejected", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false);
-  return m === `✗ credentials for "alpha" were rejected at ${DEAD}, the broker address --server named; a different mesh may be running there - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`;
-})(), preflightMessage("creds-rejected", { ...T, source: "flag-space-override", recordedServer: "nats://127.0.0.1:14993" }, false));
+const rejectedOverride = preflightMessage("creds-rejected", overrideTarget, false);
+check("message: credentials rejected at an overriding --server name both addresses and pin the retry",
+  rejectedOverride === `✗ credentials for "alpha" were rejected at ${DEAD}, the broker address --server named; a different mesh may be running there - ${overrideRemedy}`, rejectedOverride);
 check("message: credentials rejected at a --server recorded elsewhere for this folder name the recorded broker too",
-  preflightMessage("creds-rejected", { ...T, source: "flag-server", recordedServer: "nats://127.0.0.1:14993" }, false).includes(`drop --server to reach "alpha" at nats://127.0.0.1:14993`));
+  preflightMessage("creds-rejected", { ...overrideTarget, source: "flag-server" }, false).endsWith(overrideRemedy));
 check("message: credentials rejected with no other recorded broker keep the meshes-or-up step",
   preflightMessage("creds-rejected", { ...T, source: "flag-server" }, false).endsWith("run `cotal meshes` to check, or `cotal up` here to start yours")
     && preflightMessage("creds-rejected", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("creds-rejected", T, false));
 for (const source of ["flag-server", "flag-space-override"] as const) {
-  const target = { ...T, source, recordedServer: "nats://127.0.0.1:14993" };
+  const target = { ...overrideTarget, source };
   const message = preflightMessage("open-wants-auth", target, false);
-  check(`message: open space at an overriding ${source} names both brokers without prescribing up`,
-    message === `✗ broker at ${DEAD}, the address --server named, requires auth, but "alpha" is recorded as an open mesh at nats://127.0.0.1:14993 - check that address, or drop --server to reach "alpha" at nats://127.0.0.1:14993, where it is recorded`, message);
+  check(`message: open space at an overriding ${source} names both brokers and pins the retry without prescribing up`,
+    message === `✗ broker at ${DEAD}, the address --server named, requires auth, but "alpha" is recorded as an open mesh at ${recordedServer} - ${overrideRemedy}`, message);
 }
 check("message: open space at the recorded broker keeps the original auth guidance",
   preflightMessage("open-wants-auth", { ...T, source: "flag-server", recordedServer: DEAD }, false) === preflightMessage("open-wants-auth", T, false));

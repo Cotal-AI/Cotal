@@ -661,10 +661,10 @@ try {
     mkdirSync(join(caller, ".cotal"), { mode: 0o700 });
     {
       const mismatch = cli(caller, "send", "-c", "general", "hi", "--space", space, "--server", authServer, "--json");
-      check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
+      check("an open space with an overriding auth broker names both addresses and pins the retry, never up here",
         mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
           && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
-          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && mismatch.env.error.remedy === `check that address, or retry without --server and with \`--space ${space}\` to use the recorded broker at ${server}`
           && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
     }
     const openDown = cli(root, "down", "--yes", "--json");
