@@ -41,7 +41,7 @@
       "name": "the restore never sets the recorded ages",
       "file": "implementations/cli/src/lib/restore.ts",
       "find": "      if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);\n",
-      "replace": "",
+      "replace": "      if (wanted.includes(record.stream)) void applyRecordedAge;\n",
       "expectRed": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
       "cell": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
