@@ -203,6 +203,7 @@ A nonempty manifest `capabilities` list overrides the persona's capabilities.
 Otherwise, `include` inherits the persona's capabilities; `reject` grants none.
 An empty manifest list therefore does not suppress persona capabilities under `include`.
 `cotal topology view -f` displays the resolved graph and inherited grants, including capabilities outside channel scopes.
+It runs without a broker and does not download or install connectors.
 
 The resolver is [`resolve.ts`](../implementations/cli/src/lib/manifest/resolve.ts), and persona merging is in [`prepare.ts`](../implementations/cli/src/lib/manifest/prepare.ts).
 Current deployment and reapplication use [`team-deploy-apply.ts`](../implementations/cli/src/commands/team-deploy-apply.ts).

@@ -84,6 +84,26 @@ const GATE = /refusing to reconcile the operator-global seed store/;
 }
 
 {
+  const { home, xdg, run } = sandbox();
+  const manifest = join(home, "mesh.yaml");
+  writeFileSync(manifest, `apiVersion: cotal/v1
+kind: Mesh
+space: team-audit
+agent: claude
+agents:
+  planner: {instructions: Plan.}
+channels:
+  general: {deliveryClass: live, subscribe: [planner], allowPublish: [planner]}
+`);
+  const r = run(["topology", "view", "-f", manifest]);
+  check("topology view renders the access graph without seeding connectors",
+    r.status === 0 && !GATE.test(r.stderr) && !/Reconciling built-in|✓ added/.test(r.stderr) &&
+    ["team-audit", "planner", "#general"].every((text) => r.stdout.includes(text)), shown(r));
+  check("topology view wrote no seed store or extension manifest",
+    !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")));
+}
+
+{
   const { xdg, run } = sandbox();
   const before = run(["ext", "list", "--json"]);
   for (const [args, usage] of [
