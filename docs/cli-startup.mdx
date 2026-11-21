@@ -223,8 +223,10 @@ runs no stop. The command prints that the stack is still running and names `cota
 starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. The holding process removes that record as it exits, a hangup included. A holder
-that was killed leaves it, and the next `cotal down` removes it once that process is gone. A
+starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
+retry commands set it explicitly. Run them from the stack's folder. The holding process removes
+that record as it exits, a hangup included. A holder that was killed leaves it, and the next
+`cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`
 started it or the holding terminal closed, takes over its lifetime. Before it blocks it says that
 the stack is already running and that Ctrl-C or `SIGTERM` there stops the whole stack. A closed

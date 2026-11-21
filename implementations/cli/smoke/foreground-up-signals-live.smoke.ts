@@ -21,7 +21,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -532,14 +532,15 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
-async function controllerHoldCell(): Promise<void> {
-  const name = "controller-hold";
+async function controllerHoldCell(otherHome = false): Promise<void> {
+  const name = otherHome ? "controller-hold-other-home" : "controller-hold";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
-  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const machine = join(home, otherHome ? "launching home's machine" : "machine");
+  for (const p of [root, home, mesh, join(home, "xdg"), machine]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: machine, xdgConfigHome: join(home, "xdg") });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = `foreground-${name}`;
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
   const foreground = (args: string[]) => {
@@ -558,8 +559,27 @@ async function controllerHoldCell(): Promise<void> {
       return holder.io.out.includes("Controller stack started");
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
-    const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
+    const secondEnv = otherHome ? { ...env, COTAL_HOME: join(home, "other-machine") } : env;
+    const secondSandbox = otherHome ? recordSmokeSandbox({ root: mesh, cotalHome: secondEnv.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }) : sandbox;
+    const second = await foregroundCliProbe(cliEntry, tsx, mesh, secondEnv, ["up", "--foreground"], 60_000);
     assert.ok(second.code === 2 && second.err.includes(`a foreground \`cotal up\` in process ${holder.child.pid} already holds this stack's lifetime`) && !holder.state.exited, `a second foreground up refuses CONFLICT, naming the holder, and the holder keeps the stack: ${second.out}${second.err}`); passed++;
+    if (otherHome) {
+      const commands = [...second.err.matchAll(/`(COTAL_HOME=[^`]+)`/g)].map(([, command]) => command!);
+      assert.equal(commands.length, 2, second.err); passed++;
+      assert.ok(commands[0]!.startsWith(`COTAL_HOME=${shellPath(machine)} `) && commands[0]!.endsWith(" down --yes"), second.err); passed++;
+      assert.equal(commands[1], commands[0]!.replace(/ down --yes$/, " up --foreground"), second.err); passed++;
+      assert.doesNotMatch(second.err, /`cotal down --yes`/, "no unqualified stop is offered to the other home"); passed++;
+      assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: mesh, env: secondEnv });
+      const wrongDown = await foregroundCliProbe(cliEntry, tsx, mesh, secondEnv, ["down", "--yes"], 120_000);
+      assert.ok(wrongDown.code === 2 && /TARGET_UNAVAILABLE/.test(wrongDown.err) && await portOpen(port), wrongDown.out + wrongDown.err); passed++;
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+      assert.equal(down.code, 0, down.out + down.err); passed++;
+      await until(() => holder.state.exited, 10_000, () => holder.io.err.slice(-3000));
+      assert.ok(holder.state.code === 0 && !(await portOpen(port)), "the stop releases the holder and closes the broker"); passed++;
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
     // A killed holder leaves its record and the running stack, which the next foreground up takes over.
     process.kill(holder.child.pid, "SIGKILL");
     await until(() => holder.state.exited, 10_000, () => "the killed foreground up did not exit");
@@ -580,6 +600,7 @@ async function controllerHoldCell(): Promise<void> {
     try {
       for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
       // A failed cell still stops what its start left, through the product's own down.
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
     } finally {
       writeFileSync(join(root, "stdout.log"), holder.io.out + (taker?.io.out ?? ""), { mode: 0o600 });
@@ -616,5 +637,6 @@ await controllerStartupCell("team");
 await controllerHangupCell();
 await controllerSighupCell();
 await controllerHoldCell();
+await controllerHoldCell(true);
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });
