@@ -168,6 +168,12 @@ let dispose: (() => Promise<void>) | void = undefined;
 let seq = 0;
 const feed = (type: string) => ctx.feed({ type, durable: { aggregateID: SID, seq: ++seq }, data: { sessionID: SID } } as never);
 const runAndEndTurn = async () => { feed("session.execution.started"); feed("session.execution.succeeded"); await sleep(300); };
+/** A DM turn replies before it ends, as a model would, so its clean end drives no reply reminder. */
+const replyAndEndTurn = async () => {
+  const sent = await ctx.addedTools.find((t) => t.name === "cotal_dm")!.execute({ to: "web", text: "ok" });
+  if (sent.content.startsWith("⚠")) throw new Error(`the reply failed: ${sent.content}`);
+  await runAndEndTurn();
+};
 const addressOf = (w: Who): EpPrincipal => ({ owner: w.owner, actor: w.actor, uid: w.uid, runtimeId: processRuntime(w.uid).id });
 const verdict = (r: { ok: true; value: EndpointReply } | { ok: false; error: unknown }): string =>
   r.ok ? (r.value.ok ? "ok" : `${r.value.error.code}/${r.value.error.outcome ?? "-"}`)
@@ -301,7 +307,7 @@ try {
   const second = bodies[1] as { text?: string; system?: string } | undefined;
   check("after the command turn, the waiting message goes first, and the persona does not ride again",
     calls[1] === "prompt" && typeof second?.text === "string" && second.text.includes("hello from the inbox") && second.system === undefined, { calls, second });
-  await runAndEndTurn();
+  await replyAndEndTurn();
   const skillState = await settle(queued.id);
   check("then the second queued command, the skill, runs under its listed id as a turn of its own: it reads started, and the cancelled one never reached OpenCode",
     skillState.label === "started" && calls[2] === "skill opencode" && same(bodies[2], { text: "", skills: [{ id: "opencode" }] }) && !calls.includes("command init"),
@@ -342,7 +348,7 @@ try {
   check("with no execution started 5 s after OpenCode answered, the session is free: a DM then reaches POST /prompt",
     freed && calls[beforeDm] === "prompt" && String((bodies[beforeDm] as { text?: string }).text).includes("after the goal") && freedAfter >= 4500,
     { calls: calls.slice(beforeDm), freedAfter });
-  await runAndEndTurn();
+  await replyAndEndTurn();
   const next = await run({ target: "command", name: "review" });
   const nextAt = next.at;
   check("...and the next command runs: it reads started", next.label === "started" && calls.at(-1) === "command review", [next.label, calls.at(-1)]);
@@ -354,9 +360,9 @@ try {
   await sleep(Math.max(0, nextAt + 6500 - Date.now()));
   check("the last command's 5 s bound frees no later submission: a DM waits while the DM before it has not started its turn",
     same(calls.slice(held), ["prompt"]), calls.slice(held));
-  await runAndEndTurn();
+  await replyAndEndTurn();
   await until(() => calls.length > held + 1);
-  await runAndEndTurn();
+  await replyAndEndTurn();
 
   mode = "stall";
   const beforeStall = calls.length;
