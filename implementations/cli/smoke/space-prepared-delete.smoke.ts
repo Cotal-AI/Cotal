@@ -29,7 +29,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string }; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string; repair?: { attempted?: boolean } }; warnings?: { code: string }[]; error?: { code?: string; message?: string; remedy?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-prepared-delete-"));
@@ -214,6 +214,10 @@ for (const [i, space] of workshops.entries()) {
   const added = run(["space", "add", space, "--mode", "open", "--server", `nats://127.0.0.1:${43026 + i}`, "--root", ".", "--force", "--yes"], workshop);
   check(`rig: ${space} is registered open at the shared root`, added.status === 0, shown(added));
 }
+const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], workshop);
+check("doctor keeps the local open-space no-op and warns that the mode was not checked",
+  unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&
+  unchecked.envelope.result.repair?.attempted === false && unchecked.envelope.warnings?.some(w => w.code === "MODE_NOT_CHECKED") === true, shown(unchecked));
 for (const fix of [[], ["--fix"]]) {
   const command = ["doctor", "auth", ...fix];
   const bare = run([...command, "--plain"], workshop);
@@ -222,8 +226,9 @@ for (const fix of [[], ["--fix"]]) {
       && bare.stderr.includes(`cotal ${command.join(" ")} --space workshop-a`) && !bare.stderr.includes("in a space's root folder"), shown(bare));
   for (const space of workshops) {
     const explicit = run([...command, "--space", space, "--plain"], workshop);
-    check(`${command.join(" ")} --space ${space} reports no credentials in that same folder`,
-      explicit.status === 0 && explicit.stdout.includes("No credentials to check") && explicit.stdout.replace(/\s+/g, " ").includes(`Space: ${space}`), shown(explicit));
+    check(`${command.join(" ")} --space ${space} reports the unchecked mode without claiming what the broker enforces`,
+      explicit.status === 0 && explicit.stdout.includes("Credential check skipped") && explicit.stdout.replace(/\s+/g, " ").includes(`Space: ${space}`) &&
+      !explicit.stdout.includes("authenticates no one") && explicit.stderr.includes(`cotal space show ${space}`), shown(explicit));
   }
 }
 
