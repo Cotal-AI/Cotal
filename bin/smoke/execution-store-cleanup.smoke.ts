@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { beginGlobalUpdateChild, claimUpdateClosureAccess, clearUpdateRecovery, recordExecutionReference, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { beginGlobalUpdateChild, claimUpdateClosureAccess, clearUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { executionDescriptorPath, executionReadersName, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration } from "../execution-transaction.js";
