@@ -750,6 +750,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const brokerLogFile = recordedBroker ? recordedBroker.logFile : request.logFile ?? unstarted?.broker?.logFile;
   const brokerLogfileSizeLimit = recordedBroker ? recordedBroker.logfileSizeLimit : request.logfileSizeLimit ?? unstarted?.broker?.logfileSizeLimit;
   const brokerLogfileMaxNum = recordedBroker ? recordedBroker.logfileMaxNum : request.logfileMaxNum ?? unstarted?.broker?.logfileMaxNum;
+  if (brokerLogFile === undefined && (request.logfileSizeLimit !== undefined || request.logfileMaxNum !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
   // The manager's session ceiling is kept by its saved definition, so a bare up starts it with the
   // ceiling an earlier up set rather than the default. An explicit --max-sessions replaces it only
   // once the manager is stopped; a live refresh must not silently discard the requested ceiling.
