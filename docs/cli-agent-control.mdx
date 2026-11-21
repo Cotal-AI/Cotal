@@ -361,10 +361,10 @@ has not come up yet does not reach the agent when it does.
 The terminal is in raw mode for the whole reconnect, including when the link died before the first
 session finished opening, so the detach key works there too instead of echoing as `^]`.
 
-A **pipe** carries script input. For example, `printf 'ls\n' | cotal attach --name web` is
-buffered until the session opens. Buffering continues across reconnects, so
+A **pipe** carries script input and buffers it until the session opens. Buffering continues across reconnects, so
 `tail -f log | cotal attach --name web` does not lose the part of its feed written while the link was
-down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
+down. When redirected input reaches end of file, `attach` detaches and leaves the agent running.
+This also applies with `--no-reconnect`. Keep the input open if you want to continue viewing the session.
 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there

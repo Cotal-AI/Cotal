@@ -422,9 +422,11 @@ export function attachClient(
       }
       flushOut();
     };
+    const onInputEnd = () => transport.close();
     const cleanup = () => {
       clearWheel();
       stdin.off("data", onInput);
+      stdin.off("end", onInputEnd);
       process.stdout.off("resize", sendResize);
       // Undo terminal modes the (still-running) agent's TUI enabled — it won't restore us on detach.
       // If the child put us in its alternate screen, leave it too so the terminal isn't stranded in
@@ -453,15 +455,18 @@ export function attachClient(
         transport.close();
         return;
       }
-      // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
-      // default label). Only on override, so the default case stays free of duplicate noise.
-      if (detach.overridden) notice({ tone: "status", text: `detach key: ${detach.label} (from ${detach.from})` });
+      if (stdin.isTTY && detach.overridden) notice({ tone: "status", text: `detach key: ${detach.label} (from ${detach.from})` });
+      if (!stdin.isTTY && stdin.readableEnded) {
+        onInputEnd();
+        return;
+      }
       term.enterRaw();
-      stdin.resume();
       tookStdin = true;
       sendResize();
       process.stdout.on("resize", sendResize);
       stdin.on("data", onInput);
+      if (!stdin.isTTY) stdin.once("end", onInputEnd);
+      stdin.resume();
     });
     transport.onData(async (data) => {
       carried = true;
