@@ -12,6 +12,26 @@
  */
 
 import { CATALOG } from "./errors.js";
+import { EFFECT_KINDS, type EffectKind } from "./primitives.js";
+
+/** Optional run-wide limits for individual journalled effect kinds. */
+export type EffectCeilings = Readonly<Partial<Record<EffectKind, number>>>;
+
+function ceilingPins(value: EffectCeilings | undefined): EffectCeilings | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+    throw new TypeError("ceilings must be a record of effect kinds and nonnegative safe integers");
+  const result: Partial<Record<EffectKind, number>> = {};
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    if (typeof key !== "string" || !(EFFECT_KINDS as readonly string[]).includes(key) ||
+        !descriptor.enumerable || !("value" in descriptor) || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0)
+      throw new TypeError(`invalid effect ceiling ${String(key)}: expected a known effect kind and a nonnegative safe integer`);
+  }
+  for (const kind of EFFECT_KINDS) if (Object.hasOwn(value, kind)) result[kind] = value[kind]!;
+  return Object.freeze(result);
+}
 
 /**
  * The language version is a property of the ENGINE that runs a program, not of this module.
@@ -73,6 +93,8 @@ export interface RunPins {
    */
   readonly stepBudget: number;
   readonly effectCeiling: number;
+  /** Absent on legacy records. Unlisted kinds have only the total effect ceiling. */
+  readonly ceilings?: EffectCeilings;
   readonly languageVersion: string;
 }
 
@@ -84,6 +106,7 @@ export interface PinnableOptions {
   readonly yieldEvery?: number;
   readonly stepBudget?: number;
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
 }
 
 /** A pin the caller supplied disagrees with the one the run was started under (L5009 / L5008). */
@@ -105,7 +128,9 @@ export class PinMismatch extends Error {
  * epoch is a recorded fact from here on, so a second read could not be the same run's epoch.
  */
 export function resolvePins(options: PinnableOptions, now: number, languageVersion: string): RunPins {
+  const ceilings = ceilingPins(options.ceilings);
   return Object.freeze({
+    ...(ceilings !== undefined ? { ceilings } : {}),
     seed: options.seed ?? options.runId,
     startedAt: options.startedAt ?? now,
     yieldEvery: options.yieldEvery ?? PIN_DEFAULTS.yieldEvery,
@@ -133,6 +158,11 @@ export function bindPins(recorded: RunPins, options: PinnableOptions, languageVe
       `This run started under language version ${recorded.languageVersion} and this engine is version ${languageVersion}. Source and seed do not pin behaviour across a semantics change: unchanged source can take a different branch before the first effect, where there is no input hash to diverge on.\n\nOptions\n  resume on the recorded version\n  fork(run, <step>)   start a new run on this version, keeping the prefix`,
     );
   }
+  const recordedCeilings = ceilingPins(recorded.ceilings);
+  const suppliedCeilings = ceilingPins(options.ceilings);
+  if (suppliedCeilings !== undefined && JSON.stringify(suppliedCeilings) !== JSON.stringify(recordedCeilings ?? {}))
+    throw new PinMismatch("L5009", "ceilings", JSON.stringify(recordedCeilings ?? {}), JSON.stringify(suppliedCeilings),
+      "This run's per-kind effect ceilings differ from the caller's override. Resume without the override or fork the run under new ceilings.");
   const checks: readonly [keyof RunPins & string, string | number | undefined, string | number][] = [
     ["seed", options.seed, recorded.seed],
     ["startedAt", options.startedAt, recorded.startedAt],
@@ -151,5 +181,5 @@ export function bindPins(recorded: RunPins, options: PinnableOptions, languageVe
       );
     }
   }
-  return recorded;
+  return recordedCeilings === undefined ? recorded : Object.freeze({ ...recorded, ceilings: recordedCeilings });
 }

@@ -31,7 +31,7 @@
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import type { EffectHandler } from "../effects.js";
 import type { JournalEntry, JournalStore } from "./../journal.js";
-import type { RunPins } from "../pins.js";
+import type { RunPins, EffectCeilings } from "../pins.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
 import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
@@ -85,6 +85,7 @@ export interface WorkerRunRequest {
    */
   readonly seed?: string;
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
   readonly stepBudget?: number;
 }
 
