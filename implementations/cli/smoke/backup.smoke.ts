@@ -426,7 +426,7 @@ try {
       chmodSync(exposedFolder, 0o707);
       const real = realpathSync(exposedFolder);
       await assert.rejects(
-        backup({ positionals: ["create", join(exposedFolder, "artifact")], values: {}, raw: [] }),
+        backup({ positionals: ["create", join(exposedFolder, "missing", "artifact")], values: {}, raw: [] }),
         (error: unknown) => isCommandFailure(error) && error.code === "PERMISSION_DENIED"
           && error.message === `the backup destination is not protected against other local writers: ${real} is writable by every local account`
           && error.remedy === `chmod o-w ${real}`,
