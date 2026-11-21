@@ -1000,11 +1000,14 @@ export function folderSpaceStopped(cwd: string, current: string): { space: strin
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
  *  `--space` targets there while it runs, or, with none registered, the space of the root's own half
  *  started or half stopped stack ({@link unfinishedStackSpace}). Undefined outside a project and where
- *  the root has none or several. A space prepared here and never started is not one: see
+ *  the root has none or several. A caller inspecting the folder itself can refuse an ambiguous
+ *  registration instead. A space prepared here and never started is not one: see
  *  {@link folderSpaceHeld}. */
-export function folderSpace(cwd: string): string | undefined {
-  const folder = folderSpaces(cwd, loadMeshes());
+export function folderSpace(cwd: string, { refuseAmbiguous = false } = {}): string | undefined {
+  const meshes = loadMeshes();
+  const folder = folderSpaces(cwd, meshes);
   if (!folder) return undefined;
+  if (refuseAmbiguous && folder.registered.length > 1) registrationAt(folder.root, meshes);
   return folder.registered.length === 1 ? folder.registered[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
 }
 
@@ -1030,7 +1033,7 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
-      `this folder's broker hosts ${rootMatches.length} spaces (${rootMatches.map((m) => m.space).join(", ")}) - name one with --space`,
+      `this folder has ${rootMatches.length} registered spaces: ${rootMatches.map((m) => m.space).join(", ")}`,
       { available: rootMatches.map((m) => `${m.space} (${m.root})`), spaces: rootMatches.map((m) => m.space) },
     );
   return rootMatches[0];

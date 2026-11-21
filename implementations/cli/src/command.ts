@@ -65,7 +65,7 @@ import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
-import { chooseMeshTarget } from "./lib/choose-target.js";
+import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -928,7 +928,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      const renderRemedy = ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
+      const spaceRemedy = spaceChoiceRemedy(isConnectRefusal(e) ? e.cause : e, cmd.name, parsed, rest);
+      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy : ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {

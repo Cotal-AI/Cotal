@@ -115,13 +115,45 @@ const QUESTION = "Which one?";
   const env1 = envelope(script);
   check("a script with an ambiguous target is TARGET_AMBIGUOUS, exit 2", script.status === 2 && env1?.error?.code === "TARGET_AMBIGUOUS", shown(script));
   check("its message names the running spaces and its remedy says how to pick one",
-    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && /--space <name>/.test(env1?.error?.remedy ?? "") && !/--space <name>/.test(env1?.error?.message ?? ""), env1?.error);
+    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && !/--space/.test(env1?.error?.message ?? "") &&
+      ["alpha", "beta"].every((space) => env1?.error?.remedy?.includes(` who --json --space ${space}\``)), env1?.error);
   const identity = run(["whoami", "--json"]);
   const env2 = envelope(identity);
   check("a command that resolves its own target refuses the same way, its remedy apart from its message",
-    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space <name>/.test(env2?.error?.remedy ?? "") && !/--space <name>/.test(env2?.error?.message ?? ""), env2?.error);
+    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space alpha.*--space beta/.test(env2?.error?.remedy ?? "") && !/--space/.test(env2?.error?.message ?? ""), env2?.error);
   const human = run(["who"]);
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
+}
+
+// A folder can hold several registrations without having a single default space to inspect.
+{
+  const root = join(home, "beta");
+  recordMesh({ space: "gamma", server: B, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  try {
+    const who = run(["who", "--plain"], root);
+    const next = who.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check("who in a shared folder refuses before opening the roster and names both exact reads",
+      who.status === 2 && /Code:\s+TARGET_AMBIGUOUS/.test(who.stderr) && /this folder has 2 registered spaces: beta, gamma/.test(who.stderr) &&
+        commands.length === 2 && commands[0]?.endsWith(" who --plain --space beta") && commands[1]?.endsWith(" who --plain --space gamma"), shown(who));
+    for (const space of ["beta", "gamma"]) {
+      const picked = run(["who", "--plain", "--space", space], root);
+      check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
+      const show = run(["space", "show", space, "--json"], root);
+      check(`space show ${space} still reads the named space`, show.status === 0 && envelope(show)?.target?.space === space, shown(show));
+    }
+    for (const selected of [undefined, "alpha"]) {
+      if (selected !== undefined) setAdoptedCurrent(selected);
+      const show = run(["space", "show", "--json"], root);
+      const error = envelope(show)?.error;
+      check(`bare space show refuses a shared folder with ${selected === undefined ? "no" : "an unrelated adopted"} selection`,
+        show.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /registered spaces: beta, gamma/.test(error.message) &&
+          ["beta", "gamma"].every((space) => error.remedy?.includes(` space show ${space}\``)) && !error.remedy.includes("space show alpha") && getCurrent() === selected, shown(show));
+    }
+  } finally {
+    clearCurrent();
+    removeMesh("gamma");
+  }
 }
 
 // Equivalent URLs keep identity and unchecked registrations keep their caveat.
