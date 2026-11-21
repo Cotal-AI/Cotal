@@ -1,8 +1,8 @@
 /**
- * Bare `cotal use` only shows the selection, so an interrupted connector seed does not block it.
- * It used to run the seed prelude, find the crash cursor and exit 1 with "a previous connector seed
- * was interrupted", while `status`, `space` and `config` worked in the same state. Selecting a space
- * still runs the prelude, so it still refuses until `cotal ext seed --repair`.
+ * Bare `cotal use` and selecting a space only touch the selection, so an interrupted connector seed
+ * does not block them. It used to run the seed prelude, find the crash cursor and exit 1 with "a
+ * previous connector seed was interrupted", while `status`, `space` and `config` worked in the same
+ * state. Selecting a space does not launch or install connectors.
  *
  * The crash cursor is written by hand in the shape the seed engine leaves when it is killed
  * mid-install. Driven through the built binary with a sandboxed HOME, XDG_CONFIG_HOME and
@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { recordPreparedSpace } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -52,8 +53,24 @@ const plain = run(["use"]);
 check("bare use points an empty catalog at Cloud sign-in, exit 0", plain.status === 0 && plain.stdout.trim() === "no spaces are known here - sign in to Cotal Cloud with `cotal login`", shown(plain));
 check("a read leaves the crash cursor for the repair", existsSync(cursor));
 
-const select = run(["use", "nosuch"]);
-check("control: selecting a space still runs the seed prelude and refuses on the cursor", select.status !== 0 && /a previous connector seed was interrupted/.test(select.stderr) && /cotal ext seed --repair/.test(select.stderr), shown(select));
+const prevCotalHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(home, ".cotal");
+recordPreparedSpace({ space: "dev", root: neutral, ts: new Date().toISOString() });
+if (prevCotalHome === undefined) delete process.env.COTAL_HOME;
+else process.env.COTAL_HOME = prevCotalHome;
+
+const selectPrepared = run(["use", "dev", "--json"]);
+let selectEnvelope: { outcome?: string; result?: { current?: string | null } } | undefined;
+try { selectEnvelope = JSON.parse(selectPrepared.stdout) as typeof selectEnvelope; } catch { selectEnvelope = undefined; }
+check("selecting a prepared space succeeds without running the seed prelude", selectPrepared.status === 0 && selectEnvelope?.result?.current === "dev", shown(selectPrepared));
+check("selecting a prepared space leaves the crash cursor for the repair", existsSync(cursor));
+
+const selectUnknown = run(["use", "nosuch", "--json"]);
+let unknownEnvelope: { outcome?: string; error?: { code?: string } } | undefined;
+try { unknownEnvelope = JSON.parse(selectUnknown.stdout) as typeof unknownEnvelope; } catch { unknownEnvelope = undefined; }
+check("selecting an unknown space reaches target refusal without mentioning interrupted seed",
+  selectUnknown.status === 2 && unknownEnvelope?.error?.code === "TARGET_NOT_FOUND" && !/interrupted/.test(selectUnknown.stdout + selectUnknown.stderr),
+  shown(selectUnknown));
 
 const ext = run(["ext", "seed"]);
 const refusal = ext.stderr.trim().replace(/^✗ /, "");

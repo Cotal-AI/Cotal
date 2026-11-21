@@ -1,7 +1,15 @@
-import { oneLine, type Block } from "@cotal-ai/workspace";
+import { codeSpan, oneLine, type Block } from "@cotal-ai/workspace";
 import { displayCmd } from "./self-exec.js";
 import { shellWord } from "./endpoint-errors.js";
 import { unattributableRecordSteps } from "./local-process-stop.js";
+
+/** Inspect or start the existing stack without implying that its manifest can be applied again. */
+export function controllerManifestRemedy(root: string, space: string, manifest: string): string {
+  const inspect = codeSpan(`cotal service --space ${shellWord(space)}`);
+  const start = codeSpan(`cotal up --root ${shellWord(root)} --space ${shellWord(space)}`);
+  const preview = codeSpan(`cotal team boot ${shellWord(manifest)} --dry-run`);
+  return `inspect the recorded stack with ${inspect} or start it with ${start}; preview the manifest with ${preview}. To boot it independently, prepare a separate project root and space`;
+}
 
 export interface DetachedStatus {
   root?: string;

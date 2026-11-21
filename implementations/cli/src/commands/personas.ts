@@ -8,7 +8,8 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, personaDefinitionProblem, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -162,11 +163,9 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   for (const e of entries) {
     const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
-      // A parser diagnostic spans lines, the reason and then an excerpt with a caret under the
-      // fault, so each line is escaped and printed on its own.
-      const [reason = "", ...excerpt] = e.error.trimEnd().split(/\r?\n/).filter((line) => line.trim());
+      const prefix = `agent file ${e.path}: `;
+      const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
       console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
-      for (const line of excerpt) console.log(c.dim(`    ${oneLine(line)}`));
       continue;
     }
     const d = e.def!;
@@ -291,7 +290,9 @@ function remove(name: string | undefined, force: boolean, values: { space?: stri
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
-    console.error(c.dim(`cotal personas rm ${name} --force`));
+    const target = targetWords({ space: values.space, server: values.server });
+    const word = shellWord(name);
+    console.error(c.dim(name.startsWith("-") ? `cotal personas rm${target} --force -- ${word}` : `cotal personas rm ${word}${target} --force`));
     process.exit(1);
   }
   commitPersona(path, expected, undefined);

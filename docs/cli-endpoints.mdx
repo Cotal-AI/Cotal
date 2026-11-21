@@ -241,8 +241,9 @@ cotal endpoint check <contract-file> [--json|--plain]
 ```
 
 `init` creates `contract.json` and an executable `handler.mjs` template. The default directory is
-the supplied name; `--dir` chooses another one. Its parent must exist. Files are created
-exclusively, without following a pre-planted symlink or replacing an existing file. A partial
+the supplied name. Use `--dir` to choose another one. If its parent is missing, `init` creates
+nothing and prints a command to create the parent and retry. Files are created exclusively,
+without following a pre-planted symlink or replacing an existing file. A partial
 write retains the named created material for review rather than deleting it automatically.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
@@ -264,7 +265,8 @@ wrapper or command fields are refused. This file is local authoring input, not a
 with the installed schema profile and reports the derived cluster closure. All schema references
 must resolve inside their bundle; no URL or adjacent file is fetched. Attribute and event
 semantics remain opaque to the native parser, so a file declaring them produces a partial result,
-exit 4, rather than a claim that those semantics were checked.
+exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
+names the path and asks you to retry with an existing contract file.
 
 Neither command contacts a broker, loads the handler, starts a service or proves serving
 permission. Authoring takes no space, broker, caller or invocation flags.
@@ -358,7 +360,8 @@ plus those of `inspect` when `--name` names a manager target. `--args` is a JSON
 publish, and `--timeout` sets one deadline in milliseconds for the whole call (default 10000): the contract read, a
 `--name` lookup and the reply all spend from it, so an endpoint nothing serves is refused when it runs out. When the
 endpoint answers but the deadline runs out before the command is published, during the contract read or after it, the
-call fails with `OPERATION_FAILED`, names the deadline, and its Next suggests a longer `--timeout`.
+call fails with `OPERATION_FAILED` and names the deadline. Rerun the original command with the
+suggested `--timeout` and leave all other arguments and flags unchanged.
 If the invocation may have been sent and its outcome cannot be confirmed before the deadline,
 including with a short `--timeout`, it reports `OPERATION_UNKNOWN` and exits 3. This does not prove
 that the command did not run. Inspect the original endpoint and request before another invocation;
@@ -406,9 +409,13 @@ issuing an operation credential or deleting anything. It does not prove apply wi
 
 Apply delegates to the existing native guard. An answering instance refuses. An unanswered
 instance also refuses unless the broker affirmatively reports that instance rail empty.
-An unavailable probe or an in-flight registration refuses. After that evidence, the native
-helper checks governance and deletes status before spec, pinning both revisions. The issuance
-gate is not changed and no process is stopped; the same instance may register on a later start.
+An unavailable probe or an in-flight registration refuses. Once the broker affirms the instance
+rail is empty, the native helper checks governance and deletes status before spec, pinning both
+revisions. The issuance gate is not changed and no process is stopped. The same instance may
+register on a later start.
+
+If the recorded local static-auth broker is down, no deletion is attempted. The refusal names
+the project folder where `cotal up` restarts the broker so you can recheck the same full instance ID.
 
 The JSON/plain receipt retains the full coordinate and acknowledged removed revisions.
 A registration that moves during deletion is not success: its spec was not removed, but an
@@ -502,7 +509,8 @@ and give it 10 seconds. When no instance answers that read within its deadline, 
 with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
 Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
 names it, because a deadline that short can also end before a served endpoint answers, and its Next
-adds a rerun with a longer `--timeout`. Nothing was invoked or issued.
+suggests rerunning the original command with a longer `--timeout` and all other arguments and
+flags unchanged. Nothing was invoked or issued.
 
 A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
@@ -546,8 +554,11 @@ the leader. The list can lag concurrent changes and is not an atomic whole-space
 
 The snapshot reads at most 1000 registration keys. Omitted keys, unreadable records or unavailable
 registry access make the requested live portion partial and return exit 4, while preserving the
-local references. Status projection, reported state, process ownership and a serving response are
-separate. No active probe or process control is implied by a registration row.
+local references. If a broker connection fails, the report shows the diagnostic and any recovery
+step. For example, if an explicit `--server` does not answer and the selected space has a recorded
+broker, the report suggests dropping `--server` to reach that broker. Status projection, reported
+state, process ownership and a serving response are separate. No active probe or process control
+is implied by a registration row.
 
 
 ## Following an endpoint action [#following-an-endpoint-action]

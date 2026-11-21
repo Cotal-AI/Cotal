@@ -61,7 +61,7 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
 {
   const cases: [string, string[], Record<string, string | boolean>, string, string][] = [
     ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "run it without --json: cotal run revoke run-1 --local --by <who> --reason <text>"],
-    ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: cotal run check run-1 <program>"],
+    ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: `cotal run check run-1 --file p.cotal.js`"],
     ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: `cotal run start <file> --json`"],
     ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: `cotal run resume run-1 --json`"],
   ];
@@ -760,9 +760,11 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   const one = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "Proceed?"), row("/checkpoint:done#0", "pending", "Done?")));
   c("an answer to a checkpoint's name names its open key and the command, with the code and message kept",
     one instanceof CommandFailure && one.code === "TARGET_NOT_FOUND" && one.message === "the run has no open checkpoint at frage"
-    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with `cotal run answer run-1 '/checkpoint:frage#0' --value '<json>'`", one);
+    && one.remedy === "the open request '/checkpoint:frage#0' matches; answer it with `cotal run answer run-1 '/checkpoint:frage#0'`", one);
   const pinned = await withMatchingKeys(notFound(), "run-1", "frage", { on: "mgr-1" }, view(row("/checkpoint:frage#0", "pending", "Proceed?")));
   c("the suggested command keeps an explicit --on", pinned instanceof CommandFailure && pinned.remedy?.endsWith(" --on mgr-1`") === true, pinned);
+  const privateServer = await withMatchingKeys(notFound(), "run-1", "frage", { server: "wss://broker.example/ws?token=private" }, view(row("/checkpoint:frage#0", "pending", "Proceed?")));
+  c("a retry does not print a private broker URL", privateServer instanceof CommandFailure && privateServer.remedy === "the open request '/checkpoint:frage#0' matches; replace the step in the original command with '/checkpoint:frage#0'", privateServer);
   const two = await withMatchingKeys(notFound(), "run-1", "frage", {}, view(row("/checkpoint:frage#0", "pending", "A?"), row("/fanOut:x#0/checkpoint:frage#1", "pending", "B?")));
   c("several matching open keys are listed to pick from", two instanceof CommandFailure && two.remedy === "the open requests that match are '/checkpoint:frage#0', '/fanOut:x#0/checkpoint:frage#1'; pass one of them as the step", two);
   const settled = notFound();

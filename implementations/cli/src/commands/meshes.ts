@@ -29,6 +29,7 @@ import {
   checkEnforcement,
   checkEnforcementAt,
   checkMode,
+  checkOpenSpace,
   checkRoot,
   checkServer,
   checkSpaceName,
@@ -246,6 +247,7 @@ async function addMesh(positionals: string[], v: Values): Promise<void> {
       console.error(c.dim("nothing was registered - fix the above, or `--force` to record it without verifying (e.g. the mesh is down right now)"));
       process.exit(1);
     }
+    if (mode === "open") take(await checkOpenSpace(server, space, tlsRequired));
   }
 
   const result = writeRecord({ space, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(v.force ? { unchecked: true } : {}), ts: new Date().toISOString() });
@@ -432,7 +434,7 @@ async function rmMeshes(names: string[], v: Values): Promise<void> {
   const byName = new Map(entries.map((m) => [m.space, m]));
   const removed: MeshEntry[] = [];
   let failed = false;
-  for (const space of names) {
+  for (const space of new Set(names)) {
     const m = byName.get(space);
     if (!m) {
       stderrLine("✗ ", `no mesh named "${space}" is registered - see \`cotal meshes\``, c.red);
@@ -473,7 +475,6 @@ async function rmMeshes(names: string[], v: Values): Promise<void> {
       failed = true;
       continue;
     }
-    byName.delete(space);
     removed.push(m);
   }
   if (removed.length > 0) {

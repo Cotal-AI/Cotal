@@ -23,14 +23,19 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   channelBucket,
   chatStream,
+  chatSubject,
   createSpaceAuth,
+  credsClaims,
+  credsFromJwt,
   dialerFor,
   dmStream,
   idFromCreds,
@@ -43,6 +48,7 @@ import {
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  unicastSubject,
 } from "@cotal-ai/core";
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
@@ -152,6 +158,16 @@ try {
     }
     check(`control: the owned broker at ${s} is ready`, ready, s);
   }
+  // Nothing has provisioned history on the open broker yet.
+  const empty = await run(["history", "clear", "--server", openServers, "--yes", "--plain"]);
+  check("history clear on a fresh open broker reports zero and names the absent chat stream",
+    empty.status === 0 && empty.stdout.includes("0 messages purged") && empty.stderr.includes(chatStream("main")), shown(empty));
+  const emptyDms = await run(["history", "clear", "--server", openServers, "--yes", "--dms", "--json"]);
+  const emptyReceipt = emptyDms.envelope?.result as { acknowledged?: unknown[] } | null | undefined;
+  check("history clear --dms on a fresh open broker reports a complete no-op with both stream names",
+    emptyDms.status === 0 && emptyDms.envelope?.outcome === "no-op" && emptyDms.envelope.completeness === "complete"
+      && emptyReceipt?.acknowledged?.length === 0 && emptyDms.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream("main")) && w.message.includes(dmStream("main"))), shown(emptyDms));
+
   // A provisioner credential lives five minutes by default and this one stays connected for the
   // whole suite, which runs longer than that on a loaded machine.
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner", { expiresInSeconds: 3600 });
@@ -220,6 +236,11 @@ try {
   check("a sequence --since is named in the report", seqPlain.stdout.includes(`--since ${items[0]?.seq} is chat stream sequence ${items[0]?.seq}; only messages after it are shown\n`), shown(seqPlain));
   check("a bare number past the newest sequence is refused USAGE_INVALID with that sequence and how to write a date",
     yearJson.status === 1 && /^--since 2026 is past the chat stream's newest sequence, \d+, so it names no message$/.test(yearJson.envelope?.error?.message ?? "") && /^give a sequence up to \d+, or write a date in full, such as 2026-01-01$/.test(yearJson.envelope?.error?.remedy ?? ""), shown(yearJson));
+  const futureSeq = String(Number(all.envelope?.result?.items.at(-1)?.seq) + 2);
+  const futureRead = await run(["history", "general", "--limit", "1", "--since", futureSeq, "--json"]);
+  check("a future sequence cutoff returns a complete empty window even with older retained messages",
+    futureRead.status === 0 && futureRead.envelope?.result?.items.length === 0
+      && futureRead.envelope.result.window.olderRetained === true && futureRead.envelope.result.window.reachesSince === true, shown(futureRead));
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
   // A bare date is local midnight. ECMAScript reads it as UTC, so east of UTC it dropped the day's
@@ -410,7 +431,18 @@ try {
   const snap = await f.until((l) => l.includes('"type":"snapshot"'));
   const records = () => f.lines.map((l) => JSON.parse(l) as { schemaVersion: number; stream: string; type: string; data: { text?: string; reason?: string; items?: Item[] } });
   check("--follow --json starts with one snapshot record of the window", snap && records()[0]?.type === "snapshot" && records()[0]?.stream === "history" && records()[0]?.schemaVersion === 1 && records()[0]?.data.items?.length === 3, { lines: f.lines.slice(0, 2), stderr: f.stderr() });
-  await alice.multicast("live one", { channel: "general" });
+  const future = follow(["history", "general", "--since", futureSeq, "--follow", "--json"]);
+  try {
+    const ready = await future.until((line) => line.includes('"type":"snapshot"') || line.includes('"error"'));
+    await alice.multicast("live one", { channel: "general" });
+    const liveFuture = await future.until((line) => line.includes('"text":"live one"') || line.includes('"error"'));
+    const [window, event] = future.lines.map((line) => JSON.parse(line) as { type?: string; data?: { items?: Item[]; text?: string } });
+    check("a future sequence cutoff starts with an empty snapshot and still emits a live message before the cutoff",
+      ready && liveFuture && window?.type === "snapshot" && window.data?.items?.length === 0
+        && event?.type === "event" && event.data?.text === "live one", future.lines);
+  } finally {
+    await killAndAwaitExit(future.child, "SIGINT");
+  }
   await bob.multicast("not this channel", { channel: "ops" });
   const event = await f.until((l) => l.includes("live one"));
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
@@ -457,6 +489,51 @@ try {
   prefill.child.kill("SIGINT");
   await prefill.exited;
   check("a follow prints its window in the same form as its live lines", prefilled && prefill.lines.some((l) => scriptShape(l, "\\S+", "#general", ".+")) && !prefill.lines.some((l) => /^TIME\s+WHERE/.test(l)), prefill.lines);
+
+  const scopedAll = follow(["history", "--follow", "--json", "--creds", agentCreds]);
+  const scopedNamed = follow(["history", "general", "--follow", "--json", "--creds", agentCreds]);
+  try {
+    const hasSnapshot = (line: string) => line.includes('"type":"snapshot"');
+    const snapshots = await Promise.all([scopedAll, scopedNamed].map((f) => f.until(hasSnapshot)));
+    await bob.multicast("outside scoped follow", { channel: "ops" });
+    await alice.multicast("inside scoped follow", { channel: "general" });
+    await Promise.all([scopedAll, scopedNamed].map((f) => f.until((line) => line.includes('"text":"inside scoped follow"') || line.includes('"type":"error"'))));
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+    const codes = await Promise.all([scopedAll.exited, scopedNamed.exited]);
+    for (const [i, f] of [scopedAll, scopedNamed].entries()) {
+      const records = f.lines.map((line) => JSON.parse(line) as { type: string; data: { text?: string; reason?: string } });
+      check(`a scoped credential follows ${i === 0 ? "all granted channels" : "a named channel"} without subscription errors or out-of-scope events`,
+        snapshots[i] && codes[i] === 143 && records.map((r) => r.type).join() === "snapshot,event,end" && records[1]?.data.text === "inside scoped follow" && records[2]?.data.reason === "terminated", f.lines);
+    }
+  } finally {
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+  }
+  const noFollow = await run(["history", "--follow", "--json", "--creds", ungranted]);
+  const noFollowRecords = noFollow.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; data: { code?: string; reason?: string } });
+  check("an all-channel follow with no channel read grant refuses without opening a feed",
+    noFollow.status === 2 && noFollowRecords.map((r) => r.type).join() === "error,end" && noFollowRecords[0]?.data.code === "PERMISSION_DENIED" && noFollowRecords[1]?.data.reason === "setup-failed", shown(noFollow));
+
+  // A raw credential can have a broader retained read than live read. The broker's live denial
+  // must still end the all-channel follow, rather than leave an apparently running feed.
+  const retainedReader = newIdentity();
+  const { pub, sub } = credsClaims(await mintCreds(auth, retainedReader, "observer")).nats!;
+  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  const restricted = join(home, "retained-reader.creds");
+  try {
+    const chat = chatSubject(space, "*", "*", "general");
+    const jwt = await encodeUser("observer", fromPublic(retainedReader.id), fromPublic(auth.account.pub), {
+      pub,
+      sub: { allow: [...(sub?.allow ?? []).filter((row) => !row.startsWith(`cotal.${space}.chat.`)), chat] },
+    }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
+    writeFileSync(restricted, credsFromJwt(jwt, retainedReader), { mode: 0o600 });
+  } finally { signer.clear(); }
+  const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
+  try {
+    const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));
+    const records = refusedFollow.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; remedy?: string; reason?: string } });
+    check("a broker denial of the live wildcard ends the follow and says to name a channel",
+      ended && await refusedFollow.exited === 2 && records.map((r) => r.type).join() === "error,end" && records[0]?.data.code === "PERMISSION_DENIED" && records[0]?.data.remedy?.includes("name a channel") === true && records[1]?.data.reason === "setup-failed", refusedFollow.lines);
+  } finally { await killAndAwaitExit(refusedFollow.child, "SIGTERM"); }
 
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
   const brief = join(home, "brief.creds");
@@ -530,6 +607,43 @@ try {
     longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
       && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
+
+  // Payload times can disagree with broker arrival order across publishers.
+  {
+    const nc = await connect({ servers: openServers });
+    const js = jetstream(nc);
+    const now = Date.now();
+    const publish = (subject: string, actor: string, id: string, ts: number, target: { channel: string } | { to: string }) =>
+      js.publish(subject, JSON.stringify({ id, ts, space: openSpace, from: { id: `local.${actor}`, name: actor }, ...target, parts: [{ kind: "text", text: id }] }));
+    try {
+      const first = await publish(chatSubject(openSpace, "local", "alice", "volume"), "alice", "arrived-first", now, { channel: "volume" });
+      const second = await publish(chatSubject(openSpace, "local", "bob", "volume"), "bob", "arrived-second", now - 2_000, { channel: "volume" });
+      const args = ["--space", openSpace, "--json"];
+      const channel = await run(["history", "volume", ...args]);
+      const emptyDms = await run(["history", "--dms", ...args]);
+      const sequences = (r: typeof channel) => r.envelope?.result?.items.filter((item) => item.channel === "volume").map((item) => item.seq).join();
+      const expected = [first.seq, second.seq].join();
+      check("--dms with no DMs keeps the same broker sequence as channel history",
+        channel.status === 0 && emptyDms.status === 0 && sequences(channel) === expected && sequences(emptyDms) === expected,
+        { channel: shown(channel), mixed: shown(emptyDms) });
+
+      const dmSubject = unicastSubject(openSpace, "local", "bob", "local", "alice");
+      await publish(dmSubject, "alice", "older-direct", now - 3_000, { to: "local.bob" });
+      await publish(dmSubject, "alice", "direct", now - 1_000, { to: "local.bob" });
+      const mixed = await run(["history", "--dms", ...args]);
+      const narrow = await run(["history", "--dms", "--limit", "2", ...args]);
+      check("--dms preserves channel sequence with a DM present and retains the newest channel post in a two-row window",
+        mixed.status === 0 && texts(mixed).includes("direct") && sequences(mixed) === expected && narrow.status === 0
+          && texts(narrow).includes("direct") && sequences(narrow) === String(second.seq) && narrow.envelope?.result?.window.olderRetained === true,
+        { mixed: shown(mixed), narrow: shown(narrow) });
+      const byTime = await run(["history", "--dms", "--limit", "3", "--since", new Date(now - 1_500).toISOString(), ...args]);
+      check("a mixed window reaches a time cutoff even if its first row is newer than the cutoff",
+        byTime.status === 0 && byTime.envelope?.result?.window.reachesSince === true && texts(byTime).join() === "arrived-first,direct",
+        shown(byTime));
+    } finally {
+      await nc.close();
+    }
+  }
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
@@ -966,8 +1080,8 @@ try {
     await drop(chatStream(space));
     const chatOnly = await run(["history", "clear", "--yes", "--json"]);
     const dmKept = await messages(dmStream(space));
-    check("history clear with only the chat stream gone refuses TARGET_NOT_FOUND and leaves direct messages",
-      chatOnly.status === 2 && chatOnly.envelope?.error?.code === "TARGET_NOT_FOUND" && chatOnly.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged" && before > 0 && dmKept === before,
+    check("history clear with only the chat stream gone is a no-op and leaves direct messages",
+      chatOnly.status === 0 && chatOnly.envelope?.outcome === "no-op" && chatOnly.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space))) && before > 0 && dmKept === before,
       { chatOnly: shown(chatOnly), before, dmKept });
     const cleared = await run(["history", "clear", "--yes", "--dms", "--json"]);
     const dmAfter = await messages(dmStream(space));
@@ -977,8 +1091,8 @@ try {
       { cleared: shown(cleared), before, dmAfter });
     await drop(dmStream(space));
     const none = await run(["history", "clear", "--yes", "--dms", "--json"]);
-    check("history clear --dms refuses TARGET_NOT_FOUND when the chat and direct-message streams are both gone",
-      none.status === 2 && none.envelope?.outcome === "refused" && none.envelope.error?.code === "TARGET_NOT_FOUND" && none.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged",
+    check("history clear --dms is a no-op when the chat and direct-message streams are both gone",
+      none.status === 0 && none.envelope?.outcome === "no-op" && none.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space)) && w.message.includes(dmStream(space))),
       shown(none));
   }
 
@@ -1047,6 +1161,19 @@ try {
     if (replacement) await killAndAwaitExit(replacement);
     releaseReplacement?.();
   }
+  const stoppedRead = await run(["history", "updates", "--space", space, "--server", servers, "--json"]);
+  const stoppedFollow = await run(["history", "updates", "--space", space, "--server", servers, "--follow", "--json"]);
+  const stoppedRecords = stoppedFollow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    stream?: string; type?: string; schemaVersion?: number; data?: { code?: string; message?: string; remedy?: string; reason?: string };
+  });
+  const stoppedError = stoppedRead.envelope?.error;
+  check("a follow that cannot start writes the finite refusal as a history error followed by end",
+    stoppedRead.status === 2 && stoppedError?.code === "TARGET_UNAVAILABLE" && Boolean(stoppedError.remedy)
+      && stoppedFollow.status === 2 && stoppedRecords.map((r) => r.type).join() === "error,end"
+      && stoppedRecords.every((r) => r.schemaVersion === 1 && r.stream === "history")
+      && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
+      && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
+    { read: shown(stoppedRead), follow: shown(stoppedFollow) });
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

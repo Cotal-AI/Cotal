@@ -52,7 +52,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -167,6 +167,33 @@ check("control: a leading typographic-dash word that names no leading flag is an
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
 
+if (process.platform !== "win32") {
+  const cwd = realpathSync(neutral);
+  const parent = "reviewer's $draft/nested";
+  const dir = `${parent}/reviews`;
+  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--plain"], {}, cwd);
+  const next = /^Next\n  (.+)$/m.exec(scaffold.stderr)?.[1];
+  const unchanged = !existsSync(join(neutral, "reviewer's $draft"));
+  const retry = next && spawnSync("sh", ["-c", `node=$1\nbin=$2\ncotal() { "$node" "$bin" "$@"; }\n${next}`, "endpoint-init", process.execPath, BIN], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+  check("endpoint init names its missing parent without creating it, and its Next creates the scaffold",
+    scaffold.status === 2 && scaffold.stdout === "" && scaffold.stderr.split("\nNext")[0]!.includes("reviewer'\\''s $draft/nested") && unchanged
+    && !!retry && retry.status === 0 && existsSync(join(neutral, dir, "contract.json")) && existsSync(join(neutral, dir, "handler.mjs")),
+    { scaffold: shown(scaffold), retry });
+
+  const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
+  const wrong = "reviews/wrong.json";
+  const path = join(cwd, wrong);
+  const text = [run(["endpoint", "check", wrong, "--plain"]), run(["endpoint", "check", wrong])];
+  const json = run(["endpoint", "check", wrong, "--json"]);
+  const envelope = JSON.parse(json.stdout);
+  const corrected = run(["endpoint", "check", "reviews/contract.json", "--json"]);
+  check("endpoint check names the missing file and asks for an existing contract in every format",
+    authoring.status === 0 && json.status === 2 && json.stderr === "" && envelope.target.path === path
+    && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
+    && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
+    && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+}
+
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
 
@@ -199,6 +226,16 @@ check("following that printed command removes the store that was named and leave
 
 const helpPath = run(["help", "service", "nosuch"]);
 check("help with an unknown subcommand names it and lists the command's subcommands", usageShape(helpPath, /cotal service has no subcommand "nosuch"/) && /\bstart\b/.test(helpPath.stderr) && /\bstop\b/.test(helpPath.stderr), shown(helpPath));
+
+const explicitStatus = run(["help", "service", "status", "manager"]);
+const flagStatus = run(["service", "status", "manager", "--help"]);
+check("both help forms show service status usage with a service name",
+  explicitStatus.status === 0 && flagStatus.status === 0 && explicitStatus.stderr === "" && flagStatus.stderr === ""
+  && explicitStatus.stdout === flagStatus.stdout && /^  cotal service status <name>/m.test(explicitStatus.stdout),
+  { explicit: shown(explicitStatus), flag: shown(flagStatus) });
+const misspelledStatus = run(["help", "service", "sttaus", "manager"]);
+check("explicit help still refuses a misspelled service subcommand before its operand",
+  usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
 
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
@@ -288,8 +325,8 @@ for (const [args, usage, foreign] of [
   }
 }
 
-// Every command and subcommand `cotal help` lists shows one to three examples, the most common use
-// first, each a whole command with a note on what it does. Each example parses under the options its
+// Every supported command and subcommand `cotal help` lists shows one to three examples, the most common
+// use first, each a whole command with a note on what it does. Each example parses under the options its
 // help lists and selects that subcommand. Examples follow Usage and Shorthands, before Commands and
 // Options, and on 80 columns each command is one line that fits, with its note beside it or under it.
 {
@@ -332,15 +369,15 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    // The work grammar is reserved, but every lease and commit request is refused.
-    const gatedWork = cmd.name === "endpoint" && path[0] === "work";
-    if (gatedWork ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
+    // Endpoint work and Manager unit installation are listed but have no runnable examples.
+    const unavailable = (cmd.name === "endpoint" && path[0] === "work") || (cmd.name === "manager" && path[0] === "install");
+    if (unavailable ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
     const at = lines.indexOf("Examples");
     const end = lines.indexOf("", at);
     const section = lines.slice(at + 1, end === -1 ? undefined : end);
-    if (gatedWork ? at !== -1 : at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`unexpected Examples section: ${lines.join(" | ").slice(0, 300)}`);
+    if (unavailable ? at !== -1 : at === -1 || at < Math.max(lines.indexOf("Usage"), lines.indexOf("Shorthands")) || ["Commands", "Options"].some((title) => lines.includes(title) && lines.indexOf(title) < at)) problems.push(`unexpected Examples section: ${lines.join(" | ").slice(0, 300)}`);
     for (const example of examples) {
       if (typeof example === "string") { problems.push(`${example}: has no note`); continue; }
       const { command, note } = example;
@@ -348,7 +385,7 @@ for (const [args, usage, foreign] of [
       if (!section.some((line) => line.startsWith(`  ${command}`) && displayWidth(line) <= 80) || !section.join(" ").replace(/\s+/g, " ").includes(`${command} ${note}`)) problems.push(`${command}: is not one line that fits 80 columns with its note: ${section.join(" | ")}`);
       problems.push(...problemsOf(cmd, path, command));
     }
-    const expectation = gatedWork ? "omits examples for unavailable work operations" : "shows one to three examples after its usage, each one line with a note, parsing under its own options";
+    const expectation = unavailable ? "omits examples for an unavailable operation" : "shows one to three examples after its usage, each one line with a note, parsing under its own options";
     check(`${["cotal", cmd.name, ...path].join(" ")} ${expectation}`, problems.length === 0, problems);
     for (const sub of node.subcommands ?? []) if (!sub.hidden) census(cmd, [...path, sub.name], sub);
   };
@@ -470,7 +507,7 @@ for (const [args, usage, foreign] of [
   });
   const helps: [ReturnType<typeof run>, ReturnType<typeof run>][] = [];
   let next = 0;
-  await Promise.all(Array.from({ length: 6 }, async () => {
+  await Promise.all(Array.from({ length: 3 }, async () => {
     for (let i = next++; i < paths.length; i = next++) helps[i] = await Promise.all([binary([...paths[i]!, "--help"]), binary(["help", ...paths[i]!])]);
   }));
   paths.forEach((path, i) => {
@@ -548,6 +585,8 @@ const project = join(home, "proj");
 mkdirSync(project, { mode: 0o700 });
 const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
 check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
+const deleteTarget = run(["space", "add", "delete-target", "--root", project, "--mode", "open", "--server", "nats://127.0.0.1:43028", "--force", "--yes"]);
+check("space delete confirmation uses a registered target", deleteTarget.status === 0, shown(deleteTarget));
 mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>
@@ -555,7 +594,7 @@ const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string
 for (const [args, message, remedy] of [
   [["persona", "remove", "p1"], /removing 'p1' .* requires --yes/, "confirm with `cotal persona remove p1 --yes`"],
   [["history", "clear", "--dms"], /history clear requires --yes/, "then confirm it with `cotal history clear --dms --yes`"],
-  [["space", "delete", "nosuch"], /live space deletion requires a terminal/, "then run `cotal space delete nosuch --yes`"],
+  [["space", "delete", "delete-target"], /live space deletion requires a terminal/, "then run `cotal space delete delete-target --yes`"],
   [["reset", "store", "nosuch"], /reset store needs a terminal confirmation/, "then run `cotal reset store nosuch --yes`"],
   [["reset", "space", "nosuch"], /reset space needs a terminal confirmation/, "then run `cotal reset space nosuch --yes`"],
 ] as const) {
@@ -578,10 +617,17 @@ for (const [args, message] of [
   [["status", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
   [["version", "--js.on"], /Unknown option '--js\.on' - did you mean --json\?/],
   [["history", "general", "--gr.ep"], /Unknown option '--gr\.ep' - did you mean --grep\?/],
+  [["config", "get", "harness", "--jsno"], /Unknown option '--jsno' - did you mean --json\?/],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} names the nearest word`, r.status === 1 && message.test(r.stderr), shown(r));
 }
+const configTypo = run(["config", "get", "harness", "--verbsoe", "--json"]);
+check("config get does not suggest a flag only bare config takes",
+  configTypo.status === 1 && configTypo.stderr === "" && JSON.parse(configTypo.stdout).error.message === "Unknown option '--verbsoe'", shown(configTypo));
+const clearTypo = run(["history", "clear", "--folow"]);
+check("history clear does not suggest a flag only history reads take",
+  usageShape(clearTypo, /Unknown option '--folow'/) && !/did you mean/.test(clearTypo.stderr), shown(clearTypo));
 const far = run(["frobnicate"]);
 check("control: a word near nothing gets no suggestion", far.status === 1 && /unknown command: frobnicate - run `cotal help` to list commands/.test(far.stderr) && !/did you mean/.test(far.stderr), shown(far));
 

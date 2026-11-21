@@ -1,7 +1,7 @@
 /**
  * A read installs nothing. Each read runs through the built binary in a fresh sandbox with the seed
  * gate live (no `COTAL_SKIP_CONNECTOR_SEED`). From a source checkout the gate refuses to seed, so a
- * read that still reached it would exit 1 with that refusal; a read must run past it and leave the
+ * read that still reached it would fail with that refusal; a read must run past it and leave the
  * seed store and the extension manifest unwritten. A command that is not a read still meets the
  * gate. A read that would load a built-in installed at another version than the binary's names it
  * with `cotal ext seed` instead of importing it.
@@ -9,7 +9,7 @@
  * Run: pnpm smoke:read-no-seed
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -61,6 +61,8 @@ const GATE = /refusing to reconcile the operator-global seed store/;
     { args: ["docs", "--json"], exit: 0 },
     { args: ["config", "--json"], exit: 0 },
     { args: ["space", "--json"], exit: 0 },
+    { args: ["use", "--json"], exit: 0 },
+    { args: ["use", "nosuch", "--json"], exit: 2 },
     { args: ["meshes"], exit: 0 },
     { args: ["meshes", "list"], exit: 0 },
     { args: ["ps", "--json"], exit: 2 },
@@ -84,6 +86,58 @@ const GATE = /refusing to reconcile the operator-global seed store/;
 }
 
 {
+  const { home, xdg, run } = sandbox();
+  const manifest = join(home, "mesh.yaml");
+  writeFileSync(manifest, `apiVersion: cotal/v1
+kind: Mesh
+space: team-audit
+agent: claude
+agents:
+  planner: {instructions: Plan.}
+channels:
+  general: {deliveryClass: live, subscribe: [planner], allowPublish: [planner]}
+`);
+  const view = ["topology", "view", "-f", manifest];
+  const hasGraph = (r: ReturnType<typeof run>) => r.status === 0 &&
+    ["team-audit", "planner", "#general"].every((text) => r.stdout.includes(text));
+  const r = run(view);
+  check("topology view renders the access graph without seeding connectors",
+    hasGraph(r) && r.stderr === "", shown(r));
+  check("topology view wrote no seed store or extension manifest",
+    !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")));
+
+  const config = join(xdg, "cotal");
+  const root = join(config, "extensions"), stage = join(config, ".extensions.stage-probe.ready");
+  const old = join(config, ".extensions.rollback-probe"), journal = join(config, ".extensions-promotion.json");
+  const pkg = "topology-promotion-fixture", version = "1.0.0";
+  const pkgDir = join(stage, "node_modules", pkg);
+  mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: pkg, version }));
+  writeFileSync(join(stage, "extensions.json"), JSON.stringify({ extensions: [{ pkg, spec: pkg, version, commands: [] }] }));
+  const stat = lstatSync(stage);
+  const promotion = JSON.stringify({ v: 1, root, stage, old, stageIdentity: { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs } });
+  writeFileSync(journal, promotion, { mode: 0o600 });
+
+  const pending = run(view);
+  check("topology view renders the graph and leaves the pending extension promotion untouched",
+    hasGraph(pending) && pending.stderr === "" && !existsSync(root) && !existsSync(old) && !existsSync(join(config, "seed")) &&
+    existsSync(join(pkgDir, "package.json")) && existsSync(journal) && readFileSync(journal, "utf8") === promotion, shown(pending));
+
+  const list = run(["ext", "list", "--json"]);
+  check("ext list still recovers the pending promotion and reports the installed package",
+    list.status === 0 && JSON.parse(list.stdout).result.items.some((item: { pkg: string }) => item.pkg === pkg) &&
+    existsSync(join(root, "node_modules", pkg, "package.json")) && !existsSync(stage) && !existsSync(journal), shown(list));
+
+  const inventory = join(root, "extensions.json");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  writeFileSync(inventory, "invalid manifest\n");
+  const corrupt = run(view);
+  check("topology view reports corrupt inventory without rewriting it",
+    corrupt.status === 1 && corrupt.stdout === "" && /corrupt extensions manifest/.test(corrupt.stderr) &&
+    corrupt.stderr.includes("cotal ext seed --repair") && readFileSync(inventory, "utf8") === "invalid manifest\n", shown(corrupt));
+}
+
+{
   const { xdg, run } = sandbox();
   const before = run(["ext", "list", "--json"]);
   for (const [args, usage] of [
@@ -104,12 +158,41 @@ const GATE = /refusing to reconcile the operator-global seed store/;
       !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")), shown(after));
 }
 
+{
+  const { home, xdg, run } = sandbox();
+  const offline = { npm_config_offline: "true", npm_config_cache: join(home, "empty-npm-cache"), DO_NOT_TRACK: "1", USER: "config-smoke", LOGNAME: "config-smoke" };
+  const saved = run(["config", "set", "name", "Audit", "--user", "--json"], offline);
+  const unset = run(["config", "unset", "name", "--user", "--json"], offline);
+  const get = run(["config", "get", "name", "--user", "--json"], offline);
+  check("config unset removes a saved name offline without seeding connectors",
+    saved.status === 0 && unset.status === 0 && JSON.parse(unset.stdout).result.previous === "Audit" &&
+      get.status === 0 && JSON.parse(get.stdout).result.setting.winner?.source !== "user" &&
+      unset.stderr === "" && !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")),
+    { saved: shown(saved), unset: shown(unset), get: shown(get) });
+}
+
+{
+  const { home, xdg, run } = sandbox();
+  const offline = { npm_config_offline: "true", npm_config_cache: join(home, "empty-npm-cache"), COTAL_TELEMETRY: "off" };
+  for (const args of [["history", "limit", "--json"], ["h", "--json", "limit", "--yes"]]) {
+    const r = run(args, offline);
+    check(`${args.join(" ")} reaches space preflight offline without seeding`,
+      r.status === 2 && r.stderr === "" && JSON.parse(r.stdout).error?.code === "TARGET_NOT_FOUND", shown(r));
+  }
+  check("history limit reads write no seed store or extensions", !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")));
+  for (const flag of ["max-age", "per-sender", "inbox-max-age", "inbox-per-agent", "dm-max-age", "dm-per-sender"]) {
+    const r = run(["history", "limit", `--${flag}=none`, "--yes", "--json"], offline);
+    const error = r.stdout ? JSON.parse(r.stdout).error : undefined;
+    check(`history limit --${flag} still reaches the seed gate`, r.status === 2 && error?.code === "DEPENDENCY_UNAVAILABLE" && GATE.test(error.message), shown(r));
+  }
+}
+
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
 {
   const { run } = sandbox();
   for (const args of [["space", "forget", "nope"], ["meshes", "rm", "nope"], ["ext", "add", "@acme/none"]]) {
     const r = run(args);
-    check(`${args.join(" ")} is not a read: the seed gate runs first and refuses from a source checkout`, r.status === 1 && GATE.test(r.stderr), shown(r));
+    check(`${args.join(" ")} is not a read: the seed gate runs first and refuses from a source checkout`, r.status === (args[0] === "space" ? 2 : 1) && GATE.test(r.stderr), shown(r));
   }
 }
 

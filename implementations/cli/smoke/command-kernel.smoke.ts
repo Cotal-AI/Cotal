@@ -32,9 +32,10 @@ const noop = async (): Promise<void> => {};
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
     HOME: join(root, "home"), COTAL_HOME: home, XDG_CONFIG_HOME: config,
     COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
+    COTAL_FEEDBACK_URL: "https://127.0.0.1:1",
   };
-  const run = (words: string[]) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
-    cwd: root, env, encoding: "utf8", timeout: 30_000,
+  const run = (words: string[], extraEnv?: NodeJS.ProcessEnv) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
+    cwd: root, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 30_000,
   });
   try {
     const cases: string[][] = [];
@@ -66,6 +67,37 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
+    const upHelp = run(["up", "--help"]);
+    assert.equal(upHelp.status, 0, upHelp.stderr);
+    const upText = upHelp.stdout.replace(/\s+/g, " ");
+    assert.match(upText, /\[--foreground \| \[-d\|--detach\] \[-j\|--json\|--plain\]\]/);
+    assert.equal((upText.match(/without --foreground/g) ?? []).length, 2);
+    const prepared = run(["space", "create", "sample"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
+    assert.equal(prepared.status, 0, prepared.stdout + prepared.stderr);
+    const foreground = ["up", "--foreground", "--open", "--no-manager", "--server", "nats://127.0.0.1:37026"];
+    const jsonForeground = run([...foreground, "--json"]);
+    assert.equal(jsonForeground.status, 1, jsonForeground.stdout + jsonForeground.stderr);
+    assert.equal(jsonForeground.stderr, "");
+    const error = JSON.parse(jsonForeground.stdout).error;
+    assert.equal(error.code, "USAGE_INVALID");
+    assert.match(error.remedy, /omit --json .* or omit --foreground/);
+    const plainForeground = run([...foreground, "--plain"]);
+    assert.equal(plainForeground.status, 1, plainForeground.stdout + plainForeground.stderr);
+    assert.match(`${plainForeground.stdout}\n${plainForeground.stderr}`.replace(/\s+/g, " "), /omit --plain .* or omit --foreground/);
+
+    const feedbackHelp = run(["feedback", "--help"]);
+    assert.equal(feedbackHelp.status, 0, feedbackHelp.stderr);
+    const feedbackUsage = feedbackHelp.stdout.split("Usage\n")[1]?.split("\n\n")[0] ?? "";
+    assert.match(feedbackUsage, /--key-file\s+<private-file>/);
+    assert.doesNotMatch(feedbackHelp.stdout, /--key(?!-file)\b/);
+    const legacyKey = run(["feedback", "Example report", "--key", "private-placeholder", "--json"]);
+    assert.equal(legacyKey.status, 1, legacyKey.stderr);
+    assert.equal(legacyKey.stderr, "");
+    const keyError = JSON.parse(legacyKey.stdout).error;
+    assert.equal(keyError.code, "USAGE_INVALID");
+    assert.match(keyError.message, /no request was made/);
+    assert.doesNotMatch(legacyKey.stdout, /private-placeholder/);
+
     const sync = run(["sync", "--json"]);
     assert.equal(sync.status, 0, sync.stdout + sync.stderr);
     assert.deepEqual(JSON.parse(sync.stdout).result.accounts, []);
@@ -93,6 +125,19 @@ const noop = async (): Promise<void> => {};
     assert.match(diagnostic ?? "", /invalid scripted checkpoint 'approve-plan' in \.\/bad-results\.json: status must be "resolved" or "expired"/);
     assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
     assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
+
+    for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
+      writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));
+      const invalid = run(["run", "simulate", "workflow.cotal.js", "--handler", "bad-clock.json", "--json"]);
+      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+      const report = JSON.parse(invalid.stdout);
+      assert.equal(report.outcome, "refused");
+      assert.equal(report.error.code, "SCHEMA_INVALID");
+      assert.equal(report.target.file, "bad-clock.json");
+      assert.ok(report.error.message.includes(`clock.${field}`));
+      assert.ok(report.error.message.includes('"5m"'));
+      assert.equal(report.result, null);
+    }
 
     writeFileSync(join(root, "wait.js"), `
 const builder = await spawn("builder");
@@ -298,6 +343,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     run: noop,
   };
   assert.equal(commandUsage(gen), "cotal t4 <name> [--out <path>] [--force] [-f|--file <value>]");
+  assert.equal(commandUsage({ ...gen, flagNames: ["out", "file"] }), "cotal t4 <name> [--out <path>] [-f|--file <value>]");
   const over: Command = { ...gen, usage: "custom usage" };
   assert.equal(commandUsage(over), "custom usage");
 }
@@ -590,6 +636,33 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.equal(withPairedCallerRemedy(denied, "manager", { space: "s" }).remedy, undefined, "a refused manager call names no caller file, because the operator instrument already requests the manager");
   const unknown = endpointFailure(new Error("lost"), { space: "s" }, true);
   assert.equal(withPairedCallerRemedy(unknown, "com.example.reviews", { space: "s" }), unknown, "only a refusal gains the caller-file remedy");
+}
+
+{
+  const { EP_ENVELOPE_V } = await import("@cotal-ai/core");
+  const { endpointFailure, NativeReplyError } = await import("../src/lib/endpoint-errors.js");
+  const detail = { kind: "ai.cotal.manager.absolute-directory-required" };
+  const remedy = "pass an absolute path on the manager host";
+  const message = "arbitrary remote diagnostic with an argument value";
+  const classify = (endpoint: string, command: string, options: {
+    detail?: boolean; outcome?: "not-executed" | "executed"; phase?: "invocation" | "target-inspection"; code?: string;
+  } = {}) => endpointFailure(new NativeReplyError({
+    reply: { v: EP_ENVELOPE_V, id: "request", ok: false, error: {
+      code: options.code ?? "failed-precondition", message, ...(options.detail === false ? {} : { details: [detail] }), outcome: options.outcome,
+    } }, responder: { endpoint, instanceId: "instance", epoch: 1 },
+  }, options.phase ?? "invocation"), { endpoint, command }, true);
+  const refused = classify("manager", "resolve-cwd", { outcome: "not-executed" });
+  assert.equal(refused.remedy, remedy);
+  assert.ok(!JSON.stringify(refused.detail()).includes(message));
+  assert.equal(classify("manager", "resolve-cwd", { detail: false, outcome: "not-executed" }).remedy, undefined);
+  assert.equal(classify("manager", "resolve-cwd", { outcome: "not-executed", phase: "target-inspection" }).remedy, undefined);
+  assert.equal(classify("manager", "resolve-cwd", { outcome: "not-executed", code: "permission-denied" }).remedy, undefined);
+  assert.equal(classify("com.example.directory", "resolve-cwd", { outcome: "not-executed" }).remedy, undefined);
+  assert.equal(classify("manager", "spawn", { outcome: "not-executed" }).remedy, undefined);
+  const unknown = classify("manager", "resolve-cwd");
+  assert.equal(unknown.outcome, "unknown");
+  assert.notEqual(unknown.remedy, remedy);
+  assert.equal(classify("manager", "resolve-cwd", { outcome: "executed" }).outcome, "failed");
 }
 
 // --- a contract read no instance answered says so, and names how to start what serves it ----------

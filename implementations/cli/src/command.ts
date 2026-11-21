@@ -61,6 +61,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
@@ -204,7 +205,7 @@ function configFolderRefusal(problem: ConfigFolderProblem): CommandFailure {
  * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
  * which resolves its alias too.
  */
-async function extSeedGate(extCmd: Command | undefined, words: string[], configFolder: ConfigFolderProblem | undefined): Promise<boolean> {
+async function extSeedGate(extCmd: Command | undefined, words: string[], configFolder: ConfigFolderProblem | undefined, startupNotice?: StartupNotice): Promise<boolean> {
   if (extCmd === undefined || !extSeedSubcommand(extCmd, words)) return false;
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
@@ -215,6 +216,7 @@ async function extSeedGate(extCmd: Command | undefined, words: string[], configF
   const parsed = parseOrExit(extCmd, words);
   if (configFolder) failureExit(extCmd, configFolderRefusal(configFolder), false);
   if (parsed.values.repair !== true || parsed.values.reset === true) recoverExtensionPromotion();
+  if (startupNotice) keepStartupNotice(startupNotice);
   await extCmd.run(parsed);
   return true;
 }
@@ -228,15 +230,15 @@ async function extSeedGate(extCmd: Command | undefined, words: string[], configF
  * `COTAL_EXT_SEEDING` nonce + parent PID match the live reconcile lock (a forged marker no longer
  * skips, so it can't bypass the recursive-reconcile guard or the lock).
  */
-function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command): boolean {
+function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command, values?: ParsedArgs["values"]): boolean {
   if (name === "help" || name === "version" || name === "__complete" || name === "completion") return true;
   if (cmd && readsOnly(cmd, sub)) return true;
   if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
   if (name === "sync") return true; // refreshing account catalogs does not install connectors
-  if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
+  if (name === "use") return true; // selecting or showing the current space does not launch or install connectors
   if (name === "meshes" && (sub === undefined || sub === "list")) return true;
-  if (name === "config" && sub === "set") return true; // saving a preference does not require installing connectors
+  if (name === "config" && (sub === "set" || sub === "unset")) return true; // editing a preference does not require installing connectors
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
   // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
@@ -268,6 +270,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // connector as a side effect of a credential exchange. The seat's env carries no
   // COTAL_SKIP_CONNECTOR_SEED (only an operator-set one is forwarded), so the skip is by name.
   if (name === "history" && sub === "clear") return true; // purge authority does not require installing connectors
+  if (name === "history" && sub === "limit" && values && HISTORY_LIMIT_FLAGS.every((flag) => values[flag] === undefined)) return true;
   if (name === "agent-bearer") return true;
   // `app-identity` is machine-facing too: the Claude connector's local server runs it on every
   // connection, so, like a credential exchange, it must not seed the store under a running connector.
@@ -477,10 +480,17 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const first = metadataPositionals(cmd, rest).positionals[0]?.value;
+      const { positionals } = metadataPositionals(cmd, rest);
+      const first = positionals[0]?.value;
+      let selected: Command | Subcommand = cmd;
+      for (const { value } of positionals) {
+        const sub = findSubcommand(selected, value);
+        if (!sub) break;
+        selected = sub;
+      }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, flagNames, takesOperands);
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -703,8 +713,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (useExtensionOverlay) {
     try {
-      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder)) return;
-      recoverExtensionPromotion();
+      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
+      // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
+      if (builtin?.name !== "topology") recoverExtensionPromotion();
     } catch (e) {
       if (!skipUnreadableConnectorOverlay(e)) {
         if (repeatedLeading) {
@@ -793,7 +804,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
+  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
     // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
     // in its own body leaves the operator-global store as it found it.
     const deferred = cmd?.name === "up";
@@ -805,16 +816,18 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         const refusal = brokerOnly ? seedDowngradeRefusal() : deferredSeedRefusal();
         if (refusal) throw refusal;
         if (!brokerOnly) deferSeedToLaunch();
-      } else await reconcileSeededConnectors();
+      } else await reconcileSeededConnectors(cmd?.name === "setup");
     } catch (e) {
-      // The seed runs before the command, so a command that asked for JSON has not reached its own
-      // failure path. The refusal is the envelope on stdout and no text report, as any later refusal is.
-      if (cmd && asksForJson(cmd, rest)) {
+      // The seed runs before the command reaches its own failure path. A structured command still
+      // reports the same outcome and exit status in every presentation.
+      const sub = parsed?.positionals[0] ?? (cmd && metadataPositionals(cmd, rest).positionals[0]?.value);
+      if (cmd && structured(cmd, sub)) {
         const message = e instanceof Error ? e.message : String(e);
-        const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", message, message.includes("`cotal ext seed --repair`") ? {} : {
-          remedy: "fix that, then run `cotal ext seed --repair`",
-        });
-        failureExit(cmd, failure, true, rest.includes("--plain"));
+        const failure = isCommandFailure(e) ? e : new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", displayRemedy(message),
+          e instanceof SeedChildFailure ? { remedy: displayRemedy("fix that, then run `cotal ext seed --repair`") } : {});
+        const end = rest.indexOf("--");
+        const plain = parsed?.values.plain === true || (!parsed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain"));
+        failureExit(cmd, failure, asksForJson(cmd, rest), plain, undefined, rest);
       }
       seedRefusal(e);
       process.exit(1);

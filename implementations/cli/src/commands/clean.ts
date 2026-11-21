@@ -166,7 +166,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
         });
       rollbackRestoreWithBroker(lock, { unrecordedOwnersDead: attemptProcessesGone(root) });
       console.log(c.green(`✓ rolled back stale restore attempt ${values.attempt}`));
-      console.log(c.dim("  the preserved source is back at ready; resume with `cotal up` or retry `cotal up --restore`"));
+      console.log(c.dim("  the preserved source is back at ready; resume with `cotal up` or retry with `cotal up --restore <dir>` (replace <dir> with the backup directory and repeat any restore options you used)"));
     } finally {
       releaseMaintenanceLock(lock);
     }

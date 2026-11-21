@@ -16,7 +16,15 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
     return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; \`cotal service${space}\` lists this space's services`, cause: error });
   }
   const code = nativeEndpointRefusal(native?.code);
-  if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", { target, native, cause: error });
+  if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) {
+    const absoluteDirectoryRequired = mayHaveInvoked && native?.code === "failed-precondition"
+      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && (target.command === "resolve-cwd" || target.command === "list-dir")
+      && error instanceof NativeReplyError && error.phase === "invocation"
+      && error.response.reply.error?.details?.some((detail) => detail.kind === "ai.cotal.manager.absolute-directory-required");
+    return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", {
+      target, native, cause: error, ...(absoluteDirectoryRequired ? { remedy: "pass an absolute path on the manager host" } : {}),
+    });
+  }
   if (!mayHaveInvoked || native?.outcome === "executed") return new CommandFailure("failed", "OPERATION_FAILED", mayHaveInvoked ? "the native endpoint reported an executed failure" : "the endpoint contract read did not complete", { target, native, cause: error });
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", "the invocation outcome is not confirmed; no blind retry was made", { target, native, remedy: "inspect the original endpoint and request before another invocation", cause: error });
 }

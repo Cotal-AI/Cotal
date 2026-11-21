@@ -15,6 +15,8 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
+import { readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { displayCmd } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -405,9 +407,12 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
   try { lock = { ...acquireMaintenanceLock(root, operation ? { operation } : {}), createdDirectories: created }; }
   catch (error) {
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
-    let holder: number | undefined;
-    try { holder = (decodeLocalJson(readLocalRecordSource(paths.lock, 64 * 1024) ?? Buffer.from("null")) as { owner?: { pid?: unknown } } | null)?.owner?.pid as number | undefined; } catch { holder = undefined; }
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${Number.isSafeInteger(holder) ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(Number.isSafeInteger(holder) ? { holderPid: holder } : {}) }, remedy: "run the command again after that operation exits; a foreground `cotal up` holds the root only while it starts" });
+    const held = readMaintenanceLockHolder(root);
+    const holder = held?.owner.pid;
+    const remedy = held?.operation === "foreground up"
+      ? `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`
+      : "run the command again after that operation finishes";
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${holder !== undefined ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(holder !== undefined ? { holderPid: holder } : {}) }, remedy });
   }
   // An exit through process.exit skips the caller's release, so the lock is checked here as well.
   process.once("exit", (code) => {
@@ -1010,12 +1015,13 @@ export function recordedProcessesUnder(root: string, spaces: readonly string[]):
   return found;
 }
 
-/** No member of this stack ever launched: no member row names an instance or a replacement, and every
- *  instance record of a stack definition in its space failed before its child was spawned, as a
- *  broker start refused at an address another program holds does. No process of it runs and no
- *  broker of it wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
+/** No member of this stack ever launched here. Forget clears retired instance IDs but keeps their
+ *  stopped states. The store pin from a local launch also survives a refused restart, while adoption
+ *  can carry a store pin without a local recovery record. A first start refused before spawning
+ *  pins nothing for the next up and a down has nothing to stop. */
 export function stackNeverStarted(journal: StackJournal): boolean {
-  return journal.members.every((row) => row.instanceId === null && row.replacement === undefined)
+  return !(journal.recovery && journal.broker?.storeIdentity)
+    && journal.members.every((row) => row.instanceId === null && row.replacement === undefined && row.state !== "stopped" && row.state !== "already-stopped")
     && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).every((row) => row.record.value.state === "failed" && row.record.value.process === undefined));
 }
 

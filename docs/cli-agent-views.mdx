@@ -36,6 +36,8 @@ run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks
 harness precedence and physical working directory. It checks the effective name from `--name` or
 persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
 user-auth space. An invalid effective name is refused with `USAGE_INVALID` (exit 1).
+On a resolved open or user-auth space, a direct preview refuses `--expires-in` and `--expires-at`
+with `USAGE_INVALID` (exit 1), as the launch does.
 An unknown effective harness is refused with
 `DEPENDENCY_UNAVAILABLE` (exit 2), whether it came from a flag, the persona or a preference.
 Harness names are case-sensitive. Binary, login, model-policy and live authority checks are labeled
@@ -213,8 +215,9 @@ additive ledger; neither row grants permission to stop anything. A fresh summary
 not an additive ownership ledger or evidence that an agent joined, and it does not establish
 current process health. For a fresh summary, `team show <id>` names the recorded root and offers
 `cotal down --space <space> --dry-run`, the preview of the guarded whole-stack stop, with the
-recorded space filled in. `team remove <id>` refuses a fresh boot ID with `CONFLICT` and offers the
-same stop. The summary is not authority to run it.
+recorded space filled in. Both `team remove <id> --dry-run` and `team remove <id> --yes` refuse a
+fresh boot ID with `CONFLICT` and point to `cotal down` and its preview in the recorded root.
+Neither form stops the stack. The summary is not authority to stop it.
 
 
 ### Additive deployment records
@@ -231,9 +234,10 @@ channel-only manifest whose declared cards are all absent and explicitly set
 broker bind changes, access edges, existing cards,
 a changed re-apply, registered broker lists and unresolved prior attempts before an effect.
 A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
-the cards, and its Next says to set `deliveryClass: live` on each card or to create a durable
-channel with `cotal channel set <name> --delivery durable`. `team deploy --dry-run` warns
-`LIVE_DELIVERY_REQUIRED` for the same cards, so the preview says the apply would refuse.
+the cards and asks you to set `deliveryClass: live` on each card. On an open mesh, durable channels
+require a different authenticated mesh with a delivery service. On an authenticated mesh, the
+refusal also points to `cotal channel set <name> --delivery durable` as a separate operation.
+`team deploy --dry-run` warns `LIVE_DELIVERY_REQUIRED` for the same cards and offers the same guidance.
 It selects the exact registered root, single broker address, auth mode and TLS
 requirement, then holds the local maintenance lock. The original user bearer and its deployer and writer
 views must name the same owner and actor. A refused view stops before the
@@ -364,7 +368,8 @@ the address. A later failure keeps its attempt and any started members, reports 
 or unknown outcome and never repeats effects. A failed summary write also keeps the running stack.
 
 `team boot --foreground` holds the stack's lifetime in the terminal. Ctrl-C or SIGTERM invokes the
-same guarded whole-stack stop as bare `cotal down`, without force killing members. Terminal loss
+same guarded whole-stack stop as bare `cotal down`, without force killing members. A stop signal
+during startup lets the start settle before running that stop. Terminal loss
 or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
 it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
 receipt was partial. Foreground apply takes neither JSON nor plain output;
@@ -376,8 +381,10 @@ a dry-run remains a finite preview. It does not establish native apply readiness
 
 A `team boot` in a root whose stack is up, with no `cotal down` since, refuses with
 `LIFECYCLE_BLOCKED`, says the space is already up and starts nothing. Its Next offers
-`cotal team deploy <file>`, which adds the manifest's channels and agents to the running stack, or
-`cotal down` before the boot.
+`cotal service --space <space>` to inspect the recorded stack, or `cotal down --dry-run` to preview
+a stop. After stopping it, run `cotal up` in its root to restart the recorded stack. To add new
+channels or agents, use `cotal team deploy <file>` with a separate manifest that declares only new
+resources.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
 attempted. The manifest's `broker.servers`, `broker.host` and `broker.auth` must match that stack.
 A manifest that differs refuses `CONFLICT` (exit 2) and names each setting that differs with its

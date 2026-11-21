@@ -173,6 +173,8 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
+  retryAtAnotherAddress?(bindHost: string): Promise<string | undefined>;
   /** The root of the folder `up --root` was run from, when it is not this stack's root. */
   invokedRoot?: string;
   /** A fresh team boot's frozen manifest inputs. `seed` replaces `channels` for the broker's native
@@ -535,9 +537,14 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const view: Report = { ...members, sections: [...members.sections, ...listening, ...(result.written.length ? [{ blocks: [{ kind: "fields" as const, rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] : [])] };
     // `down` stops only the stack of the folder it runs in, so from another folder the Next says where.
     const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
+    // The payload limit is fixed at the broker's start, so a bare up cannot add a manager to a
+    // broker-only stack whose limit is below the floor the manager starts on: the Next names the
+    // stop and restart that can, instead of the bare up that would refuse.
+    const brokerPayload = request.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
+    const managerBelowFloor = !managed && brokerPayload !== undefined && brokerPayload < MANAGER_START_PAYLOAD_FLOOR;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
-      managed ? { command: `${displayCmd()} spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `${displayCmd()} up --root ${shellWord(root)}` : `${displayCmd()} up`, description: "Add the manager to this stack" },
+      managed ? { command: `${displayCmd()} spawn --space ${space}`, description: "Launch your default agent" } : managerBelowFloor ? { command: `${displayCmd()} up${elsewhere ? ` --root ${shellWord(root)}` : ""} --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}`, description: "Add the manager: stop the broker first, then restart it with a payload it can start on" } : { command: elsewhere ? `${displayCmd()} up --root ${shellWord(root)}` : `${displayCmd()} up`, description: "Add the manager to this stack" },
       { command: `${displayCmd()} down`, description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
@@ -750,6 +757,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   const brokerLogFile = recordedBroker ? recordedBroker.logFile : request.logFile ?? unstarted?.broker?.logFile;
   const brokerLogfileSizeLimit = recordedBroker ? recordedBroker.logfileSizeLimit : request.logfileSizeLimit ?? unstarted?.broker?.logfileSizeLimit;
   const brokerLogfileMaxNum = recordedBroker ? recordedBroker.logfileMaxNum : request.logfileMaxNum ?? unstarted?.broker?.logfileMaxNum;
+  if (brokerLogFile === undefined && (request.logfileSizeLimit !== undefined || request.logfileMaxNum !== undefined))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--logfile-size-limit and --logfile-max-num require --log-file");
   // The manager's session ceiling is kept by its saved definition, so a bare up starts it with the
   // ceiling an earlier up set rather than the default. An explicit --max-sessions replaces it only
   // once the manager is stopped; a live refresh must not silently discard the requested ceiling.
@@ -773,7 +782,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
     throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode) });
-  const mode: StackMode = previous?.journal.mode ?? request.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
+  // An adopted journal has no started members here, but a bare up still uses its recorded mode.
+  const mode: StackMode = previous?.journal.mode ?? request.mode ?? unstarted?.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
   if (mode === "open" && holdsBrokerAccount(root))
     throw new CommandFailure("refused", "CONFLICT", "this root holds a broker account; an open stack does not bypass its recorded authorization", { target: { root, space } });
   if (mode === "user") assertUserStackTransport(previous?.journal.server ?? request.server, request.transport.kind === "tls-required");
@@ -965,11 +975,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
       const local = holder && (holder.origin === undefined || holder.origin === "up");
       const stopHolder = holder ? local ? `stop space ${holder.space} with \`cotal down\` from ${holder.root}` : `stop the broker of space ${holder.space}` : `stop what answers at ${server}`;
-      const address = new URL(server);
+      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(brokerHost ?? brokerListenAddress(server).host) : undefined;
       throw new CommandFailure("refused", "CONFLICT", `something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : ""}, without this stack's broker instance; it was not adopted or stopped`, {
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
-          ? `start this stack at another address with \`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${stopHolder} and run \`${displayCmd()} up\` again`
+          ? `${retry !== undefined ? `${retry}, or ` : ""}${stopHolder} and retry this start`
           : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
@@ -977,13 +987,14 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // too, before any broker instance is recorded, so a first start names another address.
     const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
     if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
-      const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
+      const { host: dialHost, port } = brokerListenAddress(server);
       const host = brokerHost ?? dialHost;
       const { says, frees } = await addressHolder("the stack's broker address", host, port);
+      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(host) : undefined;
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined
-          ? `start this stack at another address with \`${displayCmd()} up${brokerHost === undefined ? "" : ` --host ${shellWord(brokerHost)}`} --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and retry this start`
+          ? `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`
           : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }

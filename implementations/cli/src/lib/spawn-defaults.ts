@@ -1,4 +1,6 @@
+import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { agentFilePath, personaDir } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
@@ -13,6 +15,15 @@ export function spawnPersona(configFlag: string | undefined, positionals: readon
   return winner.source === "default" ? { ref: winner.value } : { ref: winner.value, from: describeLayer(winner) };
 }
 
+/** A positional catalog entry takes precedence over a same-named legacy path. */
+export function directPersonaPath(root: string, ref: string, positional: boolean): string {
+  if (positional && ref.endsWith(".md") && !isAbsolute(ref) && !/[\\/]/.test(ref)) {
+    const catalogPath = join(personaDir(root), `${ref}.md`);
+    if (lstatSync(catalogPath, { throwIfNoEntry: false })) return catalogPath;
+  }
+  return agentFilePath(root, ref);
+}
+
 /** The harness a launch falls back to when neither `--agent` nor the persona names one, as this
  *  caller sets it: `COTAL_DEFAULT_AGENT`, then the space's saved value, then the user's. Undefined
  *  when none is set, so a manager applies its own default before the product's. */
@@ -24,6 +35,12 @@ export function callerHarness(space: string): string | undefined {
 /** Whether a spawn runs through a manager: only when the caller asks for one with `--detach` or
  *  `--on`. Any other spawn runs the application in this terminal, on every kind of mesh. */
 export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
+
+/** Only a static mesh's seat carries an issuance whose expiry the caller sets. */
+export function checkSpawnExpiryTarget(values: { "expires-in"?: string; "expires-at"?: string }, target: Pick<MeshTarget, "space" | "mode" | "auth">): void {
+  if ((values["expires-in"] !== undefined || values["expires-at"] !== undefined) && (target.mode === "user" || !target.auth))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of a seat's issued credential on a static mesh, and mesh "${target.space}" is ${target.mode === "user" ? "a user-auth mesh, where the seat's bearer comes from your login" : "open and mints no credential"}`, { remedy: "drop the flag" });
+}
 
 /** The refusal for a harness with no installed connector, naming the package when it is official. */
 export function missingConnector(name: string, target: object): CommandFailure {

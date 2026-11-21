@@ -36,7 +36,7 @@ const BACKUP_STAGES = {
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
   // A full disk names its cause and directory, what was and was not written, and a retry.
-  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run `cotal backup create [^\n]*artifact-nospace` again/,
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready/,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -48,6 +48,7 @@ const journalState = (root: string): string | undefined => {
 interface ClaimedJournal {
   state: string;
   restore?: { attemptId: string };
+  listenerProof?: unknown;
   claim?: { attemptId?: string; deadline: string; owners: unknown[]; coordinator: { startedAt: string } };
 }
 
@@ -270,8 +271,9 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
-      const destination = join(root, `artifact-${stage}`);
-      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination], {
+      const noSpace = stage === "nospace";
+      const destination = join(root, noSpace ? "disk`full\u2026 artifact-nospace" : `artifact-${stage}`);
+      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination, ...(noSpace ? ["--plain"] : [])], {
         cwd: root,
         env: { ...env, COTAL_SMOKE_FAIL_BACKUP_STAGE: stage },
         encoding: "utf8",
@@ -279,9 +281,10 @@ async function backupStageFaultScenario(): Promise<void> {
       });
       assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
-      // The cleanup completed, so the next step is the same create, not a recovery.
-      assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
-      if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
+      if (!noSpace) {
+        assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
+        assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
+      }
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
       assert.deepEqual(attemptResidue(root), [], `${stage} fault leaves no clone, config, or broker residue in the attempts dir`);
@@ -289,8 +292,19 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.equal(sourceAfter.dev, sourceBefore.dev, `${stage} fault leaves the preserved source device unchanged`);
       assert.equal(sourceAfter.ino, sourceBefore.ino, `${stage} fault leaves the preserved source inode unchanged`);
 
-      // The retry is the point: a faulted attempt must not poison its own destination path.
-      must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      if (noSpace) {
+        assert.equal(faulted.status, 5, `disk-full failure exits 5\n${faulted.stderr}`);
+        const next = faulted.stderr.split("\nNext\n")[1] ?? "";
+        const retry = /then run (`{2,})(cotal backup create .+?)\1 again/.exec(next)?.[2];
+        assert.ok(retry, `Next gives a copyable retry after freeing space\n${faulted.stderr}`);
+        must("paste the disk-full retry", spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }\n${retry}`], {
+          cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
+        }));
+        must("verify at the original disk-full destination", run("backup", "verify", destination));
+        assert.match(next, /free space on that disk/);
+      } else {
+        must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      }
       assertValidManifest(destination, space, "full");
       assert.equal(journalState(root), "ready", `${stage} retry leaves the cut ready`);
       assert.deepEqual(attemptResidue(root), [], `${stage} retry leaves no attempt residue`);
@@ -505,8 +519,51 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(/Next\s+cotal up\s+Resume the space from its preserved state\s+cotal backup restore <directory>\s+Try the restore again/.test(recovered.stdout), `the recovery receipt names resume and a retried restore as its next steps\n${recovered.stdout}`);
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
-    must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down", "--yes"));
+    // Send a real SIGTERM after publishing commit intent. Node can dispatch it only after the
+    // synchronous preparation returns, so it exercises the handoff without racing a journal poll.
+    const signalAtCommit = join(root, "signal-at-commit.cjs");
+    const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    writeFileSync(signalAtCommit, `
+      const fs = require("node:fs");
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        rename(from, to);
+        if (to !== ${JSON.stringify(journalPath)}) return;
+        const journal = JSON.parse(fs.readFileSync(to, "utf8"));
+        if (journal.state === "commit-intent" && !journal.listenerProof) {
+          process.kill(process.pid, "SIGTERM");
+        }
+      };
+      require("node:module").syncBuiltinESMExports();
+    `);
+    const committed = spawnSync(process.execPath,
+      ["--require", signalAtCommit, "--import", tsxImport, cliPath, "up", "--foreground", "--restore", artifact, "--store-dir", join(root, "new store")],
+      { cwd: root, env, encoding: "utf8", timeout: 240_000 });
+    const intent = readJournal(root);
+    assert.equal(intent?.state, "commit-intent", "SIGTERM leaves commit intent intact");
+    assert.equal(intent.listenerProof, undefined, "the signal precedes the listener bind");
+    assert.ok(intent.restore);
+    assert.equal(committed.status, 143, `SIGTERM exits 143\n${committed.stderr}`);
+    const launch = /^\s{2}(.+) <command> \[options\]$/m.exec(run().stdout)?.[1];
+    assert.ok(launch);
+    assert.ok(committed.stderr.includes(`Interrupted: restore attempt ${intent.restore.attemptId} committed before it stopped`) && committed.stderr.includes(`bare \`${launch} up\``), committed.stderr);
+    assert.doesNotMatch(committed.stderr, /backup recover/);
+    const resumed = spawn(process.execPath, ["--import", tsxImport, cliPath, "up"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let resumeErrors = "";
+    resumed.stderr!.on("data", (chunk: Buffer) => { resumeErrors += chunk.toString(); });
+    const resumedExit = new Promise<number | null>((resolveExit) => resumed.once("close", resolveExit));
+    const timeout = setTimeout(() => resumed.kill("SIGKILL"), 120_000);
+    try {
+      while (journalState(root) !== "active" && resumed.exitCode === null && resumed.signalCode === null) await sleep(50);
+      assert.equal(journalState(root), "active", `bare up continues the committed restore\n${resumeErrors}`);
+      assert.equal(readJournal(root)?.restore?.attemptId, intent.restore.attemptId);
+      must("down", run("down", "--yes"));
+      assert.equal(await resumedExit, 0, resumeErrors);
+    } finally {
+      clearTimeout(timeout);
+      resumed.kill("SIGKILL");
+      await resumedExit;
+    }
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });

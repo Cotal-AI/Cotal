@@ -215,6 +215,14 @@ try {
     startHelp.status === 0 && out(startHelp).includes("cotal manager start [--runtime <name>]") && out(startHelp).includes('(default: "pty")') && out(startHelp).includes("--roster"), out(startHelp));
   check("  and none of service add's definition flags", !/--preset\b|--file\b|--new-instance\b|--exec\b/.test(out(startHelp)), out(startHelp));
 
+  for (const args of [["manager", "install", "--help"], ["help", "manager", "install"]]) {
+    const installHelp = cotal(args);
+    check(`cotal ${args.join(" ")} explains that Manager unit installation is unsupported and shows the foreground command`,
+      installHelp.status === 0 && out(installHelp).includes("installing a manager unit is not supported")
+        && out(installHelp).includes("cotal manager start --foreground") && !out(installHelp).includes("--dry-run")
+        && !out(installHelp).includes("start it at login"), out(installHelp));
+  }
+
   const status = cotal(["manager", "status", "--space", SPACE]);
   check("cotal manager status with no manager started says so and names manager start",
     status.status === 2 && out(status).includes("TARGET_NOT_FOUND") && out(status).includes("no manager has been started in space servicecommands") && out(status).includes("cotal manager start"), out(status));
@@ -299,8 +307,8 @@ try {
   const savedM1 = () => JSON.stringify(serviceDefinitionStore(SPACE).read("m1"));
   const beforePreview = savedM1();
   const preview = cotal(["manager", "start", "--space", SPACE, "--runtime", "absent", "--dry-run"]);
-  check("manager start --runtime absent --dry-run previews m1 and saves nothing",
-    preview.status === 0 && preview.stderr.includes("manager in space servicecommands is the saved service m1") && !out(preview).includes("again with the new") && savedM1() === beforePreview, { preview: out(preview), before: beforePreview, after: savedM1() });
+  check("manager start --runtime absent --dry-run refuses the unknown runtime and leaves m1 unchanged",
+    preview.status === 2 && out(preview).includes("DEPENDENCY_UNAVAILABLE") && out(preview).includes('unknown runtime "absent"') && savedM1() === beforePreview, { preview: out(preview), before: beforePreview, after: savedM1() });
   const removed = cotal(["service", "remove", "manager", "--space", SPACE, "--yes", "--json"]);
   let removedName: unknown;
   try { removedName = (JSON.parse(removed.stdout) as { result: { kind: string; name: string } }).result; } catch { removedName = out(removed); }

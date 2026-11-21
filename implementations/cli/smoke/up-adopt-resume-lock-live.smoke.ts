@@ -241,6 +241,16 @@ try {
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
   ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
 
+  const restoreCut = runSync(["down", "--preserve-state"]);
+  ok("the resumed mesh can be preserved again", restoreCut.status === 0, `${restoreCut.stdout}${restoreCut.stderr}`);
+  const artifact = join(root, "cap-backup");
+  const backup = runSync(["backup", "create", artifact]);
+  ok("the preserved mesh can be backed up", backup.status === 0, `${backup.stdout}${backup.stderr}`);
+  const restored = runSync(["backup", "restore", artifact]);
+  ok("canonical backup restore succeeds without a cap flag", restored.status === 0, `${restored.stdout}${restored.stderr}`);
+  ok("backup restore renders the preserved store cap", openConfJetStream() === cappedBlock, openConfJetStream());
+  ok("the restored mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
+
   runSync(["down", "--yes"]);
   console.log(`\nUP ADOPT RESUME LOCK SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

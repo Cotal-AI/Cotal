@@ -10,7 +10,9 @@
  * follow 200 ms after both first reads, as a fresh 2.2.5 loads a location's lists.
  *
  * Covered: the owner's session lists OpenCode's commands, then its skills by id, with no `path` or
- * `content` on the wire, and the first list is complete. `command` answers an id at once, and
+ * `content` on the wire, and the first list is complete. The fake also lists the commands the
+ * connector's own launch config injects, as 2.2.5 does, and the reply leaves them out; one sent
+ * anyway ends `refused` with `failed-precondition` and never reaches OpenCode. `command` answers an id at once, and
  * `command-state` reads how far each command got. A listed command and a listed skill each run under
  * that name as an idle turn of their own; the first turn carries the persona's `system` field when
  * that turn is a command; a command sent while a turn runs is queued and can be cancelled, and after
@@ -20,7 +22,10 @@
  * without starting a turn reads `started` and frees the session 5 s after OpenCode answered, and that
  * bound never frees a later submission; a POST OpenCode answers only after 12 s reads `taken` past
  * 10 s, and `started` once OpenCode answered with the plugin still waiting, so the command runs; and
- * the broker refuses a sibling agent of the same owner.
+ * the broker refuses a sibling agent of the same owner. A command queued behind a turn that never
+ * ends stays queued until the owner's `interrupt`, which POSTs `/api/session/:id/interrupt` once and
+ * answers `interrupted`; OpenCode's `session.execution.interrupted` then frees the session, and the
+ * command runs. With no turn running, `interrupt` answers `idle`.
  *
  * Run: pnpm smoke:opencode2-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -41,6 +46,7 @@ import {
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver } from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { opencodeConnector } from "../src/extension.js";
 import { bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
 
 const { check, finish } = createSuite();
@@ -97,6 +103,13 @@ const COMMANDS = [
   { name: "has space" },
   { name: "sub/nested", description: "a nested command" },
 ];
+// The commands the connector's own launch adds through OPENCODE_CONFIG_CONTENT, which OpenCode then
+// lists at `GET /api/command` beside its own (measured on 2.2.5): `/reconnect` today.
+const launch = opencodeConnector.buildLaunch({ space: "launch-config", name: "cody", events: false });
+for (const a of launch.artifacts ?? []) rmSync(a, { recursive: true, force: true });
+const INJECTED = Object.entries((JSON.parse(launch.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as { command?: Record<string, { description?: string }> }).command ?? {})
+  .map(([name, c]) => ({ name, description: c.description }));
+COMMANDS.push(...INJECTED);
 const SKILLS = [
   { id: "opencode", name: "OpenCode", description: "Use this skill for any question about OpenCode itself.", path: "/builtin/opencode.md", content: "SKILL-BODY-OPENCODE" },
   { id: "demo-skill", name: "demo-skill", description: "A demo skill", autoinvoke: true, path: "/home/someone/.config/opencode/skill/demo-skill/SKILL.md", content: "SKILL-BODY-DEMO" },
@@ -112,6 +125,7 @@ const PERSONA = "You are Cody, a careful reviewer who explains every finding.";
 let mode: "ok" | "bad-text" | "crash" | "stall" = "ok";
 let slow: { answered: boolean; clientLeft: boolean } | undefined;
 let failSkills = false;
+let turnRunning = false; // a turn the fake holds open, which only an interrupt ends
 const calls: string[] = [];
 const bodies: Record<string, unknown>[] = [];
 const unexpected: string[] = [];
@@ -147,6 +161,15 @@ const oc = createServer((req, res) => {
         }, 12_000);
       }
       return void res.writeHead(204).end();
+    }
+    if (req.method === "POST" && req.url === `/api/session/${SID}/interrupt`) {
+      // As 2.2.5 answers: `{ interrupted }`, and a stopped execution ends as `session.execution.interrupted`.
+      calls.push("interrupt");
+      const was = turnRunning;
+      turnRunning = false;
+      json(res, 200, { interrupted: was });
+      if (was) setTimeout(() => feed("session.execution.interrupted"), 50);
+      return;
     }
     if (req.method === "POST" && req.url === `/api/session/${SID}/prompt`) {
       const skill = body.skills?.[0]?.id;
@@ -258,8 +281,8 @@ try {
     { name: "opencode", target: "skill", description: "Use this skill for any question about OpenCode itself." },
     { name: "demo-skill", target: "skill", description: "A demo skill" },
   ];
-  check("the first commands reply waits for OpenCode's load events, under 2 s, and lists its 4 nameable commands, then its 2 skills by id",
-    same(catalog, { supported: true, commands: expected }) && listTook < 2000, { listTook, catalog: catalog ?? verdict(listed) });
+  check(`the first commands reply waits for OpenCode's load events, under 2 s, and lists its 4 nameable commands, then its 2 skills by id, leaving out the ${INJECTED.length} the launch injects (${INJECTED.map((c) => `/${c.name}`).join(", ")})`,
+    INJECTED.length === 1 && same(catalog, { supported: true, commands: expected }) && listTook < 2000, { listTook, injected: INJECTED, catalog: catalog ?? verdict(listed) });
   const n = `ibx${randomUUID().replace(/-/g, "")}`;
   const raw = await connect({ servers, name: n, inboxPrefix: `_INBOX_${n}`, maxReconnectAttempts: 0, authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(await bearer(W.web))] });
   stops.push(() => raw.close());
@@ -308,6 +331,10 @@ try {
     [skillState.label, calls, bodies[2]]);
   await runAndEndTurn();
 
+  const injected = await Promise.all(INJECTED.map((c) => run({ target: "command", name: c.name })));
+  check(`a command the launch injects, sent anyway, is accepted and ends refused, failed-precondition, and OpenCode never got it: ${injected.length} of ${INJECTED.length}`,
+    injected.length === 1 && injected.every((r) => r.verdict === "ok" && r.label === "refused/failed-precondition" && message(r.state).includes("terminal"))
+    && !calls.some((c) => INJECTED.some((i) => c === `command ${i.name}`)), { injected, calls });
   const before = calls.length;
   const unknownCommand = await run({ target: "command", name: "nope" });
   const unknownSkill = await run({ target: "skill", name: "nope" });
@@ -357,6 +384,27 @@ try {
   await runAndEndTurn();
   await until(() => calls.length > held + 1);
   await runAndEndTurn();
+
+  {
+    const beforeHang = calls.length;
+    feed("session.execution.started");
+    turnRunning = true;
+    const stuck = await queue({ target: "command", name: "review" });
+    await sleep(6000);
+    const behind = (await readState(stuck.id)).label;
+    check("a command sent while a turn runs that never ends still reads queued 6 s later, and OpenCode got nothing",
+      stuck.verdict === "ok" && behind === "queued" && calls.length === beforeHang, [stuck.verdict, behind, calls.slice(beforeHang)]);
+    const stop = await call(webEp, "interrupt");
+    const freed = await settle(stuck.id);
+    check("the owner's interrupt answers interrupted after exactly 1 POST /interrupt, and the queued command then runs: it reads started",
+      stop.ok && stop.value.ok && same(stop.value.data, { state: "interrupted" }) && freed.label === "started" && same(calls.slice(beforeHang), ["interrupt", "command review"]),
+      [verdict(stop), stop.ok && stop.value.ok ? stop.value.data : undefined, freed.label, calls.slice(beforeHang)]);
+    await runAndEndTurn();
+    const idle = await call(webEp, "interrupt");
+    check("with no turn running, interrupt asks OpenCode once and answers idle",
+      idle.ok && idle.value.ok && same(idle.value.data, { state: "idle" }) && same(calls.slice(beforeHang), ["interrupt", "command review", "interrupt"]),
+      [verdict(idle), calls.slice(beforeHang)]);
+  }
 
   mode = "stall";
   const beforeStall = calls.length;

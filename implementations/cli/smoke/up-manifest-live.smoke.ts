@@ -103,7 +103,15 @@ try {
     && preview.stdout.includes(`Broker log file: ${JSON.stringify(logFile)}`)
     && preview.stdout.includes("Broker log rotation size limit: 1048576 bytes")
     && preview.stdout.includes("Maximum broker log files: 3"), preview);
-  ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
+
+  const unavailableArgs = ["up", "-f", manifest, "--server", SERVER, "--runtime", "example-uninstalled-runtime"];
+  const unavailablePreview = cli(...unavailableArgs, "--dry-run");
+  const unavailableApply = cli(...unavailableArgs);
+  ok("an unavailable runtime refuses preview and apply with the same dependency diagnosis",
+    unavailablePreview.status === 2 && unavailableApply.status === 2 && unavailablePreview.stdout === ""
+    && unavailablePreview.stderr === unavailableApply.stderr && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(unavailablePreview.stderr)
+    && unavailablePreview.stderr.includes('unknown runtime "example-uninstalled-runtime"'), { unavailablePreview, unavailableApply });
+  ok("the refusals and preview started nothing and created no records or log", !await portOpen(PORT) && !await portOpen(DECOY_PORT) && readdirSync(join(root, ".cotal")).length === 0 && !existsSync(logFile));
 
   const noLog = join(manifestDir, "no-log.yaml");
   writeFileSync(noLog, readFileSync(manifest, "utf8").replace(', logFile: "./broker.log"', ""));
@@ -146,7 +154,7 @@ try {
   //    the broker), naming the mesh as running and the routes that change it.
   const again = cli("up", "-f", manifest, "--server", SERVER);
   ok("up -f refuses when this folder's mesh is already running", new RegExp(`mesh "${SPACE}" is already running at .* from this folder`).test(again.stderr) && again.status === 1, { status: again.status, stderr: again.stderr });
-  ok("...and names team deploy and down before another up -f", again.stderr.includes(`cotal team deploy ${manifest}`) && again.stderr.includes(`cotal up -f ${manifest}`), again.stderr);
+  ok("...and names down before retrying instead of deploying the same manifest", again.stderr.includes("stop it with `cotal down`, then retry your original command") && !again.stderr.includes("cotal team deploy"), again.stderr);
 
   // 5) down tears the mesh down + clears the run dir — including the manager (nothing orphaned).
   //    `cotal down` now awaits real exit; keep a backstop poll keyed on the EXACT manager pid

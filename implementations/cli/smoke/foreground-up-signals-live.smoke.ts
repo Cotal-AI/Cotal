@@ -5,7 +5,8 @@
  * only its pinned manager before natural capability publication and always resumes it for cleanup.
  * A manager killed before readiness, without a stop request, must still report a degraded startup.
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
- * and again as it writes its start receipt, and another cuts a ready one's stop as a closed terminal
+ * and again as it writes its start receipt. A foreground `team boot` gets SIGTERM at the broker's
+ * readiness announcement. Another cell cuts a ready stack's stop as a closed terminal
  * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
@@ -58,16 +59,27 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; externalDown?: "named" | "folder" }): Promise<boolean> {
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, options.externalDown === "folder" ? name : "mesh");
-  for (const p of [root, home, mesh, join(mesh, ".cotal"), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  for (const p of [root, home, mesh, ...(options.nativeLog ? [] : [join(mesh, ".cotal")]), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = options.nativeLog ? undefined : recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
-  const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true });
+  const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true, throwIfNoEntry: false });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = options.externalDown === "folder" ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : ["--open", "--no-manager"])];
+  const logFile = join(mesh, "broker.log");
+  if (options.repairDelivery) {
+    // Make the spawn suggestion available without installing or launching a harness.
+    const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
+    mkdirSync(extensions, { recursive: true, mode: 0o700 });
+    writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
+      pkg: "@fixture/status", version: "1.0.0", spec: "@fixture/status@1.0.0", commands: [],
+      provides: [{ kind: "connector", name: "status-fixture" }],
+      connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
+    }] }), { mode: 0o600 });
+  }
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -95,6 +107,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       // The auth cell deliberately interrupts earlier at the natural manager birth record.
       return options.auth ? token(managerPath) !== undefined : token(brokerPath) !== undefined && existsSync(join(home, "machine", "meshes", `space.${spaceKey(space)}.json`)) && await portOpen(port);
     }, 90_000, () => err.slice(-3000), options.refusal || options.managerCrash ? 2 : 20);
+    if (options.nativeLog) {
+      const config = readFileSync(join(mesh, ".cotal/server-open.conf"), "utf8");
+      assert.ok(config.includes(`log_file: ${JSON.stringify(logFile)}`) && config.includes("logfile_size_limit: 1048576"), "fresh foreground config contains native logging and rotation"); passed++;
+      assert.equal(statSync(logFile).mode & 0o777, 0o600, "foreground native log is owner-private"); passed++;
+      assert.match(readFileSync(logFile, "utf8"), /Server is ready/, "the broker writes readiness to its native log"); passed++;
+    }
     if (options.managerCrash) {
       const manager = token(managerPath); assert.ok(manager && live(manager));
       assert.equal(existsSync(capabilityPath), false, "owned manager has not published readiness before the crash");
@@ -113,11 +131,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         console.log(`PASS foreground-up-signals ${name}: manager exit during an interrupted startup is not reported as degradation`);
         return true;
       }
-      await until(() => /control plane degraded:.*exited before it came up/.test(err), 20_000, () => err.slice(-3000));
+      // The consequence is the last line of the degraded notice on stderr.
+      await until(() => err.includes("Spawn and retirement require a functioning control plane.\n"), 20_000, () => err.slice(-3000));
       assert.equal(live(manager), false, "the failed manager's recorded birth is gone"); passed++;
       assert.equal(state.exited, false, "a genuine startup failure does not masquerade as an operator stop"); passed++;
       assert.equal(await portOpen(port), true, "the degraded stack's broker remains running"); passed++;
-      assert.match(err, /Spawn and retirement require a functioning control plane/); passed++;
+      assert.match(err, /control plane degraded:.*exited before it came up/); passed++;
       console.log(`PASS foreground-up-signals ${name}: genuine manager startup failure reported before any stop request`);
       return true;
     }
@@ -131,6 +150,11 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       refusalBoundary = !existsSync(capabilityPath);
       writeFileSync(join(root, "suspension.json"), JSON.stringify({ manager, naturallyAbsentCapability: refusalBoundary }), { mode: 0o600 });
       if (refusalBoundary) {
+        const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, args.slice(3));
+        assert.equal(second.code, 2, second.out + second.err); passed++;
+        assert.match(second.err, /LIFECYCLE_BLOCKED/); passed++;
+        assert.match(second.err.replace(/\s+/g, " "), /the other foreground terminal keeps the stack once startup finishes.* status`/); passed++;
+        assert.doesNotMatch(second.err, /run the command again/); passed++;
         const retained = [token(brokerPath), token(deliveryPath), manager];
         assert.ok(retained.every((row) => row && live(row)), "private broker/delivery/manager births live before refusal");
         refusalBirths = retained as ProcessIdentityRecord[];
@@ -167,12 +191,55 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.ok(token(managerPath) && token(deliveryPath) && await portOpen(port), "fully-ready exact manager, delivery and listener still present"); passed++;
       console.log(`PASS foreground-up-signals ${name}: public status broker/manager/delivery serving and ps answered`);
     }
+    if (options.repairDelivery) {
+      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"], 60_000);
+      const next = (report: Awaited<ReturnType<typeof status>>) => report.out.split("\nNext\n")[1] ?? "";
+      const spawnLine = /^ {2}(?:pnpm )?cotal spawn +/m;
+      const broker = token(brokerPath), delivery = token(deliveryPath);
+      assert.ok(broker && live(broker) && delivery && live(delivery));
+      const before = await status();
+      assert.equal(before.code, 0, before.err);
+      assert.match(next(before), spawnLine, before.out); passed++;
+      process.kill(delivery.pid, "SIGTERM");
+      await until(() => !live(delivery), 30_000, () => "Delivery did not exit");
+      const stopped = await status();
+      assert.equal(stopped.code, 0, stopped.err);
+      assert.match(stopped.out, /Delivery responder:.*NOT BOUND/);
+      assert.match(next(stopped), /^ {2}(?:pnpm )?cotal up +Restore the delivery responder/);
+      assert.doesNotMatch(next(stopped), spawnLine); passed++;
+      const repair = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
+      const repaired = await status();
+      assert.equal(repair.code, 0, repair.out + repair.err);
+      assert.ok(live(broker), "repair keeps the original broker running");
+      assert.match(repaired.out, /Delivery responder:\s+● bound/);
+      assert.match(next(repaired), spawnLine); passed++;
+    }
+    if (options.openBrokerExit) {
+      let health: Awaited<ReturnType<typeof foregroundCliProbe>> | undefined;
+      const components = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components"], 60_000);
+      await until(async () => {
+        health = await components();
+        return health.code === 0 && /^ {2}manager +serving/m.test(health.out);
+      }, 90_000, () => (health?.out ?? "") + (health?.err ?? ""));
+      const broker = token(brokerPath);
+      assert.ok(broker && live(broker));
+      process.kill(broker.pid, "SIGTERM");
+      await until(() => state.exited, 60_000, () => err.slice(-3000));
+      assert.equal(await portOpen(port), false);
+      const stopped = await components();
+      assert.equal(stopped.code, 1, stopped.out + stopped.err);
+      assert.match(stopped.out, /^ {2}manager +absent/m);
+      assert.match(stopped.out, /^ {2}broker +absent/m);
+      assert.match(stopped.out, /^ {2}delivery +not-started · not used on an open mesh/m); passed++;
+      return true;
+    }
     if (options.refusal || options.externalDown) {
       // Shipped bare down refuses --space/--server. Verify the one private registry record first.
       const registryPath = join(home, "machine", "meshes", `space.${spaceKey(space)}.json`);
       const registration = JSON.parse(readFileSync(registryPath, "utf8")) as { root?: string; space?: string; server?: string };
       const currentIdentity = statSync(mesh, { bigint: true });
       const currentMarker = statSync(join(mesh, ".cotal"), { bigint: true });
+      assert.ok(markerIdentity);
       assert.equal(currentMarker.dev, markerIdentity.dev); assert.equal(currentMarker.ino, markerIdentity.ino);
       assert.ok(refusalBirths.every(live), "original refused stack births still live after resumed readiness");
       assert.equal(currentIdentity.dev, rootIdentity.dev); assert.equal(currentIdentity.ino, rootIdentity.ino);
@@ -233,7 +300,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     } else {
       const signalExit = options.signal === "SIGTERM" ? 143 : 130;
       assert.equal(state.code, signalExit, `guarded shutdown exits ${signalExit} (${state.signal ?? "no signal"}): ${err}`); passed++;
-      assert.match(err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
+      assert.match(options.nativeLog ? readFileSync(logFile, "utf8") : err, /Trapped "terminated" signal/, "the CLI owner, not terminal SIGINT, stops the broker"); passed++;
       assert.doesNotMatch(err, /Trapped "interrupt" signal|could not list managed agents|control plane degraded|exited unexpectedly|spare.*unavailable/i); passed++;
       if (options.auth) {
         assert.equal(out.match(/stopped manager \(pid /g)?.length, 1, "one guarded manager stop"); passed++;
@@ -273,9 +340,10 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
 /** A prepared root takes the controller route. Ctrl-C while its foreground `up` waits for the
  *  manager's readiness lets the start settle, then runs the guarded whole-stack stop: exit 130, the
  *  stop completed for every member, and the broker listener closed. With `receipt`, the CLI sends
- *  itself SIGTERM while it writes its start receipt, and the same stop runs with exit 143. */
-async function controllerStartupCell(receipt = false): Promise<void> {
-  const name = receipt ? "controller-receipt" : "controller-startup";
+ *  itself SIGTERM while it writes its start receipt. A team boot gets SIGTERM as it starts the
+ *  broker. Both run the same stop and exit 143. */
+async function controllerStartupCell(kind: "up" | "receipt" | "team" = "up"): Promise<void> {
+  const name = kind === "up" ? "controller-startup" : `controller-${kind}`;
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
@@ -284,26 +352,34 @@ async function controllerStartupCell(receipt = false): Promise<void> {
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const preload = receipt ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
-  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const server = `nats://127.0.0.1:${port}`;
+  if (kind === "team") writeFileSync(join(mesh, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: {servers: "${server}", auth: false}\nchannels:\n  general: {deliveryClass: live}\n`);
+  const preload = kind === "receipt" ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
+  const args = kind === "team" ? ["team", "boot", "mesh.yaml", "--foreground"] : ["up", "--foreground", "--server", server];
+  const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   child.stderr?.on("data", (b: Buffer) => { err += b.toString(); });
   const state = observeOwnedChild(child);
   try {
-    if (!receipt) {
+    if (kind !== "receipt") {
+      const member = kind === "team" ? "broker" : "manager";
       await until(() => {
         if (state.error) throw state.error;
-        if (state.exited) throw new Error(`CLI exited before the manager start: ${err}`);
-        return /Starting stack-manager; waiting/.test(err);
+        if (state.exited) throw new Error(`CLI exited before the ${member} start: ${err}`);
+        return err.includes(`Starting stack-${member}; waiting`);
       }, 90_000, () => err.slice(-3000));
-      assert.ok(child.pid); process.kill(-child.pid, "SIGINT");
+      assert.ok(child.pid);
+      if (kind === "team") process.kill(child.pid, "SIGTERM");
+      else process.kill(-child.pid, "SIGINT");
     }
     await until(() => { if (state.error) throw state.error; return state.exited; }, 120_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: startup-interrupt owner streams drained`);
-    assert.equal(state.code, receipt ? 143 : 130, `a signal during startup exits ${receipt ? 143 : 130} after the stop: ${err}`); passed++;
-    if (!receipt) { assert.match(err, /Stop requested; the whole-stack stop runs once the start settles/, "the interrupt is acknowledged while the start runs"); passed++; }
-    assert.ok(out.includes("Controller stack started") && out.indexOf("Controller stack started") < out.indexOf("Controller stack stopped"), `the start settles before the guarded stop: ${out.slice(-2000)}`); passed++;
+    const exit = kind === "up" ? 130 : 143;
+    assert.equal(state.code, exit, `a signal during startup exits ${exit} after the stop: ${err}`); passed++;
+    if (kind !== "receipt") { assert.match(err, /Stop requested; the whole-stack stop runs once the start settles/, "the interrupt is acknowledged while the start runs"); passed++; }
+    const started = kind === "team" ? "Fresh team boot started" : "Controller stack started";
+    assert.ok(out.includes(started) && out.indexOf(started) < out.indexOf("Controller stack stopped"), `the start settles before the guarded stop: ${out.slice(-2000)}`); passed++;
     // A member the mode has no role for, such as a static stack's auth service, has no instance.
     const journal = JSON.parse(readFileSync(join(mesh, ".cotal", "stack-controller.json"), "utf8")) as { operation: { kind: string; phase: string }; members: { instanceId: string | null; state: string }[] };
     assert.ok(journal.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.every((member) => member.instanceId === null ? member.state === "not-attempted" : member.state === "stopped"), `the stop completed for every member: ${JSON.stringify(journal)}`); passed++;
@@ -518,6 +594,7 @@ await cell("external-folder", { auth: true, ready: true, externalDown: "folder" 
 await checkInheritedPipeCleanup();
 passed += 10;
 await cell("group", {});
+await cell("native-log", { nativeLog: true });
 await cell("term", { signal: "SIGTERM" });
 await cell("double", { twice: true });
 await cell("auth-startup-failure", { auth: true, managerCrash: true });
@@ -525,6 +602,8 @@ await cell("auth-interrupted-failure", { auth: true, managerCrash: true, signal:
 await cell("auth-early", { auth: true, twice: true });
 await cell("auth-ready", { auth: true, ready: true });
 await cell("auth-ready-term", { auth: true, ready: true, signal: "SIGTERM" });
+await cell("delivery-repair", { auth: true, ready: true, repairDelivery: true });
+await cell("open-broker-exit", { openBrokerExit: true });
 let refusalObserved = false;
 for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
   refusalObserved = await cell(`auth-refused-${attempt}`, { auth: true, refusal: true });
@@ -532,7 +611,8 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
 await controllerStartupCell();
-await controllerStartupCell(true);
+await controllerStartupCell("receipt");
+await controllerStartupCell("team");
 await controllerHangupCell();
 await controllerSighupCell();
 await controllerHoldCell();

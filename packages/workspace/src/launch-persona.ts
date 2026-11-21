@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { parseDocument } from "yaml";
-import { parseAgentFileSource, utf16Problem, type AgentDef } from "@cotal-ai/core";
+import { parseAgentFileSource, utf8Problem, type AgentDef } from "@cotal-ai/core";
 import { MeshManifestSchema } from "./mesh-manifest-schema.js";
 
 /** A workstation-file refusal, mapped onto existing native bad-request/CLI schema-invalid codes. */
@@ -41,21 +41,22 @@ export function loadLaunchPersonaFile(path: string): AgentDef {
   // Follow persona links as before. NONBLOCK keeps a replacement FIFO from hanging the open;
   // validate and read the same descriptor so a path replacement cannot bypass the type check.
   const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
-  let source: string;
+  let bytes: Buffer;
   try {
     if (!fstatSync(fd).isFile()) throw notRegular();
-    source = readFileSync(fd, "utf8");
+    bytes = readFileSync(fd);
   } finally {
     closeSync(fd);
   }
+  const source = bytes.toString("utf8");
+  const encoding = utf8Problem(bytes, source);
+  if (encoding) throw new PersonaSourceError(`invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let manifest = false;
   try {
     const document = parseDocument(source);
     if (!document.errors.length) manifest = MeshManifestSchema.safeParse(document.toJS({ maxAliasCount: 100 })).success;
   } catch { /* A non-manifest still has to pass the native persona parser below. */ }
   if (manifest) throw new PersonaSourceError("--file names a Mesh manifest, not a persona file; use `cotal team deploy <file>`. No agent was allocated", { remedy: "use `cotal team deploy <file>` for a Mesh manifest; use a native persona file for spawn" });
-  const encoding = utf16Problem(source);
-  if (encoding) throw new PersonaSourceError(`invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   try { return parseAgentFileSource(source, path); }
   catch (error) { throw new PersonaSourceError(`invalid persona definition ${path}: ${personaDefinitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
 }

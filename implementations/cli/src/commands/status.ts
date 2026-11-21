@@ -131,7 +131,7 @@ import { managerHasDeliveryMarker, managerLogPath } from "../lib/manager-proc.js
 import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
-import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_STALE_TEXT, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
+import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
@@ -174,6 +174,8 @@ import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { readCursor } from "../seed/lock.js";
 import { reconcileCursorPath } from "../seed/paths.js";
+import { managerStopImpactFacts } from "./status-stop-impact.js";
+import { responderText } from "./status-delivery.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -549,7 +551,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
   // while a maintenance journal holds the store, or if the store is unwritable.
-  if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
+  if ((target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
     const reset = storeResetTarget(root, folder.processSpace);
     // An explicit address is not evidence about a different broker's store.
     if (values.server === undefined || (reset && selected.ok && selected.target.space === reset.space
@@ -620,7 +622,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store);
+  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable");
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -1504,6 +1506,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
+    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+      gaps.add(e.code, e.message, e.target);
+      if (e.remedy) hints.push(e.remedy);
+      return { resolved: false, code: e.code, message: e.message };
+    }
     // Resolution reads the whole registry and refuses a directory or record it cannot use. The meshes
     // reader has already named it, so this is the same gap, and the selection is unresolved.
     if (isMeshRegistryError(e)) {
@@ -1639,7 +1646,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const store = offline ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
-    if (preflight.kind === "unreachable" && (overridden || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
+    if (preflight.kind === "unreachable" && (overridden || offline || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);
@@ -1894,29 +1901,6 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
   if (m.catalogs.length)
     sections.push({ title: "Space Catalog Accounts", blocks: [{ kind: "lines", lines: m.catalogs.map((r) => `${r.idp}  ${r.state}${r.error ? `: ${r.error}` : ""}`) }] });
   return sections;
-}
-
-/** The selected space's delivery responder (#1576). Bare status and the verbose mesh section both
- *  state it, so an operator on a manager host away from the broker's folder still sees it. An open
- *  mesh runs no delivery daemon, so with no lease recorded its row says the responder is not used
- *  rather than unbound. */
-function responderText(state: DeliveryResponderState | null, mode: MeshTarget["mode"], stackBlocked = false, deliveryPid?: number, storeFull = false): { text: string; tone: Tone } | undefined {
-  if (state === null && mode === "open") return { text: "not used - an open mesh runs no delivery daemon", tone: "hint" };
-  // A running delivery member with no lease is starting or not responding. Status cannot ask it which,
-  // and `up` starts no second daemon beside it.
-  if (state === "unbound" && deliveryPid !== undefined)
-    return { text: `no lease · stack-delivery pid ${deliveryPid} is alive but holds no lease, so it is starting or not responding`, tone: "failed" };
-  // While this folder's stack is blocked, `up` refuses, so the row names the block Next clears. A full
-  // store refuses the daemon's lease as every other write, so `up` starts it only once there is room.
-  if (state === "unbound")
-    return { text: `NOT BOUND - ${RESPONDER_UNBOUND_CONSEQUENCE} · ${stackBlocked ? `\`${displayCmd()} up\` refuses until the stack block is cleared, as Next shows` : storeFull ? `the full store refuses its lease, so \`${displayCmd()} up\` starts it only once there is room, as Next shows` : `start it with \`${displayCmd()} up\``}`, tone: "failed" };
-  // A stale record is NOT BOUND with a different next move: the slot is occupied by a corpse, so
-  // starting a daemon now loses the single-flight CAS. Say that, rather than sending the operator
-  // into a refusal they will read as a second failure.
-  if (state === "stale")
-    return { text: `NOT BOUND - ${RESPONDER_STALE_TEXT} · \`${displayCmd()} up\` restarts it, after waiting out the lease`, tone: "failed" };
-  if (state === "bound") return { text: "bound", tone: "ok" };
-  return undefined;
 }
 
 /** The pid of the selected space's running stack delivery member, from its owned service record. */
@@ -2283,13 +2267,13 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   }
   if (r.selected.resolved) {
     const s = r.selected;
+    const reachable = s.connection === "ok" || s.connection === "reachable";
     // Name what fixes the default persona alone; setup does far more than that.
     if (!noApplication) {
-      if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
-      else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
-      else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
+      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
+      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: `${cmd} spawn`, description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
     }
-    items.push({ command: `${cmd} who`, description: "See the live roster" });
+    if (reachable) items.push({ command: `${cmd} who`, description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
       items.push({ command: `${cmd} ps`, description: "List managed agents" });
   }
@@ -2365,6 +2349,10 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     // A clean down leaves every member stopped with no pidfile. Spawn and ps need the stack, so the
     // bare `up` that starts it again on its recorded address and store comes first.
     items.unshift({ command: `${cmd} up`, description: "Start this folder's stopped stack again; pass --runtime again if the manager ran on one" });
+  } else if (!seedBlocksRestart && !elsewhere && local && r.selected.resolved && r.selected.connection === "ok" && r.store?.state !== "full" && r.store?.state !== "write-failed"
+    && (r.selected.deliveryResponder === "unbound" || r.selected.deliveryResponder === "stale")
+    && r.folder.processes?.some((row) => row.name === "delivery" && row.state === "stopped")) {
+    items.unshift({ command: `${cmd} up`, description: "Restore the delivery responder" });
   }
   // A stack whose folder was deleted stops only from this machine's records.
   if (r.selected.resolved && r.selected.rootGone) items.unshift({ command: `${cmd} down --space ${shellWord(r.selected.space)} --yes`, description: "Stop the stack whose folder is gone and free its name" });
@@ -2663,31 +2651,6 @@ type ManagerServiceStatus = {
   };
 };
 
-/** Display only. A status observation never authorizes process control or proves cleanup. */
-function managerStopImpactFacts(input: unknown): string[] {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return ["stop impact not reported by this manager build"];
-  const impact = input as Record<string, unknown>;
-  if (!["manager", "owner-filtered"].includes(String(impact.agentScope)) || typeof impact.observedAt !== "string" || impact.observedAt.length > 100 || !Number.isFinite(Date.parse(impact.observedAt)) || !Array.isArray(impact.agents)) return ["stop impact could not be interpreted; no safe stop inferred"];
-  const facts = [`stop impact ${impact.agentScope === "manager" ? "manager-owned rows" : "owner-filtered; full scope unknown"} as of ${new Date(impact.observedAt).toISOString()}`];
-  const actions = { stop: 0, release: 0, retained: 0, unknown: 0 };
-  for (const row of impact.agents) {
-    const action = row && typeof row === "object" && !Array.isArray(row) ? (row as Record<string, unknown>).defaultAction : undefined;
-    if (action === "stop") actions.stop++;
-    else if (action === "release-custody") actions.release++;
-    else if (action === "stop-retaining-state") actions.retained++;
-    else actions.unknown++;
-  }
-  facts.push(`default stop policy: stop ${actions.stop}, release custody ${actions.release}, stop retaining state ${actions.retained}, unknown ${actions.unknown} visible seats`);
-  for (const [key, label] of [["lifecycleInFlight", "lifecycle work"], ["reservedLaunches", "reserved launches"], ["retirementsPending", "pending retirements"], ["deprovisioningInFlight", "cleanup in flight"], ["staticReconciliationInFlight", "reconciliation in flight"]] as const) {
-    const count = impact[key];
-    if (!Number.isSafeInteger(count) || Number(count) < 0) facts.push(`${label} unknown`);
-    else if (Number(count) > 0) facts.push(`${label} ${count}`);
-  }
-  if (impact.stopping === true) facts.push("native manager stop already in progress");
-  facts.push("stop not reserved; seat exit and cleanup not checked");
-  return facts;
-}
-
 /** A service registration is the health target itself.  Calling its `status` command through a
  * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
  * rail; a one-shot standalone caller does. */
@@ -2836,7 +2799,7 @@ export function deliveryLeaseAbsent(e: unknown): boolean {
 /** Delivery owns two answers: its ready lease is its liveness/control surface; its latest explicit
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
-async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
+async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential, brokerOffline: boolean): Promise<ComponentHealth> {
   const record = processRecord(DELIVERY_PIDFILE, context);
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
@@ -2854,6 +2817,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   else facts.push(renewal.adoption.ok ? "renewal adoption accepted" : `renewal adoption refused${renewal.adoption.error ? `: ${renewal.adoption.error}` : ""}`);
   const renewalRefused = renewal?.adoption?.ok === false;
   if (target.mode === "open" && record.kind === "absent" && !renewalRefused) {
+    if (brokerOffline) return { name: "delivery", verdict: "not-started", facts: ["not used on an open mesh"] };
     if (credential.kind === "unavailable") return { name: "delivery", verdict: "refused", facts: [credential.reason] };
     try {
       const component = await componentEp(target, credential);
@@ -3017,10 +2981,15 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined): Promise<void> {
+async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const e = selected.error;
+    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+      printComponent({ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] });
+      process.exitCode = COMPONENT_EXIT.refused;
+      return;
+    }
     if (isMeshRegistryError(e)) {
       printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
       process.exitCode = COMPONENT_EXIT.refused;
@@ -3049,7 +3018,7 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
   const broker = await brokerHealth(target, store);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
-    deliveryHealth(target, context, credential),
+    deliveryHealth(target, context, credential, brokerUnreachable && broker.verdict === "absent"),
     webHealth(context),
     broker,
   ]);

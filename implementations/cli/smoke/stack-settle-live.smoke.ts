@@ -86,7 +86,7 @@
  *     0002 the delivery-aware marker is 0600. After a clean down, a group-writable `.cotal/auth`
  *     makes `reset space --dry-run` name it and its repair. A `down` after every member crashed
  *     exits 0 and keeps the delivery credential, and the reset preview then names `cotal up` and
- *     `cotal down`. That `up` waits out the killed daemon's lease and starts delivery.
+ *     `cotal down`. That `up` starts a new delivery daemon that acquires the shard after the old lease expires.
  *  5. An unconfirmed native manager stop. The manager is frozen when its stop request is published,
  *     so the first `down` reports the stop unknown and the manager record stays `stopping` under that
  *     request. While the manager runs, `down` refuses `LIFECYCLE_BLOCKED` naming the instance and the
@@ -197,8 +197,10 @@ import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { execWords } from "../src/lib/exec-words.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -280,6 +282,18 @@ const track = (space: string) => {
 };
 const gone = (space: string, definition: string) => serviceInstances(space, definition).every((row) => observeServiceProcess(row.record.value) !== "running");
 const exited = (child: ChildProcess) => new Promise<void>((done) => child.exitCode !== null || child.signalCode !== null ? done() : child.once("exit", () => done()));
+
+const shardZero = async (root: string, space: string) => {
+  const creds = await workspaceSecretStore(root).get(deliveryCredsKey(space, { injected: false, root }));
+  if (creds === undefined) return undefined;
+  const nc = await connect({ servers: findMesh(space)!.server, authenticator: credsAuthenticator(new TextEncoder().encode(creds)), inboxPrefix: `_INBOX_${idFromCreds(creds)}` });
+  try {
+    const row = await (await openDeliveryRegistry(nc, space)).get(leaseKey(0));
+    if (row?.operation !== "PUT") return undefined;
+    const { holder, acquiredAt, ready } = row.json<DeliveryLeaseInfo>();
+    return { holder, acquiredAt, ready, own: holder === deliveryLeaseHolderFor(creds), expiresAt: row.created.getTime() + LEASE_TTL_MS };
+  } finally { await nc.close(); }
+};
 
 const prepare = (space: string): string => {
   const root = join(projects, space);
@@ -384,11 +398,33 @@ try {
     const startRunning = cli(root, "manager", "start", "--space", space, "--json");
     check("manager start on the running stack reports its manager running, exit 0, and starts nothing",
       startRunning.status === 0 && startRunning.env?.outcome === "no-op" && pidOf(space, "stack-manager") === managerPid, shown(startRunning));
-    const restartRunning = cli(root, "manager", "restart", "--space", space, "--yes", "--json");
-    check("manager restart --yes on it refuses LIFECYCLE_BLOCKED, stops nothing, and names manager stop then up",
+    const elsewhere = join(projects, "unrelated");
+    mkdirSync(elsewhere);
+    const otherSpace = "otherselected";
+    prepare(otherSpace);
+    const picked = cli(elsewhere, "use", otherSpace);
+    check("fixture: a different space is selected outside both projects", picked.status === 0, shown(picked));
+    const restartRunning = cli(elsewhere, "manager", "restart", "--space", space, "--yes", "--json");
+    const remedy = restartRunning.env?.error?.remedy?.match(/^stop it with `([^`]+)`, then run `([^`]+)` to start it again with its stack$/);
+    const stopWords = remedy?.[1] ? execWords(remedy[1]) : [];
+    const upWords = remedy?.[2] ? execWords(remedy[2]) : [];
+    const scoped = JSON.stringify(stopWords) === JSON.stringify(["cotal", "manager", "stop", "--space", space, "--yes"])
+      && JSON.stringify(upWords) === JSON.stringify(["cotal", "up", "--root", realpathSync(root), "--space", space]);
+    check("manager restart from another folder refuses without stopping, and both remedy commands pin the original target",
       restartRunning.status === 2 && restartRunning.env?.error?.code === "LIFECYCLE_BLOCKED"
-        && restartRunning.env.error.remedy === "stop it with `cotal manager stop --yes`, then run `cotal up` to start it again with its stack"
+        && scoped
         && managerPid !== null && pidOf(space, "stack-manager") === managerPid && alive(managerPid), shown(restartRunning));
+    if (scoped) {
+      const stopped = cli(elsewhere, ...stopWords.slice(1), "--json");
+      const brokerPid = pidOf(space, "stack-broker");
+      check("the printed stop stops only the named space's manager", stopped.status === 0 && stopped.env?.target?.space === space && gone(space, "stack-manager") && brokerPid !== null && alive(brokerPid), shown(stopped));
+      const broughtUp = cli(elsewhere, ...upWords.slice(1), "--json");
+      track(space);
+      const replacement = pidOf(space, "stack-manager");
+      check("the printed up restarts that manager from the explicit project root", broughtUp.status === 0 && pidOf(space, "stack-broker") === brokerPid && replacement !== null && replacement !== managerPid && alive(replacement), shown(broughtUp));
+    }
+    const cleared = cli(elsewhere, "use", "--clear");
+    check("fixture: the alternate selection is cleared", cleared.status === 0, shown(cleared));
     // The rows followed the store's order, by random instance ID, so they moved whenever a member
     // started under a new one.
     const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
@@ -554,14 +590,15 @@ try {
     const second = prepare(other);
     const blocked = cli(second, "up", "--server", `nats://127.0.0.1:${port}`, "--no-manager", "--json");
     check("a first up where another stack's broker answers refuses CONFLICT, exit 2, naming the address and its space", blocked.status === 2 && blocked.env?.error?.code === "CONFLICT" && blocked.env.error.message.includes(`something already answers at the stack's broker address nats://127.0.0.1:${port}, where space ${space} is registered`), shown(blocked));
-    check("its next step is another --server, or stopping that space", Boolean(blocked.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && blocked.env.error.remedy.includes(`stop space ${space} with \`cotal down\` from `)), shown(blocked));
+    const alternatePort = /\bcotal up --server nats:\/\/127\.0\.0\.1:(\d+) --no-manager --json`/.exec(blocked.env?.error?.remedy ?? "")?.[1];
+    check("its next step keeps the options with another port, or stops that space", alternatePort !== undefined && Number(alternatePort) !== port && blocked.env?.error?.remedy?.includes(`stop space ${space} with \`cotal down\` from `) === true, shown(blocked));
     const nothing = cli(second, "down", "--yes", "--json");
     check("down of that never-started stack stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
     const reset = cli(second, "reset", "space", other, "--dry-run", "--json");
     check("reset space finds nothing to reset there and names cotal up", reset.status === 2 && reset.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(reset.env.error.remedy?.includes("cotal up")), shown(reset));
     // A space with neither a registration nor a stopped stack, as a legacy root's down leaves one, is
-    // cleared with clean from its root, and each reset names its own clean route.
-    for (const [kind, clean] of [["space", "cotal clean all --force"], ["store", "cotal clean store --force"]] as const) {
+    // cleared with clean from its root, and each reset preview names its own clean preview.
+    for (const [kind, clean] of [["space", "cotal clean all --dry-run"], ["store", "cotal clean store --dry-run"]] as const) {
       const unregistered = cli(second, "reset", kind, "neverregistered", "--dry-run", "--json");
       check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run \`${clean}\` from that root`)), shown(unregistered));
     }
@@ -570,6 +607,25 @@ try {
     track(other);
     check("its next up starts at another address", moved.status === 0, shown(moved));
     const launcher = launcherAt(second);
+    const confirmation = cli(second, "down", "--space", other, "--json");
+    const retry = `${launcher} down --space ${other} --json`;
+    const remedy = confirmation.env?.error?.remedy;
+    check("the whole-stack confirmation and preview keep the explicit space and JSON",
+      confirmation.status === 1 && confirmation.env?.outcome === "refused" && confirmation.env.error?.code === "USAGE_INVALID"
+      && launcher !== undefined && remedy === `run \`${retry} --yes\` to stop it. \`${retry} --dry-run\` shows what it stops`, shown(confirmation));
+    if (launcher !== undefined && remedy?.startsWith(`run \`${retry} --yes\``)) {
+      const follow = (command: string) => cli(second, ...command.slice(launcher.length + 1).split(" "));
+      const commands = [...remedy.matchAll(/`([^`]+)`/g)].map((match) => match[1]!);
+      const preview = follow(commands[1]!);
+      check("the printed preview produces JSON for the same space without signalling",
+        preview.status === 0 && preview.env?.target?.space === other && preview.env.result?.signalled === false && !gone(other, "stack-broker"), shown(preview));
+      const confirmed = follow(commands[0]!);
+      check("the printed confirmation produces a JSON stop receipt for the same space",
+        confirmed.status === 0 && confirmed.env?.target?.space === other && confirmed.env.result?.kind === "controller-stack-stop" && gone(other, "stack-broker"), shown(confirmed));
+      const restarted = cli(second, "up", "--no-manager", "--json");
+      track(other);
+      check("restart the broker-only stack for the text stop receipt", restarted.status === 0, shown(restarted));
+    }
     const down = cli(second, "down", "--yes", "--plain");
     const restart = /^  (.+?) {2}Start the stack again from its journal and saved definitions$/m.exec(down.stdout)?.[1];
     const expectedRestart = `${launcher} up --no-manager`;
@@ -586,6 +642,19 @@ try {
       check("the printed restart starts the same broker without a manager", resumed.status === 0 && pidOf(other, "stack-broker") !== null && pidOf(other, "stack-manager") === null, shown(resumed));
       check("down --yes stops the restarted stack", cli(second, "down", "--yes", "--json").status === 0);
     }
+
+    const brokerOnly = "broker-only";
+    const brokerRoot = prepare(brokerOnly);
+    const normalPayload = cli(brokerRoot, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-payload", "1048576", "--json");
+    track(brokerOnly);
+    const normalStop = cli(brokerRoot, "down", "--yes", "--json");
+    const repeated = cli(brokerRoot, "down", "--yes", "--plain");
+    const stoppedPreview = cli(brokerRoot, "down", "--space", brokerOnly, "--dry-run", "--plain");
+    const noOpRestart = (run: Run) => /^  (.+?) {2}Start the stack without a manager$/m.exec(run.stdout)?.[1];
+    check("repeated down and its stopped preview keep the broker-only restart even when the payload permits a manager",
+      normalPayload.status === 0 && normalStop.status === 0 && repeated.status === 0 && stoppedPreview.status === 0
+      && noOpRestart(repeated) === expectedRestart && noOpRestart(stoppedPreview) === expectedRestart,
+      { start: shown(normalPayload), stop: shown(normalStop), repeated: repeated.stdout, preview: stoppedPreview.stdout });
 
     const occupant = createServer();
     await listenOn(occupant, movedPort);
@@ -1020,7 +1089,8 @@ try {
     track(space);
     check("a first up at a port another program holds refuses CONFLICT, exit 2, naming the address and bind error", refused.status === 2 && refused.env?.error?.code === "CONFLICT" && refused.env.error.message.includes(`127.0.0.1:${port}`) && refused.env.error.message.includes("address already in use"), shown(refused));
     check("the refusal says the stack started no member", Boolean(refused.env?.error?.message.startsWith("the controller stack started no member (broker: ")) && !refused.env?.error?.message.includes("started members were kept"), shown(refused));
-    check("its next step is another --server, or stopping that program", Boolean(refused.env?.error?.remedy?.includes("cotal up --server nats://127.0.0.1:<port>") && refused.env.error.remedy.includes(`stop the process listening on 127.0.0.1:${port}`)), shown(refused));
+    const retry = /\bcotal up --server nats:\/\/127\.0\.0\.1:(\d+) --no-manager --json`/.exec(refused.env?.error?.remedy ?? "");
+    check("its next step keeps the options with another port, or stops that program", !!retry && Number(retry[1]) !== port && refused.env?.error?.remedy?.includes(`stop the process listening on 127.0.0.1:${port}`) === true, shown(refused));
     check("no broker instance was recorded", serviceInstances(space, "stack-broker").length === 0, serviceInstances(space, "stack-broker").map((row) => row.record.value.state));
     const nothing = cli(root, "down", "--yes", "--json");
     check("down --yes there stops nothing and exits 0", nothing.status === 0 && nothing.env?.outcome === "no-op", shown(nothing));
@@ -1235,7 +1305,13 @@ try {
     const again = cli(root, "up", "--json");
     track(space);
     check("bare up starts the stack again", again.status === 0, shown(again));
-    const members = ["stack-broker", "stack-delivery", "stack-manager"].map((definition) => runningPidOf(space, definition));
+    const deliveryBefore = runningPidOf(space, "stack-delivery");
+    if (deliveryBefore !== null) process.kill(deliveryBefore, "SIGKILL");
+    const deliveryGone = deliveryBefore !== null && await until(() => gone(space, "stack-delivery"), 10_000);
+    // Read the final row after the daemon cannot renew it and before killing its broker.
+    const deadLease = await shardZero(root, space);
+    check("the crashed delivery daemon left its ready lease", deliveryGone && deadLease?.own === true && deadLease.ready, { deliveryBefore, deadLease });
+    const members = ["stack-broker", "stack-manager"].map((definition) => runningPidOf(space, definition));
     for (const pid of members) if (pid !== null) process.kill(pid, "SIGKILL");
     await until(() => members.every((pid) => pid === null || !alive(pid)), 10_000);
     const settled = cli(root, "down", "--yes", "--json");
@@ -1256,13 +1332,16 @@ try {
     } finally { releaseMaintenanceLock(held); }
     const stillOffered = cli(root, "reset", "store", space, "--dry-run", "--json");
     check("...and those refusals removed nothing", stillOffered.status === 0 && (stillOffered.env?.result?.applyVerdict as { offered?: boolean } | undefined)?.offered === true, shown(stillOffered));
-    // The killed daemon never released shard 0. That down kept its credential, so the repair up
-    // recognises the row as the dead daemon's, waits out its TTL and starts delivery.
+    // That down kept the killed daemon's credential. The lease can expire during the reset checks
+    // or broker startup. In either case the replacement must acquire shard 0 after its expiry.
     check("down --yes after a delivery crash keeps the delivery credential", settled.env?.result?.cleanup === "registration-removed-delivery-credential-kept", settled.env?.result?.cleanup);
     const recovered = cli(root, "up");
     track(space);
-    const delivery = pidOf(space, "stack-delivery");
-    check("up after the crash and down waits out the dead daemon's lease and starts delivery", recovered.status === 0 && recovered.stderr.includes("shard 0 is still leased to this folder's previous delivery daemon") && delivery !== null && alive(delivery), shown(recovered));
+    const delivery = runningPidOf(space, "stack-delivery");
+    const replacementLease = recovered.status === 0 ? await shardZero(root, space) : undefined;
+    check("up after the crash and down starts a different delivery daemon that acquires the expired shard", recovered.status === 0 && delivery !== null && delivery !== deliveryBefore && deadLease?.own === true
+      && replacementLease?.own === true && replacementLease.ready && replacementLease.holder !== deadLease.holder
+      && replacementLease.acquiredAt !== undefined && replacementLease.acquiredAt >= deadLease.expiresAt, { ...shown(recovered), delivery, deliveryBefore, deadLease, replacementLease });
     const recoveredDown = cli(root, "down", "--yes", "--json");
     check("down --yes stops the recovered stack and removes the credential", recoveredDown.status === 0 && recoveredDown.env?.result?.cleanup === "delivery-credential-and-registration-removed", shown(recoveredDown));
   }
@@ -1302,7 +1381,7 @@ try {
     check("while the frozen manager runs, down refuses naming its instance and request", names(whileRunning) && pid !== null && alive(pid) && held(), shown(whileRunning));
     // A public start on the live retained instance refuses before any readiness probe or record write.
     const serviceStart = cli(root, "service", "start", "stack-manager", "--space", space, "--json");
-    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === 'start the stack with `cotal up`' && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
+    check("while the frozen manager runs, service start refuses the controller member and leaves its retained stop unchanged", serviceStart.status === 2 && serviceStart.env?.outcome === "refused" && serviceStart.env.error?.code === "LIFECYCLE_BLOCKED" && serviceStart.env.error.message === "stack-manager is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started" && serviceStart.env.error.remedy === `start the stack with \`cotal up --root ${realpathSync(root)} --space ${space}\`` && pid !== null && alive(pid) && held(), { ...shown(serviceStart), target: serviceStart.env?.target, record: record() });
     const abandonLive = cli(root, "down", "--abandon-stop", request ?? "none", "--yes", "--json");
     check("while the frozen manager runs, down --abandon-stop refuses and abandons nothing", abandonLive.status === 2 && abandonLive.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(abandonLive.env.error.message.includes("still runs")) && pid !== null && alive(pid) && held(), shown(abandonLive));
     if (pid !== null) process.kill(pid, "SIGKILL");
@@ -1631,20 +1710,32 @@ try {
 
   // 9. A down killed mid-stop, once the named member's record reads `stopping`.
   const killDownAt = async (root: string, space: string, definition: string): Promise<string | undefined> => {
-    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env });
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env, stdio: "ignore" });
+    const broker = definition === "stack-broker";
+    const childEnv = broker ? { ...env, COTAL_SMOKE_HOLD_AFTER_BROKER_SIGNAL: "1" } : env;
+    assertSmokeSandboxDown(anchors.get(root), ["down", "--yes", "--json"], { cwd: root, env: childEnv });
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "down", "--yes", "--json"], { cwd: root, env: childEnv, stdio: "ignore" });
     // A read that meets down's own write of the record refuses CONFLICT; the poll takes that as not yet.
     const read = () => {
       try { return serviceInstances(space, definition)[0]?.record.value; }
       catch (error) { if (isCommandFailure(error) && error.code === "CONFLICT") return undefined; throw error; }
     };
-    const end = Date.now() + 120_000;
-    let seen = read();
-    while (Date.now() < end && child.exitCode === null && seen?.state !== "stopping") { await sleep(2); seen = read(); }
-    const request = seen?.state === "stopping" ? seen.requestId : undefined;
+    let request: string | undefined;
+    if (broker) {
+      // Wait for the real stop signal to take effect while down is held before it records the exit.
+      await until(() => {
+        const seen = read();
+        if (seen?.state === "stopping" && observeServiceProcess(seen) === "gone") request = seen.requestId;
+        return request !== undefined || child.exitCode !== null || child.signalCode !== null;
+      }, 120_000);
+    } else {
+      const end = Date.now() + 120_000;
+      let seen = read();
+      while (Date.now() < end && child.exitCode === null && seen?.state !== "stopping") { await sleep(2); seen = read(); }
+      request = seen?.state === "stopping" ? seen.requestId : undefined;
+    }
     child.kill("SIGKILL");
     await exited(child);
-    return request;
+    return child.signalCode === "SIGKILL" ? request : undefined;
   };
   {
     const space = "killedbroker";
@@ -1654,7 +1745,6 @@ try {
     track(space);
     check(`${space}: up starts the stack`, started.status === 0, shown(started));
     const request = await killDownAt(root, space, "stack-broker");
-    await until(() => gone(space, "stack-broker"), 10_000);
     check(`${space}: the killed down left the broker stopping under its request, with its process gone`, request !== undefined && serviceInstances(space, "stack-broker")[0]?.record.value.state === "stopping" && gone(space, "stack-broker"), { request });
     const status = cli(root, "status", "--space", space, "--json");
     const block = (status.env?.result?.folder as { stackBlock?: { definition?: string; reason?: string; route?: { kind?: string; requestId?: string } } | null } | undefined)?.stackBlock;

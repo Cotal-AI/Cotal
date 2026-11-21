@@ -36,7 +36,7 @@
  * connector-submitted turns against each other, not about the host's turns. Where a specific
  * comment says "connector-submitted" it is inheriting this paragraph, not adding a new caveat.
  */
-import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
+import { loadAgentFile, type PresenceCondition, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   eventPlaneArmed,
@@ -69,6 +69,7 @@ import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeReco
 import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
 import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
+import { opencode1FailureCondition } from "./failure-condition.js";
 import {
   log,
   SWAP_SETTLE_MS,
@@ -523,6 +524,13 @@ export const cotal: Plugin = async () => {
       if (agent.connected) await track(agent.setStatus(status, activity));
     } catch {
       /* presence is best-effort — never throw into opencode */
+    }
+  };
+  const safeCondition = async (condition: PresenceCondition): Promise<void> => {
+    try {
+      if (agent.connected) await track(agent.setCondition(condition));
+    } catch {
+      /* best-effort, as safeStatus */
     }
   };
 
@@ -1376,6 +1384,9 @@ export const cotal: Plugin = async () => {
               submittedWake = undefined;
             }
           }
+          // A failed turn says why before it reads idle (a Stop is not a failure). The next turn's
+          // `working` clears it (connector-core).
+          if (!interrupted) await safeCondition(opencode1FailureCondition(event.properties.error));
           await safeStatus("idle");
           if (!interrupted) scheduleErrorRetry();
           else {

@@ -14,13 +14,12 @@
  *     channel field that inherits it `(default)` instead of "not declared".
  *  E. rows that do not apply are left out: no "Durable delivery on open" row for a static space,
  *     and no empty agent table; the deploy preview's TLS row reads as `team show` reads it.
- *  F. `team boot` on the stack that is up says so and offers `team deploy` with the same file, or
- *     `cotal down`, instead of naming the stop the stack lacks.
+ *  F. `team boot` on a running stack names inspection, stop preview and ordinary restart.
  *  G. folder `b` takes a fresh channel-only `team boot` of its own space on a second port. Its
  *     receipt, `team show <id>` and the inventory name the record's kind, state, next action and
  *     auth mode in words; the JSON keeps the recorded values.
- *     Its show and its `team remove` refusal offer `cotal down --space <space> --dry-run` with the
- *     space filled in, with no placeholder and no note that the stop is not integrated. After
+ *     Its show and both `team remove` forms offer `cotal down --space <space> --dry-run` with the
+ *     space filled in. The refusal also works after stop and directs callers to the recorded root. After
  *     `down`, a second boot refuses LIFECYCLE_BLOCKED naming `cotal up` and the earlier boot's ID,
  *     and that `cotal up` starts the stack again.
  *  H. a deployment ID that no record names is TARGET_NOT_FOUND, naming the ID, from `team show` and
@@ -33,6 +32,8 @@
  *     as they were, and a removal after one of its cards was edited names that card.
  *  K. after `team remove --yes` of an 11-card deployment, `team show` lists each card's delete
  *     submission before its outcome, and the cards in manifest order, in text and JSON.
+ *  L. on an open mesh, apply and preview recommend live delivery and name the requirement for
+ *     durable channels. Setting the card to live lets the deployment succeed.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -51,10 +52,10 @@ const SERVER = `nats://127.0.0.1:${await freePort()}`, SERVER_B = `nats://127.0.
 const SPACE = `team-views-${process.pid}`, SPACE_B = `team-boot-${process.pid}`;
 
 const base = mkdtempSync(join(tmpdir(), "cotal-team-views-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "b"), c = join(base, "c");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), b = join(base, "boot project"), c = join(base, "c");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
 for (const dir of [home, configDir, s, b, c]) mkdirSync(dir, { mode: 0o700 });
-const sandboxes = new Map([s, b].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
+const sandboxes = new Map([s, b, c].map((root) => [root, recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir })]));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_PROMPT: "1" });
@@ -85,7 +86,7 @@ manifest("boot.yaml", SPACE_B, { bootch: "    deliveryClass: live\n" }, { dir: b
 manifest("open.yaml", SPACE, { lobby: "    deliveryClass: live\n" }, { open: true });
 manifest("defaults.yaml", SPACE, { dops: "", own: "    replay: true\n" }, { head: "defaults:\n  replay: false\n  replayWindow: 2h\n  deliveryClass: live\n" });
 
-let up = false, bUp = false;
+let up = false, bUp = false, openUp = false;
 try {
   const noApplications = join(base, "no-applications");
   mkdirSync(noApplications);
@@ -203,8 +204,24 @@ try {
   const blocked = envelope(second.stdout)?.error;
   check("team boot on the running stack refuses LIFECYCLE_BLOCKED and says the space is already up",
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
-  check("its Next offers team deploy with the same manifest, or cotal down",
-    blocked?.remedy === `add this manifest's channels and agents to the running stack with \`cotal team deploy ${join(s, "live.yaml")}\`, or stop it with \`cotal down\` before a team boot`, blocked);
+  const remedy = blocked?.remedy ?? "";
+  check("its Next offers inspection, stop preview and ordinary restart",
+    remedy.includes(`cotal service --space ${SPACE}`) && remedy.includes("cotal down --dry-run") && remedy.includes("`cotal up`") && !remedy.includes("team deploy"), blocked);
+  const spacedFile = "team add.yaml";
+  manifest(spacedFile, SPACE, { alerts: "    deliveryClass: live\n" });
+  const conflict = cotal(s, "up", "-f", spacedFile, "--dry-run");
+  check("up -f --dry-run on the running controller stack refuses without starting anything",
+    conflict.status === 2 && conflict.stderr.includes("CONFLICT") && conflict.stderr.includes("nothing was started"), conflict.out);
+  const command = conflict.stderr.split("`").find((part) => part.startsWith("cotal team boot "));
+  const expectedPreview = `cotal team boot '${realpathSync(s).replaceAll("'", "'\\''")}/${spacedFile}' --dry-run`;
+  check("up -f quotes the whole manifest path in its preview and does not suggest redeployment",
+    command === expectedPreview && !conflict.stderr.includes("team deploy"), conflict.out);
+  if (command === expectedPreview && process.platform !== "win32") {
+    const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${command}`, TSX, CLI],
+      { cwd: s, env, encoding: "utf8", timeout: 180_000 });
+    check("the printed command previews the intended manifest in a POSIX shell",
+      preview.status === 0 && preview.stdout.includes("#alerts"), preview);
+  }
 
   console.log("\nG. a fresh boot's records in words");
   check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);
@@ -212,6 +229,11 @@ try {
   const booted = cotal(b, "team", "boot", "boot.yaml");
   check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
     booted.status === 0 && /Auth mode:\s+static auth\n/.test(booted.stdout) && !booted.stdout.includes("static-auth"), booted.out.slice(-1200));
+  const repeat = cotal(b, "team", "boot", "boot.yaml", "--foreground");
+  check("repeating the actual boot refuses without recommending deployment of the cards it seeded",
+    repeat.status === 2 && repeat.stderr.includes("LIFECYCLE_BLOCKED") && repeat.stderr.includes(`cotal service --space ${SPACE_B}`) && repeat.stderr.includes("cotal down --dry-run") && !repeat.stderr.includes("team deploy"), repeat.out);
+  check("the printed inspection and stop preview both work while the booted stack runs",
+    cotal(b, "service", "--space", SPACE_B).status === 0 && cotal(b, "down", "--dry-run").status === 0);
   const bootId = /cotal team show ([0-9a-f]{16})/.exec(booted.stdout)?.[1] ?? "";
   const freshShow = cotal(b, "team", "show", bootId);
   check("team show <boot id> names its kind, state, next action and auth mode in words",
@@ -223,14 +245,26 @@ try {
   const bootRefusal = envelope(removeBoot.stdout)?.error;
   check("team remove <boot id> refuses CONFLICT and offers cotal down with the space filled in",
     removeBoot.status === 2 && bootRefusal?.code === "CONFLICT" && bootRefusal.remedy === `stop the booted stack with \`cotal down\`; preview that stop with \`cotal down --space ${SPACE_B} --dry-run\``, removeBoot.out.slice(-800));
+  const applyBoot = cotal(b, "team", "remove", bootId, "--yes", "--json");
+  check("team remove <boot id> --yes gives the same fresh boot refusal and remedy as dry-run",
+    applyBoot.status === 2 && JSON.stringify(envelope(applyBoot.stdout)?.error) === JSON.stringify(bootRefusal), applyBoot.out);
+  const away = cotal(c, "team", "remove", bootId, "--space", SPACE_B, "--yes", "--json");
+  const awayRefusal = envelope(away.stdout)?.error;
+  const atBootRoot = `cd '${realpathSync(b)}' && `;
+  check("team remove from another folder offers both down commands at the quoted boot root",
+    away.status === 2 && awayRefusal?.code === "CONFLICT" && awayRefusal.remedy === `stop the booted stack with \`${atBootRoot}cotal down\`; preview that stop with \`${atBootRoot}cotal down --space ${SPACE_B} --dry-run\``, away.out);
   const freshJson = envelope(cotal(b, "team", "show", bootId, "--json").stdout)?.result;
   check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
   const freshList = cotal(b, "team");
   check("the inventory row names them in words", new RegExp(`${bootId}\\s+fresh boot\\s+boot returned\\s+inspect the stack`).test(freshList.stdout), freshList.stdout);
   check("the boot preview names the requested auth mode in words", /Auth mode request:\s+static auth\n/.test(cotal(b, "team", "boot", "boot.yaml", "--dry-run").stdout));
+  const stopped = cotal(b, "down", "--yes");
+  const applyStoppedBoot = cotal(b, "team", "remove", bootId, "--space", SPACE_B, "--yes", "--json");
+  check("the fresh boot refusal and remedy are unchanged after the separate whole-stack stop",
+    stopped.status === 0 && /Controller stack stopped/.test(stopped.stdout) && applyStoppedBoot.status === 2 &&
+      JSON.stringify(envelope(applyStoppedBoot.stdout)?.error) === JSON.stringify(bootRefusal), { down: stopped.out, remove: applyStoppedBoot.out });
   // A stopped stack that carried a team is not booted with another one. The refusal names the
   // earlier boot's ID and cotal up, which starts that stack again.
-  const stopped = cotal(b, "down", "--yes");
   const again = cotal(b, "team", "boot", "boot.yaml", "--json");
   const againError = envelope(again.stdout)?.error;
   check("a second team boot after down refuses LIFECYCLE_BLOCKED, naming cotal up and the earlier boot's ID",
@@ -290,7 +324,40 @@ try {
   const rows = orderShow.stdout.split("\n").filter((line) => /^\s+#order\d+\s/.test(line)).map((line) => line.trim().replace(/\s+/g, " "));
   check("  and its text ends each card on its deletion, not on the submitted step",
     orderShow.status === 0 && rows.at(-1)?.startsWith("#order10 deleted at created revision") === true && rows.indexOf("#order0 delete submitted; outcome not implied none") < rows.findIndex((row) => row.startsWith("#order0 deleted at created revision")), rows);
+
+  console.log("\nL. live delivery guidance on an open mesh");
+  check("space create prepares the open project", cotal(c, "space", "create", OTHER).status === 0);
+  openUp = true;
+  const openStarted = cotal(c, "up", "--open", "--server", SERVER_OTHER);
+  check("up starts the open stack", openStarted.status === 0, openStarted.out);
+  if (openStarted.status !== 0) throw new Error("the open stack did not start");
+
+  const openOptions = { dir: c, server: SERVER_OTHER };
+  manifest("audit.yaml", OTHER, { "audit-team": "" }, openOptions);
+  const openRefused = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const openError = envelope(openRefused.stdout)?.error;
+  const openRemedy = "set `deliveryClass: live` on each card. Durable channels require a different authenticated mesh with a delivery service";
+  check("open apply names the live manifest fix and does not suggest a durable channel command",
+    openRefused.status === 2 && openError?.code === "UNSUPPORTED" && openError.remedy === openRemedy, openRefused.out);
+  const mixedRefused = cotal(c, "team", "deploy", "claude.yaml", "--json");
+  const mixedError = envelope(mixedRefused.stdout)?.error;
+  check("open mixed apply gives the same remedy before requesting a launch",
+    mixedRefused.status === 2 && mixedError?.code === "UNSUPPORTED" && mixedError.remedy === openRemedy, mixedRefused.out);
+  const openPreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json");
+  const openWarning = envelope(openPreview.stdout)?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
+  check("open preview offers the same guidance", openPreview.status === 0 && openWarning?.message.endsWith(`${openRemedy}.`) === true, openPreview.out);
+
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, openOptions);
+  const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const openResult = envelope(openApplied.stdout);
+  check("setting deliveryClass: live creates the card on the open mesh",
+    openApplied.status === 0 && openResult?.outcome === "ok" && Array.isArray(openResult.result?.createdChannels) &&
+      openResult.result.createdChannels.some((card) => card.name === "audit-team"), openApplied.out);
 } finally {
+  if (openUp) {
+    const down = cotal(c, "down", "--yes");
+    check("down --yes stops the open stack", down.status === 0, down.out.slice(-600));
+  }
   if (bUp) {
     const down = cotal(b, "down", "--yes");
     check("down --yes stops the stack in b", down.status === 0, down.out.slice(-600));

@@ -280,7 +280,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
       extensions: bareExtensions,
       installedExtensions: bareExtensions,
       launchGateRefusal: {
-        command: { exit: 1, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update --self\` to reconcile this installation\n` },
+        command: { exit: 2, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update --self\` to reconcile this installation\n` },
         extensions: bareExtensions,
         installedExtensions: bareExtensions,
       },

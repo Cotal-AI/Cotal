@@ -95,7 +95,7 @@ for (let i = 0; i < 50; i++) {
   const empty = json(["space"]);
   check("space --json on an empty registry is one ok envelope with no items", empty.status === 0 && empty.env?.outcome === "ok" && empty.env.target === null && empty.env.result.items.length === 0 && empty.env.result.current === null, shown(empty));
   const human = run(["space"]);
-  check("the empty report says how to start or register a space", human.status === 0 && /No spaces registered\./.test(human.stdout) && /^ {2}cotal setup\s/m.test(human.stdout) && /^ {2}cotal space add <name> --server <url>\s/m.test(human.stdout), shown(human));
+  check("the empty report says how to start or register a space", human.status === 0 && /No spaces registered\./.test(human.stdout) && /^ {2}cotal setup\s/m.test(human.stdout) && /^ {2}cotal space add <name> --server <url> --root <dir>\s/m.test(human.stdout), shown(human));
   const none = json(["use"]);
   check("bare use with nothing selected reports no selection", none.status === 0 && none.env?.result.current === null && none.env.target === null, shown(none));
 }

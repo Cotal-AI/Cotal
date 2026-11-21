@@ -479,6 +479,34 @@ try {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
   if (process.platform !== "win32") {
+    const server = "nats://[::1]:43002";
+    recordMesh(entry("beta", BETA, server));
+    for (const { name, selectors } of [
+      { name: "same", selectors: ["--space", "beta"] },
+      { name: "same", selectors: ["--server", server] },
+      { name: "-same", selectors: ["--space", "beta", "--server", server] },
+    ]) {
+      const selected = agentFilePath(MESH, name);
+      const explicit = agentFilePath(BETA, name);
+      const localCard = `---\nname: ${name}\nsubscribe: []\n---\n\nLocal\n`;
+      const auditCard = localCard.replace("Local", "Audit");
+      writeFileSync(selected, localCard);
+      writeFileSync(explicit, auditCard);
+      const refused = native(["personas", "rm", ...selectors, "--", name], CWD, { ...childEnv, NO_COLOR: "1" });
+      const retry = refused.stderr.split("\n").find(line => line.startsWith("cotal personas rm "));
+      check(`personas rm ${selectors.join(" ")} refuses before changing either copy and prints a retry`,
+        refused.status === 1 && retry !== undefined &&
+        readFileSync(selected, "utf8") === localCard && readFileSync(explicit, "utf8") === auditCard, refused.stderr);
+      const removed = spawnSync("sh", ["-c", `cotal() { "$CLI_NODE" "$CLI_BIN" "$@"; }; ${retry}`], {
+        cwd: CWD, env: { ...childEnv, CLI_NODE: process.execPath, CLI_BIN: binary }, encoding: "utf8", timeout: 30_000,
+      });
+      check(`personas rm ${selectors.join(" ")} retry removes only the explicitly targeted card`,
+        removed.status === 0 && !existsSync(explicit) && existsSync(selected) && readFileSync(selected, "utf8") === localCard,
+        { retry, status: removed.status, stderr: removed.stderr });
+      if (selectors.includes(server)) check("the retry quotes the IPv6 server selector", retry!.includes(`--server '${server}'`), retry);
+    }
+  }
+  if (process.platform !== "win32") {
     const slow = spawnSync("sh", ["-c",
       `(printf 'First line.\\n'; sleep 3; printf 'Second line.\\n') | "$@"`,
       "sh", process.execPath, binary, "persona", "create", "slow-stdin", "--space", "meshspace",
@@ -522,6 +550,19 @@ try {
     invalidEncoding.status === 1 && invalidEncoding.stderr.includes("SCHEMA_INVALID") &&
     invalidEncoding.stderr.includes(`${encodedSource}: it is not valid UTF-8`) &&
     invalidEncoding.stderr.includes(`save ${encodedSource} as UTF-8`) && !existsSync(encodedFile), invalidEncoding.stderr);
+  writeFileSync(encodedFile, readFileSync(encodedSource));
+  try {
+    const modern = native(["persona", "--json"]);
+    const inventory = JSON.parse(modern.stdout);
+    check("persona inventory marks invalid UTF-8 as partial and invalid",
+      modern.status === 4 && inventory.completeness === "partial" &&
+      inventory.result.items.some((item: { name: string; valid: boolean }) => item.name === "encoded" && !item.valid) &&
+      modern.stdout.includes("it is not valid UTF-8"), modern.stdout);
+    const legacy = native(["personas", "list", "--verbose"]);
+    check("legacy persona inventory reports invalid UTF-8 without printing replacement text",
+      legacy.status === 4 && (legacy.stdout + legacy.stderr).includes("it is not valid UTF-8") &&
+      !legacy.stdout.includes("Review caf� changes."), legacy.stdout + legacy.stderr);
+  } finally { rmSync(encodedFile); }
   const utf8 = Buffer.from("---\r\nname: encoded\r\n---\r\nReview café and the literal � symbol.\r\n");
   writeFileSync(encodedSource, utf8);
   const validEncoding = native(encodedArgs);
@@ -548,6 +589,23 @@ try {
     const shown = native(["persona", "show", name, "--plain"]);
     check(`${name}: valid UTF-8 keeps accented text and a literal replacement character`,
       created.status === 0 && shown.status === 0 && shown.stdout.includes(bodyText), created.stderr + shown.stdout + shown.stderr);
+  }
+
+  const spacedSource = "sample card.md";
+  const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
+  writeFileSync(join(scratch, spacedSource), importBytes);
+  const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", "--plain"], scratch);
+  const retry = mismatch.stderr.match(/create it under its own name with `([^`]+)`/)?.[1];
+  check("a mismatched import quotes the original filename and preserves the catalog selector",
+    mismatch.status === 1 && mismatch.stderr.includes("SCHEMA_INVALID") &&
+      retry === "cotal persona create sample --file 'sample card.md' --space alpha" && !existsSync(agentFilePath(ALPHA, "other")), mismatch.stderr);
+  if (process.platform !== "win32" && retry === "cotal persona create sample --file 'sample card.md' --space alpha") {
+    const copied = spawnSync("sh", ["-c", `cotal() { "$NODE" "$CLI" "$@"; }; ${retry}`], {
+      cwd: scratch, env: { ...childEnv, NODE: process.execPath, CLI: binary }, encoding: "utf8", timeout: 30_000,
+    });
+    const imported = agentFilePath(ALPHA, "sample");
+    check("the retry works as printed and imports the original bytes into alpha",
+      copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
   }
 
   const decoyFile = agentFilePath(ALPHA, "encoded");

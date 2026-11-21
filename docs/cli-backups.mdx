@@ -77,15 +77,17 @@ Its Next gives a shell-quoted `chmod` command when the path can be displayed unc
 choose a writable folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
-says to stop the process that listens there and run the same `backup create` again. Any other
-refusal or failure shows the check's own sentence as its native detail.
+says to stop the process that listens there and run the same `backup create` again. Retry commands
+quote the destination and any `--store-dir` path for a POSIX shell when both can be displayed
+unchanged. Otherwise, Next asks you to rerun your original command. Run either from the same
+project folder. Any other refusal or failure shows the check's own sentence as its native detail.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
 what it wrote and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
 writing: the store copy under `.cotal/maintenance/attempts`, or the backup in its destination. It
-also says that no backup was published and that the preserved cut is still ready. Its Next frees
-space on that disk and runs the same `backup create` again.
+also says that no backup was published and that the preserved cut is still ready. Its Next asks
+you to free space on the disk named in the error and retry the same `backup create`.
 
 A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
 or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.
@@ -544,8 +546,11 @@ or ambiguous owner is preserved and refused, never adopted by reachability alone
 daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
 because the interrupted `up` may have stopped before it made them. The mesh record it then writes
 keeps the recorded attach host and session ceiling and the store cap the adopted broker started with.
-A restore journals its `--max-file-store` for this. An attempt interrupted after commit intent and
-before it bound a listener recovers forward with bare `cotal up`, which starts that listener. It does
+On a legacy root, a restore uses the cap recorded in the preserved state unless `up --restore`
+receives an explicit `--max-file-store <bytes>`. The restore journals the cap it uses so re-entry
+keeps it. If SIGINT, SIGTERM or SIGHUP interrupts a restore
+after commit intent and before the listener starts, the command names the attempt and tells you to run
+bare `cotal up` from that root. That command continues the same attempt and starts the listener. It does
 so only when no process of this account names the attempt and the recorded port is free, because a
 listener spawned and never bound may still be opening the restored store, and NATS does not stop a
 second server from opening it too. While such a process runs, `up` names its pid and refuses, and

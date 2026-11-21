@@ -82,6 +82,8 @@ credentials. Per-user-auth spaces refuse too; a cached login does not replace si
 resolved root supplies the persona ACL, signer and default storage together. With no space selected
 or available, start a local static-auth space with `cotal up` in its project folder and retry there.
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
+For a prepared space that has never started, the refusal says how to run `cotal up` to create
+the local signing trust. It keeps an explicit local broker URL when the first startup can use it.
 Conflicting current-folder and selected-root accounts refuse before issuance.
 After a local static space is stopped, its retained broker configuration and validated signing
 trust still resolve file-only fixed-profile minting from its project folder, including when you
@@ -144,7 +146,8 @@ differ, the receipt warns `REPLACED_GRANTS_CHANGED`, naming both and the
 mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
 `doctor auth --space <space>` to inspect their state and the guidance for each file, and the
 space's root to run it in, since `doctor auth` reads the root it runs in.
-`--replace` takes no `--out`. An exported file stays outside
+`--replace` takes no `--out`. To re-mint an existing export in place, omit `--replace` and pass
+the same file to `--out` and `--identity`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile, public key and whether `--provision` ran, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files

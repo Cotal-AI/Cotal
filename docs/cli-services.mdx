@@ -57,8 +57,9 @@ Next still names `status` while any instance's process is running, so a failed s
 process does not suggest starting another. Nothing starts a
 dependency for you: starting the manager does not start its broker. A member of a controller stack,
 `stack-broker`, `stack-auth`, `stack-delivery` or `stack-manager`, starts and stops with the stack.
-While it is stopped its Next is bare `cotal up`, and `service start` or `service restart` of it
-refuses `LIFECYCLE_BLOCKED` before anything launches, with that same Next. A start of one by itself
+While it is stopped its list entry names bare `cotal up`. `service start` or `service restart` of a
+stopped member refuses `LIFECYCLE_BLOCKED` before anything launches and names
+`cotal up --root <dir> --space <space>` for that stack. A start of one by itself
 would leave its process running and the space unregistered. This restriction checks the saved
 adapter and the stack journal's membership. A process service you added with one of those names
 still uses its own `service start` and `service restart` commands.
@@ -76,8 +77,11 @@ dashboard's `web.creds` on a space
 replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
-and `logs --follow --json` writes one record per line. Without `--json`, a follow's last line says
-in a sentence why it ended. `logs` refuses a log file this account
+and `logs --follow --json` writes one record per line once it selects an instance. Without `--json`,
+a follow's last line says why it ended. If a saved service has no recorded instance, `logs` refuses
+with `TARGET_NOT_FOUND` (exit 2). An instance must run before it can produce a log. The refusal
+gives a `service status` command for the same service and space, which starts nothing.
+`logs` refuses a log file this account
 cannot read with `PERMISSION_DENIED` (exit 2), naming the file and `chmod u+rw`, quoted when a
 shell would split the path. The failed read changes no permissions or service state. With `--follow`
 the refusal is the stream's `error` record, which carries that step as `remedy`, and the stream ends.
@@ -85,11 +89,12 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ## Adding a service [#adding-a-service]
 
-Your own program is one line:
+Run `service add` from a prepared or registered space's project folder, or pass `--space <name>`.
+In a new project, prepare the space first. Neither command starts a broker or the service.
 
 ```bash
+cotal space create reviews-dev --root .
 cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
-cotal service start reviews
 ```
 
 `--exec` splits its text into the program and its arguments as a shell quotes words, but runs no

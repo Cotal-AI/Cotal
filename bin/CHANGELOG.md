@@ -1,5 +1,190 @@
 # cotal-ai
 
+## 0.172.2
+
+### Patch Changes
+
+- b32f661: Clarify that offline workflow validation refusals include findings in the JSON result.
+- cfc9f1e: Document the fields returned by `cotal docs --search --json`, including the empty `result.hits` array when nothing matches.
+- 250e25c: Show how to list and switch spaces on the CLI entry screen and in top-level help.
+- 8b77abe: Let self-update finish when a daemon-hosted Manager starts with the Claude Code connector, and keep a closing parent channel from crashing that Manager.
+- 584ab32: Manager install help now explains that unit installation and preview are unsupported and shows how to run the manager from your own unit.
+- 6320424: `cotal meshes rm` removes each name once per batch, and `cotal meshes add` refuses an open space the broker does not serve unless you pass `--force` or explicitly accept an unchecked registration in the guided form.
+- 801ddb8: Retry space preparation without discarding its record, and get the right stop command when forgetting a running space whose registration is missing.
+- b5f3da5: After rolling back an interrupted restore, `cotal clean restore-attempt` tells you to supply the backup directory and repeat your restore options.
+- 4d8daee: `cotal space create` now reports a missing space name before downloading or installing built-in extensions.
+- Updated dependencies [921f2ba]
+- Updated dependencies [2d875ee]
+- Updated dependencies [801c561]
+- Updated dependencies [d783fed]
+- Updated dependencies [f34eea3]
+- Updated dependencies [d185913]
+- Updated dependencies [7d59745]
+- Updated dependencies [4054194]
+- Updated dependencies [efdc7d1]
+- Updated dependencies [f261418]
+- Updated dependencies [2b1e7b4]
+- Updated dependencies [e93f99e]
+- Updated dependencies [cfc9f1e]
+- Updated dependencies [c8794f6]
+- Updated dependencies [cfc6883]
+- Updated dependencies [09e0dcc]
+- Updated dependencies [250e25c]
+- Updated dependencies [566a093]
+- Updated dependencies [d8dfe64]
+- Updated dependencies [6d35ad1]
+- Updated dependencies [cd6bfe7]
+- Updated dependencies [8b77abe]
+- Updated dependencies [005683b]
+- Updated dependencies [946a631]
+- Updated dependencies [d1fdea1]
+- Updated dependencies [584ab32]
+- Updated dependencies [edb3a55]
+- Updated dependencies [6320424]
+- Updated dependencies [262b4d2]
+- Updated dependencies [4aba47d]
+- Updated dependencies [f4d8651]
+- Updated dependencies [7393fd9]
+- Updated dependencies [03c937e]
+- Updated dependencies [0cafa7c]
+- Updated dependencies [ccb865a]
+- Updated dependencies [801ddb8]
+- Updated dependencies [81d29aa]
+- Updated dependencies [ed5599e]
+- Updated dependencies [5f67c5e]
+- Updated dependencies [b5f3da5]
+- Updated dependencies [523032d]
+- Updated dependencies [e7792d3]
+- Updated dependencies [91bd144]
+- Updated dependencies [9df97e2]
+- Updated dependencies [98fe7b0]
+- Updated dependencies [041fa86]
+- Updated dependencies [61ee54b]
+- Updated dependencies [2489e19]
+- Updated dependencies [7ce3a50]
+- Updated dependencies [d5d87e4]
+- Updated dependencies [731d13e]
+- Updated dependencies [f81e11e]
+- Updated dependencies [6d8dba0]
+- Updated dependencies [6b69068]
+- Updated dependencies [ef90254]
+- Updated dependencies [e09d43d]
+- Updated dependencies [afc457b]
+- Updated dependencies [defb15d]
+- Updated dependencies [af9691f]
+- Updated dependencies [17b4df4]
+- Updated dependencies [4d8daee]
+  - @cotal-ai/cli@0.172.2
+  - @cotal-ai/workspace@0.172.2
+  - @cotal-ai/connector-core@0.172.2
+  - @cotal-ai/manager@0.172.2
+  - @cotal-ai/auth@0.172.2
+  - @cotal-ai/delivery@0.172.2
+  - @cotal-ai/runtime@0.172.2
+  - @cotal-ai/registry@0.172.2
+  - @cotal-ai/core@0.172.2
+  - @cotal-ai/seat@0.172.2
+
+## 0.172.1
+
+### Patch Changes
+
+- a3c88a2: If a restore is interrupted after it commits but before the broker starts, Cotal prints the attempt ID and the command to continue it.
+- 287ae11: When `cotal daemon connect-check` finds the selected daemon stopped, its foreground startup command now preserves `--daemon-home`.
+- 6c8ba21: Daemon status shows that automatic updates are on while native service verification is pending.
+- 41170d0: Document the update status and reconciliation fields returned by `cotal version --json`.
+- 0e3eb09: Stop the live stack manager even when an older standalone manager is saved, and show how to configure a separate manager when the stack cannot use the requested options.
+- 5a18517: Report the correct file position for duplicate YAML keys in `cotal personas list` without printing the persona's frontmatter values.
+- e65240d: `cotal daemon service-connect` points open and static-auth spaces to `cotal up` instead of asking you to register a daemon they cannot accept.
+- 2002099: `cotal manager status --instance` now refuses an unmatched instance ID instead of reporting a manager known only by its PID.
+- 6e98cc0: When an endpoint invocation times out before sending the command, the CLI tells you to change only `--timeout` on the original command without displaying its argument values.
+- af34160: The shell installer's dry run now reports the same launcher conflicts as a normal install. It stops if a directory occupies the launcher path, or if the launcher belongs to a different npm installation and a daemon service is recorded.
+- fc1eef9: Daemon service commands report invalid space names even when the daemon is stopped.
+- fb1ed28: Point `cotal daemon setup` to `cotal up` for a stopped local static-auth or open space, even when a foreground machine daemon is running.
+- aa88e1f: The shell installer rejects empty or whitespace-only `--version` values before changing any files.
+- 9a06339: Let `cotal ext seed --repair` replace an unreadable connector selection while keeping the original record for recovery.
+- 62a9859: When the Linux daemon socket path is too long, point to a shorter private `XDG_RUNTIME_DIR` shared by the daemon and its clients.
+- 6d9e144: Self-updates no longer report a deferred machine daemon restart when no daemon or service exists and the runtime directory is missing.
+- 4547b70: Report successful writes to your defaults even when an unreadable space record prevents `cotal config` from showing the effective value.
+- Updated dependencies [714b325]
+- Updated dependencies [46f5a7a]
+- Updated dependencies [8cf5da8]
+- Updated dependencies [e9d7585]
+- Updated dependencies [bc697eb]
+- Updated dependencies [9e757ef]
+- Updated dependencies [d5365ab]
+- Updated dependencies [ddf3386]
+- Updated dependencies [dc1bad8]
+- Updated dependencies [fc569ee]
+- Updated dependencies [d1d8aaa]
+- Updated dependencies [a3c88a2]
+- Updated dependencies [bbb333c]
+- Updated dependencies [3ba92f9]
+- Updated dependencies [a79718b]
+- Updated dependencies [b921290]
+- Updated dependencies [280840a]
+- Updated dependencies [4e5a58c]
+- Updated dependencies [0e3eb09]
+- Updated dependencies [2ec9a4d]
+- Updated dependencies [e921676]
+- Updated dependencies [79d2574]
+- Updated dependencies [4363588]
+- Updated dependencies [a880a09]
+- Updated dependencies [5a18517]
+- Updated dependencies [347027f]
+- Updated dependencies [6f05bd5]
+- Updated dependencies [ee3a15c]
+- Updated dependencies [2d4f340]
+- Updated dependencies [be5e46d]
+- Updated dependencies [856cf75]
+- Updated dependencies [bde81d3]
+- Updated dependencies [d8fe52e]
+- Updated dependencies [2dd82c8]
+- Updated dependencies [7b6d652]
+- Updated dependencies [c3d0a38]
+- Updated dependencies [50696a6]
+- Updated dependencies [1078e3a]
+- Updated dependencies [2002099]
+- Updated dependencies [f346cde]
+- Updated dependencies [6e98cc0]
+- Updated dependencies [6078a57]
+- Updated dependencies [ed535b3]
+- Updated dependencies [af34160]
+- Updated dependencies [807e6fd]
+- Updated dependencies [1670fbe]
+- Updated dependencies [cceb29a]
+- Updated dependencies [cf67c96]
+- Updated dependencies [b825bde]
+- Updated dependencies [6a6a4e4]
+- Updated dependencies [a214ad7]
+- Updated dependencies [9a06339]
+- Updated dependencies [92a6ab4]
+- Updated dependencies [8fcbc43]
+- Updated dependencies [2c7d939]
+- Updated dependencies [fb6c87f]
+- Updated dependencies [39840df]
+- Updated dependencies [59b4842]
+- Updated dependencies [dd65534]
+- Updated dependencies [728bde0]
+- Updated dependencies [4ebd6da]
+- Updated dependencies [e7d4605]
+- Updated dependencies [1adcf3f]
+- Updated dependencies [c65336e]
+- Updated dependencies [2037c77]
+- Updated dependencies [c95b329]
+- Updated dependencies [4547b70]
+- Updated dependencies [fc3d455]
+  - @cotal-ai/auth@0.172.1
+  - @cotal-ai/cli@0.172.1
+  - @cotal-ai/workspace@0.172.1
+  - @cotal-ai/connector-core@0.172.1
+  - @cotal-ai/core@0.172.1
+  - @cotal-ai/manager@0.172.1
+  - @cotal-ai/runtime@0.172.1
+  - @cotal-ai/delivery@0.172.1
+  - @cotal-ai/registry@0.172.1
+  - @cotal-ai/seat@0.172.1
+
 ## 0.172.0
 
 ### Patch Changes

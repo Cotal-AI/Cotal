@@ -102,15 +102,15 @@ process.exit = ((code?: number) => {
 /** Grow one session snapshot by snapshot, with a durable event of it after each, as the server
  *  appends one to the session's log for every change to its list. */
 let seq = 0;
-async function grow(ctx: ReturnType<typeof fakeOpenCode2Context>, sessionID: string, snapshots: OpenCode2Message[][], end: string): Promise<void> {
-  const event = (type: string) => ctx.feed({ type, durable: { aggregateID: sessionID, seq: seq++ }, data: { sessionID } });
+async function grow(ctx: ReturnType<typeof fakeOpenCode2Context>, sessionID: string, snapshots: OpenCode2Message[][], end: string, endData: Record<string, unknown> = {}): Promise<void> {
+  const event = (type: string, extra: Record<string, unknown> = {}) => ctx.feed({ type, durable: { aggregateID: sessionID, seq: seq++ }, data: { sessionID, ...extra } });
   event("session.execution.started");
   for (const snapshot of snapshots) {
     lists.set(sessionID, snapshot);
     event("session.step.ended");
     await sleep(250);
   }
-  event(end);
+  event(end, endData);
   await sleep(500);
 }
 
@@ -141,8 +141,20 @@ try {
     { id: "msg_09", type: "assistant", time: { created: 1794313802010, streamed: 1794313802020, completed: 1794313802030 }, content: [{ type: "text", text: "[text 3]" }] },
     { id: "msg_10", type: "idle", time: { created: 1794313802040 }, outcome: "failed", error: { type: "provider.auth", message: "upstream echoed: secret-detail" } },
   ];
-  await grow(first, sid, [failedTurn], "session.execution.failed");
+  // The failed end carries the error as OpenCode 2.2.5 sends it for a provider 401 (measured live:
+  // `session.execution.failed` data `{ sessionID, error: { type, message, status, response } }`).
+  await grow(first, sid, [failedTurn], "session.execution.failed", {
+    error: { type: "provider.auth", message: "Missing API key", status: 401, response: { body: "{\"error\":\"upstream echoed: secret-detail\"}" } },
+  });
   const readsFirst = reads;
+  const otto = () => observer.getRoster().find((p) => p.card.name === "Otto");
+  let failedPresence = otto();
+  for (let i = 0; i < 25 && !failedPresence?.condition; i++, await sleep(200)) failedPresence = otto();
+  const { since, ...failure } = failedPresence?.condition ?? { since: undefined };
+  check("condition:the failed turn reads idle with OpenCode's own error kind and message as its condition, so no observer sees a bare idle",
+    failedPresence?.status === "idle" && JSON.stringify(failure) === JSON.stringify({ code: "auth", source: "provider.auth", message: "Missing API key" }) && typeof since === "number",
+    { status: failedPresence?.status, condition: failedPresence?.condition });
+  check("withheld:the provider's response body does not reach presence", !JSON.stringify(failedPresence ?? {}).includes("secret-detail"));
 
   first.end();
   await stopFirst?.();
@@ -159,6 +171,9 @@ try {
   });
   await sleep(1_500);
   await grow(second, SESSIONS[1]!, snapshotsOf("interrupted while streaming"), "session.execution.interrupted");
+  const after = otto();
+  check("condition:a turn someone stopped is not a failure, and the seat that ran it reports no condition",
+    after?.status === "idle" && after.condition === undefined, { status: after?.status, condition: after?.condition });
 
   const reader = new CotalEndpoint({ space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL] });
   reader.on("error", () => {});
@@ -209,7 +224,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 12;
+const EXPECTED = 15;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();

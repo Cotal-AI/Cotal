@@ -23,7 +23,8 @@ import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
-import { connectionNotReadyWarning, cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { connectionNotReadyWarning } from "./tool-specs-inbox.js";
 import { briefing } from "./briefing.js";
 import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";

@@ -13,7 +13,7 @@ import {
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, liveUpdateClosureOwner, readUpdateRecovery, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
@@ -523,6 +523,15 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       };
     };
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") || ["COTAL_HOME", "COTAL_SKIP_CONNECTOR_SEED", "COTAL_TELEMETRY"].includes(key)));
+    // The native service does not inherit the updater's environment. Delegate only from the
+    // verified journal for this generation, so boot can materialize connectors under its closure.
+    const recovery = readUpdateRecovery();
+    if (recovery?.phase === "verified-ready" && recovery.installed === version && recovery.owner && liveUpdateClosureOwner(recovery)) {
+      env.COTAL_UPDATE_CLOSURE_OWNER = String(recovery.owner.pid);
+      env.COTAL_UPDATE_CLOSURE_NONCE = recovery.owner.nonce;
+      env.COTAL_UPDATE_CLOSURE_START = recovery.owner.start;
+      env.COTAL_UPDATE_CLOSURE_TRANSACTION = "1";
+    }
     const child = spawn(node!, [...argv, "__machine-manager", "--space", space, "--runtime", "pty", "--console-port", "0", "--session-directory", home, "--expected-connector-generation", version], {
       cwd: root, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"],
     });

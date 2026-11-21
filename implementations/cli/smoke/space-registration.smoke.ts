@@ -178,6 +178,13 @@ const bundle = (over: Record<string, unknown> = {}) => ({
 const file = join(home, "hosted.json");
 writeFileSync(file, JSON.stringify(bundle()));
 const userRoot = projectRoot("hosted-root");
+const emptyInventory = await run(["space", "--plain"]);
+const registrationTemplate = /^[ \t]*(cotal space add <name> --server <url>[^\n]*?)[ \t]{2,}Register an existing broker/m;
+const emptyCommand = registrationTemplate.exec(emptyInventory.stdout)?.[1];
+const outsideCommand = "cotal space add <name> --server <url> --root <dir>";
+check("empty inventory outside a project names the required root and which folder to use",
+  emptyInventory.status === 0 && emptyCommand === outsideCommand &&
+    emptyInventory.stdout.includes("any existing folder for an open space") && emptyInventory.stdout.includes(".cotal/auth"), shown(emptyInventory));
 recordMesh({ space: "keep", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
 setCurrent("keep");
 
@@ -220,7 +227,14 @@ setCurrent("keep");
 
 // ── Adding a space from --server ───────────────────────────────────────────────────────────────────────
 {
-  const added = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
+  const outside = await run(["space", "--plain"]);
+  const inside = await run(["space", "--plain"], {}, root);
+  check("nonempty inventory names --root only when the project cannot be inferred",
+    outside.status === 0 && registrationTemplate.exec(outside.stdout)?.[1] === outsideCommand &&
+    inside.status === 0 && registrationTemplate.exec(inside.stdout)?.[1] === "cotal space add <name> --server <url>", { outside: shown(outside), inside: shown(inside) });
+  if (!emptyCommand) throw new Error(`inventory printed no registration command: ${emptyInventory.stdout}`);
+  const args: Record<string, string> = { "<name>": "open1", "<url>": LIVE, "<dir>": root };
+  const added = await json(emptyCommand.split(" ").slice(1).map((arg) => args[arg] ?? arg));
   const r = added.env?.result;
   check("an open broker is added: ok, verified, not a replacement", added.status === 0 && added.env?.outcome === "ok" && r?.kind === "space-added" && r.verified === true && r.replaced === false, shown(added));
   check("its record is the space show detail: open, manual, reachable", r?.space?.space === "open1" && r.space.mode === "open" && r.space.origin === "manual" && r.space.check === "reachable" && r.space.root === root, r?.space);
@@ -342,8 +356,18 @@ setCurrent("keep");
   const listedUnchecked = await json(["space"]);
   check("space --json marks that mode unchecked and a checked one checked",
     listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  setCurrent("dead1");
   const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
-  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  check("space show tells the user to wait for an offline broker without forgetting it",
+    shownUnchecked.status === 0 && /broker:\s+unreachable/.test(shownUnchecked.stdout) && /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) &&
+    shownUnchecked.stdout.includes("wait for the broker to answer") && !shownUnchecked.stdout.includes("cotal space forget"), shown(shownUnchecked));
+  const beforeVerify = registryFiles();
+  const verifyOffline = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
+  const retarget = await json(["space", "add", "dead1", "--server", LIVE, "--root", root]);
+  check("offline verification preserves the registration and selection and cannot retarget it",
+    refused(verifyOffline, 2, "TARGET_UNAVAILABLE") && refused(retarget, 2, "CONFLICT") &&
+    JSON.stringify(registryFiles()) === JSON.stringify(beforeVerify) && getCurrent() === "dead1", { verify: shown(verifyOffline), retarget: shown(retarget) });
+  setCurrent("keep");
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
@@ -372,15 +396,17 @@ setCurrent("keep");
     const spacedRoot = projectRoot("registrations with 'quotes' and `backticks`");
     const unchecked = await json(["space", "add", "open5", "--server", LIVE, "--root", spacedRoot, "--mode", "open", "--force"]);
     check("a forced registration keeps a root with spaces and quotes", unchecked.status === 0 && unchecked.env?.result.space.root === spacedRoot && unchecked.env?.result.verified === false, shown(unchecked));
+    setCurrent("open5");
     const detail = await run(["space", "show", "open5", "--plain"]);
-    const hint = /check its mode by adding it again without --force: (`+)(cotal space forget .+?)\1, then (`+)(cotal space add .+?)\3$/m.exec(detail.stdout);
-    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]} && ${hint[4]}`], {
+    const hint = /check its mode without removing the registration: (`+)(cotal space add .+?)\1$/m.exec(detail.stdout);
+    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]}`], {
       cwd: home, env: runEnv, encoding: "utf8", timeout: 120_000,
     });
     const checked = await json(["space", "show", "open5"]);
-    check("the printed verification commands re-register and verify the exact root",
-      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot,
+    check("the printed verification command verifies the exact root and keeps the selection",
+      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot && checked.env?.result.current === true,
       { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
+    setCurrent("keep");
   }
 }
 
@@ -951,6 +977,23 @@ if (process.platform === "linux") {
 
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
+  const project = projectRoot("retry-create");
+  const agents = join(project, ".cotal", "agents");
+  writeFileSync(agents, "obstacle");
+  const failed = await json(["space", "create", "retry-space"], project);
+  const prepared = findPreparedSpace("retry-space");
+  const file = join(preparedSpacesDir(), `${spaceSegment("retry-space")}.json`);
+  const before = prepared && readFileSync(file, "utf8");
+  check("a failed persona seed leaves the preparation in place", failed.status === 3 && failed.env?.error?.code === "OPERATION_UNKNOWN" && prepared?.root === project, shown(failed));
+  renameSync(agents, `${agents}.old`);
+  const retried = await json(["space", "create", "retry-space"], project);
+  check("the same create fills in just the default persona without replacing the prepared record",
+    retried.status === 0 && existsSync(join(agents, "default.md")) && retried.env?.result.preparedAt === prepared?.ts &&
+    retried.env?.result.written.map((w: { what: string }) => w.what).join() === "default persona" && before === readFileSync(file, "utf8"), shown(retried));
+  check("the same name in another root still conflicts", refused(await json(["space", "create", "retry-space"], root), 2, "CONFLICT"));
+  removePreparedSpace("retry-space");
+}
+{
   const before = registryFiles();
   const fresh = join(home, "fresh");
   mkdirSync(fresh);
@@ -1266,8 +1309,7 @@ if (process.platform === "linux") {
   mkdirSync(longestRoot);
   const sixtyFour = await json(["space", "create", "b".repeat(64)], longestRoot);
   check("a 64-character name is prepared", sixtyFour.status === 0 && findPreparedSpace("b".repeat(64)) !== undefined, shown(sixtyFour));
-  // A record an earlier release prepared under a name `up` cannot start: the refusal says no member
-  // was started, and its next step quotes the name.
+  // An existing prepared name reaches the same controller startup checks as before.
   const legacy = join(home, "legacy");
   mkdirSync(join(legacy, ".cotal", "agents"), { recursive: true, mode: 0o700 });
   recordPreparedSpace({ space: "sp ace", root: legacy, ts: new Date().toISOString() });
@@ -1473,6 +1515,17 @@ if (process.platform === "linux") {
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
   const stoppedHistory = await json(["history", "news", "--space", "demo"], elsewhere);
+  for (const requestedSpace of [null, "demo"]) {
+    const watch = await run(["watch", "--json", ...(requestedSpace === null ? [] : ["--space", requestedSpace])], {}, fresh);
+    const records = watch.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      type: string; target: { requestedSpace?: string | null; space?: string }; data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    check(`watch --json reports the stopped space with ${requestedSpace === null ? "automatic" : "explicit"} selection`,
+      watch.status === 2 && records.map((r) => r.type).join() === "error,end" &&
+      records.every((r) => r.target.requestedSpace === requestedSpace && r.target.space === "demo") &&
+      records[0]?.data.code === "TARGET_UNAVAILABLE" && records[0].data.message === stoppedHistory.env?.error?.message &&
+      records[0].data.remedy === stoppedHistory.env?.error?.remedy && records[1]?.data.reason === "setup-failed", shown(watch));
+  }
   for (const args of [
     ["history", "news", "--server", server],
     ["history", "news", "--server", `${server}/`],
@@ -1927,11 +1980,21 @@ if (process.platform === "linux") {
   // must clear it (#7335): the refusal names that forget, and the forget removes the file.
   mkdirSync(meshesDir(), { recursive: true, mode: 0o700 });
   const registration = join(meshesDir(), `${spaceSegment("pold")}.json`);
-  writeFileSync(registration, '{"space":"pold",');
+  const corrupt = '{"space":"pold",';
+  writeFileSync(registration, corrupt);
   const blocked = await json(["space"], folder);
   check("space with a damaged registration record refuses SCHEMA_INVALID, exit 1, naming the forget that removes it",
     refused(blocked, 1, "SCHEMA_INVALID") && blocked.env?.target?.file === registration &&
       blocked.env.error?.remedy === "restore the record from backup, or remove it with `cotal space forget pold`", shown(blocked));
+  const preview = await run(["space", "delete", "pold", "--dry-run", "--plain"], {}, folder);
+  check("delete preview names the damaged registration and its recovery without contacting a broker",
+    preview.status === 2 && preview.stderr.includes("TARGET_UNAVAILABLE") && preview.stderr.includes(registration) &&
+      preview.stderr.includes("no broker was contacted") && preview.stderr.includes(blocked.env?.error?.remedy ?? "missing remedy"), shown(preview));
+  const applied = await json(["space", "delete", "pold", "--yes"], folder);
+  check("confirmed delete reports the same registry refusal and keeps the damaged record",
+    refused(applied, 2, "TARGET_UNAVAILABLE") && applied.env?.target?.space === "pold" &&
+      applied.env.error?.message === `${blocked.env?.error?.message}; no broker was contacted for this read` &&
+      applied.env.error?.remedy === blocked.env?.error?.remedy && readFileSync(registration, "utf8") === corrupt, shown(applied));
   const forgetRegistration = await json(["space", "forget", "pold"], folder);
   check("space forget pold removes its damaged registration record, with no broker, root or origin",
     forgetRegistration.status === 0 && forgetRegistration.env?.result?.kind === "space-forgotten" && forgetRegistration.env.result.server === null &&
@@ -1955,6 +2018,52 @@ if (process.platform === "linux") {
     const reused = await json(["space", "create", name, "--root", elsewhere]);
     check("the forgotten name can immediately be prepared in a different folder", reused.status === 0, shown(reused));
     removePreparedSpace(name);
+  }
+}
+
+// An open space registered by an earlier release must still start under its exact old name.
+if (process.platform !== "win32") {
+  const project = join(home, "legacy-open");
+  mkdirSync(join(project, ".cotal"), { recursive: true, mode: 0o700 });
+  const space = "bad space";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const registration = { space, root: project, server, mode: "open", origin: "up", ts: new Date().toISOString() } as const;
+  recordMesh(registration);
+  const sandbox = recordSmokeSandbox({ root: project, cotalHome: runEnv.COTAL_HOME, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+  const child = spawn(process.execPath, [BIN, "up", "--open", "--foreground", "--no-manager", "--space", space, "--server", server], {
+    cwd: project, env: runEnv, stdio: ["ignore", "pipe", "pipe"],
+  });
+  teardownOnSignal(child);
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  let output = "";
+  child.stdout.on("data", (data) => { output += data; });
+  child.stderr.on("data", (data) => { output += data; });
+  const ready = /up at|wrote default persona|Foreground stack lifetime/;
+  try {
+    for (let i = 0; i < 240 && child.exitCode === null && !ready.test(output); i++)
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    const shownSpace = await json(["space", "show", space], project);
+    check("foreground up of a registered odd name starts its exact open space", ready.test(output) && shownSpace.status === 0 && shownSpace.env?.result?.check === "reachable", { output: output.slice(-1500), show: shown(shownSpace) });
+    const preview = await json(["space", "delete", space, "--dry-run"], project);
+    check("space delete previews the exact odd name and its live streams without changing anything",
+      preview.status === 0 && preview.env?.target?.space === space && preview.env.result.effectAttempted === false &&
+        preview.env.result.streams.some((stream: { name: string; state: string }) => stream.name === "CHAT_bad_space" && stream.state === "present"), shown(preview));
+    recordMesh({ ...registration, space: "-legacy", origin: "manual" });
+    const dashed = await json(["space", "delete", "--dry-run", "--", "-legacy"], project);
+    check("space delete still accepts registered leading-dash tokens after --", dashed.status === 0 && dashed.env?.target?.space === "-legacy", shown(dashed));
+    removeMesh("-legacy");
+    recordMesh({ ...registration, space: "bad_space", origin: "manual" });
+    const ambiguous = await json(["space", "delete", space, "--dry-run"], project);
+    check("space delete refuses ambiguous streams shared by two open-space names",
+      refused(ambiguous, 2, "CONFLICT") && /maps to the same streams/.test(ambiguous.env?.error?.message ?? ""), shown(ambiguous));
+    removeMesh("bad_space");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: project, env: runEnv });
+      const down = await run(["down", "--yes"], {}, project);
+      if (down.status !== 0) child.kill("SIGTERM");
+    }
+    await closed;
   }
 }
 

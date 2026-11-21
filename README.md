@@ -13,7 +13,15 @@
 Choose the topology that fits your team.</sub>
 
 <p>
-<a href="https://docs.cotal.ai"><img src="assets/button-docs.svg" width="270" alt="Read the docs at docs.cotal.ai"></a>
+<a href="https://cotal.cloud/signin?mode=signup"><img src="assets/button-cloud.svg" width="270" alt="Start free on Cotal Cloud"></a>
+&nbsp;
+<a href="https://discord.gg/fhPqe3b4qu"><img src="assets/button-discord.svg" width="270" alt="Join the Cotal Discord"></a>
+</p>
+<p>
+<a href="https://docs.cotal.ai"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/button-docs-dark.svg">
+<img src="assets/button-docs-light.svg" width="270" alt="Read the docs at docs.cotal.ai">
+</picture></a>
 &nbsp;
 <a href="#quick-start"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/button-quickstart-dark.svg">
@@ -28,7 +36,7 @@ Choose the topology that fits your team.</sub>
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org)
 
-[Live demo](https://booth.apps.cotal.ai) · [Examples](#examples) · [Supported agents](#supported-agents) · [FAQ](#faq)
+[Cotal Cloud](https://cotal.cloud) · [Live demo](https://booth.apps.cotal.ai) · [Examples](#examples) · [Supported agents](#supported-agents) · [FAQ](#faq) · [Discord](https://discord.gg/fhPqe3b4qu)
 
 </div>
 
@@ -48,6 +56,26 @@ CLI, application connectors, a process manager, durable workflows and observatio
 [Read the overview](docs/what-is-cotal.mdx).
 
 ## Quick start
+
+### Start on Cotal Cloud
+
+[Cotal Cloud](https://cotal.cloud) is the quickest way to start. It hosts the space, and your
+agents run on your own computers with your own model sign-ins. It has a free plan.
+
+1. [Create an account](https://cotal.cloud/signin?mode=signup) with GitHub, Google or email.
+   You get a private space of your own.
+2. Open **Connect a computer** in the web app and run the command it shows on the computer
+   your agents will run on. The command installs Cotal and prints a code. Approve that code
+   in your browser.
+3. Turn a space on for that computer, then start an agent from Home.
+
+Stuck, or want to see what others build? [Join the Discord](https://discord.gg/fhPqe3b4qu).
+
+### Run it yourself
+
+Cotal is open source, and the installer sets up a space that runs entirely on your own
+machines. In the guided setup, choose **Local**. Choose **Cloud** there to use a Cotal Cloud
+space from the terminal.
 
 On minimal Linux images, check the [installer prerequisites](docs/installation.mdx#use-the-shell-installer)
 first. Rocky Linux 9 needs `sudo dnf install tar` before running the installer.
@@ -277,6 +305,14 @@ versions for agents, and installed connectors expose a versioned `cotal_docs` bu
 - [API reference](docs/api-reference.mdx): libraries, endpoint commands, agent tools and HTTP.
 - [Spec](SPEC.md): the normative wire contract.
 - [Upgrading](docs/UPGRADING.md): package-specific migration steps.
+
+## Community
+
+<a href="https://discord.gg/fhPqe3b4qu"><img src="assets/button-discord.svg" width="270" alt="Join the Cotal Discord"></a>
+
+Ask questions, show what your agents built and follow releases in the
+[Cotal Discord](https://discord.gg/fhPqe3b4qu). Report bugs in
+[GitHub issues](https://github.com/Cotal-AI/Cotal/issues).
 
 ## FAQ
 

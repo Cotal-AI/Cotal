@@ -6,7 +6,7 @@ import {
   isJetStreamMissing, liveKvEntries, presenceBucket, standaloneConnectOpts,
   type ChannelRegistryFile, type Presence,
 } from "@cotal-ai/core";
-import { canonicalRoot, CommandFailure, connectOrThrow, serviceMetadataDigest, userViewAuth } from "@cotal-ai/workspace";
+import { canonicalRoot, CommandFailure, connectOrThrow, serviceMetadataDigest, userViewAuth, type MeshEntry } from "@cotal-ai/workspace";
 import { hashManifestSource, listLedgers } from "./manifest/ledger.js";
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "./manifest/spawn-plan.js";
 import { loadManifest, type PreparedManifest } from "./manifest/index.js";
@@ -89,7 +89,12 @@ export function cardsWithoutLiveDelivery(channels: readonly { name: string; deli
 }
 
 /** What to do about the cards {@link cardsWithoutLiveDelivery} names. */
-export const LIVE_DELIVERY_REMEDY = "set `deliveryClass: live` on each card, or create a durable channel with `cotal channel set <name> --delivery durable`";
+export function liveDeliveryRemedy(mode: MeshEntry["mode"]): string {
+  const live = "set `deliveryClass: live` on each card";
+  return mode === "open"
+    ? `${live}. Durable channels require a different authenticated mesh with a delivery service`
+    : `${live}, or create a durable channel with \`cotal channel set <name> --delivery durable\``;
+}
 
 /** Read-only additive classification. The membership feed is display-only and never grants apply. */
 export async function inspectTeamDeployment(root: string, path: string, prepared: PreparedManifest, runtime: string) {

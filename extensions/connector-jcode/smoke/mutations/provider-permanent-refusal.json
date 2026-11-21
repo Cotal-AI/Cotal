@@ -10,7 +10,7 @@
   "mutations": [
     {
       "name": "M1 retry a permanent SDK replacement refusal",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "          if (permanentBridgeRecoveryFailure(error)) throw error;",
       "replace": "          if (false) throw error;",
       "expectRed": "persistent invalid_request replacement refusal is terminal before another launch",

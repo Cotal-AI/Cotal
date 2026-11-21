@@ -23,12 +23,12 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, recordMesh, removeMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 
@@ -41,7 +41,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string; name?: string; post?: string[] | null } | null;
-  result?: { stored?: boolean };
+  result?: { stored?: boolean; sender?: { principal: string } };
   error?: { code: string; message?: string; remedy?: string };
 }
 
@@ -70,13 +70,18 @@ const releaseOpenBroker = teardownOnSignal(openBroker, dir);
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[], cwd = root) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
+const run = (args: string[], cwd = root, shell = false) => {
+  const r = spawnSync(shell ? "sh" : process.execPath, shell ? args : [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
+const retryFileSend = (refusal: ReturnType<typeof run>, cwd: string, body: string) => {
+  const command = /`cotal (send [^`]+) "<message>"`/.exec(refusal.envelope?.error?.remedy ?? "")?.[1];
+  if (!command) throw new Error(`missing send retry: ${JSON.stringify(shown(refusal))}`);
+  return run(["-c", `exec "$0" "$1" ${command} "$2" --json`, process.execPath, BIN, body], cwd, true);
+};
 const firstLine = (text: string) => text.split("\n")[0];
 const credsPath = (label: string) => join(dir, `${label}.creds`);
 let issuer: CotalEndpoint | undefined;
@@ -200,6 +205,34 @@ try {
   const chatAfter = await state(chatStream(space));
   check("the channel mint remedy produces a credential that stores on the requested channel", recovered.status === 0 && recovered.envelope?.result?.stored === true
     && chatAfter.messages === chatBefore.messages + 1 && chatAfter.last_seq === chatBefore.last_seq + 1, { reply: shown(recovered), chatBefore, chatAfter });
+  const brokerOnlyArgs = ["send", "--channel=--audit", "registered broker with explicit creds", "--server", servers, "--creds", credsPath("audit_poster"), "--json"];
+  const brokerOnly = run(brokerOnlyArgs, empty);
+  check("--server with --creds and no --space stores in the broker's registered space", brokerOnly.status === 0
+    && brokerOnly.envelope?.target?.space === space && brokerOnly.envelope.result?.stored === true, shown(brokerOnly));
+
+  const extra = { space: `${space}-other`, server: servers, root: empty, mode: "auth" as const, ts: new Date().toISOString() };
+  recordMesh(extra);
+  try {
+    const multiple = run(brokerOnlyArgs, empty);
+    check("multiple registrations at the broker keep the raw credential target at main", multiple.status === 2
+      && multiple.envelope?.target?.space === DEFAULT_SPACE && multiple.envelope.error?.code === "PERMISSION_DENIED", shown(multiple));
+  } finally { removeMesh(extra.space); }
+  removeMesh(space);
+  try {
+    const unregistered = run(brokerOnlyArgs, empty);
+    check("no registration at the broker keeps the raw credential target at main", unregistered.status === 2
+      && unregistered.envelope?.target?.space === DEFAULT_SPACE && unregistered.envelope.error?.code === "PERMISSION_DENIED", shown(unregistered));
+  } finally { recordMesh({ space, server: servers, root, mode: "auth", ts: new Date().toISOString() }); }
+
+  const quotedCreds = credsPath("poster's credential");
+  copyFileSync(credsPath("poster"), quotedCreds);
+  const withCreds = ["send", "-c", "general", "--space", space, "--server", servers, "--creds", quotedCreds, "--json"];
+  const expectedSender = run([...withCreds, "credential control"]).envelope?.result?.sender?.principal;
+  const missingWithCreds = run([...withCreds, "--file", "missing.txt"]);
+  const retriedWithCreds = retryFileSend(missingWithCreds, root, "credential retry");
+  check("file retry quotes the credential path and publishes as that credential", missingWithCreds.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && retriedWithCreds.status === 0 && retriedWithCreds.envelope?.result?.stored === true
+    && expectedSender !== undefined && retriedWithCreds.envelope.result.sender?.principal === expectedSender, { refusal: shown(missingWithCreds), retry: shown(retriedWithCreds), expectedSender });
 
   // #7045: an open space that runs elsewhere gets its streams from its first participant, and a
   // one-shot send may be that participant. The space is not registered and its broker is open.
@@ -214,6 +247,22 @@ try {
   const openRoot = join(dir, "open-project");
   mkdirSync(join(openRoot, ".cotal"), { recursive: true, mode: 0o700 });
   recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", ts: new Date().toISOString() });
+  const otherSpace = `${openSpace}-other`;
+  const missing = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", "missing.txt", "--json"], openRoot);
+  const retried = retryFileSend(missing, openRoot, "file retry");
+  const targetHistory = run(["history", "general", "--server", openServers, "--space", otherSpace, "--json"], openRoot);
+  const folderHistory = run(["history", "general", "--json"], openRoot);
+  check("file retry publishes only to the explicit space, not the project space", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && retried.status === 0 && retried.envelope?.target?.space === otherSpace && retried.envelope.result?.stored === true
+    && targetHistory.status === 0 && targetHistory.stdout.includes('"text":"file retry"')
+    && folderHistory.status === 0 && folderHistory.stdout.includes('"text":"first-open"') && !folderHistory.stdout.includes('"text":"file retry"'),
+    { refusal: shown(missing), retry: shown(retried), target: shown(targetHistory), folder: shown(folderHistory) });
+  const noBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--json"], openRoot);
+  const invalidServer = run(["send", "--server", "nats://fixture-user:fixture-secret@127.0.0.1:4222", "-c", "general", "--json"], openRoot);
+  check("body grammar remedies keep explicit targets but do not print credentials embedded in an invalid URL",
+    noBody.status === 1 && noBody.envelope?.error?.remedy?.includes(`--space ${otherSpace} --server ${openServers}`) === true
+    && invalidServer.status === 1 && !invalidServer.stdout.includes("fixture-secret") && !invalidServer.stderr.includes("fixture-secret"),
+    { noBody: shown(noBody), invalidServer: shown(invalidServer) });
   const alias = run(["send", "-c", "general", "wrong-space", "--server", `nats://localhost:${openPort}`, "--json"], openRoot);
   const openInspector = await connect({ servers: openServers });
   try {

@@ -57,8 +57,8 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
 function definitionInput(values: PersonaValues, name: string): string {
   let bytes: Buffer;
   if (values.prompt !== undefined) bytes = Buffer.from(values.prompt, "utf8");
-  else if (values.from === "-") {
-    if (process.stdin.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "pipe the explicit --from - input instead of reading an interactive terminal");
+  else if (values.file === "-" || values.from === "-") {
+    if (process.stdin.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", `pipe the explicit --${values.file === "-" ? "file" : "from"} - input instead of reading an interactive terminal`);
     const chunks: Buffer[] = [];
     let total = 0;
     for (;;) {

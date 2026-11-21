@@ -515,7 +515,9 @@ try {
   // C13: the BRK space's participant reaches the broker through a TCP pass-through the suite can cut,
   // so a broker loss is the daemon's alone; the auth services keep their own broker connections.
   let brokerPathUp = true;
-  let brokerReplyDelay = process.argv.includes("--cold-restart-repro") ? 100 : 0;
+  const coldRestart = process.argv.includes("--cold-restart-repro");
+  let brokerReplyDelay = coldRestart ? 100 : 0;
+  let contractPublishes = 0;
   const pathSockets = new Set<Socket>();
   const brokerPath: NetServer = createNetServer((inbound) => {
     if (!brokerPathUp) { inbound.destroy(); return; }
@@ -523,6 +525,23 @@ try {
     pathSockets.add(inbound); pathSockets.add(outbound);
     const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
     inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
+    if (coldRestart) {
+      let pending = Buffer.alloc(0);
+      inbound.on("data", (chunk: Buffer) => {
+        pending = Buffer.concat([pending, chunk]);
+        for (;;) {
+          const end = pending.indexOf("\r\n");
+          if (end === -1) return;
+          const line = pending.subarray(0, end).toString();
+          const pub = /^H?PUB (\S+) .*?(\d+)$/.exec(line);
+          // Skip the body by byte length. TCP chunks can split or coalesce NATS frames.
+          const next = end + 2 + (pub ? Number(pub[2]) + 2 : 0);
+          if (pending.length < next) return;
+          if (pub && /^cotal\.[^.]+\.epc\.[0-9a-f]{64}$/.test(pub[1]!)) contractPublishes++;
+          pending = pending.subarray(next);
+        }
+      });
+    }
     inbound.pipe(outbound);
     if (process.argv.includes("--hosted-latency")) {
       outbound.on("data", chunk => {
@@ -3475,10 +3494,12 @@ process.exit(result.status ?? 93);
           } finally { brokerReplyDelay = 0; }
           return;
         }
-        if (process.argv.includes("--cold-restart-repro")) {
+        if (coldRestart) {
           const client = { versionSkew: (text: string) => text, roster: async () => [] };
+          check("6267 first setup publishes missing Manager contracts", contractPublishes > 0, { contractPublishes });
           for (let run = 1; run <= 3; run++) {
             const started = Date.now();
+            const beforePublishes = contractPublishes;
             await killAndAwaitExit(child, "SIGTERM");
             child = await startDaemon();
             const daemonReadyMs = Date.now() - started;
@@ -3489,7 +3510,8 @@ process.exit(result.status ?? 93);
               await sleep(100);
             }
             const answeringMs = Date.now() - started;
-            check(`6267 restart ${run} answers within 30s without setup`, replacement.state === "answering" && answeringMs < 30_000, { answeringMs, replacement });
+            check(`6267 restart ${run} answers on the same instance within 30s without setup`, replacement.state === "answering" && replacement.instanceId === manager.instanceId && answeringMs < 30_000, { answeringMs, replacement });
+            check(`6267 restart ${run} does not republish verified Manager contracts`, contractPublishes === beforePublishes, { publishes: contractPublishes - beforePublishes });
             const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", replacement.instanceId, { onRefusal: "throw", readOnly: true });
             const resolves: number[] = [];
             for (const temperature of ["cold", "warm"]) {

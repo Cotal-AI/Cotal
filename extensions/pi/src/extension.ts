@@ -21,6 +21,7 @@ import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.j
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
 import { PiEvents } from "./events.js";
+import { piCommandDispatcher, piRunsCommands, type PiCommandHost } from "./commands.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
@@ -34,6 +35,8 @@ interface PiRuntime {
   sessionId?: string;
   expectedSessionId?: string;
   events?: PiEvents;
+  /** The API of the latest load, which a reload replaces. */
+  commandHost?: PiCommandHost;
 }
 
 type GlobalWithPi = typeof globalThis & { [RUNTIMES]?: Map<string, PiRuntime> };
@@ -134,10 +137,12 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>): PiRuntime {
-  const mesh = new MeshAgent(config);
+function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>, runsCommands: boolean): PiRuntime {
+  let runtime: PiRuntime | undefined;
+  const commands = runsCommands ? piCommandDispatcher(() => runtime?.commandHost, (): PiDriver => driver) : undefined;
+  const mesh = new MeshAgent(config, undefined, { commands });
   const driver = new PiDriver(mesh);
-  const runtime: PiRuntime = {
+  runtime = {
     config,
     mesh,
     driver,
@@ -146,6 +151,7 @@ function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFr
 
   mesh.on("incoming", () => driver.onIncoming());
   mesh.on("wake", () => driver.onWake());
+  mesh.on("command", () => driver.onCommand());
   mesh.on("mention-wake", (item: InboxItem) => driver.onMentionWake(item));
   mesh.start();
   // A once seat that must end itself, because its task's handoff could not be reported, quits Pi the
@@ -204,7 +210,11 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   const key = runtimeKey(config);
   runtime ??= runtimes.get(key);
   if (!runtime) {
-    runtime = createRuntime(config, control);
+    // Pi has no API that reports its version, so it is read from Pi's own module, which Pi's loader
+    // resolves to itself. A copy installed beside this extension, as in this repo's checkout, wins
+    // over that, so there the version is the copy's.
+    const { VERSION } = await import("@earendil-works/pi-coding-agent");
+    runtime = createRuntime(config, control, piRunsCommands(VERSION));
     runtimes.set(key, runtime);
   }
   if (eventsEnabled) {
@@ -219,6 +229,8 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     persistSessionId(startupSessionId);
   }
   runtime.driver.bind(pi);
+  // The pinned Pi types predate sendUserMessage's expandPromptTemplates; piRunsCommands gates its use.
+  runtime.commandHost = pi as unknown as PiCommandHost;
   registerCotalTools(pi, runtime.mesh, runtime.config);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
 

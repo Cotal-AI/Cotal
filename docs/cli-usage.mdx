@@ -80,10 +80,13 @@ in a folder that holds another space, its first step is that folder's own `cotal
 starts this folder's space, and `cotal spawn` follows. A stopped stack's recorded file-store cap does
 not change that restart command. Membership and artifact stores reserve no capacity at creation, so
 there is no per-space `--max-file-store` floor. With spaces on the machine but none selected
-or in this folder, it names `cotal use <name>` and `cotal space` instead. Every command generates its own help, usage, and shell completion from its declared
-flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
-command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
-itself do (exit 1), rather than print the command's help. A subcommand's help gives its whole
+or in this folder, it names `cotal use <name>` and `cotal space` instead. When the entry screen names a
+space, its Start here section shows `cotal space` to list spaces and `cotal use <name>` to switch.
+Every command generates its own help, usage, and shell completion from its declared flags.
+`cotal <command> --help` prints the same help as `cotal help <command>`.
+Both forms accept operands after the final subcommand. For example, `cotal help service status manager`
+and `cotal service status manager --help` both show the usage for `service status`.
+Both forms refuse a misspelled subcommand and exit 1. A subcommand's help gives its whole
 usage, from `cotal` through its arguments, and lists only the options that subcommand takes.
 `-v` is not a version flag.
 
@@ -107,7 +110,8 @@ command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), 
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
-or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. `cotal despawn`
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. Option suggestions
+use the flags for the selected subcommand. `cotal despawn`
 suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
@@ -262,7 +266,7 @@ The version command does not repair the manifest itself.
 | `target` | What it acted on, or `null` for a command that reads only local metadata |
 | `outcome` | `ok`, `no-op`, `refused`, `failed`, `partial` or `unknown` |
 | `completeness` | How much of the read scope the result covers: `complete`, `partial` or `not-checked`. It says nothing about whether the work succeeded |
-| `result` | The command's result. A `partial` read keeps what it read; a refused, failed or unknown run has `null` |
+| `result` | The command's result. A `partial` read keeps what it read. A `failed` or `unknown` outcome has `null`. A `refused` outcome has `null` unless the command documents structured findings, such as `result.problems` from [`run validate`, `run plan` and `run simulate`](cli-runs.mdx#offline-commands). |
 | `warnings` | One `{code, target, message}` for each thing it could not read or check |
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
@@ -409,7 +413,8 @@ directory. A failed atomic save leaves the destination unchanged. A persona
 draft write failure is not invalid input. If `space create` saved its prepared record before
 the default persona failed, including creation of its `agents` directory, it reports
 `OPERATION_PARTIAL`, exit 4, names what was saved and
-warns that the persona file may be incomplete. Repair that file before starting the space.
+warns that the persona file may be incomplete. After fixing the write problem, check the persona
+file and run the same `space create` again to finish preparing the space.
 On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
 Directory creation preserves that native cause without treating a missing parent or a dangling
 symlink as a quota failure.

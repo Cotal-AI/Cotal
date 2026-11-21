@@ -1,6 +1,7 @@
 import { basename, join, resolve } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, codeSpan, connectOrThrow, findCotalRoot, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { UnusableFile } from "../lib/unusable-file.js";
@@ -8,7 +9,7 @@ import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manife
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { completedFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { cardsWithoutLiveDelivery, inspectTeamDeployment, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, inspectTeamDeployment, liveDeliveryRemedy, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { authModeText, teamText } from "../lib/team-text.js";
 import { readLocalServiceCensus } from "../lib/service-census.js";
@@ -310,20 +311,16 @@ export async function team(args: ParsedArgs): Promise<void> {
 }
 
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
-  if (values["dry-run"] !== true) {
-    let resolved: ReturnType<typeof loadManifest>;
-    try { resolved = loadManifest(resolve(file)); }
-    catch (e) {
-      if (e instanceof ManifestError) throw manifestRefusal(e, resolve(file));
-      throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no native effect was submitted");
-    }
-    if (resolved.agents.length) {
+  const dryRun = values["dry-run"] === true;
+  // Apply handlers perform their own exact target checks and report the selected space.
+  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined);
+  if (!dryRun) {
+    if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
       return applyAgentTeam(file, values);
     }
     return applyChannelOnlyTeam(file, values);
   }
-  const { path, prepared } = readTeamFile(file, values);
   const space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
@@ -347,7 +344,7 @@ async function previewDeploy(file: string, values: TeamValues): Promise<void> {
     targetReachability: "native-reads-established", brokerPolicy: "not-checked", authorization: "read-established-not-deploy-authority", ownershipClassification: "native-roster-and-registry-snapshot", connectorAvailability: "not-checked", effectAttempted: false, persisted: false };
   writeResult(presentationOf(values), { command: "team deploy", target: { space, root: local.root, path }, result,
     completeness: "partial",
-    warnings: [...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })), ...(openDurable ? [{ code: "OPEN_DURABLE_UNSUPPORTED", target: { space }, message: "The selected running mesh is open and has no delivery daemon; this manifest's durable declaration cannot acquire a per-member backstop." }] : []), ...(notLive ? [{ code: "LIVE_DELIVERY_REQUIRED", target: { space, cards: notLive.names }, message: `Apply refuses: ${notLive.cards} ${notLive.verb} not set deliveryClass: live. To deploy, ${LIVE_DELIVERY_REMEDY}.` }] : []), ...(!native.unmanaged.feedAvailable ? [{ code: "MEMBERSHIP_FEED_UNAVAILABLE", target: { space }, message: "Other readers are a lower bound because the derived membership feed has no observed heartbeat." }] : []), ...(attempts.valid.length || attempts.refused.length ? [{ code: "ADDITIVE_ATTEMPT_REMAINS", target: { root: local.root, space, deploymentIds: attempts.valid.map((attempt) => attempt.deploymentId), unreadable: attempts.refused.map(({ path }) => path) }, message: "An additive deployment intent is retained at this root; the preview does not settle or retry it." }] : [])] }, (data): Report => ({ sections: [
+    warnings: [...prepared.warnings.map((warning) => ({ code: "MANIFEST_WARNING", target: { agent: warning.agent }, message: warning.message })), ...(openDurable ? [{ code: "OPEN_DURABLE_UNSUPPORTED", target: { space }, message: "The selected running mesh is open and has no delivery daemon; this manifest's durable declaration cannot acquire a per-member backstop." }] : []), ...(notLive ? [{ code: "LIVE_DELIVERY_REQUIRED", target: { space, cards: notLive.names }, message: `Apply refuses: ${notLive.cards} ${notLive.verb} not set deliveryClass: live. To deploy, ${liveDeliveryRemedy(local.mode)}.` }] : []), ...(!native.unmanaged.feedAvailable ? [{ code: "MEMBERSHIP_FEED_UNAVAILABLE", target: { space }, message: "Other readers are a lower bound because the derived membership feed has no observed heartbeat." }] : []), ...(attempts.valid.length || attempts.refused.length ? [{ code: "ADDITIVE_ATTEMPT_REMAINS", target: { root: local.root, space, deploymentIds: attempts.valid.map((attempt) => attempt.deploymentId), unreadable: attempts.refused.map(({ path }) => path) }, message: "An additive deployment intent is retained at this root; the preview does not settle or retry it." }] : [])] }, (data): Report => ({ sections: [
     { title: "Additive team inspection", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Registered root", data.root], ["Registration", data.registrationOrigin], ["Recorded broker", data.recordedBroker ?? "not displayable"], ["Recorded mode", authModeText(data.recordedMode)], ["TLS", data.recordedTlsRequired ? "required" : "not required"], ["Manifest", data.path], ["Runtime request", data.runtimeRequest], ["Prior additive run", data.native.priorDeploymentId ?? "none recorded"], ["Retained additive attempts", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Native roster", data.native.roster], ["Channel registry", data.native.registry], ["Membership feed", data.native.unmanaged.feedAvailable ? "display-only lower bound" : "unavailable"], ...(data.recordedMode === "open" ? [["Durable delivery on open", data.openDurableUnsupported ? "unsupported" : "not a contradiction"] as [string, string]] : [])] }, { kind: "lines", lines: [{ text: "The observed registry and roster do not reserve names or authorize creation. Manager readiness, runtime/provider availability and write grants remain unchecked; nothing was added.", tone: "waiting" }] }] },
     { title: "Requested agents", blocks: [data.agents.length ? { kind: "table", columns: [{ key: "name", label: "Name" }, { key: "application", label: "Application" }, { key: "role", label: "Role" }, { key: "model", label: "Model request" }], rows: data.agents.slice(0, 100).map((agent) => ({ name: agent.name, application: agent.application, role: agent.role ?? "none", model: agent.requestedModel ?? "application default" })) } : { kind: "lines", lines: ["No agents requested."] }, ...(data.agents.length > 100 ? [{ kind: "lines" as const, lines: ["Additional requested agents are in JSON."] }] : [])] },
     { title: "Declared channels", blocks: [data.channels.length ? { kind: "table", columns: [{ key: "name", label: "Channel" }, { key: "delivery", label: "Delivery class" }, { key: "replay", label: "Replay" }, { key: "window", label: "Replay window" }], rows: data.channels.slice(0, 100).map((channel) => ({ name: `#${channel.name}`, delivery: channel.deliveryClass ?? "not declared", replay: channel.replay === null ? "not declared" : channel.replay ? "on" : "off", window: channel.replayWindow ?? "not declared" })) } : { kind: "lines", lines: ["No channels declared."] }, { kind: "lines", lines: [...(data.channels.length > 100 ? ["Additional channels are in JSON."] : []), "Declared policy is not a live registry value or permission to overwrite existing metadata. Apply accepts all-new live channels and bounded static/open agent or mixed teams. Reapplying an identical settled deployment changes nothing; other existing cards refuse."] }] },
@@ -427,10 +424,26 @@ function removalShape(root: string, attempt: AdditiveTeamAttempt): { agents: num
 }
 
 async function previewRemove(deploymentId: string, values: TeamValues): Promise<void> {
+  const catalog = personaCatalog(values);
+  recordOperationSpace(catalog.space);
+  let summary: FreshTeamSummary | undefined;
+  try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
+  catch {
+    assertSummaryNotElsewhere(catalog.root, deploymentId);
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
+  }
+  if (summary) {
+    const atRoot = canonicalRoot(findCotalRoot()) === catalog.root ? "" : `cd ${shellPath(catalog.root)} && `;
+    throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: `stop the booted stack with ${codeSpan(`${atRoot}cotal down`)}; preview that stop with ${codeSpan(`${atRoot}cotal down --space ${shellWord(summary.space)} --dry-run`)}` });
+  }
+  let freshAttempt: ReturnType<typeof findFreshTeamAttempt>;
+  try { freshAttempt = findFreshTeamAttempt(catalog.root, deploymentId); }
+  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot attempt for this ID is unreadable; it was not treated as an additive target", { target: { root: catalog.root, deploymentId } }); }
+  if (freshAttempt) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot attempt, not an additive removal target", { target: { root: catalog.root, deploymentId } });
+
   if (values["dry-run"] !== true) {
     // The original intent picks the route; each route revalidates its own returned or stopped receipt.
     let routed: ReturnType<typeof findAdditiveTeamAttempt>;
-    const catalog = personaCatalog(values);
     try { routed = findAdditiveTeamAttempt(catalog.root, deploymentId); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this ID is unreadable; no removal route was inferred", { target: { deploymentId } }); }
     if (!routed) { const missing = unknownDeployment(catalog.root, catalog.space, deploymentId); if (missing) throw missing; }
@@ -446,19 +459,6 @@ async function previewRemove(deploymentId: string, values: TeamValues): Promise<
     const { removeAgentTeam } = await import("./team-agent-remove.js");
     return removeAgentTeam(deploymentId, values);
   }
-  const catalog = personaCatalog(values);
-  recordOperationSpace(catalog.space);
-  let summary: FreshTeamSummary | undefined;
-  try { summary = findFreshTeamSummary(catalog.root, deploymentId); }
-  catch {
-    assertSummaryNotElsewhere(catalog.root, deploymentId);
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh launch summary for this ID is unreadable; it cannot be treated as absent or as an additive removal target", { target: { space: catalog.space, deploymentId } });
-  }
-  if (summary) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot summary, not an additive ownership ledger; team remove did not infer whole-stack stop authority", { target: { recordedSpace: summary.space, recordedRoot: summary.root, selectedSpace: catalog.space, deploymentId }, remedy: `stop the booted stack with \`cotal down\`; preview that stop with \`cotal down --space ${summary.space} --dry-run\`` });
-  let freshAttempt: ReturnType<typeof findFreshTeamAttempt>;
-  try { freshAttempt = findFreshTeamAttempt(catalog.root, deploymentId); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot attempt for this ID is unreadable; it was not treated as an additive target", { target: { root: catalog.root, deploymentId } }); }
-  if (freshAttempt) throw new CommandFailure("refused", "CONFLICT", "this ID belongs to a fresh boot attempt, not an additive removal target", { target: { root: catalog.root, deploymentId } });
   let attempt: ReturnType<typeof findAdditiveTeamAttempt>;
   try { attempt = findAdditiveTeamAttempt(catalog.root, deploymentId); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive attempt for this ID is unreadable; no safe removal target was inferred", { target: { root: catalog.root, deploymentId } }); }
@@ -522,7 +522,7 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function readTeamFile(file: string, values: TeamValues): { path: string; prepared: PreparedManifest } {
+function readTeamFile(file: string, space?: string): { path: string; prepared: PreparedManifest } {
   const path = resolve(file);
   let prepared: PreparedManifest;
   try { prepared = loadManifest(path); }
@@ -534,7 +534,7 @@ function readTeamFile(file: string, values: TeamValues): { path: string; prepare
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
   }
-  if (values.space !== undefined && values.space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
+  if (space !== undefined && space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
 }
 
@@ -549,7 +549,7 @@ function manifestRefusal(e: ManifestError, path: string): CommandFailure {
 }
 
 async function bootTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values), space = prepared.manifest.space;
+  const { path, prepared } = readTeamFile(file, values.space), space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local registration or prepared-space record could not be read; no boot root was chosen", { target: { space } }); }
@@ -568,7 +568,7 @@ async function bootTeam(file: string, values: TeamValues): Promise<void> {
 
 async function previewBoot(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) return bootTeam(file, values);
-  const { path, prepared } = readTeamFile(file, values);
+  const { path, prepared } = readTeamFile(file, values.space);
   const space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
@@ -652,7 +652,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
 }
 
 async function checkTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values);
+  const { path, prepared } = readTeamFile(file, values.space);
   const openDurable = prepared.manifest.broker?.auth === false && (prepared.manifest.defaults?.deliveryClass === "durable" || prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable"));
   const result = { kind: "team-check", file: path, space: prepared.manifest.space, runtime: prepared.manifest.runtime ?? "pty",
     agents: prepared.agents.map((agent) => ({ name: agent.name, harness: agent.agentType, role: agent.role ?? null, model: agent.model ?? null, policy: agent.policy, inherited: agent.inherited, capabilities: agent.capabilities, capabilitySource: agent.capabilitySource })),

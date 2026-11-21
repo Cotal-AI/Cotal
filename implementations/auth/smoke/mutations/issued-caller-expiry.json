@@ -25,7 +25,7 @@
       "name": "run renewal re-resolves the admitted caller's generation",
       "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "              throw new EpEnvelopeError(\"conflict\", \"manager-service run renewal authority moved before issuance\");\n",
-      "replace": "              throw new EpEnvelopeError(\"conflict\", \"manager-service run renewal authority moved before issuance\");\n            const { admission } = await readRunAdmission(recordsJsm, space, \"manager\", r.run!.runId);\n            if (admission.provenance.kind === \"issued\") {\n              const ref = admission.provenance.ref;\n              await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => session.store.resolve(ref, composedSourceIsLive(session)));\n            }\n",
+      "replace": "              throw new EpEnvelopeError(\"conflict\", \"manager-service run renewal authority moved before issuance\");\n            const { admission } = await (await import(\"@cotal-ai/core\")).readRunAdmission(await (await import(\"@nats-io/jetstream\")).jetstreamManager(remoteIssuer.nc), space, \"manager\", r.run!.runId);\n            if (admission.provenance.kind === \"issued\") {\n              const ref = admission.provenance.ref;\n              await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, (session) => session.store.resolve(ref, deps.composedSourceIsLive(session)));\n            }\n",
       "expectRed": "R55 run admitted before its caller generation expired keeps renewing after expiry",
       "cell": "R55 run admitted before its caller generation expired keeps renewing after expiry"
     }

@@ -246,7 +246,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(start ? [["up", start, "Start this space"] as [string, string, string]] : folderStart ? [["up", folderStart, "Start this folder's space"] as [string, string, string]] : []),
     ...(start ? [] : [["spawn", "spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "setup", "Review setup and defaults"],
-    ["use", "use", "Choose another space"],
+    ["space", "space", "List the spaces on this machine"],
+    ["use", "use <name>", "Switch to another space"],
   ] : manifest ? [
     ["team", `team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
     ["space", `space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
@@ -308,7 +309,7 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, "rich", width));
 }
 
-/** Resolve only declared literal metadata. Neither aliases nor nesting import provider code. */
+/** Resolve declared subcommands and aliases. Words after a leaf subcommand are operands. */
 export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   let surface: Pick<Command, "subcommands"> = cmd;
   let selected: Subcommand | undefined;
@@ -326,6 +327,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
       process.exit(1);
     }
     path.push(sub.name); selected = sub; surface = sub;
+    if (!sub.subcommands?.length) break;
   }
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }

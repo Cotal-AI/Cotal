@@ -170,8 +170,9 @@ warning naming the run. A `run --endpoint <endpoint>` that matches no run lists 
 naming the endpoints runs are recorded under, with an `ENDPOINT_HAS_NO_RUNS` warning. The text view is presentation and is not a stable parsing target. With
 `--local`, only the list, `show`, `answer` and `amend` take `--json` or `--plain`. Any other local form
 refuses either flag `USAGE_INVALID`, exit 1: `start --local` and `resume --local` name the
-manager's form, which takes it, and `revoke` and `check`, which have no other form, name the same
-command without it.
+manager's form, which takes it. `revoke` and `check` have no other form. For `check`, the retry
+keeps the candidate file and explicit target and omits the output flag. If the broker URL cannot
+be displayed safely, the refusal asks you to remove the output flag from your original command.
 `run --page`, which is not in release 0.88.0 or earlier, asks one manager for a single bounded
 diagnostic JSON page instead of the full list:
 `--limit` takes 1 to 16 rows (default 8), and `--cursor` continues a scan from a returned
@@ -185,9 +186,11 @@ answerer from your credential, so no `--by` is taken there. A settled step refus
 `answer` with `TARGET_NOT_FOUND`, also when it is sent before the run records the first, and a
 revoked run refuses every answer with `LIFECYCLE_BLOCKED` and files nothing. A step the run holds no
 open request at is also `TARGET_NOT_FOUND`; when an open checkpoint or `ask` has the name you typed,
-as `frage` names `/checkpoint:frage#0`, the next step gives its full key, and several matches are
-listed for you to pick from. A run ID that no run is recorded under is `TARGET_NOT_FOUND` too, with
-or without `--local`, and the refusal says no run is recorded under that ID. Its next step lists
+as `frage` names `/checkpoint:frage#0`, the retry uses the full key and keeps your answer, artifact,
+target, and output flags. If the broker URL cannot be displayed safely, the refusal asks you to
+replace the key in your original command. Several matches are listed for you to pick from.
+A run ID that no run is recorded under is `TARGET_NOT_FOUND` too, with or without `--local`.
+The refusal says no run is recorded under that ID. Its next step lists
 runs with `cotal run`, rather than showing the missing record. Missing-step refusals instead name
 `cotal run show <runId>`. Both keep the selected space and any explicit manager pin. An
 answer without `--value` carries no value: the step settles as answered, and the
@@ -358,6 +361,9 @@ moves the virtual clock forward.
 | `events` | `wait` results. `null` is a timeout |
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+
+An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
+program does not reach that effect. The refusal names the results file and the field to correct.
 
 If the `clock.wait` delay is longer than the step's `timeout`, the simulated wait returns `null`
 and advances virtual time only to that timeout.

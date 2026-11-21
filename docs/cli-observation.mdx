@@ -143,6 +143,8 @@ A target this observer cannot open, such as a stopped project's space, is refuse
 exists, under the refusal's own code and exit 2, as `history`, `channel` and `chat` refuse it in that
 folder. The terminal gets the refusal's report, with the mesh it resolved and its next step;
 `--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
+Both records include `target.space` when a space resolved. `target.requestedSpace` holds the
+explicit `--space` value, or `null` when no space was requested.
 
 
 ### Observer stream [#observer-stream]

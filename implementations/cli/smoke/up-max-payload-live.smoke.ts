@@ -18,6 +18,9 @@
  *  4. Open legacy and controller starts serve and retain the limit without adding authentication,
  *     and accept a replacement limit once stopped.
  *  5. An open broker-only start accepts a low limit, but adding a manager refuses before launch.
+ *  6. A broker-only reuse on that low limit exits 0 but drops the add-manager hint from its Next
+ *     section, naming the stop and restart instead; on a sufficient limit the hint stays. This is
+ *     the controller route; the legacy open route's reuse receipt offers only `down`.
  *
  * Sandboxes COTAL_HOME and a project root under a scratch base with proven-clean `.cotal` ancestry;
  * kills only its own children. Needs `nats-server` on PATH.
@@ -183,10 +186,37 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
   const last = await run(["down", "--yes"]);
   ok("the final down exits 0", last.status === 0, last.out.slice(-1500));
 
+  if (mode === "auth") {
+    const brokerOnly = await run(["up", "--no-manager", "--space", space, "--server", server, "--max-payload", "131072"]);
+    try {
+      ok("the static-auth broker serves the low limit", brokerOnly.status === 0 && await servedMaxPayload(port) === 131072, brokerOnly.out);
+      for (const args of [["ps"], ["spawn", "-d"]]) {
+        const result = await run([...args, "--space", space, "--plain"]);
+        ok(`${args[0]} refuses and explains how to restart with enough payload`, result.status === 2 &&
+          result.out.includes("payload limit is 131072 bytes, below the manager's minimum of 263168 bytes") &&
+          result.out.includes("fixed while the broker runs") && result.out.includes("cotal down --yes") &&
+          result.out.includes("cotal up --foreground --max-payload 1048576"), result.out);
+      }
+      ok("the agent commands leave the low-payload broker running", await servedMaxPayload(port) === 131072);
+    } finally {
+      const clean = await run(["down", "--yes"]);
+      ok("the low-payload static-auth broker stops", clean.status === 0, clean.out);
+    }
+  }
+
   if (open) {
     const brokerOnly = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "8192"]);
     try {
       ok("a broker-only start accepts and serves 8192 bytes", brokerOnly.status === 0 && await servedMaxPayload(port) === 8192, brokerOnly.out);
+      // Only the controller route renders the add-manager hint: the legacy open route's reuse
+      // receipt offers only `down`, so there is no hint to drop there.
+      if (mode === "open-controller") {
+        const reuse = await run(["up", "--no-manager", "--space", space, "--server", server]);
+        ok("a broker-only reuse exits 0 and its Next drops the add-manager hint for the low limit",
+          reuse.status === 0 && /already running/.test(reuse.out) && !reuse.out.includes("Add the manager to this stack") &&
+          reuse.out.includes("cotal up --max-payload 1048576") && reuse.out.includes("stop the broker first") &&
+          reuse.out.includes("cotal down"), reuse.out);
+      }
       const add = await run(["up", "--server", server]);
       ok("adding a manager refuses on the recorded floor before launch",
         add.status === 1 && add.out.includes("--max-payload 8192 is below 263168 bytes") &&
@@ -201,6 +231,18 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
     } finally {
       const clean = await run(["down", "--yes"]);
       ok("the low-payload broker stops", clean.status === 0, clean.out);
+    }
+    const wide = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "1048576"]);
+    try {
+      ok("a broker-only start accepts and serves 1048576 bytes", wide.status === 0 && await servedMaxPayload(port) === 1048576, wide.out);
+      if (mode === "open-controller") {
+        const wideReuse = await run(["up", "--no-manager", "--space", space, "--server", server]);
+        ok("a broker-only reuse on a sufficient limit still offers adding the manager",
+          wideReuse.status === 0 && /already running/.test(wideReuse.out) && wideReuse.out.includes("Add the manager to this stack"), wideReuse.out);
+      }
+    } finally {
+      const clean = await run(["down", "--yes"]);
+      ok("the sufficient-payload broker stops", clean.status === 0, clean.out);
     }
   }
 }
