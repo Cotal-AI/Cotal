@@ -95,6 +95,16 @@ function settleSubject(fire: string): string {
   return checkpointSettleSubject(space, { endpoint: "manager", token: fire.split(".").at(-2)! });
 }
 
+async function waitForEnd(run: string, show: (run: string) => Promise<RunStatusView>): Promise<RunStatusView> {
+  const expires = Date.now() + 10_000;
+  let view = await show(run);
+  while (view.status?.state === "running" && Date.now() < expires) {
+    await wait(250);
+    view = await show(run);
+  }
+  return view;
+}
+
 async function verifyWaiting(start: (duration: string) => Promise<string>, show: (run: string) => Promise<RunStatusView>, calls: ApiCall[], jsm: JetStreamManager) {
   const firstCall = calls.length;
   const run = await start("30s");
@@ -121,8 +131,7 @@ async function verifyWaiting(start: (duration: string) => Promise<string>, show:
   console.log(`waiting hosted sleep: ${JSON.stringify(stats)}`);
   // Traffic on a second run must not invalidate the first run's cursor.
   const foreign = await start("1s");
-  await wait(3_000);
-  assert.equal((await show(foreign)).status?.state, "completed");
+  assert.equal((await waitForEnd(foreign, show)).status?.state, "completed");
   assert.equal((await jsm.consumers.info(wfjStreamName(space), cursor.name)).created, cursor.created,
     "the cursor survives unrelated journal writes and empty polls");
   const pending = await show(run);
@@ -196,12 +205,7 @@ async function verifyPolling(root: string, runCli: RunCli, calls: ApiCall[], jsm
   const show = async (run: string): Promise<RunStatusView> => JSON.parse((await runCli("show", run)).stdout).result.view;
   const controlStart = calls.length;
   const control = await start("2s");
-  const completeBy = Date.now() + 10_000;
-  let completed: RunStatusView;
-  do {
-    await wait(250);
-    completed = await show(control);
-  } while (completed.status?.state === "running" && Date.now() < completeBy);
+  const completed = await waitForEnd(control, show);
   assert.equal(completed.status?.state, "completed");
   assert.equal(completed.journal.filter(row => row.kind === "step" && row.step === "/sleep#0" && row.state === "settled" && row.outcome === "ok").length, 1);
   const fire = fireSubject(calls.slice(controlStart));
