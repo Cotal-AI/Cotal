@@ -56,7 +56,7 @@
     },
     {
       "name": "a fresh machine is pointed at ext seed",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "none installed \u00b7 \\`${displayCmd()} setup\\`",
       "replace": "none installed \u00b7 \\`${displayCmd()} ext seed\\`",
       "expectRed": "status on a fresh machine points at cotal setup for the connectors",
