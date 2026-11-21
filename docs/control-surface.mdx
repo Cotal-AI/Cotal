@@ -132,8 +132,9 @@ This is terminal control, so the command is limited to operator credentials, a p
 
 See the [input authority and outcome reference](control-lifecycle.mdx#seat-input) for the distinction between refusal before delivery and failure after delivery starts.
 
-`interrupt` stops a seat's live turn by writing the key its connector declares, such as Escape, into the seat's terminal.
-It has the same authority as `input`.
+The manager's `interrupt` command writes the key a seat's connector declares, such as Escape, into the seat's terminal, which stops a live turn.
+Its reply means the key was written. It has the same authority as `input`.
+The `agent` endpoint's own `interrupt`, described above, is a separate command that stops the turn through the agent's connector and answers `interrupted` or `idle`.
 
 ## Grants [#grants]
 
