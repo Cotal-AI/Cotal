@@ -151,6 +151,12 @@ try {
   const managerPid = Number(readFileSync(record(MANAGER_PIDFILE), "utf8").trim());
   ok("the manager pid record names a live process", Number.isFinite(managerPid) && alive(managerPid), managerPid);
   const on = String(listed);
+  const miss = cli("stop", "absent-seat", "--space", SPACE, "--server", SERVER, "--on", on, "--json");
+  const error = envelope(miss.stdout)?.error;
+  const roster = error?.remedy?.match(/`cotal (ps [^`]+)`/)?.[1];
+  ok("a missing seat's roster retry keeps the selected space, broker and manager", miss.status === 2 && error?.code === "TARGET_NOT_FOUND" && roster === `ps --on ${on} --space ${SPACE} --server ${SERVER}`, error);
+  const followed = cli(...roster!.split(" "), "--json");
+  ok("the suggested roster read reaches the manager", followed.status === 0 && envelope(followed.stdout)?.outcome === "ok", followed.stderr);
 
   // 1. the manager's own runtime, so a refusal below is about the runtime step and nothing else.
   const onPty = envelope(cli("spawn", "default", "-d", "--on", on, "--agent", "e2e", "--no-events", "--name", "ptyseat", "--json").stdout);
