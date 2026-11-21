@@ -13,11 +13,11 @@ import {
   canonicalRoot,
   brokerUrlKey,
   findMesh,
-  getCurrent,
   readCurrentSelection,
   homeCotalDir,
   loadMeshes,
   pruneMesh,
+  type CurrentSelection,
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
@@ -863,10 +863,9 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * A root with several running spaces, none of them the selection, keeps the selection and says so
  * before the command acts, with the `--space` that targets one of them instead.
  */
-function selectionTargetsHere(cwd: string, current: string, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
-  const explicit = readCurrentSelection()?.source === "explicit";
+function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>): boolean {
   const folder = folderSpaces(cwd, meshes);
-  if (explicit) {
+  if (source === "explicit") {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
       const names = [...folder.registered, ...(folder.prepared ? [folder.prepared] : [])];
       if (names.length) recordOperationSpaceNote(current, `the selected space applies here; this folder's space ${names.map(s => `"${s}"`).join(", ")} is reached with ${names.map(space => `--space ${shellPath(space)}`).join(" or ")} or \`cotal use --clear\``);
@@ -1045,11 +1044,11 @@ function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry |
  * it with.
  */
 export function credsSpace(cwd: string): { space: string; selected: boolean } | undefined {
+  const current = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
   // Offline by design: a credential goes to the broker its caller paired it with, and this reads no
   // liveness, so a space registered for this folder is taken as running here.
-  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current, selected: true };
+  if (current && selectionTargetsHere(cwd, current, meshes, new Set())) return { space: current.space, selected: true };
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   assertRootIsSingleTenant(root);
@@ -1063,15 +1062,15 @@ export function credsSpace(cwd: string): { space: string; selected: boolean } | 
  *  probe then. It follows the same precedence and records nothing. */
 export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boolean {
   if (flags.space || flags.server) return false;
+  const current = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
   if (current) {
-    if (readCurrentSelection()?.source === "explicit") return false;
+    if (current.source === "explicit") return false;
     // With a selection, liveness answers one question: does a space this folder has registered still
     // run, and so capture the command instead of the selection? A folder that registers the
     // selection itself resolves without it.
     const folder = folderSpaces(cwd, meshes);
-    if (!folder || folder.registered.includes(current) || folder.prepared === current) return false;
+    if (!folder || folder.registered.includes(current.space) || folder.prepared === current.space) return false;
     if (folder.registered.length) return true;
     // This folder registers nothing. A root holding its own stopped stack is still what a read
     // discovers here, so it falls through to the registration check below.
@@ -1187,9 +1186,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return local;
   }
 
+  const selection = readCurrentSelection();
   const meshes = loadMeshes();
-  const current = getCurrent();
-  if (current && selectionTargetsHere(cwd, current, meshes, offline)) {
+  if (selection && selectionTargetsHere(cwd, selection, meshes, offline)) {
+    const current = selection.space;
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
       notStarted(current, cwd);

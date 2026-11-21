@@ -699,19 +699,27 @@ export interface CurrentSelection {
 
 /** Read the bare-name pointer and its optional matching adoption marker. */
 export function readCurrentSelection(): CurrentSelection | undefined {
+  const file = currentFile();
+  const remedy = "clear the selection with `cotal use --clear`, or select a known space again";
   let space: string;
   try {
-    space = readFileSync(currentFile(), "utf8").trim();
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
+    space = readFileSync(file, "utf8").trim();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const summary = `${file} could not be read: ${(cause as Error).message}`;
+    throw new MeshRegistryError(file, summary, { cause, summary, remedy });
   }
-  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
+  if (!space) {
+    const summary = `${file} is empty - select a mesh with \`cotal use <space>\` or remove the file`;
+    throw new MeshRegistryError(file, summary, { summary, remedy });
+  }
+  const marker = `${file}.adopted`;
   try {
-    return { space, source: readFileSync(`${currentFile()}.adopted`, "utf8").trim() === space ? "adopted" : "explicit" };
+    return { space, source: readFileSync(marker, "utf8").trim() === space ? "adopted" : "explicit" };
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { space, source: "explicit" };
-    throw new MeshRegistryError(`${currentFile()}.adopted`, `the selection source could not be read: ${(cause as Error).message}`, { cause });
+    const summary = `${marker} could not be read: ${(cause as Error).message}`;
+    throw new MeshRegistryError(marker, summary, { cause, summary, remedy });
   }
 }
 

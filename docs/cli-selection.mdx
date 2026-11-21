@@ -478,6 +478,10 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
+If the saved selection is empty or unreadable, commands that rely on it refuse with `SCHEMA_INVALID`
+before connecting. Clear it with `cotal use --clear`, select a known space again, or name the space
+for that command with `--space <name>`.
+
 A selection made with `cotal use` wins over every folder state, including a running, stopped,
 prepared or copied project. The note under `Mesh:` names that choice, including native `spawn`.
 The following folder precedence rules apply only when the selection was adopted automatically
