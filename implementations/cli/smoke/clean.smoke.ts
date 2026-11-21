@@ -85,9 +85,11 @@ function checkCleanStoreCli(): void {
   if (process.platform === "win32") return;
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-clean-cli-")));
   const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+  // The child is this suite's own CLI; it gets none of the runner's connection material.
+  const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   const options = {
     cwd: root, encoding: "utf8" as const, timeout: 30_000,
-    env: { ...process.env, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config") },
+    env: { ...ambient, COTAL_HOME: home, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config") },
   };
   const run = (...args: string[]) => spawnSync(process.execPath, [cli, "clean", "store", ...args], options);
   try {
