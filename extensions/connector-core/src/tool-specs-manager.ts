@@ -266,16 +266,22 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
             const { requested, error, unreported } = d.pinAudit;
             const id = d.id ?? d.actor;
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
-            const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
+            const { waitingFor } = d;
+            const state = waitingFor !== undefined
+              ? `it is waiting for the operator at ${waitingFor} and has not joined the mesh`
+              : pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
-            const guidance = pending
-              ? "An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options."
-              : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.";
+            const guidance = waitingFor !== undefined
+              ? "Ask the operator to continue there before checking the model. Spawning it again would start a second agent."
+              : pending
+                ? "An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options."
+                : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.";
             const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ${guidance}`;
             return {
               text: message,
               structured: {
-                status: "partial", name: actual, id, manager, goalId: d.goalId, ...(mode ? { runtime: mode } : {}), joined: !pending,
+                status: "partial", name: actual, id, manager, goalId: d.goalId, ...(mode ? { runtime: mode } : {}), joined: !pending && waitingFor === undefined,
+                ...(waitingFor !== undefined ? { waitingFor } : {}),
                 model: { requested, audited: false, reported: !unreported, error }, message,
               },
             };

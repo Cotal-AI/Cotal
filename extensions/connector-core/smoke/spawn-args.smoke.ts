@@ -262,7 +262,7 @@ const MANAGER = "mmmmmmmmmmmmmmmmmmmmmmmmmm";
 const PIN = "grok-4.6";
 const launched = { ok: true, data: { name: "rev", id: "u_x.rev", agent: "claude", mode: "orca", lifecycleUid: "llllllllllllllllllllllllll" } };
 type Structured = {
-  status?: string; name?: string; id?: string; manager?: string; runtime?: string; joined?: boolean; next?: string; message?: string;
+  status?: string; name?: string; id?: string; manager?: string; runtime?: string; joined?: boolean; waitingFor?: string; next?: string; message?: string;
   model?: { requested?: string; audited?: boolean; reported?: boolean; error?: string };
 };
 type Result = { text: string; isError?: boolean; structured?: Structured };
@@ -305,7 +305,7 @@ check(
   "the partial's structured payload carries the same facts and the whole message",
   st?.status === "partial" && st.name === "rev" && st.id === "u_x.rev" && st.manager === MANAGER && st.runtime === "orca" && st.joined === true
     && st.model?.requested === PIN && st.model.audited === false && st.model.reported === true && st.model.error === "timeout"
-    && (st as any).next === undefined && st.message === partial.text,
+    && st.waitingFor === undefined && st.next === undefined && st.message === partial.text,
   st,
 );
 
@@ -336,8 +336,21 @@ check(
   "a launch still booting with its pin unaudited is the same partial, marked as not joined",
   booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
     && booting.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options.")
-    && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
+    && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured)
+    && booting.structured.waitingFor === undefined,
   booting,
+);
+
+const pickerScreen = "Claude's session picker";
+const picker = await spawnWith(new Error("timeout"), { ...launched, data: { ...launched.data, waitingFor: pickerScreen } });
+check(
+  "an unaudited launch waiting at an operator screen names that screen without claiming a join or offering a retry",
+  picker.isError !== true && picker.text.includes(`waiting for the operator at ${pickerScreen} and has not joined the mesh`)
+    && picker.text.endsWith("Ask the operator to continue there before checking the model. Spawning it again would start a second agent.")
+    && !/same goal|cotal_invoke|readiness window/.test(picker.text)
+    && picker.structured?.status === "partial" && picker.structured.joined === false && picker.structured.waitingFor === pickerScreen
+    && picker.structured.model?.requested === PIN && picker.structured.model.audited === false && picker.structured.message === picker.text,
+  picker,
 );
 
 const refused = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "failed-precondition", message: `no persona "rev"` } });
@@ -493,7 +506,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 82;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
