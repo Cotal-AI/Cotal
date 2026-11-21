@@ -169,6 +169,22 @@ channels:
     { saved: shown(saved), unset: shown(unset), get: shown(get) });
 }
 
+{
+  const { home, xdg, run } = sandbox();
+  const offline = { npm_config_offline: "true", npm_config_cache: join(home, "empty-npm-cache"), COTAL_TELEMETRY: "off" };
+  for (const args of [["history", "limit", "--json"], ["h", "--json", "limit", "--yes"]]) {
+    const r = run(args, offline);
+    check(`${args.join(" ")} reaches space preflight offline without seeding`,
+      r.status === 2 && r.stderr === "" && JSON.parse(r.stdout).error?.code === "TARGET_NOT_FOUND", shown(r));
+  }
+  check("history limit reads write no seed store or extensions", !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions")));
+  for (const flag of ["max-age", "per-sender", "inbox-max-age", "inbox-per-agent", "dm-max-age", "dm-per-sender"]) {
+    const r = run(["history", "limit", `--${flag}=none`, "--yes", "--json"], offline);
+    const error = r.stdout ? JSON.parse(r.stdout).error : undefined;
+    check(`history limit --${flag} still reaches the seed gate`, r.status === 2 && error?.code === "DEPENDENCY_UNAVAILABLE" && GATE.test(error.message), shown(r));
+  }
+}
+
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────
 {
   const { run } = sandbox();
