@@ -35,7 +35,7 @@ import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 
-const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
+const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
 const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear and limit: confirm without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;

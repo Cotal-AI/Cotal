@@ -578,7 +578,7 @@ login has no Direct Get row on the registry, and neither has an agent credential
 ## history [#history]
 
 ```bash
-cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
+cotal history [<channel> | --dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
 cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [--yes] [--json | --plain] [--space <s>]
 ```
@@ -586,7 +586,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
-| `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
+| `--dms` | off | Read all accessible channels and DMs. Requires a DM read grant. With `clear`, also clear DM history |
 | `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
 | `--limit <n>` | 50 | How many of the newest retained messages to read, a positive safe integer |
 | `--from <name>` | none | Keep messages from this sender name or id |
@@ -603,8 +603,10 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
-Reads the newest retained messages in the selected space, newest last: one channel, or every
-channel the identity may read. To read a channel named `clear`, use `cotal history '#clear'`.
+Reads the newest retained messages in the selected space, newest last. Name a channel to read
+only that channel. Without a channel, `history` reads every accessible channel, and `--dms` also
+includes accessible DMs. Do not combine a channel name with `--dms`.
+To read a channel named `clear`, use `cotal history '#clear'`.
 Use the same quoted `#` form for `limit`. `channel show` uses this form for every channel in its
 history recommendation. A name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards` before connecting. A channel with no retained
