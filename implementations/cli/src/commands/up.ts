@@ -261,7 +261,7 @@ import {
   unparsableDaemonCredsNotice,
 } from "./stack-up.js";
 import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
-import { claimForegroundHold, foregroundHolder, releaseForegroundHold } from "../lib/foreground-hold.js";
+import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
 import { stackDown } from "./stack-down.js";
@@ -805,7 +805,7 @@ function hangupForegroundStack(root: string): never {
  *  exits 129, naming `cotal down`. `start`, when given, is the startup this terminal already holds: a
  *  signal during it lets the start settle, then a stop signal runs that stop and a hangup leaves what
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
- *  The hold's end sets the exit code: 0 when another command completed the stop or preserve, 129 after
+ *  The hold exits 0 after a completed external stop or preserve, 5 after a broker crash, 129 after
  *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>, releaseRestoreNotice?: () => void): Promise<void> {
   claimForegroundHold(root);
@@ -840,21 +840,17 @@ async function holdStack(root: string, start?: () => Promise<void>, releaseResto
     if (requested) return;
   }
   return new Promise<void>((resolveHold) => {
-    // The hold ends on its own when another command completes a whole-stack stop or preserve of this
-    // root: a later operation recorded as completed is that evidence. Any other later operation,
-    // such as a refresh, keeps the hold. The poll also keeps Node alive, which a pending promise and
-    // signal listeners alone do not.
-    const recorded = () => { try { return readStackJournal(root)?.journal.operation; } catch { return undefined; } };
-    const held = recorded()?.id;
+    // The poll keeps Node alive and observes the recorded broker and external stack operations.
+    const held = (() => { try { return readStackJournal(root)?.journal.operation.id; } catch { return undefined; } })();
     let stopping = false;
     const lifetime = setInterval(() => {
-      const operation = recorded();
-      if (stopping || !operation || operation.id === held || operation.phase !== "completed" || operation.kind !== "down" && operation.kind !== "preserve") return;
+      if (stopping) return;
+      const code = foregroundStackEnd(root, held);
+      if (code === undefined) return;
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
-      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
-      process.exitCode = 0;
+      process.exitCode = code;
       resolveHold();
     }, 1000);
     const stop = (signal: "SIGINT" | "SIGTERM") => {

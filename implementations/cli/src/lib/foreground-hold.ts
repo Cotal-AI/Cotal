@@ -4,7 +4,10 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, formatRecord, identityRecord, parseRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, exitCode, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
+import { displayCmd } from "./self-exec.js";
+import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
+import { readStackJournal } from "./stack-journal.js";
 
 /** Where a foreground `up` records the process that holds its stack's lifetime. */
 const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
@@ -44,4 +47,34 @@ export function releaseDeadForegroundHold(root: string): boolean {
   if (read.kind !== "record" || assertRecordIdentity(read.record).kind !== "gone") return false;
   try { unlinkSync(path); } catch { return false; }
   return true;
+}
+
+/** Read-only lifetime check. An unreadable record is not proof that its process exited. */
+export function foregroundStackEnd(root: string, held: string | undefined): number | undefined {
+  const journal = () => { try { return readStackJournal(root)?.journal; } catch { return undefined; } };
+  const current = journal();
+  if (!current) return;
+  const { operation, space } = current;
+  if (operation.id !== held && (operation.kind === "down" || operation.kind === "preserve")) {
+    if (operation.phase === "completed") {
+      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
+      return 0;
+    }
+    if (operation.phase === "planned" || operation.phase === "applying") return;
+  }
+  const broker = current.members.find((member) => member.role === "broker");
+  if (!broker?.instanceId) return;
+  let pid: number;
+  try {
+    const instance = serviceInstanceStore(space).read(broker.instanceId)?.record.value;
+    if (!instance?.process || instance.definition !== broker.definition) return;
+    const state = observeServiceProcess(instance);
+    if (state !== "gone" && state !== "foreign-pid") return;
+    pid = instance.process.pid;
+  } catch { return; }
+  // A whole-stack stop or replacement can begin between reading the journal and observing the PID.
+  const latest = journal()?.operation;
+  if (latest?.id !== operation.id || latest.phase !== operation.phase) return;
+  process.stderr.write(`nats-server exited unexpectedly (pid ${pid}). The stack records were kept. Run \`${displayCmd()} up --foreground --root ${shellPath(root)}\` to repair the stack.\n`);
+  return exitCode("failed", "OPERATION_FAILED");
 }

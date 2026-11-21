@@ -11,6 +11,8 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * A broker crash releases a controller foreground hold with a failed exit so the next foreground
+ * `up` can repair the recorded stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
  * An external `down --yes` stops a named or folder-named legacy stack without a crash diagnostic.
  * Run: pnpm smoke:foreground-up-signals:live */
@@ -57,6 +59,13 @@ function token(path: string): ProcessIdentityRecord | undefined {
   if (!existsSync(path)) return undefined;
   const pin = verifyIdentityPin(path);
   return pin.kind === "match" ? pin.record : undefined;
+}
+
+function controllerBroker(space: string, machine: string) {
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = machine;
+  try { return serviceInstances(space, "stack-broker")[0]?.record.value; }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
 }
 
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
@@ -568,8 +577,9 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
-async function controllerHoldCell(otherHome = false): Promise<void> {
-  const name = otherHome ? "controller-hold-other-home" : "controller-hold";
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" = "takeover"): Promise<void> {
+  const otherHome = kind === "other-home";
+  const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
   const machine = join(home, otherHome ? "launching home's machine" : "machine");
   for (const p of [root, home, mesh, join(home, "xdg"), machine]) mkdirSync(p, { recursive: true, mode: 0o700 });
@@ -588,6 +598,7 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
   };
   const holder = foreground(["--server", `nats://127.0.0.1:${port}`]);
   let taker: ReturnType<typeof foreground> | undefined;
+  let brokerKilled = false;
   try {
     await until(() => {
       if (holder.state.error) throw holder.state.error;
@@ -595,6 +606,34 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
       return holder.io.out.includes("Controller stack started");
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
+    if (kind === "broker-crash") {
+      const broker = controllerBroker(space, machine);
+      assert.ok(broker?.process && observeServiceProcess(broker) === "running", "the isolated stack owns this broker process");
+      process.kill(broker.process.pid, "SIGKILL");
+      brokerKilled = true;
+      await until(() => holder.state.exited, 10_000, () => holder.io.err.slice(-3000));
+      await waitForOwnedChild(() => holder.state.closed, 3_000, `${root}: holder streams drained`);
+      assert.equal(holder.state.code, 5, "broker loss is a failed foreground run"); passed++;
+      assert.match(holder.io.err, new RegExp(`nats-server exited unexpectedly \\(pid ${broker.process.pid}\\)`)); passed++;
+      assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false, "the failed launcher releases its hold"); passed++;
+      const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"]);
+      assert.ok(status.code === 0 && status.out.includes(`nats://127.0.0.1:${port}`) && /Connection:.*unreachable/.test(status.out), status.out + status.err); passed++;
+      taker = foreground(["--root", mesh]);
+      await until(() => {
+        if (taker!.state.error) throw taker!.state.error;
+        if (taker!.state.exited) throw new Error(`the repair exited: ${taker!.io.err}`);
+        return /Operation: +up completed/.test(taker!.io.out);
+      }, 120_000, () => taker!.io.err.slice(-3000));
+      assert.equal(await portOpen(port), true, "the next foreground up repairs the recorded listener"); passed++;
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+      assert.equal(down.code, 0, down.out + down.err);
+      await until(() => taker!.state.closed, 10_000, () => taker!.io.err.slice(-3000));
+      assert.equal(taker.state.code, 0, "an external down releases the repaired stack's foreground holder cleanly"); passed++;
+      assert.doesNotMatch(taker.io.err, /nats-server exited unexpectedly/); passed++;
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
     const secondEnv = otherHome ? { ...env, COTAL_HOME: join(home, "other-machine") } : env;
     const secondSandbox = otherHome ? recordSmokeSandbox({ root: mesh, cotalHome: secondEnv.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }) : sandbox;
     const second = await foregroundCliProbe(cliEntry, tsx, mesh, secondEnv, ["up", "--foreground"], 60_000);
@@ -636,6 +675,7 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
     try {
       for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
       // A failed cell still stops what its start left, through the product's own down.
+      if (brokerKilled && !(await portOpen(port))) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
     } finally {
@@ -674,6 +714,7 @@ await controllerStartupCell("team");
 await controllerHangupCell();
 await controllerSighupCell();
 await controllerHoldCell();
-await controllerHoldCell(true);
+await controllerHoldCell("other-home");
+await controllerHoldCell("broker-crash");
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });
