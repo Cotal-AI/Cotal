@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { lookup } from "node:dns/promises";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
@@ -31,7 +31,6 @@ import {
   recordUpdateReleaseHold,
   recordUpdateRefusal,
   recordUpdateReplacement,
-  prepareConnectorConfigForUpdate,
   setUpdateSetting,
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
@@ -52,9 +51,9 @@ import {
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
+import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
-import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
@@ -357,10 +356,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       });
     }
     try {
-      if (rt.prepareExecution) {
-        prepareConnectorConfigForUpdate();
-        if (recoverExtensionPromotion(true)) prepareConnectorConfigForUpdate();
-      } else recoverExtensionPromotion();
+      prepareUpdateConnectorConfig(Boolean(rt.prepareExecution));
     } catch (error) {
       if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
       else {
@@ -650,8 +646,6 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       recordUpdateDeferral(current, "waiting for update preflight");
     }
     if (upgrading) {
-      // Replacing packages still requires an identifiable graph for dependency checks and rollback.
-      if (unreadableSelection) throw unreadableSelection;
       const code = await upgradeAndReconcile(latest.version, current, rt, target);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
@@ -1500,24 +1494,6 @@ function preflightDetail(error: unknown): string {
   return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
 }
 
-/** The nearest existing directory of the config folder. Seeding creates the folder itself, but a
- *  group-writable ancestor above it is outside the folders update repairs. */
-function assertConfigAncestorProtected(): void {
-  let path = globalConfigDir();
-  // The config folder itself is repaired below. Only a folder above it is outside that repair.
-  if (existsSync(path)) path = dirname(path);
-  while (!existsSync(path)) {
-    const parent = dirname(path);
-    if (parent === path) return;
-    path = parent;
-  }
-  // The seed resolves the physical directory before protectedLocalDirectory. Follow that so an
-  // owned private folder reached through a symlink is not refused for being a link.
-  try { path = realpathSync(path); } catch { /* the path that exists is checked below */ }
-  if (!statSync(path).isDirectory()) return;
-  protectedLocalDirectory(path, "the Cotal config folder");
-}
-
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
   try { await rt.preflightReplacement?.(); }
   catch (error) {
@@ -1533,11 +1509,20 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
 
+  let repairedSelection = false;
   const releaseChecksStarted = Date.now();
   try {
     rt.out(`Checking cotal-ai@${targetVersion} release archives`);
     const releasePackages = await waitForReleaseArchives(targetVersion, current, rt);
     if (!releasePackages) return 0;
+    // Dependency checks and the rollback snapshot need a readable connector graph.
+    try {
+      repairedSelection = repairUpdateConnectorSelection(Boolean(rt.prepareExecution), line => rt.err(line));
+    } catch (error) {
+      recordUpdateDeferral(targetVersion, `connector configuration preflight: ${preflightDetail(error)}`);
+      rt.err(`Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`);
+      return 1;
+    }
     rt.out(`Checking installed extension dependencies for ${targetVersion}`);
     checkInstalledClosure(targetVersion, releasePackages, rt);
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
@@ -1564,7 +1549,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     }
     if (registryNetworkFailure(e)) {
       recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-      rt.out("The registry cannot be reached; nothing was changed.");
+      rt.out(repairedSelection ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
       return 0;
     }
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
@@ -1662,11 +1647,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       releaseGlobal();
       if (!execution && (error instanceof RegistryUnavailable || message(error).startsWith("target staging failed: ") && registryNetworkFailure(error))) {
         recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-        rt.out("The registry cannot be reached; nothing was changed.");
+        rt.out(repairedSelection ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.");
         return 0;
       }
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
-      rt.err(`staged pre-install check refused: ${message(error)}; no installed packages or connector state were changed`);
+      rt.err(`staged pre-install check refused: ${message(error)}; ${repairedSelection ? "no installed packages were replaced" : "no installed packages or connector state were changed"}`);
       return 1;
     }
   }

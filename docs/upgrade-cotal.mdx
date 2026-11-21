@@ -288,8 +288,10 @@ Run `cotal ext seed --repair` to repair an unreadable selection. It keeps the un
 beside the replacement with a `.corrupt.` suffix. If no readable record identifies the existing
 connector set, repair seeds a new set without deleting the old files.
 `cotal update --self` still checks for a newer release. When no newer release is available, it
-reports that it did not reconcile connectors. Replacing packages still needs a readable selection
-to preserve the installed connector state.
+reports that it did not reconcile connectors. When a newer release is available, it repairs the
+unreadable selection before replacing packages and reports where it saved the original record.
+If the update fails and restores the previous CLI, it restores the repaired connector state and
+keeps the original record beside the replacement.
 If the connector seed store is newer than the running CLI, reconciliation refuses before creating
 or pruning retained sets. Run `cotal update --self` to upgrade the CLI to match the store.
 If you copied the standalone pi extension into your own host, Cotal leaves that copy unchanged.

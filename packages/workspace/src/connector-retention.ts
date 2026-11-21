@@ -128,7 +128,12 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
       if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
       const path = join(sets, name);
       if (path === id.path || keep.has(name) || resolve(path) === rollbackSet) continue;
-      try { ownedAncestors(path); if (setHasHolders(path)) continue; rmSync(path, { recursive: true, force: true }); }
+      try {
+        ownedAncestors(path);
+        // Repair leaves a private copy for the operator, not for the generation collector.
+        if (readdirSync(path).some(name => name.startsWith("selection.json.corrupt.")) || setHasHolders(path)) continue;
+        rmSync(path, { recursive: true, force: true });
+      }
       catch { console.error(`connector set cleanup: could not remove ${name}; the update remains selected`); }
     }
   } catch { /* Unreadable holder state retains all sets. */ }
@@ -392,10 +397,10 @@ export function retainConnectorConfig(): string {
   return selectConnectorConfig(id);
 }
 
-/** Explicit seed repair may set aside unreadable records, never their retained connector trees. */
-export function repairConnectorSelection(checkSource: () => void): void {
+/** Set aside unreadable selection records, never their retained connector trees. */
+export function repairConnectorSelection(checkSource?: () => void): readonly string[] {
   const id = identity();
-  if (!id) return;
+  if (!id) return [];
   const release = claimUpdateClosureAccess();
   try {
     const local = join(id.path, "selection.json");
@@ -410,7 +415,7 @@ export function repairConnectorSelection(checkSource: () => void): void {
         return true;
       }
     });
-    if (!unreadable.length) return;
+    if (!unreadable.length) return [];
     const backups: [string, string][] = [];
     try {
       for (const path of unreadable) {
@@ -418,7 +423,7 @@ export function repairConnectorSelection(checkSource: () => void): void {
         renameSync(path, aside);
         backups.push([path, aside]);
       }
-      checkSource();
+      checkSource?.();
       const root = selectConnectorConfig(id, true);
       // When either pointer already identifies the current graph, restore the missing names
       // without copying or replacing that graph.
@@ -426,6 +431,7 @@ export function repairConnectorSelection(checkSource: () => void): void {
       for (const [path] of backups) {
         if (!lstatSync(path, { throwIfNoEntry: false })) writeSelection(path, record);
       }
+      return backups.map(([, aside]) => aside);
     } catch (error) {
       for (const [path, aside] of backups) {
         if (!lstatSync(path, { throwIfNoEntry: false })) renameSync(aside, path);
