@@ -131,6 +131,11 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       refusalBoundary = !existsSync(capabilityPath);
       writeFileSync(join(root, "suspension.json"), JSON.stringify({ manager, naturallyAbsentCapability: refusalBoundary }), { mode: 0o600 });
       if (refusalBoundary) {
+        const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, args.slice(3));
+        assert.equal(second.code, 2, second.out + second.err); passed++;
+        assert.match(second.err, /LIFECYCLE_BLOCKED/); passed++;
+        assert.match(second.err.replace(/\s+/g, " "), /the other foreground terminal keeps the stack once startup finishes.* status`/); passed++;
+        assert.doesNotMatch(second.err, /run the command again/); passed++;
         const retained = [token(brokerPath), token(deliveryPath), manager];
         assert.ok(retained.every((row) => row && live(row)), "private broker/delivery/manager births live before refusal");
         refusalBirths = retained as ProcessIdentityRecord[];

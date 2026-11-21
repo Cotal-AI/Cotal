@@ -1043,6 +1043,10 @@ See the [current command contract](cli-startup.mdx#up) for this behavior.
 
 ### Foreground lifetime [#foreground-lifetime]
 
+If a legacy foreground `up` is still starting, a concurrent start refuses without taking over.
+Run `cotal status` from the project to inspect startup. To start the stack in another terminal,
+stop it with Ctrl-C in the original terminal first.
+
 See the [current command contract](cli-startup.mdx#up) for this behavior.
 
 ### Unconfirmed manager stops [#unconfirmed-manager-stops]
