@@ -86,7 +86,7 @@ import { type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, remoteManagerIssuerGrants, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
 import { createNativeServiceCalloutAuthority, type NativeServiceCalloutAuthority } from "./native-service-callout.js";
 import { openChatSessionAuthority } from "./chat-session-authority.js";
-import { CorruptNativeIssuanceEvidence, pruneNativeIssuance } from "./native-issuance.js";
+import { CorruptNativeIssuanceEvidence, makeNativeIssuancePruner } from "./native-issuance.js";
 import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { type ServiceEndpointHost } from "./service-host-contract.js";
@@ -614,14 +614,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     return jitteredBackoffMs(pruneFailures++, Math.min(pruneMs, 1_000), 60_000);
   };
   const pruneAbort = new AbortController();
-  let pruneSeq = 1;
-  const pruneBatch = async (maxRows: number): Promise<number> => {
-    const result = await pruneNativeIssuance(registry, Math.floor(Date.now() / 1000), {
-      seq: pruneSeq, maxRows, signal: pruneAbort.signal,
-    });
-    pruneSeq = result.nextSeq ?? 1;
-    return result.nextSeq === undefined ? pruneMs : 0;
-  };
+  const prune = makeNativeIssuancePruner(registry);
+  const pruneBatch = async (maxRows: number): Promise<number> =>
+    await prune(Math.floor(Date.now() / 1000), maxRows, pruneAbort.signal) ? 0 : pruneMs;
   let firstPruneMs: number;
   try {
     firstPruneMs = await pruneBatch(1);

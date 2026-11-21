@@ -14,7 +14,7 @@ import {
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, reserveLifecycleUid, registryStores } from "../src/lifecycle-registry.js";
 import { bindNativeServiceName, nativeServiceNameAuthority, readNativeServiceName } from "../src/native-service-name.js";
-import { makeNativeIssuanceRecorder, nativeIssuanceRecord, parseNativeIssuanceRecord, pruneNativeIssuance, readNativeIssuance } from "../src/native-issuance.js";
+import { makeNativeIssuancePruner, makeNativeIssuanceRecorder, nativeIssuanceRecord, parseNativeIssuanceRecord, readNativeIssuance } from "../src/native-issuance.js";
 import { authorizeConnectCredential, openConnectReader } from "../src/connect-reader.js";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
 import { validateUserToken } from "../src/token.js";
@@ -240,11 +240,11 @@ try {
   assert.throws(() => parseNativeIssuanceRecord({ ...receipt, credentialId: mintLifecycleUid() }), /native root and lifetime/);
   const foreignReceiptKey = nativeIssuanceKey(createUser().getPublicKey());
   await authKv.create(foreignReceiptKey, new TextEncoder().encode(JSON.stringify(receipt)));
-  await assert.rejects(pruneNativeIssuance(reg, expiresAt + 10), /receipt key does not match/);
+  const prune = makeNativeIssuancePruner(reg);
+  await assert.rejects(prune(expiresAt + 10, 64), /receipt key does not match/);
   await authKv.delete(foreignReceiptKey);
-  const pruned = await pruneNativeIssuance(reg, expiresAt + 10);
-  assert.equal(pruned.retainedService, 1, "elapsed service JWT time is not topology-qualified absence");
-  assert.deepEqual(await readNativeIssuance(authKv, connection.userNkey), receipt);
+  assert.equal(await prune(expiresAt + 10, 64), false, "cleanup completed after the corrupt row was removed");
+  assert.deepEqual(await readNativeIssuance(authKv, connection.userNkey), receipt, "elapsed service JWT time is not topology-qualified absence");
   await authKv.delete(nativeIssuanceKey(connection.userNkey));
   await assert.rejects(receiptWriter(issuance), "deleted native service receipt cannot be recreated");
   const mutableBinding = { ...binding }, mutableAccess = structuredClone(access);
