@@ -135,7 +135,7 @@ import {
   kvWatchConsumer,
   decodeBearerPrincipal,
   RepeatedRefusal,
-  describeStatusError,
+  describeStatusError, expiryAwareErrorEvent,
 } from "./endpoint-dial.js";
 export {
   DEFAULT_SERVER,
@@ -974,7 +974,7 @@ export class CotalEndpoint extends EventEmitter {
       // Reversing these two lines silently loses the only post-drop reason an agent can report.
       this.emit("connection", { connected: false });
       this.emit(
-        "error",
+        expiryAwareErrorEvent(err, this.listenerCount("error") > 0),
         new Error(`mesh connection closed${err ? `: ${err.message || err.name}` : ""} - re-establishing`),
       );
       void this.reestablishLoop();
@@ -2158,7 +2158,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
           && this.isOwnWatchDelete(s.error.subject))
           continue;
-        if (!this.reportSubscriptionDenial(s.error)) this.emit("error", describeStatusError(s.error));
+        if (!this.reportSubscriptionDenial(s.error)) this.emit(expiryAwareErrorEvent(s.error, this.listenerCount("error") > 0), describeStatusError(s.error));
       }
     })().catch((e) => {
       // Defensive symmetry with the reachable in-loop epoch guard above. Measured against five real
