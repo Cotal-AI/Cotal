@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { servedConnectorStatuses } from "./connector-inventory.js";
 import type { ManagerStatus, ManagerStopImpact } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { ManagedAgent } from "./seat-types.js";
 
 // Capture the loaded package version before an installation can replace its files.
@@ -22,7 +23,6 @@ const NO_OWNER_MATCHES = "-no-owner-";
 export interface StatusAndModelsDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  connectorStatuses: () => Manager["connectorStatuses"];
   ep: () => Manager["ep"];
   execution: () => Manager["execution"];
   leaseStopping: () => Manager["leaseStopping"];
@@ -51,7 +51,6 @@ export interface StatusAndModelsDeps {
   isOwnPresence: (a: ManagedAgent, p: Presence | undefined) => p is Presence;
   isProcessBoundSeat: (...args: Parameters<Manager["isProcessBoundSeat"]>) => ReturnType<Manager["isProcessBoundSeat"]>;
   launchHarness: (...args: Parameters<Manager["launchHarness"]>) => ReturnType<Manager["launchHarness"]>;
-  refreshUnavailableConnectors: (...args: Parameters<Manager["refreshUnavailableConnectors"]>) => ReturnType<Manager["refreshUnavailableConnectors"]>;
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   staticReconciliationStatus: (...args: Parameters<Manager["staticReconciliationStatus"]>) => ReturnType<Manager["staticReconciliationStatus"]>;
 }
@@ -62,7 +61,6 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    connectorStatuses: () => m["connectorStatuses"],
     ep: () => m["ep"],
     execution: () => m["execution"],
     leaseStopping: () => m["leaseStopping"],
@@ -91,7 +89,6 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
     isOwnPresence: (a, p) => m["isOwnPresence"](a, p),
     isProcessBoundSeat: (...args) => m["isProcessBoundSeat"](...args),
     launchHarness: (...args) => m["launchHarness"](...args),
-    refreshUnavailableConnectors: (...args) => m["refreshUnavailableConnectors"](...args),
     resolveConnector: (...args) => m["resolveConnector"](...args),
     staticReconciliationStatus: (...args) => m["staticReconciliationStatus"](...args),
   };
@@ -99,14 +96,13 @@ export function statusAndModelsDeps(m: Manager): StatusAndModelsDeps {
 
 /** What the manager reports about itself: status, the seat list and its owner filter, local seat facts, and the model catalog. */
 export class StatusAndModels {
-  constructor(private readonly deps: StatusAndModelsDeps) {}
+  constructor(private readonly deps: StatusAndModelsDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get connectorStatuses() { return this.deps.connectorStatuses(); }
   private get ep() { return this.deps.ep(); }
   private get execution() { return this.deps.execution(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
@@ -135,7 +131,6 @@ export class StatusAndModels {
   private isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence { return this.deps.isOwnPresence(a, p); }
   private isProcessBoundSeat(...args: Parameters<Manager["isProcessBoundSeat"]>): ReturnType<Manager["isProcessBoundSeat"]> { return this.deps.isProcessBoundSeat(...args); }
   private launchHarness(...args: Parameters<Manager["launchHarness"]>): ReturnType<Manager["launchHarness"]> { return this.deps.launchHarness(...args); }
-  private refreshUnavailableConnectors(...args: Parameters<Manager["refreshUnavailableConnectors"]>): ReturnType<Manager["refreshUnavailableConnectors"]> { return this.deps.refreshUnavailableConnectors(...args); }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private staticReconciliationStatus(...args: Parameters<Manager["staticReconciliationStatus"]>): ReturnType<Manager["staticReconciliationStatus"]> { return this.deps.staticReconciliationStatus(...args); }
 
@@ -147,7 +142,7 @@ export class StatusAndModels {
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
-      await this.refreshUnavailableConnectors(connector.name, true);
+      await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
       const harness = this.launchHarness(connector);
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
@@ -226,7 +221,7 @@ export class StatusAndModels {
    *  seats, as `ps` lists them ({@link psOwnerFilter}), so a person reading a shared Manager does not
    *  learn how many seats other owners hold on it. */
   managerStatusData(ownerFilter: string | undefined, setupClaude = false): ManagerStatus {
-    this.refreshUnavailableConnectors(undefined, setupClaude);
+    this.parts.connectorInventory.refreshUnavailableConnectors(undefined, setupClaude);
     return {
       instanceId: this.managerInstanceId,
       lifecycleUid: this.managerLifecycleUid,
@@ -239,7 +234,7 @@ export class StatusAndModels {
       terminalSessions: this.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.startedAtMs,
-      connectors: servedConnectorStatuses(this.connectorStatuses, this.userMode),
+      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses, this.userMode),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {

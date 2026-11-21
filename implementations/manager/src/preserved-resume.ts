@@ -10,6 +10,7 @@ import type { Manager, FreeSlotCause, ManagerResumeAgent, ManagerResumeIdentity,
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 import { requireRuntimeReap } from "./runtime/index.js";
 import type { CustodialRuntime } from "./runtime/index.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { foreignEventChannels } from "./seat-launch.js";
 import type { ManagedAgent } from "./seat-types.js";
 import { ownedBySibling } from "./static-lifecycle.js";
@@ -107,7 +108,6 @@ export interface PreservedResumeDeps {
   recordSlotCustody: (...args: Parameters<Manager["recordSlotCustody"]>) => ReturnType<Manager["recordSlotCustody"]>;
   recordSlotRuntime: (...args: Parameters<Manager["recordSlotRuntime"]>) => ReturnType<Manager["recordSlotRuntime"]>;
   refreshSeatRecord: (...args: Parameters<Manager["refreshSeatRecord"]>) => ReturnType<Manager["refreshSeatRecord"]>;
-  refreshUnavailableConnectors: (...args: Parameters<Manager["refreshUnavailableConnectors"]>) => ReturnType<Manager["refreshUnavailableConnectors"]>;
   reserveCustody: (...args: Parameters<Manager["reserveCustody"]>) => ReturnType<Manager["reserveCustody"]>;
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retainedSessionId: (...args: Parameters<Manager["retainedSessionId"]>) => ReturnType<Manager["retainedSessionId"]>;
@@ -174,7 +174,6 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
     recordSlotCustody: (...args) => m["recordSlotCustody"](...args),
     recordSlotRuntime: (...args) => m["recordSlotRuntime"](...args),
     refreshSeatRecord: (...args) => m["refreshSeatRecord"](...args),
-    refreshUnavailableConnectors: (...args) => m["refreshUnavailableConnectors"](...args),
     reserveCustody: (...args) => m["reserveCustody"](...args),
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retainedSessionId: (...args) => m["retainedSessionId"](...args),
@@ -187,7 +186,7 @@ export function preservedResumeDeps(m: Manager): PreservedResumeDeps {
 
 /** Resuming a preserved manager: the bound inventory, validating each retained seat's authority, relaunching or adopting it, and the commit and finalize doors. */
 export class PreservedResume {
-  constructor(private readonly deps: PreservedResumeDeps) {}
+  constructor(private readonly deps: PreservedResumeDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -245,7 +244,6 @@ export class PreservedResume {
   private recordSlotCustody(...args: Parameters<Manager["recordSlotCustody"]>): ReturnType<Manager["recordSlotCustody"]> { return this.deps.recordSlotCustody(...args); }
   private recordSlotRuntime(...args: Parameters<Manager["recordSlotRuntime"]>): ReturnType<Manager["recordSlotRuntime"]> { return this.deps.recordSlotRuntime(...args); }
   private refreshSeatRecord(...args: Parameters<Manager["refreshSeatRecord"]>): ReturnType<Manager["refreshSeatRecord"]> { return this.deps.refreshSeatRecord(...args); }
-  private refreshUnavailableConnectors(...args: Parameters<Manager["refreshUnavailableConnectors"]>): ReturnType<Manager["refreshUnavailableConnectors"]> { return this.deps.refreshUnavailableConnectors(...args); }
   private reserveCustody(...args: Parameters<Manager["reserveCustody"]>): ReturnType<Manager["reserveCustody"]> { return this.deps.reserveCustody(...args); }
   private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
   private retainedSessionId(...args: Parameters<Manager["retainedSessionId"]>): ReturnType<Manager["retainedSessionId"]> { return this.deps.retainedSessionId(...args); }
@@ -958,7 +956,7 @@ export class PreservedResume {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
-      await this.refreshUnavailableConnectors(connector.name, true);
+      await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
       const harness = this.launchHarness(connector);
       if ("refusal" in harness) return { ok: false, error: harness.refusal };
       let retainedSession: string | undefined;
