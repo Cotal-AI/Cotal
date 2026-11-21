@@ -7,8 +7,8 @@
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
  * and again as it writes its start receipt. A foreground `team boot` gets SIGTERM at the broker's
  * readiness announcement. Another cell cuts a ready stack's stop as a closed terminal
- * does. A third shows that a second foreground `up` refuses while one holds the stack, and that one
- * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
+ * does. The controller hold cell checks refusals before and after the hold is recorded, then checks
+ * that a foreground `up` can take over a running stack after its previous holder is killed.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -579,16 +579,29 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const foreground = (args: string[]) => {
-    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const foreground = (args: string[], pauseBeforeHold = false) => {
+    const preload = pauseBeforeHold ? ["--import", join(import.meta.dirname, "_foreground-hold-pause.ts")] : [];
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: [pauseBeforeHold ? "pipe" : "ignore", "pipe", "pipe"] });
     const io = { out: "", err: "" };
     child.stdout?.on("data", (b: Buffer) => { io.out += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
     return { child, io, state: observeOwnedChild(child) };
   };
-  const holder = foreground(["--server", `nats://127.0.0.1:${port}`]);
+  const holder = foreground(["--server", `nats://127.0.0.1:${port}`], !otherHome);
   let taker: ReturnType<typeof foreground> | undefined;
   try {
+    if (!otherHome) {
+      await until(() => holder.io.err.includes("Ready to publish foreground hold") || holder.state.exited, 30_000, () => holder.io.err);
+      assert.ok(!holder.state.exited && !existsSync(join(mesh, ".cotal", "stack-foreground.hold")), holder.io.err); passed++;
+      const contender = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"]);
+      writeFileSync(join(root, "startup-refusal.log"), contender.out + contender.err, { mode: 0o600 });
+      assert.equal(contender.code, 2, contender.out + contender.err); passed++;
+      assert.match(contender.err, /LIFECYCLE_BLOCKED/); passed++;
+      assert.ok(contender.err.includes(`holds this root (pid ${holder.child.pid})`), contender.err); passed++;
+      assert.match(contender.err.replace(/\s+/g, " "), /keeps the stack once startup finishes.*`cotal status`.*Ctrl-C in that terminal/); passed++;
+      assert.doesNotMatch(contender.err, /run the command again after that operation finishes/); passed++;
+      holder.child.stdin!.end("\n");
+    }
     await until(() => {
       if (holder.state.error) throw holder.state.error;
       if (holder.state.exited) throw new Error(`CLI exited before the stack was ready: ${holder.io.err}`);

@@ -604,8 +604,12 @@ keep `PERMISSION_DENIED` and name moving the configuration entry aside.
 
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
-names that command's pid. A lock whose holder is no longer running, as a command killed by
-`SIGKILL` leaves it, is taken over by the next command that needs it, which warns
+names that command's pid. If `cotal up --foreground` holds the lock, the refusal points to
+`cotal status` and explains that the other terminal keeps the stack after startup. Press Ctrl-C in
+that terminal to stop the stack before starting it here.
+
+A lock left by a command that is no longer running, for example after `SIGKILL`, is taken over by
+the next command that needs it, which warns
 `MAINTENANCE_LOCK_TAKEN_OVER` with the pid and start time of the process that left it. Taking the lock makes `.cotal/maintenance` when the folder has none. A
 command that then refuses or fails, such as `up -f` with a manifest that does not validate or `up
 --json` on the retained launcher, releases the lock and removes those folders again while they are
