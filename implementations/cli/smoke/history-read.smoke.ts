@@ -125,6 +125,25 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
 
+async function checkMembershipSetupRefusal(targetSpace: string, channel: string, code: string, ...targetFlags: string[]): Promise<void> {
+  const args = ["channel", "members", channel, "--space", targetSpace, "--json", ...targetFlags];
+  const finite = await run(args);
+  const stream = await run([...args, "--follow"]);
+  const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    schemaVersion?: number; stream?: string; type?: string; target?: { space?: string; channel?: string };
+    data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+  });
+  const error = finite.envelope?.error;
+  check(`membership follow frames ${code} as an error and end with the space and channel, exit 2`,
+    finite.status === 2 && finite.envelope?.command === "channel" && finite.envelope?.outcome === "refused"
+      && error?.code === code && Boolean(error.remedy) && stream.status === 2 && stream.stderr === ""
+      && records.map((r) => r.type).join() === "error,end" && records.every((r) =>
+        r.schemaVersion === 1 && r.stream === "membership" && r.target?.space === targetSpace && r.target?.channel === channel)
+      && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
+      && records[1]?.data?.reason === "setup-failed" && records[1]?.data?.lastAsOf === null,
+    { finite: shown(finite), stream: shown(stream) });
+}
+
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
   const child = spawn(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -1022,6 +1041,7 @@ try {
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
     const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
+    await checkMembershipSetupRefusal(openSpace, "general", "UNSUPPORTED");
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
@@ -1268,6 +1288,7 @@ try {
       && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
       && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
+  await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
