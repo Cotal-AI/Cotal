@@ -212,10 +212,12 @@ try {
   {
     const { readPreferences, writePreference } = await import("@cotal-ai/workspace");
     const save = (key: string, value: string | undefined, space?: string) => writePreference(space ? { space } : {}, key, value, readPreferences().revision);
-    const childSpawn = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
-      captureProcess("pnpm", ["exec", "tsx", "bin/cotal.ts", "spawn", ...args, "--detach", "--no-events", "--space", SPACE], {
+    const childSpawnCli = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
+      captureProcess("pnpm", ["exec", "tsx", "bin/cotal.ts", "spawn", ...args, "--space", SPACE], {
         ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv,
       });
+    const childSpawn = (args: string[], extraEnv?: NodeJS.ProcessEnv) =>
+      childSpawnCli([...args, "--detach", "--no-events"], extraEnv);
     const stopSeat = async (n: string) => {
       const r = await (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, ad: boolean) => Promise<{ ok: boolean; error?: string }> }).opStop({ name: n }, "smoke", true);
       if (!r.ok) console.log(`  · note: stop ${n} replied ${JSON.stringify(r)}`);
@@ -303,10 +305,7 @@ try {
     const h1 = await foregroundAll(["--dry-run", "--no-events", "--space", SPACE, "--name", "h1"]);
     ok("H1: a bare foreground preview says the launch writes the shipped default, and writes nothing",
       /writes the shipped default persona/.test(unstyled(h1)) && !/process\.exit|no default persona/.test(h1) && !existsSync(defaultPath), h1);
-    const preview = (...args: string[]) =>
-      captureProcess("pnpm", ["exec", "tsx", "bin/cotal.ts", "spawn", ...args, "--space", SPACE, "--dry-run", "--json"], {
-        ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1",
-      });
+    const preview = (...args: string[]) => childSpawnCli([...args, "--dry-run", "--json"]);
     const explicit = await preview("default");
     const receipt = explicit.code === 0 ? JSON.parse(explicit.out) : undefined;
     ok("an explicit default preview uses the shipped template without writing the persona",
