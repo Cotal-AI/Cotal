@@ -236,7 +236,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
   if (name === "sync") return true; // refreshing account catalogs does not install connectors
-  if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
+  if (name === "use") return true; // selecting or showing the current space does not launch or install connectors
   if (name === "meshes" && (sub === undefined || sub === "list")) return true;
   if (name === "config" && (sub === "set" || sub === "unset")) return true; // editing a preference does not require installing connectors
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
