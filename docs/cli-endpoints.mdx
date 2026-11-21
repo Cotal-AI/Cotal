@@ -80,8 +80,10 @@ A mesh where nobody is present is a complete roster: `who` says so and exits 0.
 
 ### Watch consumer lifetime
 
-`who` watches the roster and the channel registry on every mesh so it can report those states. On a
-static-auth or user-auth mesh the credential `who` connects with may not delete its watch consumers,
+On an open mesh, `who` reads the roster and channel registry once. It creates neither bucket.
+If the broker confirms there is no roster bucket, `who` reports an empty roster.
+On a static-auth or user-auth mesh, `who` watches both buckets so it can report the watch states.
+The credential `who` connects with may not delete its watch consumers,
 so each one stays on the broker for five minutes after `who` exits. A script that runs `who` in a
 tight loop there can reach the broker's limit of 1000 consumers per stream.
 
