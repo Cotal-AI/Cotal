@@ -1,11 +1,11 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { agentFilePath, connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { callerHarness, checkSpawnExpiryTarget, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import type { spawnFlags } from "./spawn.js";
@@ -85,7 +85,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     ] }));
     return;
   }
-  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : agentFilePath(root, ref);
+  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : directPersonaPath(root, ref, values.config === undefined && args.positionals.length > 0);
   let definition: AgentDef;
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.

@@ -278,6 +278,19 @@ const noDefault = cotal("spawn", "--dry-run", "--plain");
 check("spawn --dry-run with no default persona previews the shipped default without writing it",
   noDefault.status === 0 && noDefault.stdout.includes("the launch writes the shipped default persona here; the preview wrote nothing") && !existsSync(agentFilePath(root, "default")), shown(noDefault));
 
+const dottedCatalog = join(dirname(agentFilePath(root, "default")), "review.md.md");
+const dottedFile = join(root, "review.md");
+writeFileSync(dottedCatalog, "---\nname: reviewer\n---\n");
+writeFileSync(dottedFile, "---\nname: other\n---\n");
+try {
+  const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
+  check("spawn --dry-run previews the dotted catalog name instead of the project file",
+    preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+} finally {
+  rmSync(dottedCatalog);
+  rmSync(dottedFile);
+}
+
 // #7526: spawning or previewing an invalid native persona preserves the field/position error without
 // echoing persona values and without recommending `cotal team deploy`, while a Mesh manifest still
 // names `cotal team deploy <file>`.
@@ -308,6 +321,13 @@ for (const [label, body, reason] of [
   rmSync(badSpawnPath, { force: true });
 }
 const manifestAsPersona = join(root, "team-manifest.yaml");
+const invalidBytes = join(root, "bad-utf8.md");
+writeFileSync(invalidBytes, Buffer.from("---\nname: bad-utf8\n---\nbefore\xffafter\n", "latin1"));
+const invalidEncoding = cotal("spawn", "--file", invalidBytes, "--dry-run", "--json");
+check("spawn preview refuses invalid UTF-8 and says how to repair the file",
+  invalidEncoding.status === 1 && invalidEncoding.envelope?.error?.code === "SCHEMA_INVALID" &&
+  invalidEncoding.envelope.error.message?.includes(`${invalidBytes}: it is not valid UTF-8`) === true &&
+  invalidEncoding.envelope.error.remedy === `save ${invalidBytes} as UTF-8`, shown(invalidEncoding));
 writeFileSync(manifestAsPersona, "apiVersion: cotal/v1\nkind: Mesh\nspace: opsp\nagents: {}\nchannels: {}\n");
 for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", ["--dry-run"]]] as const) {
   const r = cotal("spawn", "--file", manifestAsPersona, ...flags, ...(modeLabel === "dry-run" ? ["--json"] : ["--server", "nats://127.0.0.1:34300"]));
