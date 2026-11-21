@@ -107,9 +107,9 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   try {
     let file = join(dir, exported ?? meta.main ?? "index.js");
     if (exported === undefined && meta.main !== undefined && statSync(file, { throwIfNoEntry: false })?.isDirectory()) {
-      // Resolve this directory as a package, without probing sibling files or evaluating it via require().
+      // Resolve the package's main from its root rather than treating the main directory as a separate package.
       const require = createRequire(import.meta.url);
-      file = require.resolve(`${resolve(file)}/`);
+      file = require.resolve(`${resolve(dir)}/`);
     }
     await import(pathToFileURL(file).href);
   } catch (e) {

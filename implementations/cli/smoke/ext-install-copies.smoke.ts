@@ -164,9 +164,19 @@ function main(): void {
           existsSync(join(prefix, "node_modules", "cotal-ext-bin-first")) && existsSync(join(prefix, "node_modules", "cotal-ext-bin-second")));
       check("shared bin: the bin link still reaches the shared package", symlinked() && existsSync(link));
     }
-    for (const variant of ["file", "directory", "nested-main", "missing", "exports"]) {
+    const entryCases = [
+      { variant: "file", entry: "dist/index.js" },
+      { variant: "directory", entry: "dist/index.js" },
+      { variant: "sibling", entry: "dist.js", other: "dist/index.js" },
+      { variant: "nested-dot", entry: "dist.js", other: "dist/index.js", nestedMain: "." },
+      { variant: "nested-index", entry: "dist/index.js", other: "dist/register.mjs", nestedMain: "./register.mjs" },
+      { variant: "nested-only", other: "dist/register.mjs", nestedMain: "./register.mjs" },
+      { variant: "missing" },
+      { variant: "exports", entry: "entry.mjs", other: "dist/index.js" },
+    ];
+    for (const { variant, entry, other, nestedMain } of entryCases) {
       const dir = join(root, `entry-${variant}`);
-      const { cli, offline } = sandbox(dir);
+      const { child, cli, offline, prefix } = sandbox(dir);
       const name = "cotal-directory-entry-test";
       const source = join(dir, "extension");
       const dist = join(source, "dist");
@@ -176,32 +186,35 @@ function main(): void {
         ...(variant === "exports" ? { exports: { ".": { import: "./entry.mjs" } } } : {}),
         peerDependencies: { "@cotal-ai/core": "*" },
       }));
-      if (variant === "nested-main") writeFileSync(join(dist, "package.json"), '{"main":"./register.mjs"}');
-      const entry = variant === "exports" ? join(source, "entry.mjs") : join(dist, variant === "nested-main" ? "register.mjs" : "index.js");
-      const register = `import { registry } from "@cotal-ai/core";
+      if (nestedMain) writeFileSync(join(dist, "package.json"), JSON.stringify({ type: "module", main: nestedMain }));
+      if (variant === "missing") writeFileSync(join(dist, "placeholder.txt"), "no entry here");
+      const register = (file: string) => writeFileSync(join(source, file), `import { registry } from "@cotal-ai/core";
 await Promise.resolve();
-registry.register({ kind: "command", name: "directory-entry-example", summary: "fixture", run() { console.log("Hello"); } });
-`;
-      if (variant === "missing" || variant === "exports") writeFileSync(join(dist, "placeholder.txt"), "no entry here");
-      if (variant === "missing") {
-        writeFileSync(join(source, "index.js"), register);
-        writeFileSync(join(source, "dist.js"), register);
-      } else {
-        writeFileSync(entry, register);
+registry.register({ kind: "command", name: "directory-entry-example", summary: "fixture", run() { console.log(${JSON.stringify(file)}); } });
+`);
+      if (entry) register(entry);
+      if (other) register(other);
+      if (variant !== "exports") {
+        const resolved = child(["-p", 'require.resolve("./extension")']);
+        check(`${variant} entry: Node package resolution matches the fixture`, entry
+          ? resolved.status === 0 && resolved.stdout.trim() === join(source, entry)
+          : resolved.status === 1 && resolved.stderr.includes("MODULE_NOT_FOUND"));
       }
 
       const added = cli(["ext", "add", "./extension"], offline);
       const listed = cli(["ext", "--json"]);
       assert.equal(listed.status, 0, listed.stderr);
       const { items } = JSON.parse(listed.stdout).result as { items: { pkg: string; provides: string[] }[] };
-      if (variant === "missing") {
-        check("missing directory entry: add names the failed import and rolls back",
-          added.status === 1 && added.stderr.includes(`extension ${name}@1.0.0 failed to import`) && added.stderr.includes("the add was rolled back") && items.length === 0);
+      if (!entry) {
+        check(`${variant} entry: add names the failed import and rolls back`,
+          added.status === 1 && added.stderr.includes(`extension ${name}@1.0.0 failed to import`) && added.stderr.includes("the add was rolled back")
+          && items.length === 0 && !existsSync(join(prefix, "node_modules", name)));
+        check(`${variant} entry: a fresh CLI cannot dispatch the command`, cli(["directory-entry-example"]).status === 1);
       } else {
         if (added.status !== 0) console.error(added.stderr);
         check(`${variant} entry: add advertises the command`, added.status === 0 && items.length === 1 && items[0]?.pkg === name && items[0].provides.includes("command:directory-entry-example"));
         const command = cli(["directory-entry-example"]);
-        check(`${variant} entry: a fresh CLI dispatches the command`, command.status === 0 && command.stdout.trim() === "Hello");
+        check(`${variant} entry: a fresh CLI dispatches the selected file`, command.status === 0 && command.stdout.trim() === entry);
       }
     }
     // Add uses one candidate metadata snapshot too, even when the entry changes its own file.
@@ -222,7 +235,7 @@ registry.register({ kind: "command", name: "directory-entry-example", summary: "
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 42 : 39, "all expected extension checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 56 : 53, "all expected extension checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
