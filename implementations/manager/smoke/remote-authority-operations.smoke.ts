@@ -164,7 +164,7 @@ const remoteOnly = new Manager({
   despawnAuthorized(): { ok: true; data: unknown };
   attachAuthorized(): Promise<{ ok: true; data: unknown }>;
   inputAuthorized(): unknown;
-  interruptAuthorized(): unknown;
+  terminalInputComponent: { interruptAuthorized(): unknown };
   serveTurnGoal(): unknown;
 };
 remoteOnly.userMode = true;
@@ -186,7 +186,7 @@ remoteOnly.findManagedByTarget = () => foreignTarget;
 remoteOnly.despawnAuthorized = () => { effects.push("despawn"); return { ok: true, data: {} }; };
 remoteOnly.attachAuthorized = async () => { effects.push("attach"); return { ok: true, data: {} }; };
 remoteOnly.inputAuthorized = () => { effects.push("input"); return {}; };
-remoteOnly.interruptAuthorized = () => { effects.push("interrupt"); return {}; };
+remoteOnly.terminalInputComponent.interruptAuthorized = () => { effects.push("interrupt"); return {}; };
 remoteOnly.serveTurnGoal = () => { effects.push("turn"); return {}; };
 const handlers = new Map(remoteOnly.managerServiceDefs().map((def) => [def.command, def.handler]));
 const handlerContext = {

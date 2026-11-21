@@ -113,6 +113,15 @@ function abortReason(signal: AbortSignal | undefined): Error {
 }
 
 /** Retained-history reads and private reader allocation for one endpoint. */
+/** The options of a `channelHistoryPage` read. */
+export interface ChannelHistoryPageOptions {
+  limit?: number;
+  signal?: AbortSignal;
+  /** Read only what this one principal published on the channel, as `channelHistory` reads it: the
+   *  filter is its own subject, whose sender slots the broker's publish permissions police. */
+  publisher?: { owner: string; actor: string };
+}
+
 export class EndpointHistory {
 
   /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance
@@ -172,14 +181,10 @@ export class EndpointHistory {
    *  No observer authority, presence or delivery ACL mirror is required. Returns the newest page,
    *  oldest-first, including this caller's own sends. `complete` says no older valid row remains.
    *  Reads have a ten-second budget, shortened by `signal`. Concurrent connections sharing this
-   *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader.
-   *
-   *  `publisher` reads only what that one principal published on the channel, as
-   *  {@link channelHistory} reads it: the filter is its own subject, whose sender slots the broker's
-   *  publish permissions police. */
+   *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader. */
   async channelHistoryPage(
     channel: string,
-    opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
+    opts?: ChannelHistoryPageOptions,
   ): Promise<HistoryPage> {
     assertValidChannel(channel);
     if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
