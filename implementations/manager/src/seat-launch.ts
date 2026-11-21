@@ -351,12 +351,13 @@ export class SeatLaunch {
   resolveSpawnCwd(value: unknown): { cwd: string; host: string } {
     this.assertHostDirectoryExecution();
     const asked = typeof value === "string" ? value : String(value ?? "");
-    const refuse = (reason: string): never => {
-      throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${reason})`);
-    };
-    if (!isAbsolute(asked)) refuse("expected an absolute path");
+    if (!isAbsolute(asked)) {
+      throw new EpEnvelopeError("failed-precondition", "cwd does not resolve on this host: expected an absolute path",
+        [{ kind: "ai.cotal.manager.absolute-directory-required" }], "not-executed");
+    }
     const result = this.checkSpawnCwd(asked);
-    if ("refusal" in result) return refuse(result.refusal);
+    if ("refusal" in result)
+      throw new EpEnvelopeError("failed-precondition", `cwd does not resolve on this host: ${JSON.stringify(asked)} (${result.refusal})`);
     return result;
   }
 

@@ -179,6 +179,25 @@ function envelopeOf(r: Run): PsEnvelope | undefined {
   try { return JSON.parse(lines[0]!) as PsEnvelope; } catch { return undefined; }
 }
 
+async function checkRelativeDirectoryRefusals(root: string, instance: string): Promise<void> {
+  const relative = "../relative-directory-probe";
+  const remedy = "pass an absolute path on the manager host";
+  for (const [command, arg] of [["resolve-cwd", "cwd"], ["list-dir", "path"]] as const) {
+    const args = ["endpoint", "invoke", "manager", command, "--space", space, "--on", instance, "--args", JSON.stringify({ [arg]: relative })];
+    const plain = await cotal([...args, "--plain"], root);
+    mustHaveRun(plain, `${command} relative path in plain mode`);
+    check(`${command} refuses a relative path with a fixed Next and no argument echo`,
+      plain.status === 2 && /^Next\n\s+(.+)$/m.exec(plain.out)?.[1] === remedy && !plain.out.includes(relative), plain);
+    const json = await cotal([...args, "--json"], root);
+    mustHaveRun(json, `${command} relative path in JSON mode`);
+    const env = JSON.parse(json.stdout);
+    check(`${command} confirms the relative path did not execute and retains the answering instance`,
+      json.status === 2 && env.outcome === "refused" && env.error?.code === "LIFECYCLE_BLOCKED" && env.error.remedy === remedy
+      && env.error.cause?.code === "failed-precondition" && env.error.cause.outcome === "not-executed"
+      && env.error.cause.detail?.responder?.instanceId === instance && !json.out.includes(relative), json);
+  }
+}
+
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
@@ -207,6 +226,7 @@ try {
   // would satisfy "answered by the instance it names". Assert the split exists FIRST.
   console.log("1. the mesh really is multi-manager (without this, a pin proves nothing)");
   check("two managers registered DISTINCT instance ids", IID1 !== IID2, { IID1, IID2 });
+  await checkRelativeDirectoryRefusals(root1, IID1);
 
   const unpinned = await cotal(["ps", "--space", space], root1);
   mustHaveRun(unpinned, "the unpinned `ps`");
