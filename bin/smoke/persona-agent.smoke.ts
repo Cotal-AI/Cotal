@@ -25,8 +25,8 @@
  *      paths, below COTAL_DEFAULT_AGENT and a persona pin, and a saved persona preference picks the
  *      persona of a bare spawn.
  *   H. A foreground spawn whose catalog has no default persona writes the shipped one, create-only,
- *      and launches it; its preview writes nothing, an edited default is kept, and a missing named
- *      persona is still refused.
+ *      and launches it; bare and explicit default previews write nothing, an edited default is kept,
+ *      and a missing named persona is still refused. An open-space preview refuses credential expiry.
  *
  * Throwaway everything: own nats-server on an OS-assigned free port with a scratch store dir, a
  * sandboxed COTAL_HOME, a scratch workspace root, kills only the PIDs it spawns. No live stack is
@@ -212,10 +212,12 @@ try {
   {
     const { readPreferences, writePreference } = await import("@cotal-ai/workspace");
     const save = (key: string, value: string | undefined, space?: string) => writePreference(space ? { space } : {}, key, value, readPreferences().revision);
-    const childSpawn = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
-      captureProcess("pnpm", ["exec", "tsx", "bin/cotal.ts", "spawn", ...args, "--detach", "--no-events", "--space", SPACE], {
+    const childSpawnCli = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
+      captureProcess("pnpm", ["exec", "tsx", "bin/cotal.ts", "spawn", ...args, "--space", SPACE], {
         ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv,
       });
+    const childSpawn = (args: string[], extraEnv?: NodeJS.ProcessEnv) =>
+      childSpawnCli([...args, "--detach", "--no-events"], extraEnv);
     const stopSeat = async (n: string) => {
       const r = await (mgr as unknown as { opStop: (a: Record<string, unknown>, c: string, ad: boolean) => Promise<{ ok: boolean; error?: string }> }).opStop({ name: n }, "smoke", true);
       if (!r.ok) console.log(`  · note: stop ${n} replied ${JSON.stringify(r)}`);
@@ -303,6 +305,19 @@ try {
     const h1 = await foregroundAll(["--dry-run", "--no-events", "--space", SPACE, "--name", "h1"]);
     ok("H1: a bare foreground preview says the launch writes the shipped default, and writes nothing",
       /writes the shipped default persona/.test(unstyled(h1)) && !/process\.exit|no default persona/.test(h1) && !existsSync(defaultPath), h1);
+    const preview = (...args: string[]) => childSpawnCli([...args, "--dry-run", "--json"]);
+    const explicit = await preview("default");
+    const receipt = explicit.code === 0 ? JSON.parse(explicit.out) : undefined;
+    ok("an explicit default preview uses the shipped template without writing the persona",
+      receipt?.result?.persona?.path === defaultPath &&
+      receipt.result.persona.source === "argument" && receipt.result.persona.write === "shipped-default" &&
+      receipt.result.requestedName === "default_agent" && !existsSync(defaultPath), explicit);
+    for (const [flag, value] of [["--expires-in", "60"], ["--expires-at", String(Math.floor(Date.now() / 1000) + 3600)]] as const) {
+      const expiry = await preview("unpinned", flag, value);
+      ok(`an open-space preview refuses ${flag} with the launch's diagnostic`,
+        expiry.code === 1 && expiry.out.includes('"code":"USAGE_INVALID"') && expiry.out.includes("is open and mints no credential") &&
+        expiry.out.includes('"remedy":"drop the flag"') && !existsSync(defaultPath), expiry);
+    }
     process.env.COTAL_DEFAULT_AGENT = "other";
     reset();
     const h2 = await foreground(["--no-events", "--space", SPACE, "--name", "h2"]);
