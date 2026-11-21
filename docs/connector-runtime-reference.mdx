@@ -268,7 +268,7 @@ A connector hands `MeshAgent` a dispatcher as the `commands` option:
 
 The runtime sends only those four fields of an entry. It leaves out a name `command` cannot carry and shortens a longer description or hint.
 Without a dispatcher, `commands` answers `{ supported: false }` and `command` is `unimplemented`.
-In this release only OpenCode 2.x has one.
+In this release OpenCode 2.x and [pi](pi-connector-reference.mdx#agent-commands) 0.84.2 or later have one.
 
 `command` answers the command's `id` at once, and the command waits in a queue for the connector's next idle turn.
 `MeshAgent` emits `command`, and the connector calls `dispatchNextCommand()` while no turn runs. It answers `dispatched`, `failed`, or `empty`.
