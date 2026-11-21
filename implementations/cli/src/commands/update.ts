@@ -681,8 +681,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   return reconcileCurrent(current, rt, target, (reconciled) => {
     const latest = latestVersion(rt);
     if (!latest.ok) {
-      rt.err(c.dim(`Could not check the latest cotal-ai version: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
-      return reconciled ? 0 : 1;
+      rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
+      return 1;
     }
     reportVersion(current, latest.version, rt, reconciled);
     return reconciled ? 0 : 1;

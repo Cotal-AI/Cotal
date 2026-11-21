@@ -30,7 +30,7 @@ for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-i
     const result = spawnSync(process.execPath, [cli, ...args], options);
     writeFileSync(join(base, `${args[0]}-${calls++}.log`), `${result.stdout ?? ""}${result.stderr ?? ""}\nexit=${result.status} signal=${result.signal}\n`);
     assert.ifError(result.error);
-    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, args[0] === "update" && env.npm_config_offline === "true" ? 1 : 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
     return `${result.stdout}${result.stderr}`;
   }
   let calls = 0, running = false;
@@ -53,8 +53,10 @@ for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-i
     const update = run("update");
     if (installedSkills) assert.ok(update.includes(`Claude skills refresh deferred because ${protectedDir} is read-only.`), update);
     else assert.match(update, /Refresh the Claude Code plugin: not installed/);
-    if (name === "readonly-installed-cache") assert.match(update, /Could not check the latest cotal-ai version/);
-    assert.equal(JSON.parse(readFileSync(join(state, "update-recovery.json"), "utf8")), null);
+    if (name === "readonly-installed-cache") assert.match(update, /cotal-ai version check failed: npm error code ENOTCACHED/);
+    const recovery = join(state, "update-recovery.json");
+    if (name !== "readonly-installed-cache" || existsSync(recovery))
+      assert.equal(JSON.parse(readFileSync(recovery, "utf8")), null);
     if (name === "absent") assert.equal(existsSync(claude), false);
     else {
       assert.equal(statSync(protectedDir).mode & 0o777, 0o500);
@@ -70,7 +72,7 @@ for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-i
     run("up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
     run("send", "-c", "general", "after reconciliation");
     passed++;
-    console.log(`PASS ${name}: update, status, up and send succeed without writing Claude configuration`);
+    console.log(`PASS ${name}: reconciliation, status, up and send leave Claude configuration unchanged${name === "readonly-installed-cache" ? "; the offline version check still exits 1" : ""}`);
   } finally {
     if (running) run("down", "--yes");
     if (name !== "absent" && existsSync(protectedDir)) chmodSync(protectedDir, 0o700);
