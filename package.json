@@ -1072,6 +1072,7 @@
     "smoke:console-shown-name": "tsx implementations/cli/smoke/console-shown-name.smoke.ts",
     "smoke:console-blank-confirm": "tsx implementations/cli/smoke/console-blank-confirm.smoke.tsx",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
+    "smoke:down-shared-broker:live": "tsx implementations/cli/smoke/down-shared-broker-live.smoke.ts",
     "smoke:down-pidfile-liveness:live": "tsx implementations/cli/smoke/down-pidfile-liveness-live.smoke.ts",
     "smoke:down-host-auth:live": "tsx implementations/cli/smoke/down-host-auth-live.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
