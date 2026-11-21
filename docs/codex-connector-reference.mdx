@@ -121,6 +121,25 @@ connector's own defaults and selectors ride the same rail and yield to yours, ex
 `mcp_servers`, which is how the agent reaches the mesh: the whole namespace is refused loud (at
 spawn, not at launch) rather than silently overridden.
 
+## Agent commands
+
+On a per-user mesh the host runs Codex's skills as [agent commands](connector-runtime-reference.mdx#agent-commands).
+It lists the enabled skills that Codex's `skills/list` finds for the agent's working directory,
+read again from disk on every list, by each skill's name and description. Codex lists a repo skill
+before a user or system skill of the same name, and the host lists and runs only that first one.
+A skill runs as a turn of its own, only while no other turn runs: `turn/start` carries
+`{ type: "skill", name, path }` with the listed path, and the args, when given, as the turn's text.
+Codex loads the skill's `SKILL.md` into that turn as the skill's instructions. Codex runs a turn even
+for a skill path it cannot read, so the host refuses an unknown or disabled name as `not-found`
+before it asks Codex. Right after a skill's turn, waiting messages go before the next queued skill.
+`interrupt` sends `turn/interrupt` for the running turn, the host's or one typed into the attached
+TUI, and answers `interrupted`. It answers `idle` when no turn runs, and when Codex refuses because
+the turn already ended. A stopped turn ends `interrupted`, which the host handles as an Escape in
+the TUI: the messages it carried count as delivered, and the next queued skill runs.
+
+Codex's app-server has no method that lists or runs its built-in slash commands or custom prompts,
+so the agent offers no `command` target, and a `command` for one is `unimplemented`.
+
 ## Model reporting
 
 ```bash
