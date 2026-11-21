@@ -3,25 +3,29 @@
  * Ordinary down/up retains real File messages and a durable ACK floor. Fixtures are retained. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { AckPolicy, jetstream, jetstreamManager, StorageType } from "@nats-io/jetstream";
 import { credsFromJwt, newIdentity } from "@cotal-ai/core";
-import { acquireMaintenanceLock, getSpaceAuth, readMaintenanceJournal, releaseMaintenanceLock, workspaceSecretStore } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, getSpaceAuth, readMaintenanceJournal, readServiceExecution, releaseMaintenanceLock, serviceExecutionPath, serviceIdentityPath, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { readStackJournal } from "../src/lib/stack-journal.js";
-import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
+import { observeServiceProcess, serviceInstanceStore, serviceInstances } from "../src/lib/service-instances.js";
 import { observeControllerMigrationHost } from "../src/lib/controller-migration-host.js";
 import { serviceDefinitionStore } from "../src/lib/service-definitions.js";
 
-const hostBinding = process.argv.includes("--host-binding");
+const executionBinding = process.argv.includes("--execution-binding");
+const hostBinding = process.argv.includes("--host-binding") || executionBinding;
 const { check, finish, passed, failed } = createSuite();
-const binary = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+const option = (name: string) => { const at = process.argv.indexOf(name); if (at < 0) return undefined; const value = process.argv[at + 1]; assert.ok(value && !value.startsWith("--"), `${name} needs a value`); return resolve(value); };
+const binary = option("--binary") ?? join(import.meta.dirname, "../../../bin/dist/cotal.js");
+const generationFile = option("--generation");
+const generation = generationFile ? JSON.parse(readFileSync(generationFile, "utf8")) as { root: string; inventorySha256: string } : undefined;
 assert.ok(existsSync(binary), "build cotal-ai and its dependencies before the live baseline");
 process.umask(0o077);
 const fixture = mkdtempSync(join(tmpdir(), "controller-migration-baseline-"));
@@ -91,6 +95,40 @@ try {
   check("public up creates a completed controller stack with broker, delivery and manager", stack.operation.phase === "completed" &&
     stack.members.filter(row => row.instanceId !== null).map(row => row.role).join(",") === "broker,delivery,manager");
   check("each launcher-created member is actually running", members().length === 3 && members().every(row => row.observed === "running"));
+  if (executionBinding) {
+    for (const member of stack.members.filter(row => row.instanceId !== null)) {
+      const instance = serviceInstances(space).find(row => row.name === member.instanceId)!.record.value;
+      const context = { space, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory: serviceInstanceStore(space).directory()! };
+      const path = serviceIdentityPath(context).replace(/\.identity\.json$/, ".execution.json");
+      check(member.role === "broker" ? "the native broker does not claim a Cotal/Node execution identity" : `the actual ${member.role} child records its loaded execution source`, existsSync(path) === (member.role !== "broker"));
+      if (member.role === "broker") continue;
+      const source = readFileSync(path), record = readServiceExecution(context, instance.process!);
+      assert.ok(record);
+      check(`${member.role}: receipt binds the actual child rather than the test process`, record.process.pid === instance.process!.pid && record.process.pid !== process.pid);
+      check(`${member.role}: receipt names the actual logical and loaded entries`, record.execution.logicalEntry === realpathSync.native(binary) && record.execution.loadedEntry === realpathSync.native(generation ? join(generation.root, "dist/cotal.js") : binary));
+      const executable = statSync(`/proc/${instance.process!.pid}/exe`, { bigint: true });
+      check(`${member.role}: Node observation matches the running kernel image`, record.node.path === realpathSync.native(process.execPath) && record.node.version === process.version && record.node.dev === String(executable.dev) && record.node.ino === String(executable.ino) && record.node.bytes === Number(executable.size));
+      assert.deepEqual(readServiceExecution(context, instance.process!), record);
+      check(`${member.role}: reads leave the private receipt bytes unchanged`, (lstatSync(path).mode & 0o777) === 0o600 && readFileSync(path).equals(source));
+      check(`${member.role}: byte-proof is exactly the native generation or explicitly absent`, generation
+        ? record.generationInventory?.path === join(dirname(generation.root), "inventory.json") && record.generationInventory.sha256 === generation.inventorySha256 && record.generationInventory.bytes === readFileSync(record.generationInventory.path).length
+        : record.generationInventory === null);
+      assert.throws(() => readServiceExecution(context, { ...instance.process!, token: String(BigInt(instance.process!.token) + 1n) }));
+      check(`${member.role}: a different process birth cannot read this binding`, true);
+      check(`${member.role}: missing launch evidence never borrows the current process identity`, readServiceExecution({ ...context, launchRequestId: randomUUID() }, instance.process!) === undefined);
+      const directory = join(fixture, `receipt-faults-${member.role}`); mkdirSync(directory, { mode: 0o700 });
+      const copiedContext = { ...context, stateDirectory: directory }, copy = serviceExecutionPath(copiedContext);
+      writeFileSync(copy, source, { mode: 0o600 });
+      assert.deepEqual(readServiceExecution(copiedContext, instance.process!), record);
+      check(`${member.role}: copied native receipt is a valid closed-reader control`, true);
+      writeFileSync(copy, JSON.stringify({ ...record, unexpected: true }));
+      assert.throws(() => readServiceExecution(copiedContext, instance.process!));
+      check(`${member.role}: unknown receipt fields refuse`, true);
+      writeFileSync(copy, JSON.stringify({ ...record, launchRequestId: randomUUID() }));
+      assert.throws(() => readServiceExecution(copiedContext, instance.process!));
+      check(`${member.role}: another launch cannot be relabeled by its filename`, true);
+    }
+  }
   if (hostBinding) {
     const lock = acquireMaintenanceLock(root, { operation: "stream-migration" });
     try {
@@ -194,7 +232,7 @@ try {
   console.log(`retained owned fixture: ${fixture}`);
   for (const key of Object.keys(process.env)) delete process.env[key];
   Object.assign(process.env, originalEnv);
-  const expected = hostBinding ? 37 : 28;
+  const expected = executionBinding ? 60 : hostBinding ? 37 : 28;
   if (passed() + failed() !== expected) check(`cell count: ran ${passed() + failed()}, expected ${expected}`, false);
   finish();
 }

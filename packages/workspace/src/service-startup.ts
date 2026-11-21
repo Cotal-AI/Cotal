@@ -1,6 +1,8 @@
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { spaceKey } from "./auth-paths.js";
+import { executionIdentity } from "./execution-identity.js";
+import { publishServiceExecution } from "./service-execution.js";
 import { identityRecord } from "./pid.js";
 import { CommandFailure } from "./output.js";
 import { decodeLocalJson, protectedLocalDirectory, readLocalRecordSource } from "./protected-records.js";
@@ -23,6 +25,7 @@ export function publishServiceStartup(path: string, value: { phase: string; spac
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(value.phase)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the native startup phase is invalid");
   const processIdentity = identityRecord(process.pid);
   if (!("token" in processIdentity)) throw new CommandFailure("refused", "UNSUPPORTED", "the native service child has no creation-pinned process identity");
+  if (process.platform === "linux" && executionIdentity()) publishServiceExecution({ ...value, stateDirectory: dirname(path) });
   writeSecretFileCreateOnly(path, JSON.stringify({ schemaVersion: 1, phase: value.phase, space: value.space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, process: processIdentity, observedAt: new Date().toISOString() }) + "\n");
 }
 
