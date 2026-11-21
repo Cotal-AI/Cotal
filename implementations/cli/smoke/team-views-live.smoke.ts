@@ -205,6 +205,22 @@ try {
     second.status === 2 && blocked?.code === "LIFECYCLE_BLOCKED" && blocked.message === `"${SPACE}" is already up at this root and no \`cotal down\` has stopped it; a team boot starts only a stopped stack, so nothing was booted`, second.out.slice(-800));
   check("its Next offers team deploy with the same manifest, or cotal down",
     blocked?.remedy === `add this manifest's channels and agents to the running stack with \`cotal team deploy ${join(s, "live.yaml")}\`, or stop it with \`cotal down\` before a team boot`, blocked);
+  const spacedFile = "team add.yaml";
+  manifest(spacedFile, SPACE, { alerts: "    deliveryClass: live\n" });
+  const conflict = cotal(s, "up", "-f", spacedFile, "--dry-run");
+  check("up -f --dry-run on the running controller stack refuses without starting anything",
+    conflict.status === 2 && conflict.stderr.includes("CONFLICT") && conflict.stderr.includes("nothing was started"), conflict.out);
+  for (const verb of ["deploy", "boot"]) {
+    const remedy = conflict.stderr.split("`").find((part) => part.startsWith(`cotal team ${verb} `));
+    const expected = `cotal team ${verb} '${spacedFile}'`;
+    check(`up -f quotes the whole manifest filename in its team ${verb} remedy`, remedy === expected, conflict.out);
+    if (remedy === expected && process.platform !== "win32") {
+      const preview = spawnSync("sh", ["-c", `cli=$1\ncotal() { "$0" "$cli" "$@"; }\n${remedy} --dry-run`, TSX, CLI],
+        { cwd: s, env, encoding: "utf8", timeout: 180_000 });
+      check(`the printed team ${verb} command previews the intended manifest in a POSIX shell`,
+        preview.status === 0 && preview.stdout.includes("#alerts"), preview);
+    }
+  }
 
   console.log("\nG. a fresh boot's records in words");
   check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);

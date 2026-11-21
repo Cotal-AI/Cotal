@@ -1663,7 +1663,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: `add the manifest's channels and agents to the running stack with \`cotal team deploy ${values.file}\`, or stop it with \`cotal down --yes\` and start the manifest through the controller with \`cotal team boot ${values.file}\``,
+      remedy: `add the manifest's channels and agents to the running stack with ${codeSpan(`cotal team deploy ${shellWord(values.file)}`)}, or stop it with \`cotal down --yes\` and start the manifest through the controller with ${codeSpan(`cotal team boot ${shellWord(values.file)}`)}`,
     });
     if (values["dry-run"]) {
       await upManifest(values.file, {
