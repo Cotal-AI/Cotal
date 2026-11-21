@@ -497,7 +497,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const blocked = folderReadProblem(root);
   if (blocked) {
     gaps.add("FOLDER_UNREADABLE", `this folder ${root} cannot be read by this account (${blocked}), so nothing in it was read`, { root });
-    hints.push(`make it readable by you, for example with chmod u+rx ${root}`);
+    hints.push(`make it readable by you, for example with chmod u+rx ${shellWord(root)}`);
   }
   // Every command warns about a preferences folder another account could write; status also lists its fix.
   const preferencesFolder = preferencesFolderWarning();

@@ -521,7 +521,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
   const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
   roots.push(outside);
-  const folder = join(outside, "z");
+  const folder = join(outside, "project notes");
   mkdirSync(folder, { mode: 0o700 });
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
   // The shell enters the folder before its mode drops, as it would for an operator already in it.
@@ -533,7 +533,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     r.status === 4 && envelope?.outcome === "partial" && envelope.warnings.some((w) => w.code === "FOLDER_UNREADABLE" && w.message === `this folder ${folder} cannot be read by this account (EACCES), so nothing in it was read`), shownR);
   check("…and no other warning about a part of that folder, such as an auth.json it does not hold",
     envelope?.warnings.every((w) => !/^(AUTH_UNREADABLE|PERSONAS_UNREADABLE|FRESH_BOOT_RECORD_UNAVAILABLE|ADDITIVE_ATTEMPT_UNAVAILABLE|MAINTENANCE_JOURNAL_UNREADABLE)$/.test(w.code)) === true && !(envelope?.result?.hints ?? []).some((h) => h.includes("auth.json")), envelope?.warnings);
-  check("…and its Next is the chmod that makes it readable", (envelope?.result?.hints ?? []).includes(`make it readable by you, for example with chmod u+rx ${folder}`), envelope?.result?.hints);
+  check("…and its chmod suggestion quotes the folder as one argument", (envelope?.result?.hints ?? []).includes(`make it readable by you, for example with chmod u+rx '${folder.replaceAll("'", "'\\''")}'`), envelope?.result?.hints);
 }
 
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────
