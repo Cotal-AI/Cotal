@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { aheadNote } from "../src/tool-specs.js";
+import { aheadNote } from "../src/tool-specs-inbox.js";
 
 const item = (fromName: string, fromId = "local.blank") => ({ fromName, fromId } as never);
 let checks = 0;
