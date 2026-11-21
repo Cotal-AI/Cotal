@@ -546,8 +546,11 @@ the leader. The list can lag concurrent changes and is not an atomic whole-space
 
 The snapshot reads at most 1000 registration keys. Omitted keys, unreadable records or unavailable
 registry access make the requested live portion partial and return exit 4, while preserving the
-local references. Status projection, reported state, process ownership and a serving response are
-separate. No active probe or process control is implied by a registration row.
+local references. If a broker connection fails, the report shows the diagnostic and any recovery
+step. For example, if an explicit `--server` does not answer and the selected space has a recorded
+broker, the report suggests dropping `--server` to reach that broker. Status projection, reported
+state, process ownership and a serving response are separate. No active probe or process control
+is implied by a registration row.
 
 
 ## Following an endpoint action [#following-an-endpoint-action]
