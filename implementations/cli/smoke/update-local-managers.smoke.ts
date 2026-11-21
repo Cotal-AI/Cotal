@@ -232,11 +232,13 @@ async function checkCoordinatesRace(): Promise<void> {
     }
   };
   try {
+    // The foreign Manager is a child of this suite; it gets none of the runner's own connection material.
+    const foreignEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
     for (const [mode, pinned] of [["gone", false], ["gone", true], ["zombie", false], ["zombie", true], ["unreadable", true]] as const) {
       // The reaper is separate from this synchronous scan and can be stopped to hold a real zombie.
       const parent = spawn("/bin/sh", ["-c", '"$NODE" "$ENTRY" "$VERB" --space coordinates-race >/dev/null & child=$!; echo "$child"; wait "$child"'], {
         cwd: root, stdio: ["ignore", "pipe", "inherit"],
-        env: { ...process.env, COTAL_HOME: join(root, "foreign-home"), NODE: process.execPath, ENTRY: entry, VERB: "supervise" },
+        env: { ...foreignEnv, COTAL_HOME: join(root, "foreign-home"), NODE: process.execPath, ENTRY: entry, VERB: "supervise" },
       });
       const exit = once(parent, "exit");
       let pid: number | undefined;
