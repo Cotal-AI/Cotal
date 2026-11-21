@@ -1,10 +1,14 @@
 import strictAssert from "node:assert/strict";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { claimUpdateClosureAccess, clearUpdateRecovery, readUpdateRecovery, SEEDED_EXTENSIONS, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
+import { managerViaDaemon, queryDaemon } from "../daemon/client.js";
 import { daemonPaths, EndpointRefusal } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
@@ -94,6 +98,95 @@ if (process.platform === "linux") {
     try { await waiting; }
     finally { await replacement.close(); }
   } finally { await old.close(); }
+}
+
+if (process.platform === "linux") {
+  const directory = join(root, "hosted"), home = join(directory, "home"), project = join(directory, "project"), native = join(directory, "bin");
+  const cotalHome = join(home, ".cotal");
+  const entry = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+  const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: join(home, ".config"), TMPDIR: directory, CLAUDE_CONFIG_DIR: home,
+    PATH: `${native}:${process.env.PATH}`, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1",
+    COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
+  const seedDir = join(env.XDG_CONFIG_HOME!, "cotal", "seed");
+  for (const dir of [seedDir, join(project, ".cotal"), cotalHome, native]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const authority = JSON.stringify({ everSeeded: Object.keys(SEEDED_EXTENSIONS).filter(name => name !== "claude") });
+  for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seedDir, file), authority, { mode: 0o600 });
+  writeFileSync(join(native, "claude"), "#!/bin/sh\necho '2.1.330 (Claude Code)'\n", { mode: 0o700 });
+  // An existing user MCP entry lets the real Claude setup provider run without plugin installation or an agent.
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "cotal", args: [] } } }), { mode: 0o600 });
+  const seed = spawnSync(process.execPath, [entry, "ext", "seed"], { env, cwd: project, encoding: "utf8", timeout: 180_000 });
+  assert.equal(seed.status, 0, `${seed.error ?? ""}\n${seed.stdout}${seed.stderr}`);
+  const fixture = new URL("../../implementations/auth/smoke/update-participant.fixture.ts", import.meta.url).href;
+  const participant = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", `
+    import { prepareUpdateParticipant } from ${JSON.stringify(fixture)};
+    const report = {};
+    const close = await prepareUpdateParticipant({ env: process.env, project: process.cwd(), cotalHome: process.env.COTAL_HOME, report });
+    process.stdout.write('HOSTED_PARTICIPANT ' + report.participant.space + '\\n');
+    process.stdin.resume();
+    process.stdin.once('end', () => void close().catch(error => { console.error(error); process.exitCode = 1; }));
+  `], { env, cwd: project, stdio: ["pipe", "pipe", "inherit"] });
+  const participantStopped = new Promise<number | null>(resolve => participant.once("close", resolve));
+  participant.stdin!.on("error", () => { /* The exit observation reports a failed fixture. */ });
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = cotalHome;
+  const paths = daemonPaths(env);
+  let daemon: ChildProcess | undefined, release: (() => void) | undefined;
+  let log = "";
+  async function start() {
+    daemon = spawn(process.execPath, [entry, "daemon", "serve"], { env, cwd: project, stdio: ["ignore", "pipe", "pipe"] });
+    daemon.stdout!.on("data", bytes => { log += String(bytes); });
+    daemon.stderr!.on("data", bytes => { log += String(bytes); });
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const status = await queryDaemon({ paths, timeoutMs: 1000 }).catch(() => undefined);
+      if (status?.ok && status.result.pid === daemon.pid) return;
+      if (daemon.exitCode !== null || Date.now() >= deadline) throw new Error(`daemon did not answer: ${log}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  try {
+    let output = "";
+    const space = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`participant fixture did not start: ${output}`)), 20_000);
+      void participantStopped.then(() => { clearTimeout(timer); reject(new Error(`participant fixture exited: ${output}`)); });
+      participant.stdout!.on("data", bytes => {
+        output += String(bytes);
+        const match = /^HOSTED_PARTICIPANT (\S+)\n/m.exec(output);
+        if (match) { clearTimeout(timer); resolve(match[1]!); }
+      });
+    });
+    await start();
+    const before = await managerViaDaemon({ paths }, { op: "manager-start", space });
+    assert.equal(before.state, "answering", JSON.stringify(before));
+    await killAndAwaitExit(daemon!, "SIGTERM");
+    release = claimUpdateClosureAccess();
+    writeUpdateRecovery({ previous: "0.0.0", target: version, installed: version, phase: "verified-ready", reason: "waiting for hosted readiness", owner: updateClosureOwner() });
+    await start();
+    // This is the same wait the updater runs while it still owns the live closure. The new
+    // daemon has no inherited transaction environment and must resume its recorded Manager.
+    await waitForInstalledDaemonGeneration(version, { installed: () => true, timeoutMs: 20_000 });
+    const after = await queryDaemon({ paths });
+    assert.ok(after.ok);
+    const manager = after.result.managers?.find(row => row.space === space);
+    assert.equal(manager?.state, "answering", JSON.stringify(after.result.managers));
+    assert.notEqual(manager?.pid, before.pid);
+    assert.equal(manager?.connectors?.find(row => row.agent === "claude")?.state, "available", JSON.stringify(manager?.connectors));
+    assert.equal(readUpdateRecovery()?.owner?.pid, process.pid, "the updater still holds its transaction when the Manager answers");
+  } finally {
+    if (release) { clearUpdateRecovery(); release(); }
+    try { if (daemon && daemon.exitCode === null && daemon.signalCode === null) await killAndAwaitExit(daemon, "SIGTERM"); }
+    finally {
+      process.env.COTAL_HOME = priorHome;
+      participant.stdin!.end();
+      const timer = setTimeout(() => void killAndAwaitExit(participant), 10_000);
+      try { assert.equal(await participantStopped, 0, "participant fixture shut down cleanly"); }
+      finally { clearTimeout(timer); }
+    }
+  }
 }
 
 // A version change prints the wait once across the parent and its reconcile child: the child

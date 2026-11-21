@@ -838,6 +838,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     startFailed = true;
     await stopped;
     throw !service && isAuthRejection(error) ? await refusedManagerCredential(error as Error, space, managerRoot, server, target.remoteUser) : error;
+  } finally {
+    // Closure delegation is for machine-hosted startup, not the Manager's serving lifetime.
+    if (args.values["machine-parent"] === true && process.env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") {
+      delete process.env.COTAL_UPDATE_CLOSURE_OWNER;
+      delete process.env.COTAL_UPDATE_CLOSURE_NONCE;
+      delete process.env.COTAL_UPDATE_CLOSURE_START;
+      delete process.env.COTAL_UPDATE_CLOSURE_TRANSACTION;
+    }
   }
   // A stop that arrived during start owns the exit; this process never announces itself ready.
   if (shuttingDown) return;
@@ -846,7 +854,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
-  if (args.values["machine-parent"] === true && remoteAuthority) process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId });
+  if (args.values["machine-parent"] === true && remoteAuthority && process.connected)
+    process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId }, () => { /* The parent can disconnect while this observation is in flight. */ });
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
