@@ -1,7 +1,7 @@
 /** `run check` identifies the current and candidate programs without implying a migration.
  * Exercises the built CLI on an owned loopback stack. Needs nats-server on PATH. */
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -45,7 +45,9 @@ const check = (name: string, condition: boolean, output: string) => {
   else { failed++; console.error(`FAIL: ${name}\n${output}`); }
 };
 const source = 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n';
+const quotedProgram = "reviewer's $draft.cotal.js";
 writeFileSync(join(project, "good.cotal.js"), source);
+writeFileSync(join(project, quotedProgram), source);
 writeFileSync(join(project, "edited.cotal.js"), source.replace('"resolved"', '"resolved-edited"'));
 writeFileSync(join(project, "diverged.cotal.js"), source.replace('"Ship it?"', '"Changed question?"'));
 const read = async (id: string) => JSON.parse(await succeed("run", "show", id, "--json")).result.view as {
@@ -59,6 +61,13 @@ const until = async (id: string, ready: (view: Awaited<ReturnType<typeof read>>)
   }
   throw new Error(`run ${id} did not reach the expected state`);
 };
+const retryWords = (remedy: string): string[] => {
+  const command = /(`+)(cotal run .*?)\1$/.exec(remedy)?.[2];
+  assert.ok(command, remedy);
+  const [binary, ...words] = execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { cwd: project, env, encoding: "utf8" }).split("\0").slice(0, -1);
+  assert.equal(binary, "cotal");
+  return words;
+};
 let up = false;
 try {
   for (const verb of ["check", "migrate"]) for (const flags of [["--adopt", "h1"], ["--release", "h1"], ["--discard-approvals"]]) {
@@ -68,7 +77,8 @@ try {
   const unsupportedFile = await call("run", "resume", "run-example", "--file", "good.cotal.js", "--json");
   const fileRefusal = JSON.parse(unsupportedFile.text);
   check("hosted resume --file returns a structured usage refusal without a mesh", unsupportedFile.code === 1 && fileRefusal.error.code === "USAGE_INVALID" && fileRefusal.error.remedy.includes("omit --file"), unsupportedFile.text);
-  await succeed("up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  await succeed("up", "--detach", "--server", server);
   up = true;
   const managers = JSON.parse(await succeed("ps", "--json")).result.managers;
   const selection = ["--space", "project", "--on", managers[0].instanceId];
@@ -87,6 +97,14 @@ try {
   const running = await until(id, view => view.journal.some(row => row.step === "/checkpoint:approve#0" && row.state === "pending"));
   assert.equal(running.status?.state, "running");
   const current = running.programHash;
+  const checkTarget = ["--space", "project", "--server", server, "--endpoint", "manager", "--local"];
+  const refusedCheck = await call("run", "check", id, "--file", quotedProgram, ...checkTarget, "--json");
+  assert.equal(refusedCheck.code, 1, refusedCheck.text);
+  assert.match(refusedCheck.text, /run check prints no --json output/);
+  const checkRetry = retryWords(refusedCheck.text.trimEnd());
+  assert.deepEqual(checkRetry, ["run", "check", id, "--file", quotedProgram, ...checkTarget]);
+  const checked = await call(...checkRetry);
+  check("the check retry keeps the quoted program and explicit target", checked.code === 0 && /admissible/.test(checked.text) && /program unchanged/.test(checked.text), checked.text);
   for (const verb of ["answer", "amend"]) {
     const out = await call("run", verb, id, "/checkpoint:missing#0", ...selection, "--json");
     const refusal = JSON.parse(out.text);
@@ -112,7 +130,18 @@ try {
   const afterCheck = await read(id);
   check("checks do not change source or running state", afterCheck.programHash === current
     && afterCheck.status?.state === "running", JSON.stringify(afterCheck));
-  await succeed("run", "answer", id, "/checkpoint:approve#0", "--value", '"yes"');
+  const value = '{\n  "text": "reviewer\'s `$draft`"\n}';
+  const artifact = "reviewer's $draft";
+  const answerTarget = ["--space", "project", "--server", server, "--endpoint", "manager", "--on", managers[0].instanceId];
+  const refusedAnswer = await call("run", "answer", id, "approve", "--value", value, "--artifact", artifact, ...answerTarget, "--json");
+  assert.equal(refusedAnswer.code, 2, refusedAnswer.text);
+  const refusal = JSON.parse(refusedAnswer.text);
+  assert.equal(refusal.error.code, "TARGET_NOT_FOUND");
+  const answerRetry = retryWords(refusal.error.remedy);
+  assert.deepEqual(answerRetry, ["run", "answer", id, "/checkpoint:approve#0", "--value", value, "--artifact", artifact, ...answerTarget, "--json"]);
+  const answer = JSON.parse(await succeed(...answerRetry));
+  assert.deepEqual(answer.result.answer.value, JSON.parse(value));
+  check("the answer retry is accepted with the original JSON, artifact, and target", answer.outcome === "ok" && answer.result.answer.artifact === artifact, JSON.stringify(answer));
   await until(id, view => view.status?.state === "completed");
   for (const file of ["good.cotal.js", "edited.cotal.js"]) {
     const out = await call("run", "check", id, file);

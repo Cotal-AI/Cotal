@@ -94,6 +94,19 @@ const noop = async (): Promise<void> => {};
     assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
     assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
 
+    for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
+      writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));
+      const invalid = run(["run", "simulate", "workflow.cotal.js", "--handler", "bad-clock.json", "--json"]);
+      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+      const report = JSON.parse(invalid.stdout);
+      assert.equal(report.outcome, "refused");
+      assert.equal(report.error.code, "SCHEMA_INVALID");
+      assert.equal(report.target.file, "bad-clock.json");
+      assert.ok(report.error.message.includes(`clock.${field}`));
+      assert.ok(report.error.message.includes('"5m"'));
+      assert.equal(report.result, null);
+    }
+
     writeFileSync(join(root, "wait.js"), `
 const builder = await spawn("builder");
 const start = now();
