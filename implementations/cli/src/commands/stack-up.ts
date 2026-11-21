@@ -173,6 +173,8 @@ export interface StackUpRequest {
   channels?: string;
   foreground: boolean;
   presentation: ReturnType<typeof presentationOf>;
+  /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
+  retryAtAnotherAddress?(bindHost: string): Promise<string | undefined>;
   /** The root of the folder `up --root` was run from, when it is not this stack's root. */
   invokedRoot?: string;
   /** A fresh team boot's frozen manifest inputs. `seed` replaces `channels` for the broker's native
@@ -968,11 +970,11 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
       const local = holder && (holder.origin === undefined || holder.origin === "up");
       const stopHolder = holder ? local ? `stop space ${holder.space} with \`cotal down\` from ${holder.root}` : `stop the broker of space ${holder.space}` : `stop what answers at ${server}`;
-      const address = new URL(server);
+      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(brokerHost ?? brokerListenAddress(server).host) : undefined;
       throw new CommandFailure("refused", "CONFLICT", `something already answers at the stack's broker address ${server}${holder ? `, where space ${holder.space} is registered` : ""}, without this stack's broker instance; it was not adopted or stopped`, {
         target: { root, space, server, ...(holder ? { registered: { space: holder.space, root: holder.root } } : {}) },
         remedy: previous === undefined
-          ? `start this stack at another address with \`${displayCmd()} up --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${stopHolder} and run \`${displayCmd()} up\` again`
+          ? `${retry !== undefined ? `${retry}, or ` : ""}${stopHolder} and retry this start`
           : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
@@ -980,13 +982,14 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     // too, before any broker instance is recorded, so a first start names another address.
     const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
     if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
-      const { host: dialHost, port } = brokerListenAddress(server), address = new URL(server);
+      const { host: dialHost, port } = brokerListenAddress(server);
       const host = brokerHost ?? dialHost;
       const { says, frees } = await addressHolder("the stack's broker address", host, port);
+      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(host) : undefined;
       throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
         target: { root, space, server, bindError: bindError.code },
         remedy: previous === undefined
-          ? `start this stack at another address with \`${displayCmd()} up${brokerHost === undefined ? "" : ` --host ${shellWord(brokerHost)}`} --server ${address.protocol}//${address.hostname}:<port>\` from ${root}, or ${frees} and retry this start`
+          ? `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`
           : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }

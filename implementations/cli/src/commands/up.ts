@@ -312,6 +312,7 @@ import {
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { addressHolder, brokerListenAddress, listenerBindError } from "../lib/broker-service.js";
+import { freePort, freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 
@@ -962,7 +963,7 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
         throw new CommandFailure("refused", "CONFLICT", "the selected --root changed before startup; no inherited workspace was used", { target: { root } });
       }
     }
-    try { return await runUp(invocation, inheritedLock, () => { adopted = true; }, freshTeamBoot, restoreSink); }
+    try { return await runUp(invocation, previousCwd, inheritedLock, () => { adopted = true; }, freshTeamBoot, restoreSink); }
     catch (error) {
       if (fresh) removeEmptyRecords(join(fresh, ".cotal"));
       throw error;
@@ -989,7 +990,7 @@ function retainedStartupPresentationRefusal(root: string): CommandFailure {
   return new CommandFailure("refused", "UNSUPPORTED", "this startup uses the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root }, remedy: "use a fresh prepared root with static auth, --open, or plain-loopback --user-auth for the controller-owned stack, or omit --json/--plain" });
 }
 
-async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
+async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: MaintenanceLock, onAdopt?: () => void, freshTeamBoot = false, restoreSink?: (result: RestoreStartupResult) => void): Promise<void> {
   const values = args.values as {
     server?: string; "store-dir"?: string; "max-file-store"?: string; "log-file"?: string; "logfile-size-limit"?: string; "logfile-max-num"?: string; "auth-timeout"?: string; "max-payload"?: string; "account-resolver"?: string; space?: string; root?: string; open?: boolean; "user-auth"?: boolean; "service-endpoints"?: boolean; idp?: string;
     "exchange-public-port"?: string; "exchange-public-url"?: string; "exchange-trusted-proxy"?: boolean; "advertised-server"?: string; "agent-provisioning-url"?: string;
@@ -1611,7 +1612,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         try {
           const stackServer = values.server ?? readStackJournal(meshRoot)?.journal.server ?? localMeshesForRoot(meshRoot).find((m) => m.space === stackSpace)?.server ?? await unrecordedStackServer(meshRoot, stackSpace, values.host);
           if (values.foreground && presentation !== "json") stackUpForegroundNotice(presentation, stackSpace, takeover);
-          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation }, native);
+          await stackUp({ maintenanceLock: stackLock, root: meshRoot, space: stackSpace, server: stackServer, transport, runtime: values.runtime ?? "pty", noManager, managerSeatCap, ...(stackMode ? { mode: stackMode } : {}), ...(values.idp ? { idp: values.idp } : {}), ...(values.host ? { host: values.host } : {}), ...(values["store-dir"] ? { storeDir: values["store-dir"] } : {}), ...(values["rotate-sys"] ? { rotateSys: true } : {}), ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}), ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}), ...(maxFileStore !== undefined ? { maxFileStore } : {}), ...(logFile !== undefined ? { logFile } : {}), ...(logfileSizeLimit !== undefined ? { logfileSizeLimit } : {}), ...(logfileMaxNum !== undefined ? { logfileMaxNum } : {}), ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}), ...(accountResolver !== undefined ? { accountResolver } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(values.channels ? { channels: values.channels } : {}), ...(values.__invokedRoot ? { invokedRoot: values.__invokedRoot } : {}), foreground: values.foreground === true, presentation,
+            retryAtAnotherAddress: (host) => retryStackAddress(args.raw, invokedFrom, stackServer, host),
+          }, native);
         } finally { releaseMaintenanceLock(stackLock); }
       };
       if (values.foreground) await holdForegroundStack(meshRoot, start);
@@ -5057,57 +5060,6 @@ function refuseRegisteredAddress(server: string, space: string, elsewhere: strin
   throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
     target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
     remedy: `${elsewhere}, or free that one with \`cotal space forget ${held.space}\``,
-  });
-}
-
-/** Choose only a first implicit address. A saved or explicitly requested address is never moved.
- * The broker still validates and binds its own listener; this inspection cannot reserve the port. */
-async function freshStackServer(server: string, bindHost?: string): Promise<string> {
-  const url = new URL(server);
-  const host = (bindHost ?? url.hostname).replace(/^\[|\]$/g, "");
-  const reserved = new Set<string>();
-  // A recorded address this cannot take apart reserves nothing: it names no host and port to avoid.
-  for (const mesh of loadMeshes()) {
-    const key = brokerAddressKey(mesh.server);
-    if (key !== undefined) reserved.add(key);
-  }
-  let candidate = server;
-  for (let attempt = 0; attempt < 16; attempt++) {
-    const address = new URL(candidate);
-    const key = brokerAddressKey(candidate);
-    if (key === undefined || !reserved.has(key)) {
-      try {
-        await freePort(host, Number(address.port) || 4222);
-        return candidate;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-      }
-    }
-    candidate = await serverWithFreePort(server, host);
-  }
-  throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no unreserved local broker address could be selected; no broker was started");
-}
-
-async function serverWithFreePort(server: string, host: string): Promise<string> {
-  const url = new URL(server);
-  url.port = String(await freePort(host));
-  return url.toString();
-}
-
-function freePort(host: string, requestedPort = 0): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.unref();
-    srv.once("error", reject);
-    srv.listen(requestedPort, host, () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr ? addr.port : undefined;
-      srv.close((err) => {
-        if (err) reject(err);
-        else if (port) resolve(port);
-        else reject(new Error("could not allocate a free port"));
-      });
-    });
   });
 }
 
