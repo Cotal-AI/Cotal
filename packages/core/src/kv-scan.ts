@@ -313,9 +313,8 @@ export async function liveKvEntries(
  * the only thing that ends the walk. A broker failure mid-walk propagates as the error it is; there is
  * no iterator that can end cleanly short of the answer, so a short result cannot wear a clean end.
  *
- * COST is one round trip per matching stored message, so it is for bounded, per-run key families
- * (a run's notices, its migrations, its programs, the run records of a space), never for a bucket
- * whose matching set grows with the mesh. `liveKvEntries` remains the pass for those.
+ * COST is one round trip per matching stored message, so it is for bounded key families like a
+ * run's notices, migrations or programs. Use a batched or consumer-based scan for growing families.
  *
  * Markers are carried through the collapse for the reason the header gives: a bucket with
  * `history > 1` shows a key at several revisions and only the greatest decides.
@@ -357,15 +356,15 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
 const DIRECT_BATCH = 1024;
 
 /**
- * The last entry of every key in `kv`, DEL and PURGE markers included, read WITHOUT a consumer.
+ * The last entry of every matching key in `kv`, DEL and PURGE markers included, read WITHOUT a
+ * consumer. `filter` is a NATS key pattern and defaults to the whole bucket.
  *
- * Batched Direct Gets walk the bucket's subjects in sequence order (`next_by_subj` over the whole
- * bucket), {@link DIRECT_BATCH} messages a request, so a bucket of K keys costs ceil(K / 1024) round
- * trips and K messages. It exists for readers that must leave nothing on the broker: a watch's or a
- * scan's consumer outlives its reader by the five-minute inactive threshold nats.js gives it whenever
- * the reader's profile holds no CONSUMER.DELETE (#691), and one per read piles up until the broker
- * refuses new consumers on the bucket (#4091). `multi_last` would answer in one request but refuses a
- * bucket of more than 1024 keys ("too many results", measured on nats-server 2.15.1).
+ * Batched Direct Gets walk the matching subjects in sequence order (`next_by_subj`), up to
+ * {@link DIRECT_BATCH} messages a request. It exists for readers that must leave nothing on the
+ * broker: a watch's or a scan's consumer outlives its reader by the five-minute inactive threshold
+ * nats.js gives it whenever the reader's profile holds no CONSUMER.DELETE (#691). One per read piles
+ * up until the broker refuses new consumers on the bucket (#4091). `multi_last` would answer in one
+ * request but refuses a bucket of more than 1024 keys ("too many results", measured on nats-server 2.15.1).
  *
  * A key rewritten during the walk only moves to a higher sequence, so the walk still reaches it, and
  * the greatest revision per key wins, as in {@link walkKvLatest}. Each message reports how many are
@@ -379,7 +378,7 @@ const DIRECT_BATCH = 1024;
  * `PermissionViolationError` as soon as the broker reports it. A read whose connection closes
  * before its page is answered fails at the close: the close cancels the page's native timeout.
  */
-export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
+export async function lastKvEntries(kv: KV, filter = ">"): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
     throw new Error(`lastKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`);
   const bucket: Bucket = kv;
@@ -404,7 +403,7 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
           // path keeps each completed reply subscription until the five-second timeout.
           await new Promise<void>((resolve, reject) => {
             bucket.jsm.direct.getBatch(bucket.stream, {
-              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>`,
+              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.${filter}`,
               callback: (done, sm) => {
                 if (done) {
                   done.err ? reject(done.err) : resolve();

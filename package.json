@@ -530,6 +530,7 @@
     "smoke:remote-registration-expiry": "tsx implementations/manager/smoke/remote-registration-expiry.smoke.ts && tsx implementations/manager/smoke/remote-registration-maintenance.smoke.ts && tsx implementations/manager/smoke/remote-registration-close.smoke.ts",
     "smoke:remote-start-expiry-recovery": "tsx implementations/manager/smoke/remote-start-expiry-recovery.smoke.ts",
     "smoke:remote-run-renewal": "tsx implementations/manager/smoke/remote-run-renewal.smoke.ts",
+    "smoke:remote-run-reconcile-live": "tsx bin/smoke/remote-run-reconcile-live.smoke.ts",
     "smoke:remote-ef-continuity": "tsx implementations/manager/smoke/remote-ef-continuity.smoke.ts",
     "smoke:public-remote-authority": "tsx implementations/manager/smoke/public-remote-authority.smoke.ts",
     "smoke:remote-resume-completion": "tsx implementations/manager/smoke/remote-resume-completion.smoke.ts",

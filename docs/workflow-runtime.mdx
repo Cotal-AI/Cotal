@@ -81,6 +81,10 @@ belongs to another run, a pin that differs from the recorded ones, and a differe
 A failed journal entry replays its error, while a pending entry lets the handler recover the
 external work it bound before the interruption.
 
+On startup, a manager reads its endpoint's run specs and statuses in batches. It checks the
+record, program, admission, and journal of each candidate recorded as `running` before taking
+it back. Finished runs do not need individual reads.
+
 A deadline that passes during authorized arming, before its pause is minted, ends the step as its
 expiry would. A relative `sleep` completes, and a `checkpoint` expires for its `onExpiry` to act on.
 A `wait` on a channel resolves `null` at its timeout and returns the event at the end of an `idle`

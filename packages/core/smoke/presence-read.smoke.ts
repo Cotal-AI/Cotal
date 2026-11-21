@@ -221,6 +221,11 @@ try {
       check("the reader's own record is in the read", byName(all, "reader")?.status === "idle");
       check("a record whose card.id is not its key is dropped and counted", !byName(all, "mallory") && reader.presenceBindingDropCount === drops + 1, { drops: reader.presenceBindingDropCount - drops });
       check("a record past the liveness window reads offline", byName(all, "stale")?.status === "offline", byName(all, "stale"));
+      const filtered = await lastKvEntries(kv, "u_load.*");
+      check("filtered Direct Get returns all matching entries across pages and excludes other keys",
+        filtered.length === N && filtered.every((entry) => /^u_load\.seat\d+$/.test(entry.key)), filtered.length);
+      check("a filtered Direct Get with no matches returns an empty result on a nonempty bucket",
+        (await lastKvEntries(kv, "u_absent.*")).length === 0);
     } finally {
       await nc.close();
     }

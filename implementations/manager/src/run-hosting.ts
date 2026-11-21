@@ -91,7 +91,6 @@ import {
   type RunJournalActivation,
   registry,
   standaloneConnectOpts,
-  walkKvEntries,
   type Identity,
   type RunHost,
   type RunHostDrive,
@@ -108,6 +107,7 @@ import {
   type SpaceAuth,
   rejectionText,
 } from "@cotal-ai/core";
+import { findRunningRunIds } from "./run-reconcile-inventory.js";
 
 /** What the host needs from the manager: its coordinates and its trust material. */
 export interface RunHostingContext {
@@ -914,12 +914,11 @@ export class RunHosting {
     try {
       inherited = await this.withOperator({}, async (planes, kv) => {
         const out: typeof inherited = [];
-        for (const e of await walkKvEntries(kv, `run.${this.ctx.endpoint}.*.spec`)) {
-          const runId = e.key.split(".")[2];
-          if (runId === undefined) continue;
+        for (const runId of await findRunningRunIds(kv, this.ctx.endpoint)) {
+          if (retrying && this.runs.has(runId)) continue;
           const record = await readRunRecord(kv, this.ctx.endpoint, runId);
           const note = record?.status;
-          if (note === undefined || note.value.state !== "running" || (retrying && this.runs.has(runId))) continue;
+          if (note === undefined || note.value.state !== "running") continue;
           const status = note.value;
           const program = await readRunProgram(kv, this.ctx.endpoint, runId);
           if (program === undefined) {
