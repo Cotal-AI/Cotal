@@ -81,9 +81,10 @@ belongs to another run, a pin that differs from the recorded ones, and a differe
 A failed journal entry replays its error, while a pending entry lets the handler recover the
 external work it bound before the interruption.
 
-On startup, a manager reads its endpoint's run specs and statuses in batches. It uses the
-recorded state to find `running` candidates, then checks each candidate's record, program,
-admission, and journal before taking it back. Finished runs do not need individual reads.
+On startup, a manager reads its endpoint's run specs and statuses in batches and checks that the
+scan reaches the stream leader's observed revision. It uses the recorded state to find `running`
+candidates, then opens fresh reads for each candidate's record, program, admission, and journal
+before taking it back. Finished runs do not need individual reads.
 
 A deadline that passes during authorized arming, before its pause is minted, ends the step as its
 expiry would. A relative `sleep` completes, and a `checkpoint` expires for its `onExpiry` to act on.

@@ -706,7 +706,7 @@ try {
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
   }
-  console.log("A5a. a dropped inventory connection does not strand inherited runs");
+  console.log("A5a. a dropped connection or incomplete inventory does not strand inherited runs");
   {
     const startPaused = async (file: string) => {
       const r = await callB("run-start", { source: CHECKPOINT, file });
@@ -722,6 +722,7 @@ try {
     const logs: string[] = [];
     const sockets = new Set<Socket>();
     let droppedJwt: string | undefined;
+    let shortened = false;
     let heldScan: (() => void) | undefined;
     const port = Number(new URL(brokerA.servers).port);
     const relay = createServer((client) => {
@@ -751,6 +752,18 @@ try {
             client.resetAndDestroy();
             return;
           }
+          if (!shortened) {
+            // Keep the wire length and broker reply intact, but read a key family with no entries.
+            // A stale replica can return the same clean, empty Direct Get reply.
+            const original = bytes.toString("latin1");
+            const changed = original.replace('"next_by_subj":"$KV.cotal_records_' + spaceA + '.run.manager.*.*"',
+              '"next_by_subj":"$KV.cotal_records_' + spaceA + '.run.missing.*.*"');
+            if (changed !== original) {
+              shortened = true;
+              upstream.write(Buffer.from(changed, "latin1"));
+              return;
+            }
+          }
           // Hold the retry's first inventory read until the gate and unchanged run are observed.
           client.pause();
           heldScan = () => { upstream.write(bytes); client.resume(); };
@@ -771,14 +784,16 @@ try {
       await successor.revoke(revokedId, "operator", "withdrawn before takeover");
       await successor.reconcile();
       c("the initial reconcile loses its inventory connection", droppedJwt !== undefined && logs.some((line) => line.includes("boot reconcile failed: connection closed")), logs);
-      const releaseScan = await until(async () => heldScan, 5_000);
+      const releaseScan = await until(async () => heldScan, 10_000);
       const parked = await successor.status({ runId });
       const missing = await successor.resume({ runId: `run-${"0".repeat(32)}` }).then(() => undefined, (e: unknown) => e as { code?: string });
       c("the run gate is open and the inherited run is still parked before retry completes", missing?.code === "not-found" && parked.status?.epoch === 1 && pending(parked, "Ship it?") !== undefined, { missing, status: parked.status });
       releaseScan?.();
       const recovered = releaseScan && await until(async () => { const v = await successor.status({ runId }); return v.status?.epoch === 2 ? v : undefined; }, 10_000);
-      c("a fresh scan takes back the admitted run once without another reconcile call",
-        recovered?.status?.epoch === 2 && pending(recovered, "Ship it?") !== undefined && recovered.journal.filter((r) => r.kind === "activation").length === 2, { status: recovered?.status, logs });
+      c("a fresh scan takes back the admitted run once after an empty inventory disagrees with the leader",
+        shortened && logs.some((line) => line.includes("did not reach the leader's run inventory"))
+        && recovered?.status?.epoch === 2 && pending(recovered, "Ship it?") !== undefined && recovered.journal.filter((r) => r.kind === "activation").length === 2,
+        { status: recovered?.status, shortened, logs });
       const revoked = await successor.status({ runId: revokedId });
       c("the retry still leaves the revoked run parked", revoked.status?.epoch === 1 && revoked.revoked?.by === "operator"
         && revoked.journal.filter((r) => r.kind === "activation").length === 1, { status: revoked.status, logs });

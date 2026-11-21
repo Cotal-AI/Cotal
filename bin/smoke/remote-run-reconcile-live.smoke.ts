@@ -42,6 +42,7 @@ const env = {
 const cli = resolve("bin/dist/cotal.js");
 
 const HISTORY = 550;
+const INHERITED = 30;
 let oneWayMs = 0;
 let expirations = 0;
 const sockets = new Set<Socket>();
@@ -88,7 +89,8 @@ function supervise(space: string) {
 }
 
 async function managerUp(manager: ReturnType<typeof supervise>): Promise<string> {
-  const deadline = Date.now() + 100_000;
+  // Each inherited run has a separate authority and activation path over the delayed link.
+  const deadline = Date.now() + 360_000;
   while (!manager.output().includes("manager up") && manager.child.exitCode === null && manager.child.signalCode === null && Date.now() < deadline) await wait(100);
   assert.match(manager.output(), /manager up/);
   const instance = /activating registered instance ([a-z0-9]+)/.exec(manager.output())?.[1];
@@ -149,19 +151,26 @@ async function seedTerminalRuns(fx: Awaited<ReturnType<typeof startHostedAuthFix
   } finally { await writer.close(); }
 }
 
-async function checkRestart(space: string, instance: string, runId: string, epoch: number, manager: ReturnType<typeof supervise>, label: string) {
+async function checkRestart(instance: string, manager: ReturnType<typeof supervise>, label: string, count: number) {
   const started = Date.now();
   assert.equal(await managerUp(manager), instance);
   const elapsed = Date.now() - started;
   const boot = manager.output().split("\n").filter((line) => line.includes("workflow-run boot reconcile"));
   console.log(`${label}: ${elapsed} ms to manager up, ${expirations} broker JWT expirations, reconcile: ${boot.join(" | ")}`);
   assert.equal(expirations, 0, `${label}: the broker expired an operator connection`);
-  assert.deepEqual(boot.map((line) => line.split("workflow-run boot reconcile: ")[1]), ["took back 1 run(s) recorded running"]);
+  assert.deepEqual(boot.map((line) => line.split("workflow-run boot reconcile: ")[1]), [`took back ${count} run(s) recorded running`]);
+}
+
+async function checkRunning(space: string, instance: string, runId: string, epoch: number) {
   const { view } = await run<{ view: RunStatusView }>(space, instance, "show", runId);
   assert.equal(view.status?.state, "running");
   assert.equal(view.status.epoch, epoch);
   assert.equal(view.journal.filter((row) => row.kind === "activation").length, epoch);
-  console.log(`${label}: inherited checkpoint is running at epoch ${epoch}`);
+}
+
+async function startCheckpoint(space: string, instance: string, file: string): Promise<string> {
+  const { result: { runId } } = await run<{ result: { runId: string } }>(space, instance, "start", "--file", file);
+  return runId;
 }
 
 const fx = await startHostedAuthFixture("remote-reconcile", 1, { keepFiles: keep });
@@ -199,21 +208,27 @@ try {
   writeFileSync(file, 'await checkpoint("keep", "Continue?");\n');
   manager = supervise(space);
   const instance = await managerUp(manager);
-  const { result: { runId } } = await run<{ result: { runId: string } }>(space, instance, "start", "--file", file);
-  const { view } = await run<{ view: RunStatusView }>(space, instance, "show", runId);
-  assert.equal(view.status?.state, "running");
-  assert.equal(view.status.epoch, 1);
+  const runId = await startCheckpoint(space, instance, file);
+  await checkRunning(space, instance, runId, 1);
   await crash(manager);
 
-  // Same broker, signerless participant and 160 ms RTT in both cells. History is the only load
-  // added before the second restart; the parked run itself was admitted by shipped `cotal run`.
+  // Same broker, signerless participant and 160 ms RTT in both cells.
   oneWayMs = 80;
   manager = supervise(space);
-  await checkRestart(space, instance, runId, 2, manager, "positive control");
+  await checkRestart(instance, manager, "positive control", 1);
+  await checkRunning(space, instance, runId, 2);
+  const more: string[] = [];
+  while (more.length < INHERITED - 1) {
+    const count = Math.min(3, INHERITED - 1 - more.length);
+    more.push(...await Promise.all(Array.from({ length: count }, () => startCheckpoint(space, instance, file))));
+  }
   await crash(manager);
   await seedTerminalRuns(fx);
   manager = supervise(space);
-  await checkRestart(space, instance, runId, 3, manager, `${HISTORY} completed runs including empty-journal and extended statuses`);
+  await checkRestart(instance, manager, `${HISTORY} completed runs and ${INHERITED} inherited checkpoints`, INHERITED);
+  await checkRunning(space, instance, runId, 3);
+  for (const id of more) await checkRunning(space, instance, id, 2);
+  console.log(`all ${INHERITED} checkpoints advanced one epoch and have a single new activation`);
   await run(space, instance, "answer", runId, "/checkpoint:keep#0", "--value", '"go"');
   const completedBy = Date.now() + 15_000;
   for (;;) {

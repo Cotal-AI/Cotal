@@ -185,6 +185,16 @@ interface HostedRun {
   renewalDebt?: { at: number; reason: string };
 }
 
+interface InheritedRun {
+  runId: string;
+  revision: number;
+  epoch: number;
+  fencingToken: number;
+  source: string;
+  file?: string;
+  admission: RunAdmissionView;
+}
+
 const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
 const TAKE_BACK_RETRY_DELAYS_MS = [1_000, 5_000, 30_000] as const;
 /** How many launches (start or resume) may be in their activation wait at once. Each holds a
@@ -910,41 +920,15 @@ export class RunHosting {
   /** Retry the inventory read, not individual launch failures. No drive is launched until the
    *  scan completes, so repeating a failed scan cannot repeat a partial set of launches. */
   private async takeBack(retrying = false): Promise<boolean> {
-    let inherited: { runId: string; revision: number; epoch: number; fencingToken: number; source: string; file?: string; admission: RunAdmissionView }[] = [];
+    const inherited: InheritedRun[] = [];
     try {
-      inherited = await this.withOperator({}, async (planes, kv) => {
-        const out: typeof inherited = [];
-        for (const runId of await findRunningRunIds(kv, this.ctx.endpoint)) {
-          if (retrying && this.runs.has(runId)) continue;
-          const record = await readRunRecord(kv, this.ctx.endpoint, runId);
-          const note = record?.status;
-          if (note === undefined || note.value.state !== "running") continue;
-          const status = note.value;
-          const program = await readRunProgram(kv, this.ctx.endpoint, runId);
-          if (program === undefined) {
-            this.ctx.log(`! run ${runId} is recorded running with no recorded program; it cannot be taken back here - resume it from a terminal with \`cotal run resume ${runId} --local --file <program>\``);
-            continue;
-          }
-          // A run whose admission is missing, unreadable or revoked is NOT taken back (SPEC 14.8):
-          // it stays parked, named in the log, until an operator admits or revokes it explicitly.
-          let admission: RunAdmissionView;
-          try {
-            admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId);
-          } catch (e) {
-            if (planes.nc.isClosed()) throw e;
-            this.ctx.log(`! run ${runId} stays parked: ${rejectionText(e)}`);
-            continue;
-          }
-          if (admission.revoked !== undefined) {
-            this.ctx.log(`! run ${runId} stays parked: revoked by ${admission.revoked.by} (${admission.revoked.reason})`);
-            continue;
-          }
-          const activation = await this.withOperator({ runId }, async (reader, _kv, takeoverId) =>
-            lastActivation((await replayRunJournal(reader.js, reader.jsm, this.ctx.space, runId, takeoverId)).records));
-          out.push({ runId, revision: note.revision, epoch: Math.max(status.epoch, activation?.epoch ?? 0) + 1, fencingToken: Math.max(status.fencingToken, activation?.fencingToken ?? 0) + 1, source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission });
-        }
-        return out;
-      });
+      const candidates = await this.withOperator({}, (planes) => findRunningRunIds(planes, this.ctx.endpoint));
+      for (const runId of candidates) {
+        if (this.stopping) return true;
+        if (retrying && this.runs.has(runId)) continue;
+        const run = await this.readInheritedRun(runId);
+        if (run !== undefined) inherited.push(run);
+      }
     } catch (e) {
       this.ctx.log(`! workflow-run boot reconcile failed: ${rejectionText(e)}`);
       return false;
@@ -966,6 +950,41 @@ export class RunHosting {
     }
     this.ctx.log(`workflow-run boot reconcile: took back ${takenBack} run(s) recorded running`);
     return true;
+  }
+
+  private async readInheritedRun(runId: string): Promise<InheritedRun | undefined> {
+    const { space, endpoint } = this.ctx;
+    // Named operator issuance checks admission itself. Use a fresh read-only operator to
+    // diagnose missing admissions before asking for the named journal credential.
+    const candidate = await this.withOperator({}, async ({ jsm, nc }, kv) => {
+      const note = (await readRunRecord(kv, endpoint, runId))?.status;
+      if (note?.value.state !== "running") return undefined;
+      const program = await readRunProgram(kv, endpoint, runId);
+      if (program === undefined) {
+        this.ctx.log(`! run ${runId} is recorded running with no recorded program; it cannot be taken back here - resume it from a terminal with \`cotal run resume ${runId} --local --file <program>\``);
+        return undefined;
+      }
+      let admission: RunAdmissionView;
+      try {
+        admission = await readRunAdmission(jsm, space, endpoint, runId);
+      } catch (e) {
+        if (nc.isClosed()) throw e;
+        this.ctx.log(`! run ${runId} stays parked: ${rejectionText(e)}`);
+        return undefined;
+      }
+      if (admission.revoked !== undefined) {
+        this.ctx.log(`! run ${runId} stays parked: revoked by ${admission.revoked.by} (${admission.revoked.reason})`);
+        return undefined;
+      }
+      return { note, program, admission };
+    });
+    if (candidate === undefined) return undefined;
+    const { note, program, admission } = candidate;
+    const activation = await this.withOperator({ runId }, async ({ js, jsm }, _kv, takeoverId) =>
+      lastActivation((await replayRunJournal(js, jsm, space, runId, takeoverId)).records));
+    return { runId, revision: note.revision, epoch: Math.max(note.value.epoch, activation?.epoch ?? 0) + 1,
+      fencingToken: Math.max(note.value.fencingToken, activation?.fencingToken ?? 0) + 1,
+      source: program.source, ...(program.file !== undefined ? { file: program.file } : {}), admission };
   }
 
   /** Renewal: re-mint every live drive's `run-driver` credential for the SAME nkey and attempt
