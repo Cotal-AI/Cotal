@@ -7540,7 +7540,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "version);\n          if (realpathSync(entry) !== realpathSync(entryS",
+      "anchor": "realpathSync(entry)",
       "class": "non-render/control",
       "rationale": "Paused recovery compares canonical executable paths to bind repair authority, not peer presence."
     },
