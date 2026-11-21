@@ -1,5 +1,5 @@
 import type { KV } from "@nats-io/kv";
-import { assertIdToken, decodeEntry, endpointToken, lastKvEntries, parseRunStatus } from "@cotal-ai/core";
+import { assertIdToken, decodeEntry, endpointToken, lastKvEntries } from "@cotal-ai/core";
 
 /** Discovery only. The caller re-reads a candidate's record before attempting takeback. */
 export async function findRunningRunIds(kv: KV, endpoint: string): Promise<string[]> {
@@ -10,8 +10,8 @@ export async function findRunningRunIds(kv: KV, endpoint: string): Promise<strin
   for (const entry of entries) {
     const [, , id, part] = entry.key.split(".");
     if (entry.operation !== "PUT" || part !== "status" || id === undefined || !live.has(`${prefix}.${id}.spec`)) continue;
-    const status = parseRunStatus(decodeEntry(entry, entry.key), entry.key);
-    if (status.state === "running") running.push(assertIdToken(id, "runId"));
+    const status = decodeEntry<{ state?: unknown } | null>(entry, entry.key);
+    if (status?.state === "running") running.push(assertIdToken(id, "runId"));
   }
   return running;
 }

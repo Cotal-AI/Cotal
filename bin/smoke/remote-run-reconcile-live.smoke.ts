@@ -140,7 +140,11 @@ async function seedTerminalRuns(fx: Awaited<ReturnType<typeof startHostedAuthFix
     for (let i = 0; i < HISTORY; i++) {
       const id = `run-${i.toString(16).padStart(32, "0")}`;
       const revision = await createRunSpec(kv, "manager", id, { createdAt: at, pins: { seed: id, startedAt: at, yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" } });
-      await writeRunStatus(kv, "manager", id, { observedSpecRevision: revision, state: "completed", holder: "smoke-history", epoch: 1, fencingToken: 1, journalHigh: 0, at });
+      // Finished history may have an empty journal or fields a newer writer added.
+      await writeRunStatus(kv, "manager", id, {
+        observedSpecRevision: revision, state: "completed", holder: "smoke-history", epoch: 1, fencingToken: 1,
+        journalHigh: i === 0 ? -1 : 0, at, ...(i === 1 ? { futureField: true } : {}),
+      });
     }
   } finally { await writer.close(); }
 }
@@ -209,7 +213,7 @@ try {
   await crash(manager);
   await seedTerminalRuns(fx);
   manager = supervise(space);
-  await checkRestart(space, instance, runId, 3, manager, `${HISTORY} completed runs`);
+  await checkRestart(space, instance, runId, 3, manager, `${HISTORY} completed runs including empty-journal and extended statuses`);
   await run(space, instance, "answer", runId, "/checkpoint:keep#0", "--value", '"go"');
   const completedBy = Date.now() + 15_000;
   for (;;) {
