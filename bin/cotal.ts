@@ -64,6 +64,8 @@ export const executionSha256 = (bytes: string | Buffer): string => createHash("s
 const MAX_RECORD_BYTES = 4 * 1024 * 1024;
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^[a-f0-9]{32}$/;
+export const executionReadersName = ".execution-readers-v1";
+const executionReaders = new Set<string>();
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid execution record");
@@ -203,7 +205,7 @@ export function observeExecutionVersion(root: string): string {
   return meta.version;
 }
 
-function executionProgram(root: string, verifyInventory: boolean): { root: string; entry: string; retained: boolean } {
+function executionProgram(root: string, verifyInventory: boolean, pin = false, retry = true): { root: string; entry: string; retained: boolean } {
   const installed = realpathSync.native(root), descriptorPath = executionDescriptorPath(installed);
   const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === realpathSync.native(dirname(fileURLToPath(import.meta.url)))
     ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
@@ -246,6 +248,10 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
       typeof generation.inventorySha256 !== "string" || !HASH.test(generation.inventorySha256)) throw new Error("invalid retained execution identity");
   for (const path of [installed, dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) executionLocation(path);
   const store = executionStore(installed), container = join(store, generation.id), selected = join(container, "cotal-ai");
+  if (pin && !pinExecutionProgram(container)) {
+    if (retry) return executionProgram(root, verifyInventory, true, false);
+    throw new Error("the selected execution generation changed during launch; retry the command");
+  }
   for (const path of [store, container, selected]) {
     const info = lstatSync(path);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe execution generation directory");
@@ -260,6 +266,46 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
   const meta = object(JSON.parse(readFileSync(join(canonicalSelected, "package.json"), "utf8")));
   if (meta.name !== "cotal-ai" || meta.version !== generation.version) throw new Error("retained execution manifest differs");
   return { root: canonicalSelected, entry: join(canonicalSelected, "dist", "cotal-program.js"), retained: true };
+}
+
+/** Publish the process reader before any generation file is opened. A collector closes admission
+ * before reading the pins, then either reopens it or takes the directory out of the store. */
+function pinExecutionProgram(container: string): boolean {
+  if (executionReaders.has(container)) return true;
+  const parent = lstatSync(dirname(container), { throwIfNoEntry: false });
+  const generation = lstatSync(container, { throwIfNoEntry: false });
+  if (!parent || !generation) return false;
+  if (!parent.isDirectory() || !generation.isDirectory()) throw new Error("unsafe execution generation directory");
+  protectedExecutionEntry(dirname(container));
+  protectedExecutionEntry(container);
+  const readers = join(container, executionReadersName);
+  const info = lstatSync(readers, { throwIfNoEntry: false });
+  if (!info) return !!lstatSync(container, { throwIfNoEntry: false });
+  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+  if (info.uid === 0 && uid !== 0) return true;
+  if (!info.isDirectory() || info.uid !== generation.uid || info.uid !== uid || (info.mode & 0o077) !== 0)
+    throw new Error("invalid execution reader directory");
+  let file: string;
+  let scope = "unknown";
+  try {
+    if (process.platform === "linux") {
+      const ns = /^pid:\[(\d+)\]$/.exec(readlinkSync("/proc/self/ns/pid"));
+      const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      if (ns && /^[a-f0-9-]{36}$/.test(boot)) scope = `${boot}-${ns[1]}`;
+    }
+  } catch { /* An unverified process stays pinned until it exits. */ }
+  try {
+    file = mkdtempSync(join(readers, `${scope}.${process.pid}-`));
+  }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  if (lstatSync(join(container, ".collecting"), { throwIfNoEntry: false })) {
+    try { fs.rmdirSync(file); } catch { /* Collection can take the directory first. */ }
+    return false;
+  }
+  if (!lstatSync(file, { throwIfNoEntry: false })) return false;
+  executionReaders.add(container);
+  process.once("exit", () => { try { fs.rmdirSync(file); } catch { /* The collector checks the process before removal. */ } });
+  return true;
 }
 
 const executionStarted = Symbol.for("cotal.execution.started");
@@ -323,7 +369,12 @@ export function startExecutionProgram(): void {
   let selected: ReturnType<typeof selectExecutionProgram> | undefined;
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..");
   if (startedHere() && refuseDoomedStagedCheck(realpathSync.native(packageRoot))) return;
-  try { selected = selectExecutionProgram(packageRoot); }
+  try {
+    const container = dirname(packageRoot);
+    if (basename(packageRoot) === "cotal-ai" && ID.test(basename(container)) && basename(dirname(container)) === ".cotal-generations" && !pinExecutionProgram(container))
+      throw new Error("the execution generation is being retired; start from the installed entry");
+    selected = executionProgram(packageRoot, true, !import.meta.url.endsWith(".ts"));
+  }
   catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}; reinstall with npm install -g cotal-ai@latest\n`);
     process.exitCode = 1;

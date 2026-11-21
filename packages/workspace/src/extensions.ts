@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { connectorConfigDir } from "./connector-retention.js";
+import { connectorExecutionReferenceRoot, executionReferenceGeneration, recordExecutionReference } from "./execution-references.js";
 import { inspectLock } from "./advisory-lock.js";
 import { globalConfigDirProblem } from "./cotal-config.js";
 import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
@@ -340,6 +341,8 @@ export function bindExtensionPeers(
 
   const bound: BoundExtensionPeer[] = [];
   for (const link of planned) {
+    const generation = executionReferenceGeneration(link.source);
+    if (generation) recordExecutionReference(generation, connectorExecutionReferenceRoot(connectorConfigDir()));
     let current: string | undefined;
     try {
       current = realpathSync(link.destination);

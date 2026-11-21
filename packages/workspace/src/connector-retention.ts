@@ -3,6 +3,7 @@ import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirS
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
+import { recordCopiedExecutionLink } from "./execution-references.js";
 import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
@@ -504,7 +505,11 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, pre
       try {
         for (const name of names) {
           const source = join(current, name), destination = join(staging, name);
-          if (existsSync(source)) cpSync(source, destination, { recursive: true, verbatimSymlinks: true, filter: path => !retentionLockFile(basename(path)) });
+          if (existsSync(source)) cpSync(source, destination, { recursive: true, verbatimSymlinks: true, filter: path => {
+            if (retentionLockFile(basename(path))) return false;
+            recordCopiedExecutionLink(path, id.path);
+            return true;
+          } });
         }
         if (!hasRoot) renameSync(staging, root);
         else {

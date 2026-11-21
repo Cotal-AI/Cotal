@@ -26,7 +26,7 @@ export function inspectLaunchdInstall(definition: ServiceDefinitionSnapshot, sel
   if (value.host.machine !== host.machine || value.host.uid !== host.uid || value.definitionRevision !== definition.record.revision || row.supervisorRecord.mechanism !== "none-recorded" || !["stopped", "failed"].includes(value.state) || !["gone", "previous-boot"].includes(row.observedProcess))
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this instance is not an unowned, settled, stopped direct-process incarnation on this host", { target });
   let cli: string[];
-  try { cli = selfArgv(); }
+  try { cli = selfArgv(true); }
   catch { throw new CommandFailure("refused", "UNSUPPORTED", "the current command has no durable installed Cotal entry for a LaunchAgent", { target }); }
   const home = homedir();
   let homeStat: ReturnType<typeof lstatSync>;

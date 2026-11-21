@@ -27,7 +27,7 @@ export function inspectSystemdInstall(definition: ServiceDefinitionSnapshot, sel
   const row = instanceProjection(selected);
   if (selected.record.value.definitionRevision !== definition.record.revision || row.supervisorRecord.mechanism !== "none-recorded" || !["stopped", "failed"].includes(selected.record.value.state) || !["gone", "previous-boot"].includes(row.observedProcess)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected instance is not an unowned, settled, stopped direct-process incarnation at this definition revision; no unit impact was inferred", { target });
   let cli: string[];
-  try { cli = selfArgv(); }
+  try { cli = selfArgv(true); }
   catch { throw new CommandFailure("refused", "UNSUPPORTED", "the current command is not a verified durable Cotal entry; no unit invocation was guessed", { target }); }
   const directory = systemdUserUnitDirectory(), unitName = systemdServiceUnitName(space, name, selected.name);
   const unitPath = join(directory, unitName), privateHome = join(directory, "cotal-service", unitName.slice(0, -".service".length));

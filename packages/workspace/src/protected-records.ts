@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { acquireLock, ensureDirNoSymlink, hardenPrivate, mkSecretDir, realDirNoSymlink, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { homeCotalDir } from "./cotal-home.js";
+import { recordExecutionServiceReferences } from "./execution-references.js";
 import { spaceKey } from "./auth-paths.js";
 
 import { LOCAL_INPUT_LIMIT, localRecordAccess, readLocalRecordSource, requireLocalRecordAccess, unsearchableFolder, shellPath, type LocalRecordAccess } from "./local-record-source.js";
@@ -585,7 +586,9 @@ export class ProtectedRecordStore<T> {
       beforeCommit?.();
       if (value === undefined) { if (!current) throw new CommandFailure("refused", "CONFLICT", "the local record no longer exists"); unlinkSync(path); return undefined; }
       const record: SavedLocalRecord<T> = { recordVersion: 1, revision: randomUUID(), value };
-      writeSecretFileAtomic(path, JSON.stringify(record, null, 2) + "\n");
+      const text = JSON.stringify(record, null, 2) + "\n";
+      if (this.namespace === "services") recordExecutionServiceReferences(text, path);
+      writeSecretFileAtomic(path, text);
       return record;
     } finally { lock.release(); }
   }

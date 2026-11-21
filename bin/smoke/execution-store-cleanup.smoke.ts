@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { beginGlobalUpdateChild, claimUpdateClosureAccess, clearUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
-import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
+import { executionDescriptorPath, executionReadersName, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration } from "../execution-transaction.js";
 
@@ -29,6 +29,7 @@ if (["linux", "darwin"].includes(process.platform)) {
       writeFileSync(join(root, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.1.0", bin: { cotal: "./dist/cotal.js" } }));
     }
     const store = executionStore(installed);
+    writeFileSync(join(source, "dist/cotal-program.js"), "console.log('ready'); process.stdin.resume();\n");
     const publish = (version: string) => {
       writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version, bin: { cotal: "./dist/cotal.js" } }));
       const generation = retainExecutionGeneration(installed, source);
@@ -40,10 +41,65 @@ if (["linux", "darwin"].includes(process.platform)) {
     };
     const first = publish("0.2.0");
     assert.equal(readdirSync(store).filter(name => name.startsWith(".transaction-")).length, 0);
-    const second = publish("0.3.0");
-    assert.deepEqual(readdirSync(store).filter(name => /^[a-f0-9]{32}$/.test(name)).sort(), [first.id, second.id].sort());
-    const third = publish("0.4.0");
-    assert.equal(existsSync(dirname(first.root)), true, "third publication retains oldest generation");
+    const tracked = existsSync(join(dirname(first.root), executionReadersName));
+    const reader = spawn(process.execPath, [join(installed, "dist/cotal.js")], { cwd: scratch, stdio: ["pipe", "pipe", "inherit"] });
+    const readerExited = new Promise<void>(resolve => reader.once("close", () => resolve()));
+    const reference = join(scratch, "connector-reference"), link = join(reference, "core");
+    const serviceRecordId = "saved-service";
+    const workspaceModule = new URL("../../packages/workspace/dist/index.js", import.meta.url).href;
+    const writeService = (program: string | undefined) => {
+      const writer = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        const { ProtectedRecordStore } = await import(${JSON.stringify(workspaceModule)});
+        const store = new ProtectedRecordStore('services', 'cleanup', value => value, 'definitions');
+        const id = ${JSON.stringify(serviceRecordId)};
+        const value = ${JSON.stringify(program ? { launch: { type: "process", executable: relative(scratch, program), cwd: scratch } } : undefined)};
+        store.commit(id, store.read(id), value);
+        process.stdout.write(store.directory());
+      `], { encoding: "utf8" });
+      assert.equal(writer.status, 0, writer.stderr);
+      if (program) {
+        const name = readdirSync(writer.stdout).find(name => name.endsWith(".json"));
+        assert.ok(name);
+        return join(writer.stdout, name);
+      }
+    };
+    mkdirSync(reference, { mode: 0o700 });
+    let second: ReturnType<typeof publish>, third: ReturnType<typeof publish>;
+    try {
+      await new Promise<void>((resolve, reject) => { reader.once("error", reject); reader.once("exit", code => reject(new Error(`reader exited ${code}`))); reader.stdout.once("data", () => resolve()); });
+      second = publish("0.3.0");
+      assert.deepEqual(readdirSync(store).filter(name => /^[a-f0-9]{32}$/.test(name)).sort(), [first.id, second.id].sort());
+      third = publish("0.4.0");
+      assert.equal(existsSync(first.root), true, "the live bootstrap reader keeps its loaded generation");
+      if (tracked) {
+        const writer = spawnSync(process.execPath, ["--input-type=module", "-e", `const{recordExecutionReference}=await import(${JSON.stringify(new URL("../../packages/workspace/dist/index.js", import.meta.url).href)});recordExecutionReference(${JSON.stringify(dirname(first.root))},${JSON.stringify(reference)});const{symlinkSync}=await import('node:fs');symlinkSync(${JSON.stringify(first.root)},${JSON.stringify(link)});`], { encoding: "utf8" });
+        assert.equal(writer.status, 0, writer.stderr);
+      } else symlinkSync(first.root, link);
+    } finally { reader.stdin.end(); await readerExited; }
+    clean();
+    assert.equal(existsSync(first.root), true, "a durable link keeps the generation after the process exits");
+    const serviceRecord = tracked ? writeService(join(first.root, "dist/cotal.js")) : undefined;
+    rmSync(link);
+    if (serviceRecord) {
+      clean();
+      assert.equal(existsSync(first.root), true, "a saved service protects the executable without a live process or connector link");
+      const bytes = readFileSync(serviceRecord);
+      writeFileSync(serviceRecord, "{");
+      clean();
+      assert.equal(existsSync(first.root), true, "an unreadable saved service does not authorize collection");
+      assert.equal(warnings.length, 1);
+      warnings.length = 0;
+      writeFileSync(serviceRecord, bytes);
+      writeService(undefined);
+      const boundary = join(dirname(third.root), ".execution-previous");
+      const previous = readFileSync(boundary);
+      rmSync(boundary);
+      clean();
+      assert.equal(existsSync(first.root), true, "missing rollback evidence does not authorize collection");
+      writeFileSync(boundary, previous, { mode: 0o600 });
+    }
+    clean();
+    assert.equal(existsSync(first.root), !tracked, "the unreferenced oldest tracked generation is collected; untracked generations stay");
     assert.equal(selectExecutionProgram(installed).root, third.root);
     assert.equal(existsSync(second.root), true, "previous remains for rollback and loaded processes");
     assert.equal(JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8")).previous, undefined);
@@ -61,7 +117,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(existsSync(join(store, ".preparing-Cd5678")), false);
     assert.equal(existsSync(join(store, ".transaction-Tr5678")), false, "an empty unpublished journal does not block cleanup");
     assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "keep");
-    assert.equal(warnings.length, 0, "generation entries are not removal candidates");
+    assert.equal(warnings.length, 0, "a symlink is not a generation removal candidate");
     rmSync(join(store, "e".repeat(32)));
 
     const pending = retainExecutionGeneration(installed, source);
@@ -113,7 +169,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     for (const path of [protectedTornJournal, invalidJournal]) rmSync(dirname(path), { recursive: true });
 
     clean();
-    assert.equal(existsSync(pending.root), true, "completed unpublished generation remains");
+    assert.equal(existsSync(pending.root), !tracked, "only a tracked, completed unpublished generation can be collected");
     assert.equal(existsSync(pendingJournal), false);
 
     // An earlier release had no previous field or completed marker. Its validated publication
@@ -195,6 +251,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     for (const version of ["0.5.0", "0.6.0", "0.7.0"]) {
       writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version, bin: { cotal: "./dist/cotal.js" } }));
       const retained = retainExecutionGeneration(otherInstall, source);
+      rmSync(join(dirname(retained.root), executionReadersName), { recursive: true, force: true });
       const journal = journalExecutionTransaction(otherInstall, retained);
       publishExecutionTransaction(otherInstall, journal);
       legacy.push({ journal, root: retained.root });
@@ -229,6 +286,6 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(existsSync(successor.root), true);
     assert.equal(readdirSync(executionStore(otherInstall)).filter(name => /^[a-f0-9]{32}$/.test(name)).length, 4);
     assert.equal(selectExecutionProgram(otherInstall).root, successor.root);
-    console.log("execution store cleanup: all generations retained, completed transactions and abandoned staging retired, pending recovery and foreign lock preserved");
+    console.log("execution store cleanup: unused tracked generations retired, live, saved and legacy references preserved");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
