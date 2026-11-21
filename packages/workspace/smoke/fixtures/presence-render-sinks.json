@@ -502,21 +502,21 @@
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`${operation} child terminated by ${closed.signal}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`Windows npm intermediary exited ${closed.status}; descendant completion is unproved`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`process exited ${result.status}`",
       "class": "non-render/control",
@@ -1337,7 +1337,7 @@
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
