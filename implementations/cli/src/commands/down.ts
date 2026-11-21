@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { displayCmd } from "../lib/self-exec.js";
 import { drainAndClose } from "@cotal-ai/core";
 import { homedir } from "node:os";
@@ -1476,6 +1476,14 @@ export function pidfileState(path: string): PidfileState {
   if (pin.kind === "gone" || pin.kind === "no-pid") return { pid, liveness: "dead", note: "stale pidfile" };
   if (pin.kind !== "match" && pin.kind !== "legacy") return { pid, liveness: "unknown", note: `identity ${pin.kind}` };
   const liveness = probeLiveness(pid);
+  if (liveness === "alive" && process.platform === "linux") {
+    // kill(pid, 0) also succeeds after exit, until the parent reaps the process.
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const state = stat[stat.lastIndexOf(")") + 2];
+      if (state === "Z" || state === "X") return { pid, liveness: "dead", note: "stale pidfile" };
+    } catch { /* Keep the signal result when procfs cannot be read. */ }
+  }
   if (liveness === "alive") return { pid, liveness };
   return { pid, liveness, note: liveness === "dead" ? "stale pidfile" : "liveness unknown" };
 }
