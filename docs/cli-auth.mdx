@@ -78,8 +78,9 @@ cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>
 The fixed-profile forms use the existing native static credential profiles. No generic host
 profile is exposed.
 A space registered as open refuses `UNSUPPORTED`, since it authenticates no one and issues no
-credentials. Per-user-auth spaces refuse too; a cached login does not replace signing authority. The
-resolved root supplies the persona ACL, signer and default storage together. With no space selected
+credentials. A running or stopped local per-user-auth space also refuses `UNSUPPORTED`. Use the
+space's login or enrollment path instead of minting a static credential. The resolved root supplies
+the persona ACL, signer and default storage together. With no space selected
 or available, start a local static-auth space with `cotal up` in its project folder and retry there.
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
 For a prepared space that has never started, the refusal says how to run `cotal up` to create

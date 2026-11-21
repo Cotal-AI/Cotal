@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSy
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid } from "@cotal-ai/workspace";
+import { agentSecretFilePaths, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid, type Envelope } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, cotalPty } from "./_console-pty.js";
@@ -32,6 +32,26 @@ const idp = createServer((_req, res) => {
 await new Promise<void>((done) => idp.listen(0, "127.0.0.1", done));
 const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 let idpClosed = false;
+
+type Cli = (...args: string[]) => Promise<{ code: number | null; out: string }>;
+
+async function checkStoppedMint(cli: Cli, root: string, space: string, running: Envelope): Promise<void> {
+  const output = join(scratch, "stopped-user.creds");
+  for (const args of [[], ["--space", space, "--out", output], ["--space", space, "--provision"], ["--endpoint", "com.example.audit", "--out", output]]) {
+    const result = await cli("auth", "mint", "alice", ...args, "--json");
+    const refusal = JSON.parse(result.out) as Envelope;
+    assert.deepEqual(refusal.error, running.error);
+    assert.equal((refusal.target as { space?: string } | null)?.space, space);
+    check(`stopped user-auth mint ${args[0] ?? "with no flags"} matches the running refusal`, result.code === 2 && refusal.outcome === "refused", result.out);
+  }
+  const plain = await cli("auth", "mint", "alice", "--plain");
+  check("plain stopped mint names enrollment without suggesting a restart", plain.code === 2 && plain.out.includes("UNSUPPORTED") &&
+    plain.out.includes("use the space's supported login/enrollment path") && !plain.out.includes("cotal up"), plain.out);
+  const wrong = await cli("auth", "mint", "alice", "--space", "other-space", "--json");
+  check("an unknown space is not classified using the stopped space's auth mode", wrong.code === 2 && (JSON.parse(wrong.out) as Envelope).error?.code === "TARGET_NOT_FOUND", wrong.out);
+  check("refused mints publish no standing credential, export, or endpoint intent",
+    ![agentSecretFilePaths(root, space, "alice").creds, output, `${output}.issuance.json`].some(existsSync));
+}
 
 async function cell(user: boolean): Promise<void> {
   const label = user ? "user" : "static";
@@ -69,6 +89,9 @@ async function cell(user: boolean): Promise<void> {
     }
   }
   check(`${label}: shipped startup succeeds`, up.code === 0);
+  const runningMint = user ? await cli("auth", "mint", "alice", "--json") : undefined;
+  const runningRefusal = runningMint === undefined ? undefined : JSON.parse(runningMint.out) as Envelope;
+  if (runningMint) check("running user-auth mint refuses static issuance", runningMint.code === 2 && runningRefusal?.error?.code === "UNSUPPORTED", runningMint.out);
   check(`${label}: retained launcher, no controller journal or manager pidfile`, !existsSync(join(root, ".cotal/stack-controller.json")) && !existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, stack)));
   check(`${label}: recorded infrastructure processes are alive`, stack.pids.length === (user ? 3 : 2) && stack.pids.every(alive));
   let leaseRefusal: { code: number | null; out: string } | undefined;
@@ -157,6 +180,7 @@ async function cell(user: boolean): Promise<void> {
   if (leaseRefusal) check("user: live delivery without a pidfile refuses for its renewed lease", leaseRefusal.code === 2 && leaseRefusal.out.includes("LIFECYCLE_BLOCKED") && leaseRefusal.out.includes("still renewing a lease"));
   for (let end = Date.now() + 10_000; stack.pids.some(alive) && Date.now() < end; await wait(100));
   check(`${label}: every recorded process exited`, stack.pids.every((pid) => !alive(pid)));
+  if (runningRefusal) await checkStoppedMint(cli, root, space, runningRefusal);
   const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);
 }
