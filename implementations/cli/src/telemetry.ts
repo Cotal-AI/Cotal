@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir, release } from "node:os";
 import { basename, join } from "node:path";
+import { parseArgs } from "node:util";
 import { Worker } from "node:worker_threads";
 import { findSubcommand, type Command, type Registry } from "@cotal-ai/core";
 import {
@@ -103,22 +104,18 @@ function silent(cmd: Command): boolean {
 }
 
 const MAX_FLAGS = 32;
-const FLAG = /^--?[A-Za-z][\w-]*/;
+const FLAG_NAME = /^(?:--[A-Za-z][\w-]*|-[A-Za-z])$/;
 
-/** The names of the flags in `words`, values stripped: `--server=x` and `--server x` both read as
- *  `--server`, and a word after `--` is text. An unknown flag counts by name too. */
-export function flagNames(cmd: Command, words: readonly string[]): string[] {
-  const valued = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "string" ? [`--${flag.name}`, ...(flag.short ? [`-${flag.short}`] : [])] : [])));
+/** Tokenize without validation so usage refusals still report flags. Only option names leave here. */
+function flagNames(cmd: Command, words: readonly string[]): string[] {
+  const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+  const { tokens } = parseArgs({ args: [...words], options, strict: false, allowPositionals: true, tokens: true });
   const names = new Set<string>();
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i]!;
-    if (word === "--") break;
-    const name = FLAG.exec(word)?.[0];
-    if (!name) continue;
-    names.add(name);
-    if (valued.has(name) && name === word) i++;
+  for (const token of tokens) {
+    if (token.kind === "option" && FLAG_NAME.test(token.rawName)) names.add(token.rawName);
+    if (names.size === MAX_FLAGS) break;
   }
-  return [...names].slice(0, MAX_FLAGS);
+  return [...names];
 }
 
 /** The registered subcommand the first positional names, never a user value. */

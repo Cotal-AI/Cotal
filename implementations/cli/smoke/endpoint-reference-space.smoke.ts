@@ -87,9 +87,16 @@ try {
   const address = intake.address();
   if (!address || typeof address === "string") throw new Error("telemetry intake did not bind to a loopback port");
   const telemetry = { DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: `http://127.0.0.1:${address.port}/v1/telemetry` };
-  for (const [label, name] of [["ordinary", "unknown-plain-space"], ["embedded quote", 'quoted-space-prefix"quoted-space-suffix']] as const) {
+  for (const [label, spelling, name, flags] of [
+    ["ordinary", ["--space", "--json"], "unknown-plain-space", ["--space", "--json"]],
+    ["embedded quote", ["--space=", "--json"], 'quoted-space-prefix"quoted-space-suffix', ["--space", "--json"]],
+    ["attached short value", ["-s", "--json"], "attached-private-space", ["-s", "--json"]],
+    ["grouped short value", ["-js"], "grouped-private-space", ["-j", "-s"]],
+  ] as const) {
+    const [option, ...rest] = spelling;
+    const targetArgs = option === "--space" ? [option, name] : [option + name];
     const before = received.length;
-    const local = await run(["endpoint", "--space", name, "--json"], telemetry);
+    const local = await run(["endpoint", ...targetArgs, ...rest], telemetry);
     check(`${label}: local JSON retains the exact name and retry`, local.status === 2 && local.stderr === ""
       && local.envelope?.target?.requested === name && local.envelope.error?.message.includes(name) === true
       && local.envelope.error.remedy?.includes(retry) === true, local);
@@ -100,6 +107,7 @@ try {
     check(`${label}: regular telemetry keeps the code and omits the local diagnostic`, events.length === 1
       && event?.level === "regular" && event.command === "endpoint" && event.outcome === "refused"
       && event.exitCode === 2 && event.errorCode === "TARGET_NOT_FOUND" && event.errorMessage === null && event.errorStack === null
+      && JSON.stringify(event.flags) === JSON.stringify(flags)
       && name.split('"').every(part => !payload.includes(part)), bodies);
   }
 } finally {

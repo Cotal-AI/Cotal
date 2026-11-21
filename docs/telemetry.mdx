@@ -118,7 +118,7 @@ At `regular` the event also carries:
 |---|---|---|
 | `account` | string or `null` | A sha256 hash of the IdP URL and subject id of the home's cached sign-in, cut to 32 hex characters, so one person counts once across machines; with several sign-ins, the first by IdP URL. `null` without a sign-in. It is read as the command starts, so a `login` reports the sign-in cached before it and a `logout` the one it removes. |
 | `subcommand` | string or `null` | The registered subcommand the first positional names (`ext add`, `daemon status`), never a user value. |
-| `flags` | string array, at most 32 | Flag names as typed (`--json`, `-j`, `--server`), values stripped; an unknown flag counts by name. |
+| `flags` | string array, at most 32 | Flag names as typed (`--json`, `-j`, `--server`). Attached and separate values are omitted, and grouped short flags are listed separately. An unknown flag counts by name. |
 | `errorCode` | string or `null` | The typed code of a refusal or failure (`USAGE_INVALID`, `AUTH_REQUIRED`, `OPERATION_PARTIAL`); `null` on success or when the exit carried no code. |
 | `errorMessage` | string or `null`, at most 500 characters | The failure's message after masking: quoted words become `<value>` (the CLI quotes every user value it echoes), URLs `<url>`, email addresses `<email>`, IPv4 addresses `<ip>`, paths `<path>` and any run of 32 or more token characters `<token>`. `null` on success. |
 | `errorStack` | string or `null`, at most 2000 characters | At most 12 frames of the failure's stack, each file path cut down to its part inside `node_modules` (the installed package and file, never the directory it is installed under); a frame outside one reads `<path>`. `null` on success or when the failure had no stack. |
