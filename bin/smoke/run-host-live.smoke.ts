@@ -745,7 +745,7 @@ try {
           client.end("-ERR 'Authorization Violation'\r\n");
           return;
         }
-        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\.[^\r\n]+\r\n[^\r\n]*"next_by_subj":"[^"]*\.run\.manager\.\*\.spec"/.test(data)) {
+        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.DIRECT\.GET\.[^\r\n]+\r\n[^\r\n]*"next_by_subj":"[^"]*\.run\.manager\.\*\.\*"/.test(data)) {
           if (droppedJwt === undefined) {
             droppedJwt = jwt;
             client.resetAndDestroy();

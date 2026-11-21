@@ -303,6 +303,10 @@ Revocation markers remain leader-served point reads, so an inventory with many m
 exceed a request budget. Use the diagnostic page mode below for a bounded view; it is not a complete
 inventory or authority to retire runs.
 
+At startup the manager uses batched reads to find runs recorded as running on its endpoint.
+It checks each candidate's current record and admission before taking it back. Finished runs do
+not require individual reads, and the remote operator credential keeps its 60-second lifetime.
+
 ## Refused steps [#refused-steps-and-timer-expiry]
 
 A run whose step was refused (L5016) stays held; a

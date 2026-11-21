@@ -8,6 +8,7 @@
  * broker round trip, so a list that reads one run at a time spends rows × reads × round trip and
  * misses that budget long before the store is large. The caller and the delivery daemon dial the
  * broker directly, so only the manager's reads pay the delay.
+ * The same link checks that a successor recovers a parked run without point-reading finished runs.
  *
  * Lives under bin/smoke because it composes the manager AND the runtime.
  * Needs nats-server on PATH. Run: pnpm smoke:run-ps-latency
@@ -53,6 +54,7 @@ const c = (name: string, ok: boolean, extra?: unknown) => {
 // A TCP relay that forwards every chunk after `delay` ms in each direction. Equal timeouts fire in
 // the order they were set, so each direction stays in order.
 let delay = 0;
+let observeManagerLine: ((line: string) => void) | undefined;
 const sockets = new Set<Socket>();
 const relay = (from: Socket, to: Socket) => {
   from.on("data", (chunk) => {
@@ -81,6 +83,13 @@ const releaseBroker = teardownOnSignal(broker);
 const proxy = createServer((client) => {
   const upstream = dial(port, "127.0.0.1");
   for (const s of [client, upstream]) { sockets.add(s); s.on("close", () => sockets.delete(s)); }
+  let tail = "";
+  client.on("data", (chunk: Buffer) => {
+    if (observeManagerLine === undefined) return;
+    const lines = (tail + chunk.toString("latin1")).split("\r\n");
+    tail = lines.pop()!;
+    for (const line of lines) observeManagerLine(line);
+  });
   relay(client, upstream);
   relay(upstream, client);
 });
@@ -105,7 +114,7 @@ try {
     issuance: { mode: "issue", store: session.store, accepted: session.accepted, sources: [] },
   }));
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-  const service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
+  let service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args: Record<string, unknown>, deadlineMs = 30_000): Promise<EndpointReply> =>
     (await core.invokeCommand(nc!, space, service, command, args, { deadlineMs, currentEpoch: async () => 0 })).reply;
 
@@ -141,6 +150,37 @@ try {
     rows?.length === RUNS, slow instanceof Error ? slow.message : slow.ok ? rows?.length : slow.error);
   c("the delayed list carries the same rows as the undelayed one",
     rows !== undefined && unhurried.ok && JSON.stringify(rows) === JSON.stringify(unhurried.data));
+
+  console.log("3. the successor recovers a checkpoint without point-reading completed history");
+  const paused = await call("run-start", { source: 'await checkpoint("approve", "Proceed?");' });
+  if (!paused.ok) throw new Error(`checkpoint start: ${JSON.stringify(paused.error)}`);
+  const { runId } = paused.data as { runId: string };
+  for (let attempt = 0; ; attempt++) {
+    const view = await call("run-status", { runId });
+    if (view.ok && (view.data as RunStatusView).journal.some((row) => row.kind === "step" && row.state === "pending" && row.asks === "Proceed?")) break;
+    if (attempt === 50) throw new Error("checkpoint did not park");
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await manager.stop({ withAgents: true });
+
+  let batches = 0;
+  let finishedPointReads = 0;
+  const finishedIds = new Set(runIds);
+  observeManagerLine = (line) => {
+    if (/"next_by_subj":"[^"]*\.run\.manager\.\*\.\*"/.test(line)) batches++;
+    const point = /"last_by_subj":"[^"]*\.(?:run|program)\.manager\.([^.\"]+)/.exec(line);
+    if (point && finishedIds.has(point[1]!)) finishedPointReads++;
+  };
+  delay = DELAY_MS;
+  manager = new Manager({ space, servers: proxied, runtime: "pty", workspaceRoot: root });
+  await manager.start();
+  observeManagerLine = undefined;
+  delay = 0;
+  c("one batched inventory read and no finished-run point reads", batches === 1 && finishedPointReads === 0, { batches, finishedPointReads });
+  service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
+  const taken = await call("run-status", { runId });
+  const status = taken.ok ? (taken.data as RunStatusView).status : undefined;
+  c("the checkpoint is running under the successor's epoch", status?.state === "running" && status.epoch === 2, taken.ok ? status : taken.error);
 } catch (e) {
   failed++;
   console.log("  ✗ FAIL: the suite threw", (e as Error).stack ?? String(e));

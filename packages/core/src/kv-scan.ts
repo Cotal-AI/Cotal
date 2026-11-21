@@ -357,12 +357,11 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
 const DIRECT_BATCH = 1024;
 
 /**
- * The last entry of every key in `kv`, DEL and PURGE markers included, read WITHOUT a consumer.
+ * The last entry of every matching key in `kv`, DEL and PURGE markers included, read WITHOUT a consumer.
  *
- * Batched Direct Gets walk the bucket's subjects in sequence order (`next_by_subj` over the whole
- * bucket), {@link DIRECT_BATCH} messages a request, so a bucket of K keys costs ceil(K / 1024) round
- * trips and K messages. It exists for readers that must leave nothing on the broker: a watch's or a
- * scan's consumer outlives its reader by the five-minute inactive threshold nats.js gives it whenever
+ * Batched Direct Gets walk the filtered subjects in sequence order (`next_by_subj`),
+ * up to {@link DIRECT_BATCH} messages per request. This is for readers that must leave nothing
+ * on the broker: a scan consumer outlives its reader by the inactive threshold nats.js gives it whenever
  * the reader's profile holds no CONSUMER.DELETE (#691), and one per read piles up until the broker
  * refuses new consumers on the bucket (#4091). `multi_last` would answer in one request but refuses a
  * bucket of more than 1024 keys ("too many results", measured on nats-server 2.15.1).
@@ -379,7 +378,7 @@ const DIRECT_BATCH = 1024;
  * `PermissionViolationError` as soon as the broker reports it. A read whose connection closes
  * before its page is answered fails at the close: the close cancels the page's native timeout.
  */
-export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
+export async function lastKvEntries(kv: KV, filter = ">"): Promise<KvEntry[]> {
   if (!(kv instanceof Bucket))
     throw new Error(`lastKvEntries needs the @nats-io/kv Bucket implementation to address its backing stream (got ${kv?.constructor?.name ?? typeof kv})`);
   const bucket: Bucket = kv;
@@ -404,7 +403,7 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
           // path keeps each completed reply subscription until the five-second timeout.
           await new Promise<void>((resolve, reject) => {
             bucket.jsm.direct.getBatch(bucket.stream, {
-              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>`,
+              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.${filter}`,
               callback: (done, sm) => {
                 if (done) {
                   done.err ? reject(done.err) : resolve();
