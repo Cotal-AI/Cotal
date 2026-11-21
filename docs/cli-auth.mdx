@@ -180,9 +180,10 @@ A partial or unknown result retains the allocated public identity and lifecycle 
 and does not retry the mint.
 
 A fixed-profile credential expires 24 hours after it is minted unless `--expires-in` or
-`--expires-at` sets another time, in native seconds. With `--provision`, `--expires-in` must be at
-least 2 seconds. A shorter lifetime refuses before the mint creates a file or an inbox. If a
-credential expires during provisioning, the mint does not report success.
+`--expires-at` sets another time, in native seconds. `--expires-in` takes a whole number of at least
+1 second for a file-only mint or 2 seconds with `--provision`. A shorter lifetime refuses before the
+mint creates a file or an inbox. If a credential expires during provisioning, the mint does not
+report success.
 `--no-expiry` issues one with no expiry claim and
 records that request beside the file, in `<file>.no-expiry.json`, so `doctor auth` reports it as a
 warning rather than a finding. The receipt reports the resulting JWT expiry. The three flags are
