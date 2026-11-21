@@ -1,0 +1,2 @@
+# channel registry text in cotal channel show and the list: one-line descriptions, indented instructions, no control characters.
+smoke:channel-text-containment:cli:live

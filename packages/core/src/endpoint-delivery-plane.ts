@@ -5,6 +5,8 @@ import { aclRetired, readAcl } from "./acls.js";
 import { ANYCAST_CANCEL_OP, ANYCAST_STATUS_OP, ANYCAST_TAKES_OP } from "./anycast-requests.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT } from "./backup-config.js";
+import { serveChannelConfig } from "./channel-config.js";
+import { openChannelRegistry } from "./channels.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import type { CotalEndpoint } from "./endpoint.js";
@@ -143,6 +145,7 @@ export class EndpointDeliveryPlane {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
+  private channelConfigSub?: Subscription;
   /** The lifecycles whose membership inventory this daemon has been asked for, as principal to uids
    *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
    *  is written after its inventory read starts. An entry goes when a later inventory for the same
@@ -551,6 +554,7 @@ export class EndpointDeliveryPlane {
    *  up, because the daemon still has to ask the broker who owns the shard. */
   async quiescePlane3(): Promise<void> {
     this.plane3Quiesced = true;
+    this.dropChannelConfig();
     if (this.deliveryServeSub) {
       try { this.deliveryServeSub.unsubscribe(); } catch { /* already dead */ }
       this.deliveryServeSub = undefined;
@@ -615,9 +619,30 @@ export class EndpointDeliveryPlane {
     if (this.plane3Quiesced) return;
     await this.manager(); // the manager runs consume:false, so this.jsm is lazy — ensure it
     this.armDeliveryControl();
+    await this.armChannelConfig();
     await this.armAnycastRequests();
     await this.runFanout();
     await this.runReader();
+  }
+
+  private dropChannelConfig(): void {
+    const sub = this.channelConfigSub;
+    if (!sub) return;
+    this.channelConfigSub = undefined;
+    sub.unsubscribe();
+    const i = this.subs.indexOf(sub);
+    if (i >= 0) this.subs.splice(i, 1);
+  }
+
+  private async armChannelConfig(): Promise<void> {
+    this.dropChannelConfig();
+    const nc = this.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    const kv = await openChannelRegistry(nc, this.identity.space);
+    if (!this.plane3MayAct() || nc !== this.nc) return;
+    this.channelConfigSub = serveChannelConfig(nc, this.identity.space, kv,
+      () => this.plane3MayAct() && nc === this.nc && !this.stopped, (e) => this.emit("error", e));
+    this.subs.push(this.channelConfigSub);
   }
 
   /** (Re)register the `ctl.delivery` control responder on the CURRENT connection. A reconnect drains the

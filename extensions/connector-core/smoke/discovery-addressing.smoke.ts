@@ -151,11 +151,11 @@ try {
 
   // ---- cotal_channel_info ----
   const ownInfo = await run(me, "cotal_channel_info", { channel: own });
-  check("own event channel is described as this session's, not as invented", ownInfo.text.includes("your own event channel") && !ownInfo.text.includes("invented"), ownInfo.text);
+  check("own event channel is described as this session's, not as unregistered chat", ownInfo.text.includes("your own event channel") && !ownInfo.text.includes("no saved entry"), ownInfo.text);
   const otherInfo = await run(me, "cotal_channel_info", { channel: events[0] });
-  check("another agent's event channel is described as one", otherInfo.text.includes("an agent's event channel") && !otherInfo.text.includes("invented"), otherInfo.text);
+  check("another agent's event channel is described as one", otherInfo.text.includes("an agent's event channel") && !otherInfo.text.includes("no saved entry"), otherInfo.text);
   const plainInfo = await run(me, "cotal_channel_info", { channel: "ops.private" });
-  check("an ordinary unregistered channel keeps its registry wording", plainInfo.text.includes("not in the channel registry") && plainInfo.text.includes("invented"), plainInfo.text);
+  check("an ordinary unregistered channel says it has no saved entry", plainInfo.text.includes("not in the channel registry") && plainInfo.text.includes("no saved entry"), plainInfo.text);
 
   // ---- cotal_dm ----
   const self = await run(me, "cotal_dm", { to: "Scout", text: "to myself" });

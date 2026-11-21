@@ -125,6 +125,7 @@ const proto = MeshAgent.prototype as unknown as {
     replay: replays,
     registered: channel === "lane.ci",
   });
+  agent.channelState = async (channel) => channel === "lane.ci" ? { revision: 1, config: {} } : { revision: 0 };
 
   const known = await send.run(agent, cfg, { text: "hi", channel: "lane.ci" });
   const typo = await send.run(agent, cfg, { text: "hi", channel: "lane.cj" });

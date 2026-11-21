@@ -7,7 +7,7 @@ import type { ChannelRegistryFile } from "./channels.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 const DEFAULT_FIELDS = { replay: true, replayWindow: true, deliveryClass: true } as const satisfies Record<keyof ChannelDefaults, true>;
-const CHANNEL_FIELDS = { ...DEFAULT_FIELDS, description: true, instructions: true } as const satisfies Record<keyof ChannelConfig, true>;
+const CHANNEL_FIELDS = { ...DEFAULT_FIELDS, description: true, instructions: true, writer: true, removed: true } as const satisfies Record<keyof ChannelConfig, true>;
 
 type RegistryValue = ChannelConfig | ChannelDefaults;
 

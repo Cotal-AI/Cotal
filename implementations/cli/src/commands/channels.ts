@@ -25,6 +25,7 @@ import { listDeclaredChannels } from "../lib/personas.js";
 import { channelHistoryCommand } from "../lib/history-command.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { declaredFrom } from "./send.js";
+import { configureChannelAsAgent, isAgentChannelWriter } from "../lib/channel-config.js";
 
 export const channelFlags = [
   ...targetFlags, jsonFlag, plainFlag,
@@ -116,7 +117,10 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const writes = action === "set" || action === "remove" || (action === "defaults" && Object.keys(patch(values)).length > 0);
   const profile = action === "remove" && values.purge ? "channel-purger" : writes ? "channel-writer" : "operator";
   const connection = await connectOrThrow(values, profile);
-  if (values.delivery === "durable" && connection.mode !== "auth" && connection.mode !== "user")
+  const agentWriter = writes && values.creds !== undefined && isAgentChannelWriter(connection);
+  if (agentWriter && (action === "defaults" || values.purge))
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "channel-config cannot change space defaults or purge history.");
+  if (values.delivery === "durable" && !agentWriter && connection.mode !== "auth" && connection.mode !== "user")
     throw new CommandFailure("refused", "UNSUPPORTED", "the selected mesh has no recorded authenticated delivery service; durable membership was not promised by a metadata write", { target: { space: connection.space, mode: connection.mode ?? "unrecorded" }, remedy: "select a registered authenticated space with its delivery service, or use --delivery live for a live-only channel" });
   const user = connection.bearer && writes ? await userViewAuthOrExit(connection, profile === "channel-purger" ? "channel-purger" : "channel-writer") : undefined;
   const auth = user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds }
@@ -139,7 +143,9 @@ export async function channels(args: ParsedArgs): Promise<void> {
   let removed = false;
   let wrote = false;
   try {
-    if (action === "remove") {
+    if (agentWriter) {
+      ({ removed, wrote } = await configureChannelAsAgent(connection, name!, action === "remove" ? undefined : patch(values)));
+    } else if (action === "remove") {
       if (values.purge) ({ purged, removed } = await clearChannel({ ...options, channel: name! }));
       // clearChannel's best-effort config cleanup is not an acknowledgement of the registry delete.
       removed = (await deleteChannels({ ...options, channels: [name!] })).length > 0 || removed;
@@ -148,6 +154,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
       wrote = await seedChannelRegistry({ ...options, file });
     }
   } catch (error) {
+    if (error instanceof CommandFailure) throw error;
     // The purge went through and the registry step did not: report the partial outcome below.
     if (error instanceof ChannelRegistryRemovalFailed) purged = error.purged;
     // A write that kept losing the revision race to other writers saved nothing.
@@ -265,7 +272,7 @@ function registryView(result: { action: string; name?: string; space: string; re
     const config = Object.hasOwn(registry.channels ?? {}, name!) ? registry.channels![name!] : undefined;
     const undecodable = bad(name!);
     return { sections: [
-      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"]] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
+      { title: `Channel · #${name}`, blocks: [{ kind: "fields", rows: [["Space", result.space], ["Metadata", undecodable ? "not decoded" : config ? "configured" : "no saved entry"], ...policyFields(config, registry.defaults), ["Description", config?.description || "not set"], ...(config ? [["Last configuration writer", config.writer ?? "unrecorded"] as [string, string]] : [])] }, ...(undecodable ? [{ kind: "lines" as const, lines: [{ text: `The saved entry does not decode (${undecodable.error}). The key was left as it is, and the channel resolves to the default policy.`, tone: "waiting" as const }] }] : [])] },
       ...(config?.instructions ? [{ title: "Instructions · advisory", blocks: [{ kind: "lines" as const, lines: config.instructions.split(/\r?\n/) }] }] : []),
       { title: "Next", blocks: [
         ...(open ? [{ kind: "lines" as const, lines: ["Broker-observed channel membership is unavailable on open meshes."] }] : []),

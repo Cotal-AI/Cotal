@@ -24,7 +24,7 @@ export async function spaceInitializationReadPort(nc: NatsConnection, space: str
  *  rows wholesale into public diagnostics, operation receipts or an authority artifact. */
 export type SpaceInitializationObservation = { key: string; operation: "kv-get" } & (
   | { state: "present"; revision: number; value: ChannelConfig | ChannelDefaults }
-  | { state: "observed-tombstone"; revision: number; marker: "DEL" | "PURGE" }
+  | { state: "observed-tombstone"; revision: number; marker: "DEL" | "PURGE" | "removed" }
   | { state: "reported-not-found" | "registry-unavailable" | "permission-denied" | "target-mismatch" | "observation-failed" | "not-observed-budget" }
 );
 
@@ -85,6 +85,10 @@ export async function observeSpaceInitialization(reads: SpaceInitializationReadP
       const value: unknown = JSON.parse(decoder.decode(entry.value));
       if (!object(value)) { observations.push({ ...row, state: "observation-failed" }); continue; }
       if (key === CHANNEL_DEFAULTS_KEY) validateChannelDefaults(value); else validateChannelConfig(value);
+      if (key !== CHANNEL_DEFAULTS_KEY && (value as ChannelConfig).removed) {
+        observations.push({ ...row, state: "observed-tombstone", revision: entry.revision, marker: "removed" });
+        continue;
+      }
       observations.push({ ...row, state: "present", revision: entry.revision, value });
     } catch (error) {
       const state = spaceSchemaReadFailure(error);
