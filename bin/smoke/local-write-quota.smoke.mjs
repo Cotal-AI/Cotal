@@ -68,14 +68,12 @@ try {
         assert.equal(prepared[0].root, project);
         assert.deepEqual(result.changed, [{ what: "prepared space", path: join(home, ".cotal", "prepared", "space.73.json") }]);
         assert.match(result.error.remedy, /check and repair/);
-        // Creation refuses a name already prepared. Forget the retained record before creating
-        // it again, as the CLI's conflict remedy specifies; no broker or daemon is needed.
-        const forgotten = run(home, ["space", "forget", "s", "--json"]);
-        assert.equal(forgotten.status, 0, forgotten.stdout + forgotten.stderr);
+        assert.match(result.error.remedy, /space create s --root/);
       } else assert.equal(result.changed, undefined);
       const retried = run(home, args);
       assert.equal(retried.status, 0, retried.stdout + retried.stderr);
       assert.equal(JSON.parse(retried.stdout).outcome, "ok");
+      if (partial) assert.equal(JSON.parse(retried.stdout).result.preparedAt, prepared[0].preparedAt);
       assert.ok(existsSync(persona));
       for (const dir of [join(project, ".cotal"), join(project, ".cotal", "agents")])
         assert.equal(statSync(dir).mode & 0o777, 0o700);

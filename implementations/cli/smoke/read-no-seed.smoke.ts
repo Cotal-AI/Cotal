@@ -9,7 +9,7 @@
  * Run: pnpm smoke:read-no-seed
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -81,6 +81,58 @@ const GATE = /refusing to reconcile the operator-global seed store/;
       && human.stdout.split("\n").some(line => line.trim() === "Agent applications: ○ not set up")
       && next?.[0] === `${displayCmd()} login Sign in to Cotal Cloud`
       && next.some(line => line.startsWith(`${displayCmd()} setup --help See setup flags for scripts.`)), shown(human));
+}
+
+{
+  const { home, xdg, run } = sandbox();
+  const manifest = join(home, "mesh.yaml");
+  writeFileSync(manifest, `apiVersion: cotal/v1
+kind: Mesh
+space: team-audit
+agent: claude
+agents:
+  planner: {instructions: Plan.}
+channels:
+  general: {deliveryClass: live, subscribe: [planner], allowPublish: [planner]}
+`);
+  const view = ["topology", "view", "-f", manifest];
+  const hasGraph = (r: ReturnType<typeof run>) => r.status === 0 &&
+    ["team-audit", "planner", "#general"].every((text) => r.stdout.includes(text));
+  const r = run(view);
+  check("topology view renders the access graph without seeding connectors",
+    hasGraph(r) && r.stderr === "", shown(r));
+  check("topology view wrote no seed store or extension manifest",
+    !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")));
+
+  const config = join(xdg, "cotal");
+  const root = join(config, "extensions"), stage = join(config, ".extensions.stage-probe.ready");
+  const old = join(config, ".extensions.rollback-probe"), journal = join(config, ".extensions-promotion.json");
+  const pkg = "topology-promotion-fixture", version = "1.0.0";
+  const pkgDir = join(stage, "node_modules", pkg);
+  mkdirSync(pkgDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: pkg, version }));
+  writeFileSync(join(stage, "extensions.json"), JSON.stringify({ extensions: [{ pkg, spec: pkg, version, commands: [] }] }));
+  const stat = lstatSync(stage);
+  const promotion = JSON.stringify({ v: 1, root, stage, old, stageIdentity: { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs } });
+  writeFileSync(journal, promotion, { mode: 0o600 });
+
+  const pending = run(view);
+  check("topology view renders the graph and leaves the pending extension promotion untouched",
+    hasGraph(pending) && pending.stderr === "" && !existsSync(root) && !existsSync(old) && !existsSync(join(config, "seed")) &&
+    existsSync(join(pkgDir, "package.json")) && existsSync(journal) && readFileSync(journal, "utf8") === promotion, shown(pending));
+
+  const list = run(["ext", "list", "--json"]);
+  check("ext list still recovers the pending promotion and reports the installed package",
+    list.status === 0 && JSON.parse(list.stdout).result.items.some((item: { pkg: string }) => item.pkg === pkg) &&
+    existsSync(join(root, "node_modules", pkg, "package.json")) && !existsSync(stage) && !existsSync(journal), shown(list));
+
+  const inventory = join(root, "extensions.json");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  writeFileSync(inventory, "invalid manifest\n");
+  const corrupt = run(view);
+  check("topology view reports corrupt inventory without rewriting it",
+    corrupt.status === 1 && corrupt.stdout === "" && /corrupt extensions manifest/.test(corrupt.stderr) &&
+    corrupt.stderr.includes("cotal ext seed --repair") && readFileSync(inventory, "utf8") === "invalid manifest\n", shown(corrupt));
 }
 
 {
