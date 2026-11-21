@@ -12,11 +12,12 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
+  brokerAddressForDisplay, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, isMeshRegistryError, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
 import { journalRecordedElsewhere, readStackJournal } from "../lib/stack-journal.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { verdictSection } from "../lib/verdict.js";
 
@@ -98,7 +99,11 @@ function liveStackRefusal(entry: MeshEntry, space: string, preview = false): Com
 function resolveSpaceDeletionEntry(name: string): MeshEntry {
   let entry: ReturnType<typeof findMesh>;
   try { entry = findMesh(name); }
-  catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local registry could not be read; no live space deletion target was inferred", { target: { space: name } }); }
+  catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    const { message, remedy } = registryFailure(error);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; no broker was contacted for this read`, { target: { space: name }, remedy });
+  }
   if (!entry) {
     // A prepared space has a name and a root but no running broker whose streams could be deleted.
     let prepared: ReturnType<typeof findPreparedSpace>;

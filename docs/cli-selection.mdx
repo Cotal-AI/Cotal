@@ -343,6 +343,10 @@ names how to move the project back before resetting the store. When it offers ad
 stop the adopted stack in its new root before resetting its store. If the project cannot be
 located, the refusal says that stored streams could not be checked.
 
+If a damaged registry record prevents the lookup, `space delete` refuses with `TARGET_UNAVAILABLE`,
+exit 2, before contacting a broker. It names the file and advises restoring it from backup or, if
+the file is named for a space, removing the local registration with `cotal space forget <space>`.
+
 The dry run also reads the space's workflow runs from its records bucket and lists each run that
 has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
 waiting for an answer cannot be answered or resumed afterwards. To read a run's open request first,
