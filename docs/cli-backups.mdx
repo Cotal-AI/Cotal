@@ -77,8 +77,9 @@ Its Next gives a shell-quoted `chmod` command when the path can be displayed unc
 choose a writable folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
-says to stop the process that listens there and run the same `backup create` again. Any other
-refusal or failure shows the check's own sentence as its native detail.
+says to stop the process that listens there and run the same `backup create` again. Retry commands
+quote the destination and any `--store-dir` path for a POSIX shell. Run the retry from the same
+project folder. Any other refusal or failure shows the check's own sentence as its native detail.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
