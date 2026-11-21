@@ -666,6 +666,15 @@ try {
       const hints = status.env?.result?.hints as string[] | undefined;
       check("status names the stopped stack's occupied address and how to free it", status.status === 0 && selected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true && hints?.includes(remedy) === true && !hints.some((hint) => hint.startsWith("start it again with")), shown(status));
       check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
+      const retry = cli(second, "up", "--no-manager", "--json");
+      const after = cli(second, "status", "--space", other, "--json");
+      const afterSelected = after.env?.result?.selected as { message?: string } | undefined;
+      const afterHints = after.env?.result?.hints as string[] | undefined;
+      check("status keeps the occupied address diagnosis after a refused restart",
+        retry.status === 2 && retry.env?.error?.code === "CONFLICT" && after.status === 0
+        && afterSelected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true
+        && afterHints?.includes(remedy) === true && !afterHints.some((hint) => hint.startsWith("start it again with")),
+        { retry: shown(retry), status: shown(after) });
       check("the read commands leave the independent listener and stopped broker alone", occupant.listening && gone(other, "stack-broker"));
     } finally {
       await new Promise<void>((done) => occupant.close(() => done()));

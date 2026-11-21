@@ -599,14 +599,20 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The restart blocker for a prepared space whose controller stack completed its stop. */
+/** The live address blocker for a stopped controller stack with a recorded broker. */
 export async function stoppedStackAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
-    if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return undefined;
+    if (journal?.space !== space) return undefined;
+    const { kind, phase } = journal.operation;
+    const cleanStop = kind === "down" && phase === "completed";
+    const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
+      && journal.members.some((row) => row.role === "broker" && row.state === "refused");
+    if (!cleanStop && !refusedRestart) return undefined;
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
-    const restart = `${displayCmd()} up${journal.members.some((row) => row.role === "manager" && row.state === "not-attempted") ? " --no-manager" : ""}`;
+    const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
+    const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
     return { message: held.says, remedy: `${held.frees}, then run ${codeSpan(restart)} in ${root}; this stack keeps its recorded address` };
   } catch (error) {
     // An unreadable local record does not establish an address conflict.

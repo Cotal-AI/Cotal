@@ -306,6 +306,8 @@ keeps its mode. A `.cotal`, or a root without one, that this account cannot writ
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself when its root is unwritable, before a broker has made `jetstream`, or when this account cannot open it, and
 `chmod -R u+w`. This check also runs for `up -f` and for a bare `up` reopening a recorded custom store.
+When a local stack is stopped, `status` and `ps` check the same store as bare `up` and name the
+permission repair before a restart, including for a recorded custom store.
 If that unwritable folder also lacks read or search access, the step names
 `chmod -R u+rwX` instead, since `u+w` alone leaves it closed. A writable store root without read
 access refuses before startup too, naming that root and `chmod -R u+rwX`; a writable `jetstream`
@@ -800,6 +802,9 @@ pidfile, `cotal status` in that folder shows the row as `stale pidfile` and puts
 Next, which starts it again on the recorded address and store. A manager stopped by SIGTERM removes
 its pidfile. When its retained manager records belong to this broker start, status shows `stopped`
 and offers the same restart. A stack started with `--no-manager` still shows `not started`.
+In the root of a locally started legacy open stack, `status` shows the running broker and the
+stopped manager even after the manager removes its pidfile. Next names `cotal down --yes`, then
+`cotal up --foreground` to start both again. The first command stops the broker and its hosted work.
 `up` does not record `--runtime`, so pass it again when the manager ran on one.
 While such a stopped folder's broker store remains, Next also names the step for a stale store:
 `cotal reset store <space>` when that reset reaches this folder's store, and `cotal clean store --force`

@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, lstatSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { drainAndClose } from "@cotal-ai/core";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -78,7 +78,6 @@ import {
   NATS_PIDFILE,
   OFFICIAL_CONNECTORS,
   oneLine,
-  spaceKey,
   PREFERENCE_KEYS,
   plainFlag,
   preflightTarget,
@@ -127,10 +126,11 @@ import {
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
-import { managerHasDeliveryMarker, managerLogPath } from "../lib/manager-proc.js";
+import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { MANAGER_OMITTED } from "../lib/delivery-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, webBoundAddress, webInstalled, webSessionSource, type HarnessStatus, type MachineStatus } from "../lib/status.js";
+import { legacyManagerStopped, statusRuntimeSpace } from "./status-legacy.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
@@ -1020,7 +1020,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // report that state and stop rather than crashing in the recovery command that names it.
   let space: string;
   try {
-    space = auth?.space ?? resolveRuntimeSpace(root);
+    space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined);
   } catch (e) {
     hints.push((e as Error).message);
     return folder({ state: "none", spaces: [], userAuth: false, error: null });
@@ -1083,7 +1083,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   const managerIndex = !unusable && !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
     ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
     : -1;
-  if (managerIndex !== -1 && legacyManagerStopped(root, space))
+  if (managerIndex !== -1 && legacyManagerStopped(root, space, localManagerInstanceId(root, space)))
     processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
   const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
@@ -1282,21 +1282,6 @@ function localManagerInstanceId(root: string, space: string): string | undefined
   } catch {
     return undefined;
   }
-}
-
-/** Whether the legacy stack whose broker pidfile is in `root` started a manager that has since
- *  exited and removed its pidfile (as SIGTERM does), rather than running with `--no-manager`. */
-function legacyManagerStopped(root: string, space: string): boolean {
-  const id = localManagerInstanceId(root, space);
-  if (id === undefined) return false;
-  let brokerMtime: bigint;
-  try { brokerMtime = statSync(join(root, ".cotal", NATS_PIDFILE), { bigint: true }).mtimeNs; }
-  catch { return false; }
-  for (const path of [managerLogPath(space, root), join(root, ".cotal", `manager-execution.${spaceKey(space)}.${id}.json`)]) {
-    try { if (statSync(path, { bigint: true }).mtimeNs >= brokerMtime) return true; }
-    catch { /* absent or unreadable candidate */ }
-  }
-  return false;
 }
 
 /** User-mode manager status goes through the same control call `cotal spawn` uses. `instanceId`
@@ -2302,12 +2287,10 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   // This folder's own stack is blocked the same way under another selection, and its block leads too.
   const blocked = stack ?? folderStack(r.folder, r.selected);
   const block = blocked ? r.folder.stackBlock : undefined;
-  // A legacy static-auth stack started here whose broker or manager exited leaves its pidfile, and a
-  // bare `up` in this folder starts it again on the address and store this machine recorded. An open
-  // refresh restarts no manager, and an open or user-auth broker needs its mode flag again.
-  const local = r.selected.resolved && r.selected.mode === "auth" && !r.folder.controllerStack && r.folder.root === r.selected.root && r.folder.processSpace === r.selected.space
-    && !["manual", "catalog"].includes(r.meshes.items.find((m) => m.space === r.selected.space)?.origin ?? "up");
-  const exited = local ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
+  const origin = r.meshes.items.find((m) => m.space === dialed?.space)?.origin;
+  const legacy = dialed && !r.folder.controllerStack && r.folder.root === dialed.root && r.folder.processSpace === dialed.space;
+  const local = legacy && dialed.mode === "auth" && !["manual", "catalog"].includes(origin ?? "up");
+  const exited = legacy ? (r.folder.processes ?? []).filter((row) => (row.name === "nats" || row.name === "manager") && row.state === "stopped" && (row.pid !== null || row.detail === "stopped")).map((row) => row.name) : [];
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (block && blocked) {
@@ -2341,7 +2324,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     const held = r.folder.heldServices ?? [], space = r.selected.space;
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
-  } else if (!storeBlocked && !seedBlocksRestart && exited.length) {
+  } else if (!elsewhere && legacy && dialed.mode === "open" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
+    items.unshift({ command: `${cmd} down --yes`, description: "Stop this folder's broker so the exited manager can be restarted" }, { command: `${cmd} up --foreground`, description: "Then start the stack with its manager" });
+  } else if (!storeBlocked && !seedBlocksRestart && local && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];
     items.unshift({ command: `${cmd} up`, description: `Restart this folder's ${broker && manager ? "broker and manager" : broker ? "broker" : "manager"}, which exited; ${notes.join("; ")}` });
