@@ -1,72 +1,46 @@
-import { registry, rejectionText } from "@cotal-ai/core";
-import type { Connector } from "@cotal-ai/core";
-import { extensionConnectors, loadExtensionsManifest, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
+import { oneLine, registry, rejectionText } from "@cotal-ai/core";
+import type { Connector, ConnectorSetupProvider } from "@cotal-ai/core";
+import { extensionConnectors, loadExtensionsManifest, logicalExecutionEntry, materializeFromManifest, OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
 import { resolveHarness } from "./harness-resolution.js";
 import type { ManagerConnectorStatus } from "./manager-service-contract.js";
-import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
+import { bearerEntryArgv } from "./preserved-resume.js";
 
-/** What {@link ConnectorInventory} reads from the Manager. Every entry is read at use, so a field the Manager
- *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
-export interface ConnectorInventoryDeps {
-  bootNotes: () => Manager["bootNotes"];
-  setBootNotes: (value: Manager["bootNotes"]) => void;
-  connectorRequirements: () => Manager["connectorRequirements"];
-  setConnectorRequirements: (value: Manager["connectorRequirements"]) => void;
-  connectorStatuses: () => Manager["connectorStatuses"];
-  setConnectorStatuses: (value: Manager["connectorStatuses"]) => void;
-  execution: () => Manager["execution"];
-  installedExtensions: () => Manager["installedExtensions"];
-  machineSetupCommand: () => Manager["machineSetupCommand"];
-  classSpawnEnabled: (...args: Parameters<Manager["classSpawnEnabled"]>) => ReturnType<Manager["classSpawnEnabled"]>;
-  prepareClaudeWake: (...args: Parameters<Manager["prepareClaudeWake"]>) => ReturnType<Manager["prepareClaudeWake"]>;
+/** The construction facts the inventory reads. Every one is fixed once the Manager is built. */
+export interface ConnectorInventorySettings {
+  execution: "runtime" | "none";
+  installedExtensions: boolean;
+  machineSetupCommand?: string;
+  expectedConnectorGeneration: string;
 }
 
-/** Builds the {@link ConnectorInventoryDeps} for a Manager. It reads Manager members by name at each use, so a
- *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
-export function connectorInventoryDeps(m: Manager): ConnectorInventoryDeps {
-  return {
-    bootNotes: () => m["bootNotes"],
-    setBootNotes: (value) => { m["bootNotes"] = value; },
-    connectorRequirements: () => m["connectorRequirements"],
-    setConnectorRequirements: (value) => { m["connectorRequirements"] = value; },
-    connectorStatuses: () => m["connectorStatuses"],
-    setConnectorStatuses: (value) => { m["connectorStatuses"] = value; },
-    execution: () => m["execution"],
-    installedExtensions: () => m["installedExtensions"],
-    machineSetupCommand: () => m["machineSetupCommand"],
-    classSpawnEnabled: (...args) => m["classSpawnEnabled"](...args),
-    prepareClaudeWake: (...args) => m["prepareClaudeWake"](...args),
-  };
-}
-
-/** The connector inventory taken at boot: which harnesses resolve on this host and the notes for those that do not. */
+/** The connector inventory taken at boot: which harnesses resolve on this host and the notes for those that do not.
+ *  It owns the rows; other parts hold this object and read them at use. */
 export class ConnectorInventory {
-  constructor(private readonly deps: ConnectorInventoryDeps) {}
+  /** Connector harness inventory. Available paths stay pinned; unavailable rows are retried when
+   * launch, model lookup or status asks, without stopping unrelated Manager work. */
+  connectorStatuses: ManagerConnectorStatus[] = [];
+  private connectorRequirements = new Map<string, { requires: readonly string[]; needsClaudeWake: boolean }>();
+  private claudeWakeRecheck?: Promise<void>;
+  /** The boot inventory's warnings, printed once start completes, so a refused start prints none. */
+  bootNotes: string[] = [];
 
-  // The Manager members these bodies read, under their Manager names. Each reads through its dep at
-  // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
-  // is the one that runs.
-  private get bootNotes() { return this.deps.bootNotes(); }
-  private set bootNotes(value: Manager["bootNotes"]) { this.deps.setBootNotes(value); }
-  private get connectorRequirements() { return this.deps.connectorRequirements(); }
-  private set connectorRequirements(value: Manager["connectorRequirements"]) { this.deps.setConnectorRequirements(value); }
-  private get connectorStatuses() { return this.deps.connectorStatuses(); }
-  private set connectorStatuses(value: Manager["connectorStatuses"]) { this.deps.setConnectorStatuses(value); }
-  private get execution() { return this.deps.execution(); }
-  private get installedExtensions() { return this.deps.installedExtensions(); }
-  private get machineSetupCommand() { return this.deps.machineSetupCommand(); }
-  private classSpawnEnabled(...args: Parameters<Manager["classSpawnEnabled"]>): ReturnType<Manager["classSpawnEnabled"]> { return this.deps.classSpawnEnabled(...args); }
-  private prepareClaudeWake(...args: Parameters<Manager["prepareClaudeWake"]>): ReturnType<Manager["prepareClaudeWake"]> { return this.deps.prepareClaudeWake(...args); }
+  constructor(
+    private readonly settings: ConnectorInventorySettings,
+    private readonly parts: Pick<ManagerParts, "harnessResolution" | "seatLaunch" | "servePlane">,
+    /** The Manager's lifecycle admission, which a Claude wake recheck holds while it runs. */
+    private readonly beginLifecycle: (resumeOperation: boolean) => (() => void) | undefined,
+  ) {}
 
   /** Resolve every installed/registered connector's declared harness binaries before the manager
    * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
    * boot continues, names it once start completes and records it on both manager status surfaces. */
   async inspectConnectorsAtBoot(): Promise<void> {
     this.bootNotes = [];
-    if (this.execution === "none") { this.connectorStatuses = []; return; }
+    if (this.settings.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
     let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; prompts?: boolean; pkg?: string }>;
-    if (this.installedExtensions) {
+    if (this.settings.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
       } catch (error) {
@@ -85,7 +59,7 @@ export class ConnectorInventory {
       }));
     }
     this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
-      requires, needsClaudeWake: !!this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
+      requires, needsClaudeWake: !!this.settings.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
     }]));
     for (const { name, requires, eventPlane, prompts = false } of declared) {
       const { binaries, reason: missing } = resolveHarness(name, requires);
@@ -98,8 +72,63 @@ export class ConnectorInventory {
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
-    if (!this.classSpawnEnabled())
+    if (!this.parts.seatLaunch.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
+  }
+
+  /** Install and verify the hosted Claude wake channel, or report the cause and remedy. */
+  private async prepareClaudeWake(): Promise<string | undefined> {
+    try {
+      const connector = await this.parts.harnessResolution.resolveConnector("claude");
+      if (!connector.setup) throw new Error("Claude connector has no setup provider");
+      const provider = await materializeFromManifest<ConnectorSetupProvider>(connector.setup, { expectedGeneration: this.settings.expectedConnectorGeneration });
+      if (!provider.connector) throw new Error("Claude connector has no install action");
+      const cotal = bearerEntryArgv();
+      cotal[cotal.length - 1] = logicalExecutionEntry() ?? cotal.at(-1)!;
+      await provider.connector.run({ cotal, machineHost: true });
+    } catch (error) {
+      const detail = oneLine(rejectionText(error).replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 800));
+      return `Claude wake channel setup failed: ${detail}. Correct the cause and run \`${this.settings.machineSetupCommand}\` on this computer.`;
+    }
+  }
+
+  /** Retry unavailable applications without changing resolved available rows. Claude launches
+   *  join the status or launch that started wake setup, before any name or capacity is reserved. */
+  refreshUnavailableConnectors(name?: string, setupClaude = false): Promise<void> | undefined {
+    const wasEnabled = this.parts.seatLaunch.classSpawnEnabled();
+    let pending: Promise<void> | undefined;
+    for (const row of this.connectorStatuses) {
+      if (row.state !== "unavailable" || (name !== undefined && row.agent !== name)) continue;
+      const requirements = this.connectorRequirements.get(row.agent);
+      if (!requirements) continue;
+      if (requirements.needsClaudeWake && this.claudeWakeRecheck) {
+        pending = this.claudeWakeRecheck;
+        continue;
+      }
+      const { binaries, reason } = resolveHarness(row.agent, requirements.requires);
+      if (reason) {
+        row.binaries = binaries;
+        row.reason = reason;
+      } else if (requirements.needsClaudeWake) {
+        const release = setupClaude ? this.beginLifecycle(true) : undefined;
+        if (!release) continue;
+        pending = this.claudeWakeRecheck = this.prepareClaudeWake().then((failure) => {
+          row.binaries = binaries;
+          if (failure) { row.reason = failure; return; }
+          const alreadyEnabled = this.parts.seatLaunch.classSpawnEnabled();
+          row.state = "available";
+          delete row.reason;
+          if (!alreadyEnabled) this.parts.servePlane.enableClassSpawn();
+        }).finally(() => { this.claudeWakeRecheck = undefined; release(); });
+        void pending.catch((error) => console.error(`! manager: Claude recheck failed: ${rejectionText(error)}`));
+      } else {
+        row.binaries = binaries;
+        row.state = "available";
+        delete row.reason;
+      }
+    }
+    if (!wasEnabled && this.parts.seatLaunch.classSpawnEnabled()) this.parts.servePlane.enableClassSpawn();
+    return pending;
   }
 }
 

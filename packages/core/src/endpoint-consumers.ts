@@ -2,6 +2,7 @@
 // inbox, chat and task consumers and pumping them, the DM-only bind, the per-channel chat subscriptions, and
 // the consumer and stream reads. Moved verbatim from endpoint.ts; the endpoint keeps the fields and
 // chatFrontier and forwards to these. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { withDeadline } from "./deadline.js";
 import { ackWaitOf, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import { authenticatedMessage, kindFromParsed, isUsableMessageId, isFromSubjectSender, dmOnlyDelivery } from "./endpoint-messages.js";
@@ -9,7 +10,7 @@ import { DmDurableMissingError, type DmOnlyOptions, DmBindRefusedError } from ".
 import { isConsumerNotFound, isJetStreamMissing, isStreamNotFound } from "./jetstream-missing.js";
 import { taskDurableConfig } from "./streams.js";
 import { dmDurable, dmStream, taskStream, taskDurable, type ParsedSubject, parseSubject, chatSubject } from "./subjects.js";
-import type { AgentCard, AnycastTakeOutcome, MessageMeta, CotalMessage, Delivery } from "./types.js";
+import type { AnycastTakeOutcome, MessageMeta, CotalMessage, Delivery } from "./types.js";
 import { type JetStreamManager, type JetStreamClient, type ConsumerMessages, jetstreamManager, type Consumer, type JsMsg, JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
 
@@ -21,17 +22,9 @@ export interface EndpointConsumersDeps {
   jsm: () => JetStreamManager | undefined;
   setJsm: (value: JetStreamManager | undefined) => void;
   js: () => JetStreamClient | undefined;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
-  card: () => AgentCard;
   authed: () => boolean;
-  channels: () => string[];
-  ackWaitMs: () => number;
-  inactiveThresholdMs: () => number;
   firstConnect: () => boolean;
   setFirstConnect: (value: boolean) => void;
-  backfillFloor: () => number | undefined;
   streamMsgs: () => ConsumerMessages[];
   taskEpoch: () => string | undefined;
   setTaskEpoch: (value: string | undefined) => void;
@@ -57,23 +50,15 @@ export interface EndpointConsumersDeps {
 
 /** One endpoint's durable consumers. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
 export class EndpointConsumers {
-  constructor(private readonly deps: EndpointConsumersDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointConsumersDeps) {}
 
   private get nc() { return this.deps.nc(); }
   private get jsm() { return this.deps.jsm(); }
   private set jsm(value: JetStreamManager | undefined) { this.deps.setJsm(value); }
   private get js() { return this.deps.js(); }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get card() { return this.deps.card(); }
   private get authed() { return this.deps.authed(); }
-  private get channels() { return this.deps.channels(); }
-  private get ackWaitMs() { return this.deps.ackWaitMs(); }
-  private get inactiveThresholdMs() { return this.deps.inactiveThresholdMs(); }
   private get firstConnect() { return this.deps.firstConnect(); }
   private set firstConnect(value: boolean) { this.deps.setFirstConnect(value); }
-  private get backfillFloor() { return this.deps.backfillFloor(); }
   private get streamMsgs() { return this.deps.streamMsgs(); }
   private get taskEpoch() { return this.deps.taskEpoch(); }
   private set taskEpoch(value: string | undefined) { this.deps.setTaskEpoch(value); }
@@ -116,18 +101,18 @@ export class EndpointConsumers {
       // Open-mode self-create rides the SAME per-lifecycle ensure as the privileged pre-create: an
       // existing `dm_…-<uid>` durable (this lifecycle's own restart) is kept with its ORIGINAL
       // activation frontier; a fresh lifecycle captures its frontier at creation.
-      await this.ensureDmDurable(this.owner, this.actor, ownUid, {
-        ackWaitMs: this.ackWaitMs,
-        inactiveThresholdMs: this.inactiveThresholdMs,
+      await this.ensureDmDurable(this.identity.owner, this.identity.actor, ownUid, {
+        ackWaitMs: this.identity.ackWaitMs,
+        inactiveThresholdMs: this.identity.inactiveThresholdMs,
       });
     }
-    const dm = dmDurable(this.owner, this.actor, ownUid);
+    const dm = dmDurable(this.identity.owner, this.identity.actor, ownUid);
     try {
-      await this.pump(dmStream(this.space), dm, { inbox: true });
+      await this.pump(dmStream(this.identity.space), dm, { inbox: true });
     } catch (e) {
       // Auth mode cannot create the durable, so every rebind fails the same way until the session is
       // replaced. The typed error lets a caller name that route instead of a bare "consumer not found".
-      if (this.authed && isConsumerNotFound(e)) throw new DmDurableMissingError(dmStream(this.space), dm);
+      if (this.authed && isConsumerNotFound(e)) throw new DmDurableMissingError(dmStream(this.identity.space), dm);
       throw e;
     }
 
@@ -144,33 +129,33 @@ export class EndpointConsumers {
     // security boundary). Per-
     // channel history is the explicit replay-gated backfill, on FIRST connect only; a reconnect reopens
     // the subs without re-backfilling (the durable backstop redelivers any missed window via dlv).
-    if (this.channels.length) {
+    if (this.identity.channels.length) {
       // Arm the per-channel join watermarks BEFORE opening the subs: the backfill reads <= frontier and
       // the core-sub delivers > frontier, so they never overlap (first connect). On reconnect we reopen
       // without arming/backfilling.
-      const armed = this.firstConnect ? await this.armJoin(this.channels) : undefined;
-      for (const ch of this.channels) this.subscribeChat(ch);
+      const armed = this.firstConnect ? await this.armJoin(this.identity.channels) : undefined;
+      for (const ch of this.identity.channels) this.subscribeChat(ch);
       await this.confirmChatSub();
-      if (armed) await this.backfillArmed(armed, this.backfillFloor);
+      if (armed) await this.backfillArmed(armed, this.identity.backfillFloor);
     }
     // First connect, auth mode: self-join BOOT durable channels via the server-side delivery daemon
     // (it owns membership now — there is no manager-written boot membership). Seeds plane3Channels so a
     // later leave can tombstone the §7 boundary; idempotent on relaunch. Open mode has no Plane-3.
-    if (this.firstConnect && this.authed && this.channels.length) await this.armBootDurableMemberships();
+    if (this.firstConnect && this.authed && this.identity.channels.length) await this.armBootDurableMemberships();
     this.firstConnect = false;
 
     // Anycast: a shared work-queue consumer for our role — one instance grabs each task.
     // Open mode self-creates; auth mode BINDS the provisioner-pre-created svc_<role>
     // durable (agents are denied CONSUMER.CREATE on TASK_<space>, since the create-time
     // filter is the cross-role-drain attack surface — see provisionTaskQueue).
-    if (this.card.role) {
+    if (this.identity.card.role) {
       if (!this.authed) {
         await this.jsm.consumers.add(
-          taskStream(this.space),
-          taskDurableConfig(this.space, this.card.role, { ackWaitMs: this.ackWaitMs }),
+          taskStream(this.identity.space),
+          taskDurableConfig(this.identity.space, this.identity.card.role, { ackWaitMs: this.identity.ackWaitMs }),
         );
       }
-      await this.pump(taskStream(this.space), taskDurable(this.card.role), this.authed ? { takeRole: this.card.role } : {});
+      await this.pump(taskStream(this.identity.space), taskDurable(this.identity.card.role), this.authed ? { takeRole: this.identity.card.role } : {});
     }
   }
 
@@ -223,7 +208,7 @@ export class EndpointConsumers {
 
   /** Read the TASK stream's creation time into {@link taskEpoch}. */
   async readTaskEpoch(): Promise<string> {
-    const epoch = (await (await this.manager()).streams.info(taskStream(this.space))).created;
+    const epoch = (await (await this.manager()).streams.info(taskStream(this.identity.space))).created;
     this.taskEpoch = epoch;
     return epoch;
   }
@@ -304,8 +289,8 @@ export class EndpointConsumers {
    *  of one, and the next copy reaches the handler only after the previous handler settles. */
   async bindDmOnly(mode: DmOnlyOptions): Promise<void> {
     if (!this.js) throw new Error(this.notLiveMsg());
-    const stream = dmStream(this.space);
-    const durable = dmDurable(this.owner, this.actor, this.requireLifecycleUid("consuming the DM inbox"));
+    const stream = dmStream(this.identity.space);
+    const durable = dmDurable(this.identity.owner, this.identity.actor, this.requireLifecycleUid("consuming the DM inbox"));
     let consumer: Consumer;
     try {
       consumer = await this.js.consumers.get(stream, durable);
@@ -366,7 +351,7 @@ export class EndpointConsumers {
   subscribeChat(channel: string): void {
     if (!this.nc || this.chatSubs.has(channel)) return;
     this.chatSubDenied.delete(channel);
-    const subject = chatSubject(this.space, "*", "*", channel);
+    const subject = chatSubject(this.identity.space, "*", "*", channel);
     const sub = this.nc.subscribe(subject, {
       callback: (err, m) => {
         if (err) {
@@ -379,9 +364,9 @@ export class EndpointConsumers {
           if (err instanceof PermissionViolationError) this.chatSubRefusals.add(err);
           this.chatSubDenied.add(channel);
           this.chatSubs.delete(channel);
-          const i = this.channels.indexOf(channel);
+          const i = this.identity.channels.indexOf(channel);
           if (i >= 0) {
-            this.channels.splice(i, 1);
+            this.identity.channels.splice(i, 1);
             // A late sub.allow refusal forces this agent out of the channel (the broker revoked its live
             // read). If it held a Plane-3 durable membership, the §7 boundary must close too. This sub
             // callback can't await, so a fail-closed async helper RETRIES the tombstone (backoff) UNTIL it
@@ -407,7 +392,7 @@ export class EndpointConsumers {
         }
         if (!isRecord(msg) || !isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!isFromSubjectSender(msg, parsed)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
-        if (msg.from.id === this.card.id) return; // our own echo
+        if (msg.from.id === this.identity.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
         this.emit("message", authenticatedMessage(msg, parsed), delivery, {
           historical: false,

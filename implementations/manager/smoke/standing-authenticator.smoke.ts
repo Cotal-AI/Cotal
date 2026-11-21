@@ -40,7 +40,7 @@ for (const method of ["dialServeConnection", "dialGoalWriter", "dialSessionLedge
       else {
         const component = new ServePlane({
           auth: () => receiver.auth, remoteAuthority: () => receiver.remoteAuthority, dial: receiver.dial,
-        } as unknown as ConstructorParameters<typeof ServePlane>[0]);
+        } as unknown as ConstructorParameters<typeof ServePlane>[0], {} as ConstructorParameters<typeof ServePlane>[1]);
         if (method === "dialServeConnection") await component.dialServeConnection(state as never);
         else await component.dialSessionLedgerConnection(state as never, identity);
       }

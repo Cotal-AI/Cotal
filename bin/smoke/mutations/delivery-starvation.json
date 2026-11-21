@@ -91,8 +91,8 @@
     {
       "name": "M18 a lease row is proven ours by its PRINCIPAL alone, ignoring which run wrote it",
       "file": "packages/core/src/endpoint-delivery-lease.ts",
-      "find": "    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;",
-      "replace": "    return info.holder === this.card.id;",
+      "find": "    return info.holder === this.identity.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;",
+      "replace": "    return info.holder === this.identity.card.id;",
       "expectRed": "R9 a row with OUR holder but another run's incarnation is NOT adopted as our own",
       "cell": "R9 a row with OUR holder but another run's incarnation is NOT adopted as our own",
       "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/delivery... build > /dev/null && pnpm smoke:delivery-starvation",

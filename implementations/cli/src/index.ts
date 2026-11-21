@@ -33,7 +33,7 @@ import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
 import { history, historyComplete, historyFlags, historySubcommands, validateHistoryArguments } from "./commands/history.js";
-import { clean, cleanComplete } from "./commands/clean.js";
+import { clean, cleanComplete, validateCleanArguments } from "./commands/clean.js";
 import { reset, resetComplete, resetFlags, validateResetArguments } from "./commands/reset.js";
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
 import { send, sendComplete, sendFlags, sendArguments } from "./commands/send.js";
@@ -329,6 +329,7 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
       { name: "dry-run", type: "boolean", description: "store/all: list what would be removed and remove nothing" },
     ],
+    validate: validateCleanArguments,
     run: clean,
     complete: cleanComplete,
   },

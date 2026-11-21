@@ -23,12 +23,9 @@ import {
   type LeaseReading,
 } from "../src/watchdog.js";
 import { defaultProbeTimeoutMs } from "@cotal-ai/core";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, detail?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 console.log("\nM. the probe budget is the transport's own");
 // `isReachable` gives a ws(s) broker 5s and a TCP broker 1s, because a ws broker rides an HTTPS
@@ -151,7 +148,7 @@ check("I4 a comparison span longer than the lag retains the remaining unstarved 
   50_000 - bounded.starvedMsWithin(50_000) === 20_000);
 
 const EXPECTED_CELLS = 34;
-check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, pass + fail === EXPECTED_CELLS, pass + fail);
+check(`every cell ran (${EXPECTED_CELLS} before this sentinel)`, passed() + failed() === EXPECTED_CELLS, passed() + failed());
 
-console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`\nDELIVERY-WATCHDOG-EVIDENCE SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+finish();

@@ -59,6 +59,13 @@ const at80 = async (args: string[]) => {
  *  which no wrap can break. */
 const fits80 = (display: string) => display.split("\n").every((line) => [...line].length <= 80 || !/\S\s+\S/.test(line.trim()));
 
+const empty = run(["space"]);
+check("rig: no spaces are registered or prepared", empty.status === 0 && empty.stdout.includes("No spaces registered."), shown(empty));
+const unknownStep = 'Unknown space "b4b". Run `cotal space` to check the name. For a new local space, run `cotal space create b4b` in its project folder, then run `cotal up` there.';
+const unknownPlain = run(["doctor", "auth", "--space", "b4b", "--plain"]);
+check("doctor auth --space for an unknown space gives preparation guidance instead of a root",
+  unknownPlain.status === 2 && `${unknownPlain.stdout}${unknownPlain.stderr}`.includes(`Next\n  ${unknownStep}\n`), shown(unknownPlain));
+
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
 
@@ -171,8 +178,8 @@ const cleared = run(["use", "--clear"]);
 check("rig: the selection is cleared", cleared.status === 0, shown(cleared));
 
 const doctorUnknown = run(["doctor", "auth", "--space", "nosuch", "--json"]);
-check("control: a space nothing prepared or registered keeps the general step",
-  doctorUnknown.status === 2 && doctorUnknown.envelope?.error?.code === "AUTH_REQUIRED" && doctorUnknown.envelope.error.remedy === "run `cotal doctor auth --space nosuch` in that space's root folder; `cotal space` lists each space's root", shown(doctorUnknown));
+check("an unknown space keeps the JSON refusal code and gives preparation guidance even in another space's root",
+  doctorUnknown.status === 2 && doctorUnknown.envelope?.error?.code === "AUTH_REQUIRED" && doctorUnknown.envelope.error.remedy === unknownStep.replaceAll("b4b", "nosuch"), shown(doctorUnknown));
 
 const preview = run(["space", "delete", "b4b", "--dry-run", "--json"]);
 check("a delete preview of a prepared space refuses as unavailable, exit 2", preview.status === 2 && preview.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(preview));

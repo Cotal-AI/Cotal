@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
@@ -12,13 +12,49 @@ export interface RetainedExecutionGeneration {
   inventorySha256: string;
 }
 
-export function unwritableInstallation(installedRoot: string): Error {
+export function unwritableInstallation(installedRoot: string, directory?: string): Error {
   const tool = ["sudo", "doas"].find(name => resolveOnPath(name));
   const prefix = dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''");
   const install = `npm install -g --prefix '${prefix}' cotal-ai@latest`;
   const administrator = tool ? `run: ${tool} ${install}` : `run as root: ${install}`;
   const normalAccount = tool ? `as your normal account, without ${tool}` : "as your normal account";
-  return new Error(`installation is not writable; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
+  return new Error(`installation is not writable${directory ? `: ${directory}` : ""}; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
+}
+
+export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void): void {
+  const stat = lstatSync(path);
+  const owned = stat.uid === process.getuid?.();
+  try {
+    if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) {
+      const mode = (stat.mode & 0o7777) | 0o200;
+      if (setMode) setMode(mode); else chmodSync(path, mode);
+    }
+    accessSync(path, constants.W_OK);
+  } catch {
+    if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+    throw unwritableInstallation(installed, setMode ? path : undefined);
+  }
+}
+
+export function writableExecutionStore(installed: string, shared: boolean): string {
+  const store = executionStore(installed);
+  const create = !lstatSync(store, { throwIfNoEntry: false });
+  if (create) mkdirSync(store, { mode: 0o700 });
+  const stat = lstatSync(store);
+  if (!stat.isDirectory()) throw new Error("unsafe execution generation store");
+  protectedExecutionEntry(store);
+  const setMode = (mode: number): void => {
+    const fd = openSync(store, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const current = fstatSync(fd);
+      if (current.uid !== process.getuid?.() || current.dev !== stat.dev || current.ino !== stat.ino || current.mode !== stat.mode)
+        throw new Error(`unprotected execution entry: ${store}`);
+      fchmodSync(fd, mode);
+    } finally { closeSync(fd); }
+  };
+  if (create && shared) setMode(0o755);
+  assertWritableExecutionDirectory(store, installed, setMode);
+  return store;
 }
 
 /** Remove group and other write from a tree this process just created. Node before 24.22 applies the
@@ -48,21 +84,9 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
-  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
-    const stat = lstatSync(path);
-    const owned = stat.uid === process.getuid?.();
-    try {
-      if (owned && stat.isDirectory() && (stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
-      accessSync(path, constants.W_OK);
-    } catch {
-      if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
-      throw unwritableInstallation(installedRoot);
-    }
-  }
-  const store = executionStore(installedRoot), shared = executionShared(installedRoot);
-  if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
-  if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
-  protectedExecutionEntry(store);
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))])
+    assertWritableExecutionDirectory(path, installedRoot);
+  const shared = executionShared(installedRoot), store = writableExecutionStore(installedRoot, shared);
   const before = executionInventory(verifiedSource);
   const staging = mkdtempSync(join(store, ".preparing-"));
   try {

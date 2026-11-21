@@ -307,7 +307,7 @@ try {
   await until(() => staleAgent!.connected, 30_000);
   const staleEp = staleAgent.ep as unknown as {
     kv?: unknown;
-    servers: string;
+    identity: { servers: string };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
@@ -327,7 +327,7 @@ try {
   // to the compiler only; overriding it here is the same door the reviewer used, and it reaches
   // closeFailedBind, which tears the connection down WITHOUT emitting a transport:false edge.
   staleEp.kv = liveKv;
-  staleEp.servers = "nats://127.0.0.1:1";
+  staleEp.identity.servers = "nats://127.0.0.1:1";
   await staleEp.reconnect().catch(() => {});
   check(
     "a FAILED bind clears the presence-refusal record rather than carrying it onto the next connection",

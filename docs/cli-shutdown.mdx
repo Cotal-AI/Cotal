@@ -734,6 +734,8 @@ value in its printed force command so it stays one shell argument. A run without
 and `--space`, `--server`, `--creds` and `--dms` for `history`, so that command acts on the same target.
 When the store path begins with `-`, the printed command uses `--store-dir=<dir>` so the path is not
 read as another option.
+`clean history` refuses `--store-dir` with `USAGE_INVALID` (exit 1) and purges nothing, even with `--force`.
+Use `--store-dir` with `clean store` or `clean all` to name a stopped store.
 Only `history` takes `--space` (or `-s`), `--server` or `--creds`. Local cleanup uses the project found
 from the working directory. When local cleanup refuses these flags, it reports `USAGE_INVALID`
 (exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,

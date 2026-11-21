@@ -5,6 +5,7 @@
  */
 import type { CotalEndpoint } from "@cotal-ai/core";
 import { createCommandLane, type CommandDispatcher, type CommandQueue } from "./agent-commands.js";
+import { createNameLane } from "./agent-name.js";
 import { PROMPT_DESK_MIN_MAX_PAYLOAD, createPromptDesk, type PromptDesk } from "./prompt-desk.js";
 
 export interface AgentEndpoint {
@@ -12,9 +13,9 @@ export interface AgentEndpoint {
   readonly prompts: PromptDesk;
   /** The commands waiting for an idle turn, which the connector runs one per turn. */
   readonly commands: CommandQueue;
-  /** Close every prompt and reply to every caller still waiting, refuse every queued command, then
-   *  stop serving and wait for the handlers in flight. Does not wait for a `deliver` call that has
-   *  not ended. */
+  /** Close every prompt and reply to every caller still waiting, refuse every queued command and
+   *  every later `set-name`, then stop serving and wait for the handlers in flight. Does not wait for
+   *  a `deliver` call that has not ended. */
   close(): Promise<void>;
 }
 
@@ -46,7 +47,8 @@ export async function openAgentEndpoint(
   };
   const desk = createPromptDesk(ep, warn);
   const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}));
-  const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers] });
+  const naming = createNameLane(ep, warn);
+  const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler] });
   desk.served(serve.ready);
 
   let closing: Promise<void> | undefined;
@@ -54,6 +56,7 @@ export async function openAgentEndpoint(
     ep.off("transport", onTransport);
     desk.close();
     lane.close();
+    naming.close();
     return serve.stop();
   })());
   const onTransport = (t: { connected: boolean }): void => {

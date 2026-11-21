@@ -308,7 +308,7 @@ export class MeshAgent extends EventEmitter {
       },
       card: {
         id: config.id,
-        name: config.name,
+        name: config.displayName ?? config.name,
         role: config.role,
         kind: config.kind,
         description: config.description,
@@ -367,6 +367,11 @@ export class MeshAgent extends EventEmitter {
 
   get id(): string {
     return this.ep.card.id;
+  }
+
+  /** The display name peers see now: the launch name until `set-name` changes it (SPEC 13.22). */
+  get displayName(): string {
+    return this.ep.card.name;
   }
 
   get connected(): boolean {

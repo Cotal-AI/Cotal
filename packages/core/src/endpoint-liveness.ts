@@ -1,6 +1,7 @@
 // The peer-readable liveness responder and probe of CotalEndpoint, as an internal component. Moved
 // verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import { AuthorizationError, PermissionViolationError, TimeoutError, type Msg, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import {
@@ -19,9 +20,6 @@ import { livenessServeFilter, livenessSubject } from "./subjects.js";
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointLivenessDeps {
   nc: () => NatsConnection | undefined;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
   subs: () => Subscription[];
   livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
   notLiveMsg: () => string;
@@ -35,12 +33,9 @@ export interface EndpointLivenessDeps {
  *  every connection, and the probe that grades another responder. Internal: `CotalEndpoint` keeps
  *  the public methods and forwards to it. */
 export class EndpointLiveness {
-  constructor(private readonly deps: EndpointLivenessDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointLivenessDeps) {}
 
   private get nc() { return this.deps.nc(); }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
   private get subs() { return this.deps.subs(); }
   private get livenessResponders() { return this.deps.livenessResponders(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
@@ -109,7 +104,7 @@ export class EndpointLiveness {
       if (i >= 0) this.subs.splice(i, 1);
     }
     const { readState } = held;
-    const sub = this.nc.subscribe(livenessServeFilter(this.space, plane), { queue: `live.${plane}` });
+    const sub = this.nc.subscribe(livenessServeFilter(this.identity.space, plane), { queue: `live.${plane}` });
     held.sub = sub;
     this.subs.push(sub);
     // The responder token this bind answers under: AN OPAQUE VALUE MINTED HERE, and deliberately
@@ -189,7 +184,7 @@ export class EndpointLiveness {
       // measuring anything.
       throw new Error(`liveness: "${plane}" is not a plane this surface answers for (${[...LIVENESS_PLANES].join(", ")})`);
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const reqSubject = livenessSubject(this.space, plane, this.owner, this.actor);
+    const reqSubject = livenessSubject(this.identity.space, plane, this.identity.owner, this.identity.actor);
     const reply = `${reqSubject}.reply.${randomUUID()}`;
     let outcome: ProbeOutcome;
     let answered: ResponderState | undefined;

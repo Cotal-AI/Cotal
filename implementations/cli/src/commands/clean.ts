@@ -83,6 +83,11 @@ function recordedAttemptStep(root: string, journal: ReturnType<typeof readMainte
   return `this root's maintenance record names attempt ${recorded.attemptId} (state ${journal.state})${recorded.next ? `; ${recorded.next}` : ""}`;
 }
 
+export function validateCleanArguments(args: ParsedArgs): void {
+  if (args.positionals[0] === "history" && args.values["store-dir"] !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", "clean history targets a running mesh. Nothing was purged. Only clean store and clean all take --store-dir.", { selfContained: true });
+}
+
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
  *   - `history`: purge the retained message backlog on the RUNNING broker (CHAT, plus DMs with
  *     `--dms`) via the least-privilege purger cred. `cotal history clear` is a thin alias.
@@ -104,6 +109,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", target ? `clean has no target "${target}"; it takes ${TARGETS.join(", ")}` : `clean needs a target: ${TARGETS.join(", ")}`);
   if (args.positionals.length > 1)
     throw new CommandFailure("refused", "USAGE_INVALID", target === "history" ? "clean history takes no channel name; it clears all retained channel history, so nothing was purged" : `clean ${target} takes no extra positional arguments; nothing was removed`);
+  validateCleanArguments(args);
   const dryRun = values["dry-run"] === true;
   if (dryRun && target !== "store" && target !== "all")
     throw new CommandFailure("refused", "USAGE_INVALID", `--dry-run previews clean store and clean all only, not clean ${target}`);

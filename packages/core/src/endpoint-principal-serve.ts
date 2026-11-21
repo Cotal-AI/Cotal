@@ -3,6 +3,7 @@
 // `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts; the
 // endpoint keeps servePrincipal, which a smoke replaces, and the fields, and forwards to these. Not
 // re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
 import { EpEnvelopeError, type EndpointReply } from "./endpoint-envelope.js";
@@ -12,7 +13,7 @@ import type { EpCaller, EpPrincipal, PrincipalAuthority } from "./endpoint-subje
 import { processRuntime } from "./process-runtime.js";
 import type { CompiledContract } from "./schema-profile.js";
 import { spacePrefix } from "./subjects.js";
-import type { AgentCard, PresencePrompts } from "./types.js";
+import type { PresencePrompts } from "./types.js";
 import type { NatsConnection, PermissionViolationError } from "@nats-io/transport-node";
 
 /** The highest `prompts` presence `seq` this process used under each runtime id (SPEC §6). A reader
@@ -24,11 +25,7 @@ const promptsSeqs = new Map<string, number>();
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on the
  *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointPrincipalServeDeps {
-  space: () => string;
   nc: () => NatsConnection | undefined;
-  owner: () => string;
-  actor: () => string;
-  card: () => AgentCard;
   principalServes: () => Map<string, PrincipalServeIntent>;
   principalServers: () => Map<string, PrincipalServeIntent>;
   promptsPresence: () => PresencePrompts | undefined;
@@ -41,13 +38,9 @@ export interface EndpointPrincipalServeDeps {
 
 /** One endpoint's principal serve and prompts. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
 export class EndpointPrincipalServe {
-  constructor(private readonly deps: EndpointPrincipalServeDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointPrincipalServeDeps) {}
 
-  private get space() { return this.deps.space(); }
   private get nc() { return this.deps.nc(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get card() { return this.deps.card(); }
   private get principalServes() { return this.deps.principalServes(); }
   private get principalServers() { return this.deps.principalServers(); }
   private get promptsPresence() { return this.deps.promptsPresence(); }
@@ -59,13 +52,13 @@ export class EndpointPrincipalServe {
 
   /** Subscribe `intent` on `nc`. */
   bindPrincipalHandle(intent: PrincipalServeIntent, nc: NatsConnection): EpPrincipalServeHandle {
-    return servePrincipalRoute(nc, this.space, intent.self, intent.serve);
+    return servePrincipalRoute(nc, this.identity.space, intent.self, intent.serve);
   }
 
   /** A principal-route refusal a call or a serve reports itself: a request publish, a serve
    *  subscription or a reply read. Only a reply publish is left, which no call or serve awaits. */
   ownedPrincipalRouteRefusal(err: PermissionViolationError): boolean {
-    const p = `${spacePrefix(this.space)}.ep.`;
+    const p = `${spacePrefix(this.identity.space)}.ep.`;
     if (err.operation === "publish") return err.subject.startsWith(`${p}prin.`);
     return err.subject.startsWith(`${p}prin.`) || err.subject.startsWith(`${p}prin-reply.`);
   }
@@ -249,9 +242,9 @@ export class EndpointPrincipalServe {
       ?? (call.command === "describe" ? describeContracts() : call.endpoint === AGENT_ENDPOINT ? AGENT_CONTRACTS[call.command] : undefined);
     if (contract === undefined)
       throw new EpEnvelopeError("bad-request", `no contract is built in for ${call.endpoint}.${call.command}; pass one`, undefined, "not-executed");
-    const caller: EpCaller = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("callPrincipal") };
-    return epPrincipalCall(nc, this.space, { principal: call.principal, authority: call.authority }, {
-      endpoint: call.endpoint, command: call.command, contract, caller, name: this.card.name,
+    const caller: EpCaller = { owner: this.identity.owner, actor: this.identity.actor, uid: this.requireLifecycleUid("callPrincipal") };
+    return epPrincipalCall(nc, this.identity.space, { principal: call.principal, authority: call.authority }, {
+      endpoint: call.endpoint, command: call.command, contract, caller, name: this.identity.card.name,
       ...(call.args !== undefined ? { args: call.args } : {}),
     }, { deadlineMs: call.deadlineMs, ...(call.signal ? { signal: call.signal } : {}) });
   }

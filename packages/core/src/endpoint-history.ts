@@ -1,3 +1,4 @@
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { nanos, type NatsConnection } from "@nats-io/transport-node";
@@ -14,12 +15,6 @@ export interface EndpointHistoryDeps {
   jetstream: () => JetStreamClient | undefined;
   manager: () => JetStreamManager | undefined;
   setManager: (manager: JetStreamManager | undefined) => void;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
-  userMode: () => boolean;
-  connectionId: () => string;
-  card: () => { id: string };
   notLiveMsg: () => string;
   requireLifecycleUid: (operation: string) => string;
   requestDelivery: (op: string, args: Record<string, unknown>) => Promise<ControlReply>;
@@ -122,19 +117,13 @@ export class EndpointHistory {
   /** Per stream, the history-reader names of this connection's current reader id and the reads
    *  waiting for one (see {@link acquireHistoryReader}). */
   private readonly historyReaderSlots = new Map<string, HistoryReaderSlots>();
-  constructor(private readonly deps: EndpointHistoryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointHistoryDeps) {}
   private get nc() { return this.deps.connection(); }
   private get js() { return this.deps.jetstream(); }
   private get jsm() { return this.deps.manager(); }
   private set jsm(manager: JetStreamManager | undefined) {
     this.deps.setManager(manager);
   }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get userMode() { return this.deps.userMode(); }
-  private get connId() { return this.deps.connectionId(); }
-  private get card() { return this.deps.card(); }
 
 
   /** Fetch recent messages from a channel's JetStream backlog. `signal` cancels the active pull and
@@ -156,10 +145,10 @@ export class EndpointHistory {
     // A publisher is one principal. A `*` in either slot would widen the read back to any sender
     // while the caller believes it narrowed it, so both slots are checked as concrete tokens.
     const subject = from === undefined
-      ? chatSubject(this.space, "*", "*", channel)
-      : chatSubject(this.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
+      ? chatSubject(this.identity.space, "*", "*", channel)
+      : chatSubject(this.identity.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
     return (await this.streamHistory(
-      chatStream(this.space),
+      chatStream(this.identity.space),
       [subject],
       opts?.limit ?? 100,
       undefined,
@@ -186,9 +175,9 @@ export class EndpointHistory {
     const jsm = this.jsm ??= await jetstreamManager(this.nc);
     const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
     signal.throwIfAborted();
-    const stream = chatStream(this.space);
-    const name = chatHistDurable(this.owner, this.actor, this.deps.requireLifecycleUid("channelHistoryPage"));
-    const subject = chatSubject(this.space, "*", "*", channel);
+    const stream = chatStream(this.identity.space);
+    const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("channelHistoryPage"));
+    const subject = chatSubject(this.identity.space, "*", "*", channel);
     const marker = randomUUID();
     let created: ConsumerInfo;
     for (;;) {
@@ -295,7 +284,7 @@ export class EndpointHistory {
       // same aliasing `assertValidChannel` was written for on the policy path; the read path needs
       // it too, and it fails loud rather than serving a channel nobody asked for.
       assertValidChannel(channel);
-      return chatSubject(this.space, "*", "*", channel);
+      return chatSubject(this.identity.space, "*", "*", channel);
     }))];
     // No channels is not an empty stream, but it IS an empty answer, and asking the broker for a
     // consumer with no filter would read the WHOLE stream instead of none of it.
@@ -322,7 +311,7 @@ export class EndpointHistory {
         const i = next++;
         if (i >= batches.length) return;
         pages[i] = await this.streamHistory(
-          chatStream(this.space), batches[i], limit, undefined, opts?.signal,
+          chatStream(this.identity.space), batches[i], limit, undefined, opts?.signal,
         );
       }
     };
@@ -402,8 +391,8 @@ export class EndpointHistory {
     try {
       // every inst.<recipOwner>.<recipActor>.<sndOwner>.<sndActor> DM — the whole DM subtree (god-view)
       return (await this.streamHistory(
-        dmStream(this.space),
-        [`${spacePrefix(this.space)}.inst.>`],
+        dmStream(this.identity.space),
+        [`${spacePrefix(this.identity.space)}.inst.>`],
         opts?.limit ?? 100,
         undefined,
         opts?.signal,
@@ -561,7 +550,7 @@ export class EndpointHistory {
    *  deletes on {@link calloutReaderId} instead: the server's id and the client id it assigned this
    *  connection, which the client reads from the server's INFO and does not choose. */
   historyReaderId(nc: NatsConnection): string {
-    if (!this.userMode) return this.connId;
+    if (!this.identity.userMode) return this.identity.connId;
     const info = nc.info;
     if (!info) throw new Error("history: the server has not sent its INFO, so this connection has no history reader id yet");
     return calloutReaderId(info.server_id, info.client_id);
@@ -906,8 +895,8 @@ export class EndpointHistory {
     opts: { untilSeq?: number; limit?: number } = {},
   ): Promise<JsMsg[]> {
     if (!this.jsm || !this.js) throw new Error(this.deps.notLiveMsg());
-    const stream = chatStream(this.space);
-    const name = chatHistDurable(this.owner, this.actor, this.deps.requireLifecycleUid("chat history reads"));
+    const stream = chatStream(this.identity.space);
+    const name = chatHistDurable(this.identity.owner, this.identity.actor, this.deps.requireLifecycleUid("chat history reads"));
     const out: JsMsg[] = [];
     // Clear any consumer leaked by a crashed prior read before re-creating it with THIS read's
     // single filter (the read ACL is enforced at create — see the doc above).
@@ -961,7 +950,7 @@ export class EndpointHistory {
    *  tail owns them. Reads through the contained {@link collectHistory}. */
   async backfillChannel(channel: string, upToSeq: number, sinceMs?: number, floorSeq?: number): Promise<number> {
     if (floorSeq !== undefined && floorSeq >= upToSeq) return 0;
-    const subject = chatSubject(this.space, "*", "*", channel);
+    const subject = chatSubject(this.identity.space, "*", "*", channel);
     // A window that reaches back before 1970 covers the whole retained window (#7323). Its start time
     // would be a date JetStream does not read, or not a valid date at all, and the read replayed nothing.
     const since = sinceMs === undefined ? undefined : Date.now() - sinceMs;
@@ -987,7 +976,7 @@ export class EndpointHistory {
       // Same authenticity guard as the tail; skip our own echoes in history.
       if (!this.deps.isRecord(msg) || !this.deps.isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
       const parsed = parseSubject(sm.subject);
-      if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.card.id) continue;
+      if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.identity.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
       this.deps.emit("message", this.deps.authenticatedMessage(msg, parsed), noop, { historical: true, kind: "channel" } satisfies MessageMeta);
       n++;
@@ -1024,7 +1013,7 @@ export class EndpointHistory {
     if (!isConcreteChannel(channel)) return { messages: [], seqs: [], dropped: false, unanswered: true };
     const policy = await this.deps.joinPolicyFresh(channel);
     if (!policy.replay) return { messages: [], seqs: [], dropped: true, unanswered: true };
-    const subject = chatSubject(this.space, "*", "*", channel);
+    const subject = chatSubject(this.identity.space, "*", "*", channel);
     let raw: JsMsg[];
     try {
       raw = await this.collectHistory(subject, { seq: sinceSeq + 1 });
@@ -1045,7 +1034,7 @@ export class EndpointHistory {
       // Same authenticity guard as the tail/backfill; skip our own echoes.
       if (!this.deps.isRecord(msg) || !this.deps.isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
       const parsed = parseSubject(sm.subject);
-      if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.card.id) continue;
+      if (!parsed || !this.deps.isFromSubjectSender(msg, parsed) || msg.from.id === this.identity.card.id) continue;
       collected.push(this.deps.authenticatedMessage(msg, parsed));
       seqs.push(sm.seq);
     }

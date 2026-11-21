@@ -2,6 +2,7 @@
 // delivery-class lookups, and the registry watch or read that fills it), as an internal component.
 // Moved verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
@@ -13,21 +14,16 @@ import {
   readChannelDefaults,
   decodeChannelEntry,
 } from "./channels.js";
-import { isPublishPermissionDenied } from "./endpoint.js";
+import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
-import type { AgentCard, ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
+import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
  *  never copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointChannelDiscoveryDeps {
   nc: () => NatsConnection | undefined;
-  space: () => string;
-  card: () => AgentCard;
-  doConsume: () => boolean;
-  doWatch: () => boolean;
-  doWatchChannels: () => boolean;
   channelKv: () => KV | undefined;
   setChannelWatchIter: (iter: Awaited<ReturnType<KV["watch"]>>) => void;
   channelConfigs: () => Map<string, ChannelConfig>;
@@ -49,14 +45,9 @@ export interface EndpointChannelDiscoveryDeps {
  *  replay and delivery-class policy they answer, and the registry watch or one-shot read that keeps
  *  the cache. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointChannelDiscovery {
-  constructor(private readonly deps: EndpointChannelDiscoveryDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointChannelDiscoveryDeps) {}
 
   private get nc() { return this.deps.nc(); }
-  private get space() { return this.deps.space(); }
-  private get card() { return this.deps.card(); }
-  private get doConsume() { return this.deps.doConsume(); }
-  private get doWatch() { return this.deps.doWatch(); }
-  private get doWatchChannels() { return this.deps.doWatchChannels(); }
   private get channelKv() { return this.deps.channelKv(); }
   private set channelWatchIter(iter: Awaited<ReturnType<KV["watch"]>>) { this.deps.setChannelWatchIter(iter); }
   private get channelConfigs() { return this.deps.channelConfigs(); }
@@ -76,7 +67,7 @@ export class EndpointChannelDiscovery {
   /** A consumer that reads presence on demand reads the channel registry on demand too: it holds no
    *  watch on either, so a seat binds no consumer per member on these buckets (SPEC §6, §7). */
   get readsChannelsOnDemand(): boolean {
-    return this.doConsume && this.doWatchChannels && !this.doWatch;
+    return this.identity.doConsume && this.identity.doWatchChannels && !this.identity.doWatch;
   }
 
   /**
@@ -102,7 +93,7 @@ export class EndpointChannelDiscovery {
       } catch (e) {
         if (!isPublishPermissionDenied(e)) throw e;
         throw new Error(
-          `channel registry read refused for ${this.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${channelBucket(this.space)}, the on-demand registry read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
+          `channel registry read refused for ${this.identity.card.id}: this credential may not publish $JS.API.DIRECT.GET.KV_${channelBucket(this.identity.space)}, the on-demand registry read (SPEC Appendix B). A credential minted by an older issuer can lack this grant even when newly minted; upgrade the manager or auth service that issues credentials, then mint a new credential. Reusing credentials or reconnecting does not add the grant.`,
           { cause: e },
         );
       }
@@ -141,7 +132,7 @@ export class EndpointChannelDiscovery {
    *  `registered` says whether the channel has its own registry entry. */
   async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null; registered: boolean }> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
+    const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.identity.space, { create: false }));
     let cfg: ChannelConfig | undefined;
     let defaults: ChannelDefaults | undefined;
     try {

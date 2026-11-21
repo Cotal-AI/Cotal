@@ -78,8 +78,8 @@
     {
       "name": "the endpoint restores the general fallback, so a channel-less send publishes instead of refusing",
       "file": "packages/core/src/endpoint-messaging.ts",
-      "find": "    const channel = opts?.channel ?? this.channels.find(isConcreteChannel);",
-      "replace": "    const channel = opts?.channel ?? this.channels.find(isConcreteChannel) ?? \"general\";",
+      "find": "    const channel = opts?.channel ?? this.identity.channels.find(isConcreteChannel);",
+      "replace": "    const channel = opts?.channel ?? this.identity.channels.find(isConcreteChannel) ?? \"general\";",
       "expectRed": "multicast with no channel and no subscription REFUSES",
       "cell": "multicast with no channel and no subscription REFUSES",
       "note": "A fallback, not a crash, which is why it needs its own cell: the `channel === undefined` branch below simply goes dead, nothing throws, and the caller is told the send succeeded while the broker drops it. The same mutation also reddens the two cells that read the refusal text, and the leave-your-last-channel cell that depends on it; naming one is enough, and naming the first one keeps the verdict about the send rather than about leave."

@@ -4,7 +4,7 @@
     {
       "name": "S1 the whole-bucket freshness gate is dropped, so the observer never reports its own view stale during a held link (the sidebar has nothing to surface, and the rebind that hangs off that gate never fires)",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.ttlMs) {\n      this.emitPresenceViewIfChanged();\n",
+      "find": "    if (this.lastPresenceWatchAt !== 0 && now - this.lastPresenceWatchAt > this.identity.ttlMs) {\n      this.emitPresenceViewIfChanged();\n",
       "replace": "    if (false) {\n      this.emitPresenceViewIfChanged();\n",
       "expectRed": "1.7 and that stale transition was emitted (the page has something to surface)",
       "cell": "1.7 and that stale transition was emitted (the page has something to surface)"

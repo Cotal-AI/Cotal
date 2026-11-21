@@ -17,6 +17,7 @@ import {
 } from "@cotal-ai/core";
 import {
   aclEnv,
+  nameEnv,
   connectorLaunchOptions,
   controlEndpoint,
   eventChannel,
@@ -158,7 +159,7 @@ export const piConnector: Connector = {
       ...launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
+      ...nameEnv(opts),
     };
     // Arming is separate from the broker's publish grant. The WAL needs a stable root on restart.
     if (launchArmsEvents(opts)) {

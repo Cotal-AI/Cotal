@@ -625,6 +625,7 @@ export class Preservation {
     const launch = record.agent.launch;
     const agent: ManagedAgent = {
       name,
+      ...(record.agent.displayName !== undefined ? { displayName: record.agent.displayName } : {}),
       role: record.agent.role,
       agent: launch.connector,
       id: principalKey(identity.owner, identity.actor).key,

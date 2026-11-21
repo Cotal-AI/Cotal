@@ -12,7 +12,7 @@
     {
       "name": "R2 the once-per-TTL rate limit is dropped, so a rebind the broker refuses is retried on every sweep tick (consumer-create churn against a missing or denied stream)",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;\n",
+      "find": "    if (this.presenceRebind || now - this.presenceRebindAt < this.identity.ttlMs) return;\n",
       "replace": "    if (this.presenceRebind) return;\n",
       "expectRed": "5.2 a refused rebind is retried at most once per TTL, not once per sweep tick",
       "cell": "5.2 a refused rebind is retried at most once per TTL, not once per sweep tick"
@@ -28,8 +28,8 @@
     {
       "name": "R4 the per-peer age-out ignores whether the watch delivered after the peer's heartbeat, so the observer's own deafness emits one offline verdict per peer on the tick before the whole-bucket gate trips",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "      if (p.status !== \"offline\" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {\n",
-      "replace": "      if (p.status !== \"offline\" && now - p.ts > this.ttlMs) {\n",
+      "find": "      if (p.status !== \"offline\" && now - p.ts > this.identity.ttlMs && this.lastPresenceWatchAt - p.ts > this.identity.ttlMs) {\n",
+      "replace": "      if (p.status !== \"offline\" && now - p.ts > this.identity.ttlMs) {\n",
       "expectRed": "2.6 no per-peer offline verdict was emitted for the observer's own deafness",
       "cell": "2.6 no per-peer offline verdict was emitted for the observer's own deafness"
     },
@@ -92,7 +92,7 @@
     {
       "name": "S1 the TTL gate is removed, so two immediate refused writes are called permanently stuck before the roster has lost one liveness window",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "      Date.now() - this.presenceWriteFailingSince < this.ttlMs\n",
+      "find": "      Date.now() - this.presenceWriteFailingSince < this.identity.ttlMs\n",
       "replace": "      false\n",
       "expectRed": "4.4 two immediate refused writes do not escalate before one full TTL",
       "cell": "4.4 two immediate refused writes do not escalate before one full TTL"

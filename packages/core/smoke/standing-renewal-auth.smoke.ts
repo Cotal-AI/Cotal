@@ -25,7 +25,7 @@ import {
   setupSpaceStreams,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -42,17 +42,7 @@ const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<vo
     setTimeout(resolve, timeoutMs);
   });
 
-let pass = 0,
-  fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const space = `renewal-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -347,8 +337,8 @@ try {
   } catch (e) { threw = (e as Error).message; }
   check("a source returning an UNBOUNDED cred fails loud (renewal seam requires bounded creds)", threw.includes("without a numeric exp"), threw);
 
-  console.log(fail === 0 ? `\nSTANDING RENEWAL SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nSTANDING RENEWAL SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-  process.exitCode = fail === 0 ? 0 : 1;
+  console.log(failed() === 0 ? `\nSTANDING RENEWAL SMOKE OK ✅  (${passed()} passed, ${failed()} failed)` : `\nSTANDING RENEWAL SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
+  finish();
 } finally {
   srv.kill("SIGKILL");
   await awaitExit(srv);

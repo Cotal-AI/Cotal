@@ -74,7 +74,7 @@ export function briefing(config: AgentConfig, harness: BriefingHarness, offered?
     (sentence.match(/\bcotal_[a-z][a-z_]*\b/g) ?? []).every((name) => tools.has(name)),
   ).join(" ")).filter(Boolean);
   return [
-    `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}".`,
+    `You are connected to the Cotal mesh as "${config.displayName ?? config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}".`,
     ...guidance,
   ].join("\n\n");
 }
