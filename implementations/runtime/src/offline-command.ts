@@ -88,6 +88,18 @@ function scriptOf(file: string | undefined): SimScript {
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
+  // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
+  // simulation, naming the singular key when the typo is a plural of one.
+  const clockFields = new Set(["start", "turn", "ask", "checkpoint", "wait"]);
+  for (const key of Object.keys(clock ?? {})) {
+    if (clockFields.has(key)) continue;
+    const singular = key.endsWith("s") ? key.slice(0, -1) : undefined;
+    const known = singular !== undefined && clockFields.has(singular) ? singular : undefined;
+    throw new CommandFailure("refused", "SCHEMA_INVALID",
+      `unknown clock field '${key}' in the simulation results script ${file}${known === undefined ? "" : `; use clock.${known} instead`}`,
+      { target: { file }, remedy: known === undefined ? `remove clock.${key} from ${file}, then rerun the simulation` : `use clock.${known} in ${file} instead of clock.${key}, then rerun the simulation` });
+  }
   for (const key of ["turn", "ask", "checkpoint", "wait"] as const) {
     const delay = clock?.[key];
     if (delay === undefined) continue;
