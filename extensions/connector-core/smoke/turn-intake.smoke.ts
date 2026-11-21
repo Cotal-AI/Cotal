@@ -619,7 +619,7 @@ for (const status of ["blocked", "handoff"] as const) {
       allowPublish: [],
     };
     unpinnedAgent = new MeshAgent(unpinnedCfg);
-    (unpinnedAgent as unknown as { ep: { connId: string } }).ep.connId = unpinnedId.id;
+    (unpinnedAgent as unknown as { ep: { identity: { connId: string } } }).ep.identity.connId = unpinnedId.id;
     await unpinnedAgent.start(100);
     await unpinnedAgent.whenConnected();
     await advancePollIntervals(unpinnedAgent, 3);
@@ -663,7 +663,7 @@ for (const status of ["blocked", "handoff"] as const) {
       allowPublish: [],
     };
     pinnedAgent = new MeshAgent(pinnedCfg);
-    (pinnedAgent as unknown as { ep: { connId: string } }).ep.connId = pinnedId.id;
+    (pinnedAgent as unknown as { ep: { identity: { connId: string } } }).ep.identity.connId = pinnedId.id;
     const pinnedTroubleLines: string[] = [];
     (pinnedAgent as unknown as { log(m: string): void }).log = (m: string) => { if (m.includes("the run-turn pull is not answering")) pinnedTroubleLines.push(m); };
     await pinnedAgent.start(100);
@@ -1434,7 +1434,7 @@ process.exit(0);
       : baseSeatEnv;
     const delegatedCfg = configFromEnv(delegatedEnvForAgent);
     delegatedAgent = new MeshAgent(delegatedCfg);
-    (delegatedAgent as unknown as { ep: { connId: string } }).ep.connId = delegatedId.id;
+    (delegatedAgent as unknown as { ep: { identity: { connId: string } } }).ep.identity.connId = delegatedId.id;
     await delegatedAgent.start(100);
     await delegatedAgent.whenConnected();
     await advancePollIntervals(delegatedAgent, 3);
