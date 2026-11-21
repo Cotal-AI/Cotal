@@ -15,6 +15,7 @@
  *     the durable #team.build and a live-only one of the live #team.chat. Once it stops, it stays on
  *     #team.build as a member with stored copies and leaves #team.chat. A follow of #team.build drops
  *     it once only the channel's class turns live.
+ *  D. a bare join leaves no durable member after SIGINT or SIGTERM, even after the broker restarts.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
@@ -162,8 +163,8 @@ try {
   const member = (channel: string) => census(channel)?.members.find((m) => m.name === "fern");
   const online = await until(() => member("team.build")?.durable === true && member("team.chat")?.live === true, 90_000);
   const build = member("team.build"), chat = member("team.chat");
-  check("while connected, fern is a live and durable member of #team.build", online && build?.live === true && build.durable === true, build);
-  check("while connected, fern is a live member of #team.chat with no stored copies", chat?.live === true && chat.durable === false, chat);
+  check("while connected, fern is a live and durable member of #team.build", online && build?.live === true && build.durable === true, { build, out: fern.out });
+  check("while connected, fern is a live member of #team.chat with no stored copies", chat?.live === true && chat.durable === false, { chat, out: fern.out });
   const fernId = build?.id;
   const durableMember = (channel: string) => census(channel)?.members.find((m) => m.id === fernId);
   fern.child.kill("SIGINT");
@@ -184,9 +185,24 @@ try {
   follow.child.kill("SIGINT");
   await follow.exited;
 
-  console.log("\nD. a stopped legacy membership feed converts without losing durable state");
+  console.log("\nD. a bare join retires its durable membership");
   for (const run of running) if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill("SIGINT");
   await Promise.all(running.map((run) => run.exited));
+  check("#archive is saved as durable", cotal("channel", "set", "archive", "--replay", "--delivery", "durable").status === 0);
+  const archiveMembers = () => census("archive");
+  const archiveEmpty = () => archiveMembers()?.members.length === 0;
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+    const reader = started("join", "--name", "archive-reader", "--channel", "archive");
+    const armed = await until(() => reader.out.includes("holding presence") &&
+      archiveMembers()?.members.some((m) => m.name === "archive-reader" && m.live && m.durable) === true, 60_000);
+    check(`the bare join establishes a live durable member before ${signal}`, armed, reader.out);
+    reader.child.kill(signal);
+    await reader.exited;
+    check(`the bare join exits ${code} on ${signal}`, reader.child.exitCode === code, reader.out);
+    check(`the bare join leaves no archive member after ${signal}`, await until(archiveEmpty, 20_000), archiveMembers());
+  }
+
+  console.log("\nE. a stopped legacy membership feed converts without losing durable state");
   check("team.build is durable again before the upgrade", cotal("channel", "set", "team.build", "--delivery", "durable").status === 0);
   check("the old message is retained before conversion", cotal("history", "archive", "--json").stdout.includes("kept"));
   check("stop every stack member before preparing a legacy feed", cotal("down", "--yes").status === 0);
@@ -215,6 +231,7 @@ try {
   if (converted.status !== 0) throw new Error("automatic membership conversion failed");
   const durableFern = () => census("team.build")?.members.some((row) => row.id === fernId && row.durable);
   check("durable fern membership rebuilds with a fresh heartbeat", await until(() => durableFern() === true && (census("team.build")?.asOf ?? 0) > 0, 90_000), census("team.build"));
+  check("the two retired bare joins do not reappear after the broker restarts", archiveEmpty(), archiveMembers());
   check("retained history survives conversion", cotal("history", "archive", "--json").stdout.includes("kept"));
   check("new messages still store after conversion", cotal("send", "-c", "archive", "after conversion").status === 0);
   const repeat = cotal("up");
