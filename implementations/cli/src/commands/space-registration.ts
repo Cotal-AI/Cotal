@@ -415,9 +415,7 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  * default persona there as setup does, so a bare `cotal spawn` in the space has one to launch. It
  * starts nothing, and the selection is left as it is. The root is `--root`, else this folder.
  */
-export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
-  if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>] [--adopt]");
-  const name = rest[0]!;
+export async function spaceCreate(name: string, rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   const root = resolve(rootFlag ?? process.cwd());
   if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
   if (adopt) {
