@@ -666,6 +666,13 @@ const takeoverRun = startedId()!;
   const { rid, open: openPause } = await holdAtCheckpoint();
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
+  const revokeArgs = { endpoint: EP, by: "smoke-operator", reason: "broker outage" };
+  reset();
+  const refusal = await wf(["revoke", rid], { ...revokeArgs, json: true }).then(() => undefined, (e: unknown) => e);
+  c("revoke with --json asks to remove only that flag from the original invocation",
+    isCommandFailure(refusal) && exitCode(refusal.outcome, refusal.code) === 1
+      && refusal.remedy === "remove --json from the original command and rerun it", refusal);
+
   // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
   // table, one read before the marker exists.
   reset();
@@ -674,7 +681,7 @@ const takeoverRun = startedId()!;
   c("ps prints running for the run before it is revoked", stateOf(before) === "running", before);
 
   reset();
-  await wf(["revoke", rid], { by: "smoke-operator", reason: "broker outage" });
+  await wf(["revoke", rid], revokeArgs);
   c("revoke acknowledges with the revoker and the reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
@@ -1058,7 +1065,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 129;
+const DECLARED = 130;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
