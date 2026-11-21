@@ -1,5 +1,17 @@
 # @cotal-ai/core
 
+## 0.173.0
+
+### Minor Changes
+
+- e268f34: An agent's owner can now interrupt the agent's running turn, so commands queued behind a turn that hangs can run. The `agent` endpoint advances to revision 3 with `interrupt`, which only the owner's interactive session may call and which answers `interrupted`, or `idle` when no turn ran. A connector offers it through an optional `interrupt()` on its command dispatcher; the OpenCode 2.x plugin posts OpenCode's own `/api/session/:id/interrupt`, and the stopped turn ends as a Stop at the terminal does. An agent never interrupts its own turn.
+
+### Patch Changes
+
+- e489bae: Clarify which output flags work with `up`, what `down --dry-run` inspects, how to prepare a space for `service add`, and how to supply a feedback key safely.
+- 7bce605: Move the anycast take responder state into the internal anycast part, the pending durable leaves into the durable membership part, and the pending boot joins into the boot membership part, so each field has one owner instead of being read through getter and setter callbacks on `CotalEndpoint`. The package exports, public methods and wire behaviour are unchanged.
+- 5beae54: Direct spawn selects catalog names ending in `.md` correctly, and spawn and local persona listings reject files with invalid UTF-8.
+
 ## 0.172.2
 
 No changes in this release.

@@ -1,5 +1,20 @@
 # @cotal-ai/manager
 
+## 0.173.0
+
+### Patch Changes
+
+- dc60a3b: Manager directory commands now tell you to pass an absolute path on the manager host when you supply a relative one. The CLI reports a confirmed refusal without echoing the supplied path.
+- Updated dependencies [e268f34]
+- Updated dependencies [e489bae]
+- Updated dependencies [7bce605]
+- Updated dependencies [f79e065]
+- Updated dependencies [5beae54]
+- Updated dependencies [871b5b3]
+  - @cotal-ai/core@0.173.0
+  - @cotal-ai/seat@0.173.0
+  - @cotal-ai/workspace@0.173.0
+
 ## 0.172.2
 
 ### Patch Changes
