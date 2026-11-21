@@ -188,7 +188,10 @@ export function launchEnv(
  *  when `set-name` changed it. Every connector forwards both, so a seat keeps its actor and shows
  *  its last name. */
 export function nameEnv(opts: { name: string; displayName?: string }): Record<string, string> {
-  return { COTAL_NAME: opts.name, ...(opts.displayName !== undefined ? { COTAL_DISPLAY_NAME: opts.displayName } : {}) };
+  const env: Record<string, string> = {};
+  env.COTAL_NAME = opts.name;
+  if (opts.displayName !== undefined) env.COTAL_DISPLAY_NAME = opts.displayName;
+  return env;
 }
 
 /** The agent's resolved access policy as `COTAL_*` env, when present. Forwarded by each connector
