@@ -268,8 +268,24 @@ semantics remain opaque to the native parser, so a file declaring them produces 
 exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
 names the path and asks you to retry with an existing contract file.
 
-Neither command contacts a broker, loads the handler, starts a service or proves serving
-permission. Authoring takes no space, broker, caller or invocation flags.
+
+### Local check output
+
+`cotal endpoint check <contract-file> --json` reports local validation in `result`, with `kind`
+set to `local-endpoint-contract`. The digests use the `sha256:` prefix.
+
+| Field in `result` | Meaning |
+|---|---|
+| `closureDigest` | Closure digest of the compiled cluster declaration, which includes the command schema digests. |
+| `commands[].inputDigest` | Closure digest of the command's compiled input schema bundle. |
+| `commands[].outputDigest` | Closure digest of the command's compiled output schema bundle. |
+| `handlerExecuted` | `false`: the check did not load or run the handler. |
+| `brokerContacted` | `false`: the check did not contact a broker. |
+| `authorityChecked` | `false`: the check did not verify permission to serve the endpoint. |
+| `servingChecked` | `false`: the check did not verify that the endpoint is registered and serving. |
+
+Passing the local check does not start a service or establish that the contract can be served.
+Authoring takes no space, broker, caller or invocation flags.
 
 Serve the edited contract through the independent service controller:
 
