@@ -1151,7 +1151,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; nothing was started", { target: { root, space: stackSpace, runtime: values.runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
     }
     // A concurrent whole-stack operation is a known refusal that names its pid, as for `down`.
-    const lock = acquireStackOperationLock(root);
+    const lock = acquireStackOperationLock(root, "up");
     let pending: PendingOrdinaryResume | undefined;
     let recoveredRestore: PreparedRestore | undefined;
     // Set only at the moment the lock is passed to a re-entry, which then owns releasing it. Any
@@ -1594,7 +1594,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       return `${failure.message} ${failure.remedy}`;
     });
     try {
-      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : undefined);
+      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : "up");
       const native = controllerStackNative();
       // A foreground terminal holds the start as well, so a signal during it stops what it started.
       const start = async () => {
@@ -1666,7 +1666,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       if (previewRoot) console.log(c.yellow("! this preview used the invoking folder, not the inherited home store; before applying, prepare it with `cotal space create <space> --root .`"));
       return;
     }
-    const lock = acquireStackOperationLock(cotalRoot());
+    const lock = acquireStackOperationLock(cotalRoot(), "up");
     try {
       if (freshTeamBoot) {
         if (!values.space) throw new CommandFailure("refused", "USAGE_INVALID", "fresh team boot needs the manifest's exact selected space");
@@ -1729,7 +1729,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // that journals, give it `heldLock` and hand it down from here; do not audit by call-site shape.
   // The one caller that does NOT pass it is the prepare-failure path above, where the lock has
   // genuinely not been taken yet in this frame and the helper is meant to take its own.
-  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireStackOperationLock(cotalRoot(), values.detach ? undefined : "foreground up");
+  let startupLock: MaintenanceLock | undefined = inheritedLock ?? acquireStackOperationLock(cotalRoot(), values.detach ? "up" : "foreground up");
   onAdopt?.(); // from here the release below owns it, inherited or not
   const releaseStartupLock = () => {
     if (!startupLock) return;

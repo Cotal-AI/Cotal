@@ -604,9 +604,10 @@ keep `PERMISSION_DENIED` and name moving the configuration entry aside.
 
 A whole-stack `up` or `down` takes the root's maintenance lock before it reads the journal. While
 another whole-stack or maintenance command holds it, the command refuses `LIFECYCLE_BLOCKED` and
-names that command's pid. If `cotal up --foreground` holds the lock, the refusal points to
+names that command's pid. If `cotal up --foreground` holds the lock, a refused `up` points to
 `cotal status` and explains that the other terminal keeps the stack after startup. Press Ctrl-C in
-that terminal to stop the stack before starting it here.
+that terminal to stop the stack before starting it here. A refused `down` directs you to stop it
+in that terminal or wait for startup to finish and retry the stop.
 
 A lock left by a command that is no longer running, for example after `SIGKILL`, is taken over by
 the next command that needs it, which warns

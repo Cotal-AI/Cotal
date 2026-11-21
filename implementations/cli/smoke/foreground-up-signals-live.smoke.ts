@@ -7,8 +7,8 @@
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
  * and again as it writes its start receipt. A foreground `team boot` gets SIGTERM at the broker's
  * readiness announcement. Another cell cuts a ready stack's stop as a closed terminal
- * does. The controller hold cell checks refusals before and after the hold is recorded, then checks
- * that a foreground `up` can take over a running stack after its previous holder is killed.
+ * does. The controller hold cell checks start and stop refusals before the hold is recorded, then
+ * checks the conflict and takeover behavior of a running stack.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -588,10 +588,21 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
     return { child, io, state: observeOwnedChild(child) };
   };
-  const holder = foreground(["--server", `nats://127.0.0.1:${port}`], !otherHome);
+  const server = ["--server", `nats://127.0.0.1:${port}`];
+  let holder = foreground(server);
   let taker: ReturnType<typeof foreground> | undefined;
   try {
     if (!otherHome) {
+      await until(() => holder.io.out.includes("Controller stack started") || holder.state.exited, 120_000, () => holder.io.err);
+      assert.ok(!holder.state.exited, holder.io.err);
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      const stopped = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+      assert.equal(stopped.code, 0, stopped.out + stopped.err); passed++;
+      await waitForOwnedChild(() => holder.state.closed, 10_000, `${root}: initial foreground released`);
+      assert.ok(holder.state.code === 0 && !existsSync(holdPath) && !(await portOpen(port)), "the first down stops the stack and leaves its journal"); passed++;
+      const journalPath = join(mesh, ".cotal", "stack-controller.json");
+      const stoppedJournal = readFileSync(journalPath);
+      holder = foreground([], true);
       await until(() => holder.io.err.includes("Ready to publish foreground hold") || holder.state.exited, 30_000, () => holder.io.err);
       assert.ok(!holder.state.exited && !existsSync(holdPath), holder.io.err); passed++;
       const contender = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
@@ -601,6 +612,17 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
       assert.ok(contender.err.includes(`holds this root (pid ${holder.child.pid})`), contender.err); passed++;
       assert.match(contender.err.replace(/\s+/g, " "), /keeps the stack once startup finishes.*`cotal status`.*Ctrl-C in that terminal/); passed++;
       assert.doesNotMatch(contender.err, /run the command again after that operation finishes/); passed++;
+      const stopArgs = ["down", "--yes", "--plain"];
+      assertSmokeSandboxDown(sandbox, stopArgs, { cwd: mesh, env });
+      const stop = await foregroundCliProbe(cliEntry, tsx, mesh, env, stopArgs, 60_000);
+      const refusal = stop.out + stop.err;
+      writeFileSync(join(root, "startup-stop-refusal.log"), refusal, { mode: 0o600 });
+      assert.equal(stop.code, 2, refusal); passed++;
+      assert.match(refusal, /LIFECYCLE_BLOCKED/); passed++;
+      assert.ok(refusal.includes(`holds this root (pid ${holder.child.pid})`), refusal); passed++;
+      assert.match(refusal.replace(/\s+/g, " "), /stop the stack with Ctrl-C.*wait for startup to finish and retry this stop/); passed++;
+      assert.doesNotMatch(refusal, /before starting it here/); passed++;
+      assert.deepEqual(readFileSync(journalPath), stoppedJournal, "both refusals leave the stopped journal unchanged"); passed++;
       writeFileSync(`${holdPath}.test-release`, "", { mode: 0o600 });
     }
     await until(() => {

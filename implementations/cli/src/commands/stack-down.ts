@@ -371,7 +371,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
     // A busy root's refusal names the recorded space, as every refusal after the lock does.
     const recorded = readStackJournal(root)?.journal.space;
     if (recorded !== undefined) recordOperationSpace(recorded);
-    const lock = acquireStackOperationLock(root);
+    const lock = acquireStackOperationLock(root, "down");
     try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
     finally { releaseMaintenanceLock(lock); }
   } finally { release(); }

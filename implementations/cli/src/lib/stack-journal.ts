@@ -396,7 +396,8 @@ export function maintenanceStackView(root: string, space: string): ControllerSta
 /** Take the root's maintenance lock for one whole-stack operation. Every whole-stack operation
  *  holds it for its whole run, and a dead holder is reclaimed only when its PID is proven dead. A
  *  live holder is a known refusal that names its PID; nothing was read or changed. `operation`, such
- *  as `restore`, is recorded in the lock so another command it refuses can say what holds the root.
+ *  as `restore`, is recorded so another command can say what holds the root. It also tells a
+ *  refused contender which next step fits the operation it tried.
  *  Taking the lock creates the root's `.cotal/maintenance` folders when they are missing. A command
  *  that then ends refused or failed releases the lock if it still holds it, and removes the folders
  *  the lock created while they are still empty, so a refusal leaves the folder as it found it. */
@@ -409,9 +410,7 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
     if (!isMaintenanceError(error) || error.code !== "lock-held") throw error;
     const held = readMaintenanceLockHolder(root);
     const holder = held?.owner.pid;
-    const remedy = held?.operation === "foreground up"
-      ? `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`
-      : "run the command again after that operation finishes";
+    const remedy = stackLockRemedy(held?.operation, operation);
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `another whole-stack or maintenance operation holds this root${holder !== undefined ? ` (pid ${holder})` : ""}; nothing was changed`, { target: { root, ...(holder !== undefined ? { holderPid: holder } : {}) }, remedy });
   }
   // An exit through process.exit skips the caller's release, so the lock is checked here as well.
@@ -425,6 +424,16 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
     for (const dir of created) { try { rmdirSync(dir); } catch { return; } }
   });
   return lock;
+}
+
+function stackLockRemedy(held: string | undefined, contender: string | undefined): string {
+  if (held === "foreground up") {
+    if (contender === "up" || contender === "foreground up")
+      return `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`;
+    if (contender === "down")
+      return "stop the stack with Ctrl-C in the owning terminal, or wait for startup to finish and retry this stop";
+  }
+  return "run the command again after that operation finishes";
 }
 
 /** An earlier operation that had no recorded outcome, and the member evidence it was settled from.
