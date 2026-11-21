@@ -17,7 +17,7 @@ process.env.COTAL_HOME = cotalHome;
 const env = { PATH: process.env.PATH, TMPDIR: home, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
-const space = "shared-owner", manual = "shared-neighbor", legacy = "-old-neighbor", catalog = "shared-catalog";
+const space = "shared-owner", manual = "shared-neighbor", legacy = "\u2013json", catalog = "shared-catalog";
 const journal = join(root, ".cotal", "stack-controller.json");
 console.log(`Sandbox retained at ${home}`);
 
@@ -54,6 +54,7 @@ try {
   const journalBefore = readFileSync(journal, "utf8");
 
   const human = cli(2, "down", "--yes");
+  const plain = cli(2, "down", "--yes", "--plain");
   assert.equal(human.stdout, "");
   assert.match(human.stderr, /^Next$/m);
   const { outcome, target, error } = JSON.parse(cli(2, "down", "--yes", "--json").stdout);
@@ -63,12 +64,13 @@ try {
   assert.deepEqual([...target.spaces].sort(), [...blockers].sort());
   for (const name of blockers) assert.ok(error.message.includes(`"${name}"`), error.message);
   assert.ok(human.stderr.includes(error.message), human.stderr);
-  const hints = [`space show ${manual}`, `space forget ${manual}`, `space show -- ${legacy}`, `space forget -- ${legacy}`,
-    `space show ${catalog}`, " sync`", "down --yes", "whose spaces are not using the broker"];
+  assert.ok(plain.stderr.includes(error.message), plain.stderr);
+  const hints = [`space show -- ${manual}`, `space forget -- ${manual}`, `space show -- '${legacy}'`, `space forget -- '${legacy}'`,
+    `space show -- ${catalog}`, " sync`", "down --yes", "whose spaces are not using the broker"];
   for (const hint of hints) {
-    assert.ok(error.remedy.includes(hint) && human.stderr.includes(hint), human.stderr);
+    assert.ok(error.remedy.includes(hint) && human.stderr.includes(hint) && plain.stderr.includes(hint), plain.stderr);
   }
-  assert.ok(!error.remedy.includes(`space forget ${catalog}`), error.remedy);
+  assert.ok(!error.remedy.includes(`space forget -- ${catalog}`), error.remedy);
   const { result: preview } = JSON.parse(cli(0, "down", "--dry-run", "--json").stdout);
   assert.equal(preview.blockedBy.remedy, error.remedy);
   assert.equal(preview.signalled, false);
@@ -76,10 +78,11 @@ try {
   assert.equal(readFileSync(journal, "utf8"), journalBefore);
   assert.equal(await listening(), true);
 
-  cli(0, "space", "show", manual);
+  cli(0, "space", "show", "--", manual);
   cli(0, "space", "show", "--", legacy);
-  cli(0, "space", "forget", manual);
-  cli(0, "space", "forget", "--", legacy);
+  cli(0, "space", "forget", "--", manual);
+  // The legacy name can be forgotten, but it cannot key a per-space preference.
+  assert.match(cli(4, "space", "forget", "--", legacy).stderr, /per-space preferences were not removed/);
   assert.deepEqual([manual, legacy].map(findMesh), [undefined, undefined]);
   assert.deepEqual(JSON.parse(cli(2, "down", "--yes", "--json").stdout).target.spaces, [catalog]);
   assert.equal(await listening(), true);

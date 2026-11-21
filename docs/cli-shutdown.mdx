@@ -199,8 +199,8 @@ stack's broker is the launch the journal records at that root and address, and o
 folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget <space>`, after
 which `down` stops the stack through its journal. While another registered space names this
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing.
-It names each blocking registration and points to `cotal space show <space>` to inspect it. Use
-`cotal space forget <space>` only if you no longer need that local registration and its space is
+It names each blocking registration and points to `cotal space show -- <space>` to inspect it. Use
+`cotal space forget -- <space>` only if you no longer need that local registration and its space is
 not using the broker. A catalog registration can be removed only through its catalog. Retry
 `cotal down --yes` from the stack's folder after resolving all the sharing.
 `down` never forgets those other registrations for you. It cannot rebuild its own registration for

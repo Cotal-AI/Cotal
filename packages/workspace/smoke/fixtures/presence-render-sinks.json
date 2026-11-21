@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1105,
+    "total": 1110,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 883
+    "non-render/control": 888
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -6588,6 +6588,41 @@
       "anchor": "`stop its running members with ${running.map((row) => `\\`cotal service stop ${row.name} --instance ${row.instanceId} --space ${row.space} --yes\\``).join(\", then \")}, then remove ${path} and run \\`cotal up\\` from ${root}`",
       "class": "non-render/control",
       "rationale": "Stack journal refusal remedy: names the service stop commands for the running members; a local stack record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/stack-journal.ts",
+      "kind": "derived-output",
+      "anchor": "`${spaces.length === 1 ? \"another registration names\" : \"other registrations name\"} this stack's exact broker address (${spaces.map((space) => codeSpan(JSON.stringify(space))).join(\", \")}). The broker was not stopped`",
+      "class": "non-render/control",
+      "rationale": "Shared-broker stop refusal names registrations from the local registry, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/stack-journal.ts",
+      "kind": "derived-output",
+      "anchor": "`inspect with ${commands(\"show\", spaces)}.`",
+      "class": "non-render/control",
+      "rationale": "Shared-broker stop remedy points to registration inspection, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/stack-journal.ts",
+      "kind": "derived-output",
+      "anchor": "commands(\"show\", spaces)",
+      "class": "non-render/control",
+      "rationale": "Builds inspection commands from local registry names, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/stack-journal.ts",
+      "kind": "derived-output",
+      "anchor": "`Only forget registrations that are no longer needed and whose spaces are not using the broker: ${commands(\"forget\", local)}.`",
+      "class": "non-render/control",
+      "rationale": "Shared-broker stop remedy explains when forgetting a local registration is appropriate, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/stack-journal.ts",
+      "kind": "derived-output",
+      "anchor": "commands(\"forget\", local)",
+      "class": "non-render/control",
+      "rationale": "Builds explicit forget commands from local registry names, not peer presence."
     },
     {
       "path": "implementations/cli/src/lib/stack-runs.ts",

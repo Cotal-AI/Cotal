@@ -1050,9 +1050,9 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   const spaces = sharing.map((mesh) => mesh.space);
   const cmd = displayCmd();
   const commands = (sub: "show" | "forget", names: string[]) => names.map((space) =>
-    codeSpan(`${cmd} space ${sub} ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`)).join(", ");
+    codeSpan(`${cmd} space ${sub} -- ${shellWord(space)}`)).join(", ");
   const local = sharing.filter((mesh) => mesh.origin !== "catalog").map((mesh) => mesh.space);
-  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${spaces.length === 1 ? "another registration names" : "other registrations name"} this stack's exact broker address (${spaces.map((space) => JSON.stringify(space)).join(", ")}). The broker was not stopped`, {
+  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${spaces.length === 1 ? "another registration names" : "other registrations name"} this stack's exact broker address (${spaces.map((space) => codeSpan(JSON.stringify(space))).join(", ")}). The broker was not stopped`, {
     target: { server: journal.server, spaces },
     remedy: [
       `inspect with ${commands("show", spaces)}.`,
