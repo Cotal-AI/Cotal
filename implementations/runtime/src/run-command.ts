@@ -75,7 +75,9 @@ import {
 } from "@cotal-ai/core";
 import { CATALOG, CheckpointNotAmendable, CheckpointNotOpen, DurationError, isDuration, LangErrors, parseDuration, programHashOf, RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
 import {
+  brokerAddressForDisplay,
   boundedValue,
+  codeSpan,
   CommandFailure,
   commandFailureReport,
   failureEnvelope,
@@ -99,6 +101,7 @@ import {
   connectOrThrow,
   isConnectRefusal,
   SHOWN_VALUE_MAX,
+  shellPath,
 } from "@cotal-ai/workspace";
 import { offlineWorkflow, sourceOf } from "./offline-command.js";
 import { seatTurnCommand } from "./seat-turn-command.js";
@@ -1025,6 +1028,15 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
   runReceipt(verb, space, result, values, a, { step: b, ...(values.value !== undefined ? { value } : {}), ...(values.artifact !== undefined ? { artifact: values.artifact } : {}) });
 }
 
+/** Render a retry flag without splitting its argument or printing terminal control characters. */
+function retryFlag(flag: string, value: string | undefined): string {
+  if (value === undefined) return "";
+  // Bash ANSI-C quoting keeps even multiline arguments copyable on one line.
+  const word = oneLine(value) === value ? shellPath(value)
+    : `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
+  return ` --${flag}${value.startsWith("-") ? "=" : " "}${word}`;
+}
+
 /** A step key the run has no open request at, answered with the open keys whose step name it matches,
  *  as `frage` matches `/checkpoint:frage#0`. A run that cannot be read leaves the refusal as it was. */
 export async function withMatchingKeys(error: unknown, runId: string, stepKey: string, values: RunValues, read: () => Promise<RunStatusView>): Promise<unknown> {
@@ -1037,9 +1049,17 @@ export async function withMatchingKeys(error: unknown, runId: string, stepKey: s
   if (!matches.length) return error;
   // A step name comes from the program, so it is escaped and quoted before the terminal shows it.
   const quoted = (key: string) => `'${oneLine(key).replaceAll("'", `'\\''`)}'`;
-  const remedy = matches.length === 1
-    ? `the open request ${quoted(matches[0]!)} matches; answer it with \`cotal run answer ${runId} ${quoted(matches[0]!)} --value '<json>'${values.space ? ` --space ${values.space}` : ""}${values.on ? ` --on ${values.on}` : ""}\``
-    : `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  let remedy: string;
+  if (matches.length === 1) {
+    const key = quoted(matches[0]!);
+    const flags = (["value", "artifact", "space", "server", "creds", "endpoint", "on"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    remedy = `the open request ${key} matches; answer it with ${codeSpan(`cotal run answer ${runId} ${key}${flags}${output}`)}`;
+    if (values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server))
+      remedy = `the open request ${key} matches; replace the step in the original command with ${key}`;
+  } else {
+    remedy = `the open requests that match are ${matches.map(quoted).join(", ")}; pass one of them as the step`;
+  }
   return new CommandFailure(error.outcome, error.code, error.message, { remedy, target: error.target, ...(error.native ? { native: error.native } : {}) });
 }
 
@@ -1234,7 +1254,11 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     const flag = values.json ? "--json" : "--plain";
     if (verb === "start" || verb === "resume")
       usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: \`cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}\``);
-    usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>` : `cotal run check ${a} <program>`}`);
+    if (verb === "migrate" && values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server))
+      usage(`run ${raw} prints no ${flag} output`, `remove ${flag} from the original command and rerun it`);
+    const retry = verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>`
+      : codeSpan(`cotal run check ${a}${(["file", "space", "server", "creds", "endpoint"] as const).map((key) => retryFlag(key, values[key])).join("")}${args.values.local === true ? " --local" : ""}`);
+    usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${retry}`);
   }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
 }

@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, Journal, journalEntryKeyString, LangErrors, validate, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -84,9 +84,20 @@ function scriptOf(file: string | undefined): SimScript {
     if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
   }
-  const start = (script.clock as Record<string, unknown> | undefined)?.start;
+  const clock = script.clock as Record<string, unknown> | undefined;
+  const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  for (const key of ["turn", "ask", "checkpoint", "wait"] as const) {
+    const delay = clock?.[key];
+    if (delay === undefined) continue;
+    try {
+      if (typeof delay === "string") { parseDuration(delay); continue; }
+    } catch (error) {
+      if (!(error instanceof DurationError)) throw error;
+    }
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, { target: { file } });
+  }
   for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
     for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const problem = checkpointResultProblem(result);
