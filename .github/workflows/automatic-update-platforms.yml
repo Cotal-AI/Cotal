@@ -277,7 +277,7 @@ jobs:
           const manifest = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/release-candidate/manifest.json'));
           assert.equal(manifest.source, process.env.SOURCE_SHA);
           assert(manifest.packages.every(pkg => pkg.version === process.env.TARGET_VERSION));
-          assert.equal(manifest.packages.length, 24);
+          assert.equal(manifest.packages.length, 25);
           NODE
       - name: Fetch exact published A package closure without rebuilding
         if: needs.select.outputs.phase == 'published'
@@ -426,7 +426,7 @@ jobs:
           assert.equal(manifest.source, process.env.SOURCE_SHA);
           assert.equal(bootstrap.source, manifest.source);
           assert.equal(bootstrap.version, process.env.TARGET_VERSION);
-          assert.equal(manifest.packages.length, 24);
+          assert.equal(manifest.packages.length, 25);
           assert(manifest.packages.every(pkg => pkg.version === process.env.TARGET_VERSION));
           mkdirSync(process.env.RUNNER_TEMP + '/upgrade-evidence', { recursive: true });
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
@@ -436,7 +436,7 @@ jobs:
             const next = JSON.parse(readFileSync(nextRoot + 'manifest.json'));
             const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
             assert.equal(next.source, manifest.source);
-            assert.equal(next.packages.length, 24);
+            assert.equal(next.packages.length, 25);
             const expectedNextVersion = cell.followOnAction ? cell.targetVersion : (cell.finalTargetVersion ?? cell.targetVersion);
             assert(next.packages.every(pkg => pkg.version === expectedNextVersion));
             writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-source-manifest.json', readFileSync(root + 'manifest.json'), { flag: 'wx', mode: 0o600 });
@@ -446,7 +446,7 @@ jobs:
               const followOnRoot = process.env.RUNNER_TEMP + '/release-follow-on/';
               const followOn = JSON.parse(readFileSync(followOnRoot + 'manifest.json'));
               assert.equal(followOn.source, manifest.source);
-              assert.equal(followOn.packages.length, 24);
+              assert.equal(followOn.packages.length, 25);
               assert(followOn.packages.every(pkg => pkg.version === cell.finalTargetVersion));
               writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-follow-on-manifest.json', readFileSync(followOnRoot + 'manifest.json'), { flag: 'wx', mode: 0o600 });
               Object.assign(originReceipt, { followOnArtifact: process.env.FOLLOW_ON_ARTIFACT, followOnDigest: process.env.FOLLOW_ON_DIGEST, followOnManifestSha256: hash(followOnRoot + 'manifest.json') });
@@ -815,9 +815,9 @@ jobs:
                   assert.equal(digest(bytes), origin[side + 'ManifestSha256'], 'archived manifest differs from origin receipt');
                   assert.equal(digest(bytes), report.candidateNext?.[side + 'ManifestSha256'], 'archived manifest differs from reported pair');
                   assert.equal(manifest.source, plan.sourceSHA);
-                  assert.equal(manifest.packages.length, 24);
+                  assert.equal(manifest.packages.length, 25);
                   assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), expectedPackages);
-                  assert.equal(new Set(manifest.packages.map(pkg => pkg.archive)).size, 24);
+                  assert.equal(new Set(manifest.packages.map(pkg => pkg.archive)).size, 25);
                   for (const pkg of manifest.packages) {
                     assert.equal(pkg.version, version);
                     assert.match(pkg.sha256, /^[a-f0-9]{64}$/);
@@ -1039,7 +1039,7 @@ jobs:
           assert.equal(manifest.source, process.env.PRODUCT_SOURCE);
           assert.equal(bootstrap.source, manifest.source);
           assert.equal(bootstrap.version, '0.164.4');
-          assert.equal(manifest.packages.length, 24);
+          assert.equal(manifest.packages.length, 25);
           NODE
       - name: Capture native launchd manuals before proof cell
         shell: bash
