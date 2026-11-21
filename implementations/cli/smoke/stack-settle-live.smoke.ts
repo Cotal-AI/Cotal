@@ -566,10 +566,43 @@ try {
       check(`reset ${kind} of a space with no registration or stack names ${clean} from its root`, unregistered.status === 2 && unregistered.env?.error?.code === "TARGET_NOT_FOUND" && Boolean(unregistered.env.error.remedy?.includes(`run \`${clean}\` from that root`)), shown(unregistered));
     }
     const movedPort = await freePort();
-    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--json");
+    const moved = cli(second, "up", "--server", `nats://127.0.0.1:${movedPort}`, "--no-manager", "--max-payload", "262144", "--json");
     track(other);
     check("its next up starts at another address", moved.status === 0, shown(moved));
-    check("down --yes stops the moved stack", cli(second, "down", "--yes", "--json").status === 0);
+    const launcher = launcherAt(second);
+    const down = cli(second, "down", "--yes", "--plain");
+    const restart = /^  (.+?) {2}Start the stack again from its journal and saved definitions$/m.exec(down.stdout)?.[1];
+    const expectedRestart = `${launcher} up --no-manager`;
+    check("down --yes tells the operator to restart the broker-only stack without a manager", down.status === 0 && launcher !== undefined && restart === expectedRestart, shown(down));
+    const retire = cli(second, "down", "--yes", "--with-agents", "--plain");
+    const retireRestart = /^  (.+?) {2}Start the stack without a manager$/m.exec(retire.stdout)?.[1];
+    check("retirement on a stopped low-payload stack that never ran a manager is a no-op and names the broker-only restart",
+      retire.status === 0 && retire.stdout.includes("Nothing was stopped.") && launcher !== undefined && retireRestart === expectedRestart, shown(retire));
+    const bare = cli(second, "up", "--plain");
+    check("bare up still refuses to add a manager below its payload floor", bare.status === 1 && bare.stderr.includes("--max-payload 262144 is below 263168 bytes"), shown(bare));
+    if (launcher !== undefined && retireRestart === expectedRestart) {
+      const resumed = cli(second, ...retireRestart.slice(launcher.length + 1).split(" "), "--json");
+      track(other);
+      check("the printed restart starts the same broker without a manager", resumed.status === 0 && pidOf(other, "stack-broker") !== null && pidOf(other, "stack-manager") === null, shown(resumed));
+      check("down --yes stops the restarted stack", cli(second, "down", "--yes", "--json").status === 0);
+    }
+
+    const occupant = createServer();
+    await listenOn(occupant, movedPort);
+    try {
+      const status = cli(second, "status", "--space", other, "--json");
+      const history = cli(second, "history", "--space", other, "general", "--json");
+      const remedy = `stop the process listening on 127.0.0.1:${movedPort}, then run \`${expectedRestart}\` in ${realpathSync(second)}; this stack keeps its recorded address`;
+      const selected = status.env?.result?.selected as { message?: string } | undefined;
+      const hints = status.env?.result?.hints as string[] | undefined;
+      check("status names the stopped stack's occupied address and how to free it", status.status === 0 && selected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true && hints?.includes(remedy) === true && !hints.some((hint) => hint.startsWith("start it again with")), shown(status));
+      check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
+      check("the read commands leave the independent listener and stopped broker alone", occupant.listening && gone(other, "stack-broker"));
+    } finally {
+      await new Promise<void>((done) => occupant.close(() => done()));
+    }
+    const free = cli(second, "history", "--space", other, "general", "--json");
+    check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up` in ") === true, shown(free));
     // Once it ran, it keeps that address, so a broker another space started there must stop first.
     const third = "takenport";
     const taker = prepare(third);
@@ -1330,8 +1363,9 @@ try {
   }
 
   // The same down must see completion when the manager exits between the receipt read and PID check.
-  if (process.platform === "linux") {
-    const space = "stopreceiptwindow";
+  for (const releaseOn of ["accepted", "failed"]) {
+    if (process.platform !== "linux") break;
+    const space = `stopreceiptwindow${releaseOn}`;
     const root = prepare(space);
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
     track(space);
@@ -1341,9 +1375,10 @@ try {
     check(`${space}: up records a running manager`, started.status === 0 && pid !== undefined && states !== undefined, shown(started));
     if (manager && pid !== undefined && states !== undefined) {
       const hook = join(home, "hold-stop-reader.cjs");
-      const crossed = join(home, "stop-reader-crossed");
+      const crossed = join(home, `stop-reader-crossed-${releaseOn}`);
       // Only the down process loads this hook. It returns real I/O results without changing the
-      // manager's receipts, stop policy or PID verdict. The missing failed phase is read last.
+      // manager's receipts, stop policy or PID verdict. Resume after either a missing accepted
+      // receipt or the two missing terminal receipts.
       writeFileSync(hook, `
         const fs = require("node:fs");
         const { syncBuiltinESMExports } = require("node:module");
@@ -1377,13 +1412,16 @@ try {
           catch (error) {
             if (paused && error.code === "ENOENT" && typeof path === "string" && path.startsWith(${JSON.stringify(states + "/")})) {
               if (path.endsWith(".completed.json")) missingCompletion = path;
-              if (missingCompletion && path === missingCompletion.replace(/\\.completed\\.json$/, ".failed.json")) {
+              const releaseOn = ${JSON.stringify(releaseOn)};
+              if (releaseOn === "accepted" && path.endsWith(".accepted.json") ||
+                  releaseOn === "failed" && missingCompletion && path === missingCompletion.replace(/\\.completed\\.json$/, ".failed.json")) {
+                const completion = path.replace(/\\.(accepted|failed)\\.json$/, ".completed.json");
                 kill(pid, "SIGCONT");
                 paused = false;
                 waitFor(() => {
                   try { kill(pid, 0); return false; } catch (probe) { if (probe.code === "ESRCH") return true; throw probe; }
                 });
-                if (fs.existsSync(missingCompletion)) fs.writeFileSync(${JSON.stringify(crossed)}, "");
+                if (fs.existsSync(completion)) fs.writeFileSync(${JSON.stringify(crossed)}, "");
               }
             }
             throw error;

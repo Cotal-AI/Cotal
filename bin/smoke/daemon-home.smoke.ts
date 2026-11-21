@@ -20,6 +20,8 @@
  *     that serve's pid. This is green today and must stay green;
  *  H0b a different COTAL_HOME refuses the same default listener with advice for both daemon forms,
  *     identical in plain and JSON. The matching home still reaches the same ready daemon;
+ *  H0c an overlong Linux runtime path tells both daemon forms and clients to use a shorter
+ *     private XDG_RUNTIME_DIR, without creating a socket or lifetime lock;
  *  H1 a managed `serve --daemon-home D` beside a live legacy daemon: binds a different socket under
  *     `$XDG_RUNTIME_DIR/cotal/`. Both answer their own pid. The legacy socket keeps its inode and
  *     mtime. The no-flag client still reaches legacy. D holds a live lock owned by the managed pid;
@@ -264,11 +266,21 @@ try {
     check("G2 stopped explicit status names a shell-quoted foreground start", absent.doc.error?.cause?.code === "NOT_RUNNING" && absent.doc.error.remedy === expected, absent.doc);
     const defaultStatus = await cli(["status", "--json"]);
     check("G2 stopped default status keeps the bare foreground start", defaultStatus.status === 2 && defaultStatus.doc.error?.cause?.code === "NOT_RUNNING" && defaultStatus.doc.error.remedy === "start it with `cotal daemon serve`", defaultStatus.doc);
+    const invalidSpace = await cli(["status", "--space", "bad.space", "--json"]);
+    for (const mode of ["service-connect", "service-disconnect", "service-status"]) {
+      const invalid = await cli([mode, "--space", "bad.space", "--json"]);
+      check(`G2 stopped ${mode} rejects a malformed space locally`, invalid.status === 1 && invalid.doc.command === `daemon ${mode}` && invalid.doc.target?.space === "bad.space" && invalid.doc.error?.code === "USAGE_INVALID" && invalid.doc.error.cause?.code === "BAD_FIELD" && invalid.doc.error.remedy === undefined && invalid.doc.error.message === invalidSpace.doc.error?.message, invalid);
+    }
     for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status", "setup"]) {
       const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
       check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
-      if (mode === "service-connect") check("G2 stopped service-connect names the same quoted foreground start", result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
+      if (mode.startsWith("service-")) check(`G2 stopped ${mode} still reports the missing daemon for a valid space`, result.doc.error?.code === "TARGET_UNAVAILABLE" && result.doc.error.cause?.code === "NOT_RUNNING", result.doc);
+      if (mode === "connect-check" || mode === "service-connect") check(`G2 stopped ${mode} names the same quoted foreground start`, result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
     }
+    const plain = await cli(["connect-check", "--daemon-home", managed, "--space", "missing", "--plain"]);
+    check("G2 stopped explicit connect-check prints the same Next in plain output", plain.status === 2 && plain.err.includes(expected), plain.err);
+    const defaultCheck = await cli(["connect-check", "--space", "missing", "--json"]);
+    check("G2 stopped default connect-check keeps the bare foreground start", defaultCheck.status === 2 && defaultCheck.doc.error?.cause?.code === "NOT_RUNNING" && defaultCheck.doc.error.remedy === "start it with `cotal daemon serve`", defaultCheck.doc);
     for (const mode of ["login", "setup"]) {
       for (const idp of ["http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "http://127.0.0.1/api/auth?PRIVATE_MARKER=1", "http://127.0.0.1/api/auth#PRIVATE_MARKER", "http://provider.example/api/auth", "https://"]) {
         const invalid = await cli([mode, "--daemon-home", managed, "--idp", idp, "--json"]);
@@ -282,11 +294,27 @@ try {
     check("G2 failure-context reads create no runtime entries or daemon lock", runtimeEntries().length === 0 && !existsSync(lockFile(managed)));
   });
 
+  await cell("H0c overlong socket paths point to the runtime directory", async () => {
+    const longRuntime = join(root, "r".repeat(116 - Buffer.byteLength(root) - 1));
+    mkdirSync(longRuntime, { mode: 0o700 });
+    for (const args of [["serve"], ["serve", "--daemon-home", managed], ["status", "--daemon-home", managed]]) {
+      const { status, doc } = await cli([...args, "--json"], 30_000, { ...childEnv, XDG_RUNTIME_DIR: longRuntime });
+      check(`H0c ${args.join(" ")} keeps the socket-length refusal`, status === 2 && doc.error?.code === "TARGET_UNAVAILABLE" && doc.error.cause?.code === "NO_RUNTIME_DIR", doc);
+      check(`H0c ${args.join(" ")} points to the same shorter private runtime for daemon and clients`, doc.error?.remedy === "Set XDG_RUNTIME_DIR to a shorter private directory owned by your user with mode 0700. Use the same XDG_RUNTIME_DIR for the daemon and its clients.", doc.error);
+    }
+    check("H0c the refusals leave the runtime and lifetime locks untouched", readdirSync(longRuntime).length === 0 && !existsSync(lockFile(join(home, "daemon"))) && !existsSync(lockFile(managed)));
+  });
+
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
     legacyServe = await serve([]);
     check("H0 legacy serve reports ready at $XDG_RUNTIME_DIR/cotal/daemon.sock", live(legacyServe) && legacyServe.socket === legacy.socket, { socket: legacyServe.socket, status: legacyServe.status, err: legacyServe.err.slice(0, 300) });
     const st = await cli(["status", "--json"]);
     check("H0 no-flag status answers ready with the legacy serve's pid, exit 0", st.status === 0 && st.doc.result?.state === "ready" && st.doc.result?.pid === legacyServe.child.pid, { status: st.status, doc: st.doc });
+    const invalidSpace = await cli(["status", "--space", "bad.space", "--json"]);
+    for (const mode of ["service-connect", "service-disconnect", "service-status"]) {
+      const invalid = await cli([mode, "--space", "bad.space", "--json"]);
+      check(`H0 running ${mode} reports the same malformed space as status`, invalid.status === 1 && invalid.doc.error?.code === "USAGE_INVALID" && invalid.doc.error.cause?.code === "BAD_FIELD" && invalid.doc.error.remedy === undefined && invalid.doc.error.message === invalidSpace.doc.error?.message, invalid);
+    }
     check("H0 the runtime dir holds exactly the legacy socket", JSON.stringify(runtimeEntries()) === JSON.stringify(["daemon.sock"]), runtimeEntries());
   });
 

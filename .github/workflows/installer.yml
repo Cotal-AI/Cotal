@@ -57,6 +57,8 @@ jobs:
           docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 install/test-matrix.sh
       - name: Existing-install reconciliation gate
         run: node install/reconcile.test.mjs
+      - name: Installer argument validation
+        run: node --test install/arguments.test.mjs
       - name: Minimal-image prerequisites gate
         run: node install/prerequisites.test.mjs
       - name: Parses under dash, not just bash

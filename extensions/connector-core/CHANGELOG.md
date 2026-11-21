@@ -1,5 +1,20 @@
 # @cotal-ai/connector-core
 
+## 0.172.0
+
+### Minor Changes
+
+- de93c7e: A Claude Code seat that Cotal launches on a signed-in space now lets its owner answer Claude's tool permissions from another session, while Claude's own dialog stays open.
+  
+  The plugin registers `PermissionRequest` and `SubagentStop`. The hook relay holds a `PermissionRequest` past its 2-second deadline once a proven connector has it, and the control server passes each handler a signal that aborts when the hook's connection closes. The connector opens each permission as a prompt on the agent's own `agent` endpoint, offered for 7 days, and hands Claude the remote allow or deny. It settles a prompt from what Claude reports later: a closed hook connection, a batch that ran a call with the same scope, tool and input, or the end of that scope's turn. A call the remote deny refused is listed in Claude's batch with the deny's message as its result, and it does not count as a call that ran. `AskUserQuestion` and `ExitPlanMode` stay with Claude's dialog. On Windows the hook answers each permission itself with no decision and the connector warns once. `MeshAgent.prompts` exposes the agent's prompt desk to a connector. A connector can declare `prompts`, and every Manager `status.connectors` row now carries `prompts`, true when the connector declares it and the mesh is user-auth. The Manager cluster advances to revision 52, whose closed status schema a revision-51 reader rejects. `HookHandle` takes a third argument, the hook's connection context, so code that calls a handler typed as `HookHandle` passes one.
+
+### Patch Changes
+
+- 87c15fd: Move the mesh agent's own presence writes (status with its turn-boundary yield, activity, condition, model and cwd, and the chain that keeps them in call order) out of `agent.ts` into an internal `agent-presence.ts`. `MeshAgent` keeps the status it reports and a forwarder for each member called from outside the family. The package surface is unchanged.
+- d5aa368: Connection instructions now recommend only the Cotal tools that the connection can call.
+- 2df89cb: Keep verified Cotal updates installed when a Codex or Claude configuration file is read-only, refresh the connector files that can be updated, and report any remaining configuration work.
+- 3a433d1: The uninstall guide now shows how to remove the machine daemon before deleting the Cotal CLI.
+
 ## 0.171.5
 
 ### Patch Changes

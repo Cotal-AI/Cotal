@@ -8,10 +8,13 @@ import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import { effectiveDeliveryClass } from "./channels.js";
 import { isPublishPermissionDenied } from "./endpoint.js";
 import type { IssuedSubjectPermission } from "./issued-authority.js";
+import type { ChannelMember } from "./endpoint-options.js";
+import type { EndpointPresence } from "./endpoint-presence.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
-import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject } from "./subjects.js";
-import type { AgentCard, ChannelConfig, ChannelDefaults, ChannelMembership, MembershipChange, MembershipEntry, MembershipSnapshot } from "./types.js";
+import { listMembers } from "./members.js";
+import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, subjectMatches } from "./subjects.js";
+import type { AgentCard, ChannelConfig, ChannelDefaults, ChannelMembership, DeliveryClass, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
@@ -75,6 +78,9 @@ export interface EndpointSubscriptionsDeps {
   durableJoinChannel: (channel: string) => Promise<{ durable: boolean; reason?: string; generation?: number }>;
   durableLeaveChannel: (channel: string, generation?: number, lifecycleUid?: string) => Promise<void>;
   fetchMemberships: (channel?: string) => Promise<{ channel: string; generation: number; activated: boolean; lifecycleUid?: string }[] | undefined>;
+  presence: () => EndpointPresence;
+  membersRegistry: () => Promise<KV>;
+  deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
   recordOwnWatchConsumer: (info: ConsumerInfo) => string;
   watchConsumerDeleteDenied: (stream: string, name: string, owner: object | undefined) => boolean;
   deleteMembershipConsumer: (jsm: JetStreamManager, stream: string, name: string) => Promise<boolean>;
@@ -113,6 +119,9 @@ export class EndpointSubscriptions {
   private durableJoinChannel(channel: string) { return this.deps.durableJoinChannel(channel); }
   private durableLeaveChannel(channel: string, generation?: number, lifecycleUid?: string) { return this.deps.durableLeaveChannel(channel, generation, lifecycleUid); }
   private fetchMemberships(channel?: string) { return this.deps.fetchMemberships(channel); }
+  private get presence() { return this.deps.presence(); }
+  private membersRegistry() { return this.deps.membersRegistry(); }
+  private deliveryClassFresh(channel: string) { return this.deps.deliveryClassFresh(channel); }
   private recordOwnWatchConsumer(info: ConsumerInfo) { return this.deps.recordOwnWatchConsumer(info); }
   private watchConsumerDeleteDenied(stream: string, name: string, owner: object | undefined) { return this.deps.watchConsumerDeleteDenied(stream, name, owner); }
   private deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string) { return this.deps.deleteMembershipConsumer(jsm, stream, name); }
@@ -318,6 +327,61 @@ export class EndpointSubscriptions {
         config: this.channelConfigs.get(channel),
       }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
+  }
+
+  /**
+   * Who is a durable member of a channel — read from the privileged members registry (Plane-3),
+   * joined with presence for liveness (a member whose peer is gone but lingering shows `live:false`,
+   * not a phantom). Only CURRENT, ACTIVATED members (non-tombstoned, and past activation catch-up — a
+   * join still completing or that failed catch-up reported durable:false and stays hidden here until
+   * confirmed, so this surface never overstates membership). A row is a concrete channel or a family
+   * (`review.>`, #5404). Asked for one channel, a family row counts when the channel is durable-class
+   * and under it, and a principal with several rows is listed once. The map of every channel keys each
+   * row as recorded, so a family's members sit under the family itself (`review.>`), not under each
+   * channel it covers. `live`-class channels carry no durable record — membership there
+   * is the live core-sub, not tracked here. Privileged read (the members KV is manager-write/read; agents hold no grant), so
+   * it is served by the manager, not an agent capability.
+   */
+  async channelMembers(channel: string): Promise<ChannelMember[]>;
+  async channelMembers(): Promise<Map<string, ChannelMember[]>>;
+  async channelMembers(
+    channel?: string,
+  ): Promise<ChannelMember[] | Map<string, ChannelMember[]>> {
+    const members = (await listMembers(await this.membersRegistry())).filter(
+      (r) => r.leaveCursor === undefined && r.activated === true,
+    );
+    const byId = new Map<string, Presence>();
+    for (const p of this.presence.values()) byId.set(p.card.id, p);
+    const memberForId = (id: string): ChannelMember => {
+      const p = byId.get(id);
+      return p
+        ? { id: p.card.id, name: p.card.name, role: p.card.role, live: p.status !== "offline" }
+        : { id, name: id, live: false };
+    };
+    const byName = (a: ChannelMember, b: ChannelMember) => a.name.localeCompare(b.name);
+
+    if (channel !== undefined) {
+      const stored = (await this.deliveryClassFresh(channel)) === "durable";
+      const ids = new Set(
+        members
+          .filter((r) => r.channel === channel || (stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel)))
+          .map((r) => r.owner),
+      );
+      return [...ids].map(memberForId).sort(byName);
+    }
+
+    const map = new Map<string, ChannelMember[]>();
+    for (const r of members) {
+      const arr = map.get(r.channel);
+      const m = memberForId(r.owner);
+      if (arr) {
+        if (!arr.some((x) => x.id === m.id)) arr.push(m);
+      } else {
+        map.set(r.channel, [m]);
+      }
+    }
+    for (const arr of map.values()) arr.sort(byName);
+    return map;
   }
 
   /** Lazily open the DERIVED membership FEED KV (`cotal_membership_<space>`; admin/observer read, the

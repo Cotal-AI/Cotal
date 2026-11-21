@@ -3,11 +3,11 @@ import { lookup } from "node:dns/promises";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
-  cmdSpawnSpec,
+  cmdSpawnSpec, oneLine,
   beginGlobalUpdateChild,
   processGroupMembers,
   processStartToken,
@@ -47,6 +47,7 @@ import {
   liveUpdateClosureOwner,
   recoveryProcessStartToken,
   observeUnownedRecovery,
+  UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
@@ -344,6 +345,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
+  let connectorSelection: UnreadableConnectorSelection | undefined;
   if (args.values.self === true) {
     try { rt.preflightExecution?.(); }
     catch (error) {
@@ -360,18 +362,24 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
         if (recoverExtensionPromotion(true)) prepareConnectorConfigForUpdate();
       } else recoverExtensionPromotion();
     } catch (error) {
-      const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
-        native: { outcome: "not-executed" }, remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
-      });
-      recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
-      throw failure;
+      if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
+      else {
+        const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "PERMISSION_DENIED", `Cannot prepare the Cotal connector configuration: ${message(error)}. No CLI update was staged.`, {
+          native: { outcome: "not-executed" }, remedy: "Correct the reported connector configuration problem, then run `cotal update --self` again.",
+        });
+        recordUpdateDeferral(rt.version(), `connector configuration preflight: ${preflightDetail(failure)}`);
+        throw failure;
+      }
     }
-    // Built-in self-update skips the extension overlay. Validate its inventory after recovery, not before.
-    try { loadExtensionsManifest(); }
+    // Built-in self-update skips the extension overlay. Validate its inventory after recovery.
+    if (!connectorSelection) try { loadExtensionsManifest(); }
     catch (error) {
-      rt.err(c.red(`✗ ${message(error)}`));
-      process.exitCode = 1;
-      return;
+      if (error instanceof UnreadableConnectorSelection) connectorSelection = error;
+      else {
+        rt.err(c.red(`✗ ${message(error)}`));
+        process.exitCode = 1;
+        return;
+      }
     }
   }
   const restored = await recoverInterruptedUpdate(rt);
@@ -397,7 +405,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     const repaired = (rt.repairInstallModes ?? repairInstallModes)(root);
     if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
   }
-  const code = await executeUpdate(Boolean(args.values.self), rt, args.values);
+  const code = await executeUpdate(Boolean(args.values.self), rt, args.values, restored ? undefined : connectorSelection);
   if (code !== 0) process.exitCode = code;
   else if (args.values.self !== true && childBinding(rt).kind !== "bound") {
     clearUpdateRecovery();
@@ -570,7 +578,7 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
 }
 
 /** Injectable command body: production keeps one process seam; the smoke covers every decision branch. */
-export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}): Promise<number> {
+export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRuntime, target: Record<string, unknown> = {}, unreadableSelection?: UnreadableConnectorSelection): Promise<number> {
   const current = rt.version();
   const child = childBinding(rt);
   if (child.kind === "invalid") {
@@ -619,8 +627,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
         return 1;
       }
+      if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
+        rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
+        return 1;
+      }
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-      else if (latest.npmResult && await npmProxyRefused(latest.npmResult, rt.env)) {
+      else if (await npmProxyRefused(latest.npmResult, rt.env)) {
         rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
         return 1;
       }
@@ -638,9 +650,17 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       recordUpdateDeferral(current, "waiting for update preflight");
     }
     if (upgrading) {
+      // Replacing packages still requires an identifiable graph for dependency checks and rollback.
+      if (unreadableSelection) throw unreadableSelection;
       const code = await upgradeAndReconcile(latest.version, current, rt, target);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
+    }
+    if (unreadableSelection) {
+      rt.err(unreadableSelection.message);
+      rt.out("No newer CLI version. No connector reconciliation was run.");
+      reportVersion(current, latest.version, rt, false);
+      return 0;
     }
     if (rt.isCurrent?.()) {
       reportUncheckedPreparedRecords(rt, target);
@@ -1951,7 +1971,7 @@ async function runNpmAsync(args: string[], archiveCache?: string): Promise<Comma
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
-      windowsVerbatimArguments, windowsHide: true,
+      cwd: parse(homedir()).root, windowsVerbatimArguments, windowsHide: true,
       ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
@@ -1979,9 +1999,10 @@ async function runNpmAsync(args: string[], archiveCache?: string): Promise<Comma
 function runNpm(args: string[], inherit = false): CommandResult {
   try {
     const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
-    const result = spawnSync(file, spawnArgs, inherit
-      ? { stdio: "inherit", windowsVerbatimArguments }
-      : { encoding: "utf8", windowsVerbatimArguments });
+    const result = spawnSync(file, spawnArgs, {
+      cwd: parse(homedir()).root, windowsVerbatimArguments,
+      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
+    });
     return {
       status: result.status,
       signal: result.signal,
@@ -2039,6 +2060,8 @@ async function runGlobalProcess(
     // exec keeps the published PID and the real child keeps its original argv and stdin.
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-update", file, ...args] : args, {
+      // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
+      ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
       env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.

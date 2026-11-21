@@ -14,7 +14,7 @@ import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
  * It composes the existing commands and adds no new authority. Pausing, renaming and disconnecting
  * stay separate commands; this one does not absorb them.
  */
-import { claimUpdateClosureAccess, codeSpan, CommandFailure, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
+import { claimUpdateClosureAccess, codeSpan, CommandFailure, findMesh, findPreparedSpace, hasUserAuthState, keptCatalogCredentials, resolveOnPath } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import type { DaemonPaths } from "./endpoint.js";
 import { EndpointRefusal } from "./endpoint.js";
@@ -393,6 +393,12 @@ async function connectWhenApproved(opts: SetupOptions, steps: SetupStep[]): Prom
 
 /** Run setup through an answering Manager, or a connected machine service with the opt-out. */
 export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
+  // As in connect-check, a stopped local stack is recorded as prepared, not registered.
+  const entry = findMesh(opts.space);
+  const prepared = entry ? undefined : findPreparedSpace(opts.space);
+  if ((entry && (entry.mode !== "user" || !entry.userAuth)) || (prepared && !hasUserAuthState(prepared.root, opts.space, { readOnly: true }))) {
+    throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+  }
   const steps: SetupStep[] = [];
   let discoveredSignIn = false;
   const unit = await ensureInstalled(opts, steps);
@@ -408,6 +414,13 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
     let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);
     const signedInToProvider = () => discovered.ok && !("event" in discovered) && "signedInProviders" in discovered.result && discovered.result.signedInProviders?.includes(opts.idp ?? "");
+    if (!hasSpace() && discovered.ok) {
+      // Signed-in catalogs do not list a prepared local stack. Rule it out before signing in.
+      const check = await connectCheckViaDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, space: opts.space });
+      if (check.ok && check.result.outcome === "not-user-auth") {
+        throw new CommandFailure("refused", "UNSUPPORTED", NON_USER_AUTH_MESSAGE, { remedy: NON_USER_AUTH_REMEDY, native: { code: "NOT_USER_AUTH" } });
+      }
+    }
     if (!hasSpace() && opts.idp && !signedInToProvider()) {
       opts.report("sign-in: approve this machine on another device", { step: "sign-in", outcome: "running", detail: "approve this machine on another device" });
       const signed = await loginFromCli({ ...opts, idp: opts.idp });

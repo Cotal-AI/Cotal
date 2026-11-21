@@ -227,6 +227,13 @@ has not sent a proven request within 5 seconds of accept. Once a client has sent
 missing or unproven reply means the server may have handled it. The hook relay says so whether the
 connection closed, failed, or reached the relay's 2-second deadline. Nothing is sent twice.
 
+A hook entry can mark an event as held with `runHookRelay`'s `holds` option, as the Claude Code hook
+marks `PermissionRequest`. The 2-second deadline still covers the dial and the server's proof of a
+held event, and it ends once the request reached a proven server, so the reply can come whenever
+someone answers. While a handler runs, the server passes it `{ signal }`, which aborts when the hook's
+connection closes. A handler that holds an event uses it to stop waiting for an answer that can no
+longer reach the hook.
+
 A client and a server of different versions refuse each other: the version is in the hello, the
 challenge and every MAC, and nothing is negotiated. A launch whose material carries a key without a
 version, or a version the build does not speak, is refused where it is read.

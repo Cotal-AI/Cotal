@@ -77,7 +77,6 @@ import type {
   MembershipChange,
   MembershipSnapshot,
 } from "./types.js";
-import { listMembers } from "./members.js";
 import type { DeliveryLeaseInfo, ManagerLeaseInfo } from "./lease.js";
 import { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
 import { EndpointDeliveryPlane, type MaybePromise } from "./endpoint-delivery-plane.js";
@@ -116,7 +115,6 @@ import {
   CONTROL_DELIVERY_ADMIN,
   dmStream,
   isConcreteChannel,
-  isChannelFamily,
   parseSubject,
   assertInboxConnId,
   MEMBERSHIP_FEED_KEY,
@@ -126,7 +124,6 @@ import {
   mintLifecycleUid,
   DEV_OWNER,
   spaceWildcard,
-  subjectMatches,
   unicastSubject,
   unicastRecvFilter,
 } from "./subjects.js";
@@ -1916,6 +1913,9 @@ export class CotalEndpoint extends EventEmitter {
     durableJoinChannel: (channel) => this.durableJoinChannel(channel),
     durableLeaveChannel: (...args) => this.durableLeaveChannel(...args),
     fetchMemberships: (channel) => this.fetchMemberships(channel),
+    presence: () => this.presence,
+    membersRegistry: () => this.membersRegistry(),
+    deliveryClassFresh: (channel) => this.deliveryClassFresh(channel),
     recordOwnWatchConsumer: (info) => this.recordOwnWatchConsumer(info),
     watchConsumerDeleteDenied: (stream, name, owner) => this.watchConsumerDeleteDenied(stream, name, owner),
     deleteMembershipConsumer: (jsm, stream, name) => this.deleteMembershipConsumer(jsm, stream, name),
@@ -1997,41 +1997,7 @@ export class CotalEndpoint extends EventEmitter {
   async channelMembers(
     channel?: string,
   ): Promise<ChannelMember[] | Map<string, ChannelMember[]>> {
-    const members = (await listMembers(await this.membersRegistry())).filter(
-      (r) => r.leaveCursor === undefined && r.activated === true,
-    );
-    const byId = new Map<string, Presence>();
-    for (const p of this.presence.values()) byId.set(p.card.id, p);
-    const memberForId = (id: string): ChannelMember => {
-      const p = byId.get(id);
-      return p
-        ? { id: p.card.id, name: p.card.name, role: p.card.role, live: p.status !== "offline" }
-        : { id, name: id, live: false };
-    };
-    const byName = (a: ChannelMember, b: ChannelMember) => a.name.localeCompare(b.name);
-
-    if (channel !== undefined) {
-      const stored = (await this.deliveryClassFresh(channel)) === "durable";
-      const ids = new Set(
-        members
-          .filter((r) => r.channel === channel || (stored && isChannelFamily(r.channel) && subjectMatches(r.channel, channel)))
-          .map((r) => r.owner),
-      );
-      return [...ids].map(memberForId).sort(byName);
-    }
-
-    const map = new Map<string, ChannelMember[]>();
-    for (const r of members) {
-      const arr = map.get(r.channel);
-      const m = memberForId(r.owner);
-      if (arr) {
-        if (!arr.some((x) => x.id === m.id)) arr.push(m);
-      } else {
-        map.set(r.channel, [m]);
-      }
-    }
-    for (const arr of map.values()) arr.sort(byName);
-    return map;
+    return channel === undefined ? this.subscriptions.channelMembers() : this.subscriptions.channelMembers(channel);
   }
 
   /**

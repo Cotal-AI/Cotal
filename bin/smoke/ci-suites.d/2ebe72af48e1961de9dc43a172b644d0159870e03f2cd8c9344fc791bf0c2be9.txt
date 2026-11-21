@@ -1,0 +1,2 @@
+# Claude Code tool permissions on the prompt desk: the report table, the identity cases, the gates and the real hook.
+smoke:claude-permission-prompts

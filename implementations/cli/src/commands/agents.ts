@@ -142,15 +142,16 @@ export async function stop(args: ParsedArgs): Promise<void> {
   } else {
     name = managedTarget(args, "stop");
     refuseControlCreds(v.creds, v.space);
-    pin = await pinForTarget({ ...v, name } as never, "cotal stop");
+    const refusal = { onRefusal: v.json ? "throw" as const : undefined };
+    pin = await pinForTarget({ ...v, name } as never, "cotal stop", [], refusal);
     on = pin.instanceId;
     // A typed pin the registry does not list is refused at once, as spawn refuses it. Stop's admin
     // instrument holds no registry read, so the check uses the one ps reads the registry with.
     if (v.on !== undefined && on !== undefined) {
-      const reader = await resolveControlTarget(v, "control-caller-privileged", on);
+      const reader = await resolveControlTarget(v, "control-caller-privileged", on, refusal);
       if (!reader.auth.bearer) await refuseUnregisteredManager(reader.space, reader.server, reader.auth, on);
     }
-    t = await resolveControlTarget(v, "control-caller-admin", on);
+    t = await resolveControlTarget(v, "control-caller-admin", on, refusal);
   }
   recordOperationSpace(t.space);
   const reply = await askManager(cliControl, t.space, t.server, v.self ? "stopSelf" : "stop", { ...(name ? { name } : {}), graceful: v.force !== true }, t.auth, t.auth.bearer ? "owner" : "any", undefined, { ...pin, instanceId: on });
@@ -297,7 +298,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest:
   if (loc.kind === "absent" && verb === "cotal status" && loc.instances.includes(agent))
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the answering managers report no agent with that name or identity", { target: { space: loc.space ?? null, name: agent }, remedy: managerItselfRemedy(agent, options.openMesh === true) });
   if (loc.kind === "absent")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: "run `cotal ps` to see the agents each manager runs" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target: { space: loc.space ?? null, agent, managerInstanceIds: loc.instances }, remedy: `run ${codeSpan(onRerun("cotal ps", v))} to see the agents each manager runs` });
   const shown = oneLine(agent);
   if (loc.kind === "several")
     throw new AgentManagerUnsettled(`"${shown}" is held on each of these ${loc.instances.length} managers. Which one should run this?`, managersByInstance(loc.instances, loc.managers), "TARGET_AMBIGUOUS", message, { space: loc.space ?? null, agent, managerInstanceIds: loc.instances });
@@ -573,6 +574,11 @@ function noApplicationHere(): boolean {
   try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
 }
 
+function liveSeatsRemedy(v: FlagValues<typeof psFlags>): string {
+  const words = [...(v.on === undefined ? [] : ["--on", v.on]), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
+  return `run ${codeSpan(onRerun("cotal ps", v, words))} without --slots to list live agents`;
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
   // #651 presentations: --wide is a human layout and --json the document that already carries every
@@ -771,7 +777,7 @@ export interface SeatCensus {
  *  is named, otherwise from every registered instance. Throws the classified failure when the target
  *  cannot be resolved or no manager can be asked, and {@link NoManagerAnswered} when none of your
  *  managers answered on a user-auth mesh. */
-export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: string | undefined): Promise<SeatCensus> {
+export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, command: "ps" | "slots", on: string | undefined): Promise<SeatCensus> {
   refuseControlCreds(v.creds, v.space);
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
@@ -801,7 +807,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
   if (command === "slots" && (t.mode === "open" || t.mode === "user"))
     throw new CommandFailure("refused", "UNSUPPORTED", "--slots applies only to static-auth spaces; open and user-auth managers own no durable static slot rows", {
       target: on !== undefined ? { space: t.space, scope: "manager", managerInstanceId: on } : { space: t.space, scope: t.auth.bearer ? "manager" : "all-managers" },
-      remedy: "run `cotal ps` without --slots to list live agents",
+      remedy: liveSeatsRemedy(v),
     });
   // A pin the registry does not list is refused at once, as spawn refuses it; only a registered manager is waited on.
   if (on !== undefined && !t.auth.bearer) await refuseUnregisteredManager(t.space, t.server, t.auth, on);
@@ -933,14 +939,14 @@ export class NoManagerAnswered extends CommandFailure {
 }
 
 /** {@link readSeats} on a user-auth mesh with several of your managers live and none named. */
-async function readYourManagers(v: ConnectFlags, command: "ps" | "slots", managers: readonly ManagerCandidate[]): Promise<SeatCensus> {
+async function readYourManagers(v: ConnectFlags & FlagValues<typeof psFlags>, command: "ps" | "slots", managers: readonly ManagerCandidate[]): Promise<SeatCensus> {
   if (command === "slots") {
     let space: string | undefined;
     try { space = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space, readOnly: true }).space; } catch { /* unresolved stays null */ }
     if (space !== undefined) recordOperationSpace(space);
     throw new CommandFailure("refused", "UNSUPPORTED", "--slots applies only to static-auth spaces; open and user-auth managers own no durable static slot rows", {
       target: { space: space ?? null, scope: "your-managers" },
-      remedy: "run `cotal ps` without --slots to list live agents",
+      remedy: liveSeatsRemedy(v),
     });
   }
   const { space, mode, instances } = await askYourManagers(cliControl, v, command, managers);

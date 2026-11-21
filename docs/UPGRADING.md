@@ -1,5 +1,26 @@
 # Upgrading a running deployment
 
+## A person's control of their own agents
+
+On a space where people sign in, a person can now stop, attach to, type into and interrupt every
+agent under their own owner without `admin`, and read those agents' event channels. The auth
+service issues these permissions, so update and restart it, then reconnect each person's clients.
+
+The Manager cluster advances to revision 53 with the targeted `interrupt` command. An older Manager
+does not serve it, so update Managers before a client interrupts a turn through them.
+
+## Tool permissions on the agent endpoint
+
+A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
+own agent endpoint, and Claude's dialog stays open beside them. A running Claude session keeps the
+plugin it already loaded, so reload plugins or reopen the session to register the new
+`PermissionRequest` and `SubagentStop` hooks. A managed seat still launches with `bypassPermissions`
+unless you pass a mode, and then it asks nothing.
+
+The Manager cluster advances to revision 52. Every `status.connectors` row carries `prompts`, and
+the closed status schema of revision 51 rejects such a row. Upgrade Managers and their callers
+together.
+
 ## Participant payload history after 0.168.0
 
 Participant connections can read retained tool payloads for their own owner and for foreign
@@ -139,6 +160,11 @@ broker for a stopped stack, it converts a legacy File-backed membership feed bef
 space's services and prints one conversion line. Durable members, channel metadata and message
 history are kept. A running stack, remote broker or adopted listener is not converted automatically.
 Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
+
+If you stopped the stack with `cotal down --preserve-state`, run
+`cotal up --recreate-membership-store` from the same project. It converts the derived feed
+before starting the stack's services and resumes the preserved cut without discarding channel
+history. If conversion fails, `up` stops the broker it started and keeps the cut for a retry.
 
 The command uses one exact short-lived credential to inspect and delete only the membership stream,
 then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and

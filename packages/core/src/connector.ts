@@ -308,6 +308,10 @@ export interface Connector extends Extension {
    *  `eventChannel`, so the grant the manager mints here and the subject the session publishes to
    *  are the same derivation and cannot drift. */
   eventChannel?(principal: { owner: string; actor: string }): string;
+  /** A session this connector launches serves its harness's tool permissions on the agent's
+   *  `agent` endpoint (SPEC 13.22) when the mesh is user-auth. A launch capability and nothing more:
+   *  it does not say a given session's endpoint will open. */
+  readonly prompts?: true;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager resolves each at boot, passes the absolute path through {@link LaunchOpts.resolvedBinaries},

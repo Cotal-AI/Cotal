@@ -4,6 +4,7 @@ import { agentAuthState, agentLifecycleSecretFilePaths, userAuthStateDir } from 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { servedConnectorStatuses } from "./connector-inventory.js";
 import type { ManagerStatus, ManagerStopImpact } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
 import type { ManagedAgent } from "./seat-types.js";
@@ -238,7 +239,7 @@ export class StatusAndModels {
       terminalSessions: this.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.startedAtMs,
-      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+      connectors: servedConnectorStatuses(this.connectorStatuses, this.userMode),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {

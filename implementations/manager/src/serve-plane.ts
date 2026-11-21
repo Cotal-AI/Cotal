@@ -14,6 +14,7 @@ import {
   type ServiceNameAuthority, type dialerFor,
 } from "@cotal-ai/core";
 import { claimManagerSiblingIdentities } from "@cotal-ai/workspace";
+import { servedConnectorStatuses } from "./connector-inventory.js";
 import { DELIVERY_ADMIN_BOOT_WAIT_MS, makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { MANAGER_ENDPOINT, managerClusterArtifacts, managerContractArtifactValues, type ManagerConnectorStatus } from "./manager-service-contract.js";
 import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
@@ -75,6 +76,7 @@ export interface ServePlaneDeps {
   setSessionPlane(value: ManagerSessionPlane | undefined): void;
   sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined;
   setSessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined): void;
+  /** The connector rows a status read serves (see {@link servedConnectorStatuses}). */
   connectorStatuses(): readonly ManagerConnectorStatus[];
   setGoalWriterIdentity(value: Identity): void;
   setGoalWriterCreds(value: string | undefined): void;
@@ -127,7 +129,7 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     setSessionPlane: (value) => { m["sessionPlane"] = value; },
     sessionKeyRenewTimer: () => m["sessionKeyRenewTimer"],
     setSessionKeyRenewTimer: (value) => { m["sessionKeyRenewTimer"] = value; },
-    connectorStatuses: () => { m["refreshUnavailableConnectors"](); return m["connectorStatuses"]; },
+    connectorStatuses: () => { m["refreshUnavailableConnectors"](); return servedConnectorStatuses(m["connectorStatuses"], m["userMode"]); },
     setGoalWriterIdentity: (value) => { m["goalWriterIdentity"] = value; },
     setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
@@ -463,7 +465,7 @@ export class ServePlane {
         // reopened past the slot's stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-        status: { connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })) },
+        status: { connectors: [...this.connectorStatuses] },
       });
       const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the

@@ -88,7 +88,10 @@ const SUN_PATH_MAX: Partial<Record<NodeJS.Platform, number>> = { linux: 107, dar
 export function assertSocketPathFits(path: string, platform: NodeJS.Platform = process.platform): void {
   const max = SUN_PATH_MAX[platform];
   if (max !== undefined && Buffer.byteLength(path) > max) {
-    throw new EndpointRefusal("NO_RUNTIME_DIR", `${path} is ${Buffer.byteLength(path)} bytes, longer than the ${max} a unix socket path may have here`, "use a daemon home or Cotal home with a shorter path");
+    const remedy = platform === "linux"
+      ? "Set XDG_RUNTIME_DIR to a shorter private directory owned by your user with mode 0700. Use the same XDG_RUNTIME_DIR for the daemon and its clients."
+      : "use a daemon home or Cotal home with a shorter path";
+    throw new EndpointRefusal("NO_RUNTIME_DIR", `${path} is ${Buffer.byteLength(path)} bytes, longer than the ${max} a unix socket path may have here`, remedy);
   }
 }
 

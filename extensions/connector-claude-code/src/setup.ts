@@ -18,10 +18,10 @@ import {
   type McpServerSpec,
   type SignedInSpace,
 } from "@cotal-ai/core";
-import { ENV_REFERENCE } from "@cotal-ai/connector-core";
+import { ENV_REFERENCE, isConfigProtected } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
-import { desktopConfigPath, desktopNameClash, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
-import { claudeUserMcpServers } from "./user-mcp.js";
+import { desktopConfigPath, desktopEntryCurrent, desktopNameClash, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
+import { claudeUserMcpPath, claudeUserMcpServers } from "./user-mcp.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -113,12 +113,21 @@ export function userServerState(current: unknown, desired: McpServerSpec): "curr
   return same ? "current" : "replace";
 }
 
+const protectedClaudeConfig = (path: string, change: string): string =>
+  `${change} was not updated because ${path} is read-only. Make that file writable, then run \`cotal update\`.`;
+
 /** Register the user-scope entry through `claude mcp add`, replacing one that names another server,
  *  and read it back: a registration Claude did not keep is an error, not a seat that never wakes. */
-function registerUserServer(cotal: readonly string[]): string {
+function registerUserServer(cotal: readonly string[], refreshing = false): string {
   const desired = userServerEntry(cotal);
   const state = userServerState(claudeUserMcpServers().cotal, desired);
   if (state === "current") return "user MCP entry cotal current";
+  const path = claudeUserMcpPath();
+  if (isConfigProtected(path)) {
+    const detail = protectedClaudeConfig(path, "The Claude Code user MCP entry cotal");
+    if (!refreshing) throw new Error(detail);
+    return detail;
+  }
   if (state === "replace") {
     const removed = command("mcp", "remove", "--scope", "user", "cotal");
     if (removed.status !== 0) throw new Error(`mcp remove failed (cotal):\n${removed.output}`);
@@ -132,10 +141,15 @@ function registerUserServer(cotal: readonly string[]): string {
 
 /** Whether Claude Code's user config declares the `cotal` server the wake channel of a launched
  *  session binds to; a managed launch is refused without it. */
-function userServerRow(): ConnectorStatusRow {
+function userServerRow(installed: boolean): ConnectorStatusRow {
   let declared: boolean;
   try {
-    declared = claudeUserMcpServers().cotal !== undefined;
+    const entry = claudeUserMcpServers().cotal;
+    declared = entry !== undefined;
+    const path = claudeUserMcpPath();
+    if (installed && userServerState(entry, userServerEntry([process.execPath])) !== "current" && isConfigProtected(path)) {
+      return { label: "Claude wake channel", state: "warn", text: protectedClaudeConfig(path, "The Claude Code user MCP entry cotal") };
+    }
   } catch (e) {
     return { label: "Claude wake channel", state: "error", text: (e as Error).message };
   }
@@ -163,6 +177,11 @@ function desktop(cotal: readonly string[], add: boolean, signedIn?: SignedInSpac
   if (signedIn) return `Claude Desktop ${hostedConnector(signedIn)}`;
   if (!add && readDesktopEntry(path) === undefined) return undefined;
   const state = writeDesktopEntry(path, desktopEntry(cotal));
+  if (state === "read-only") {
+    const detail = protectedClaudeConfig(path, "The Claude Desktop MCP entry");
+    if (add) throw new Error(detail);
+    return detail;
+  }
   if (state === "not added" || state === "not updated")
     return `Claude Desktop ${state}: Claude Desktop is running and writes back the config it read when it started, which would drop the entry. Quit Claude Desktop, then run \`cotal setup\` again from a terminal outside it`;
   return `Claude Desktop ${state}${state === "current" ? "" : "; quit and reopen Claude Desktop to load it"}`;
@@ -558,16 +577,25 @@ function offForAccount(): boolean {
  *  exists, install it for the account as setup does, and retire the per-project installs that had it on
  *  in their own project. One turned off in its project stays, so it keeps the plugin off there, and a
  *  project-scope record is that project's shared setting and is left alone. An account that turned the
- *  plugin off keeps its per-project installs as they are. Returns how many it retired,
- *  or undefined when it changed nothing. */
-function promoteLocalOnly(installs: PluginEntry[], version: string): number | undefined {
-  if (installs.some((entry) => entry.scope !== "local" && entry.scope !== "project") || offForAccount()) return undefined;
-  const on = installs.filter((entry) => {
+ *  plugin off keeps its per-project installs as they are. */
+function promotableInstalls(installs: PluginEntry[]): PluginEntry[] {
+  if (!installs.some((entry) => entry.scope === "local") || installs.some((entry) => entry.scope !== "local" && entry.scope !== "project") || offForAccount()) return [];
+  return installs.filter((entry) => {
     const project = entry.projectPath;
     if (entry.scope !== "local" || typeof project !== "string" || !statSync(project, { throwIfNoEntry: false })?.isDirectory()) return false;
     // `enabled` is reported for the folder the list runs in, so ask each project about its own install.
     return listPlugins(project).some((own) => own.id === entry.id && own.scope === "local" && own.projectPath === project && own.enabled === true);
   });
+}
+
+function protectedPromotion(on: PluginEntry[]): string[] {
+  if (!on.length) return [];
+  const paths = [join(process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"), "settings.json"),
+    ...on.map((entry) => join(entry.projectPath as string, ".claude", "settings.local.json"))];
+  return paths.filter(isConfigProtected).map((path) => protectedClaudeConfig(path, "The Claude Code plugin scope"));
+}
+
+function promoteLocalOnly(on: PluginEntry[], version: string): number | undefined {
   if (!on.length) return undefined;
   install("cotal", "user", version);
   return retireProjectInstalls(on);
@@ -608,6 +636,10 @@ function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorSta
   if (!installs.length) return row("off", "not installed");
   if (installs.some((entry) => (Array.isArray(entry.errors) ? entry.errors.length > 0 : Boolean(entry.errors ?? entry.error))))
     return row("error", "load error · run `cotal setup`");
+  try {
+    const protectedScope = protectedPromotion(promotableInstalls(installs));
+    if (protectedScope.length) return row("warn", protectedScope.join(" "));
+  } catch (error) { return row("error", (error as Error).message); }
   let materialized: unknown;
   try {
     materialized = (JSON.parse(readFileSync(join(marketplaceDir(), "cotal", ".claude-plugin", "plugin.json"), "utf8")) as { version?: unknown }).version;
@@ -634,6 +666,8 @@ function desktopRow(signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
   try {
     entry = readDesktopEntry(path);
     if (desktopNameClash(path)) clash = " A server named cotal in Claude Desktop's config uses the same name as the Claude Code plugin.";
+    if (entry !== undefined && !desktopEntryCurrent(path, desktopEntry([process.execPath])) && isConfigProtected(path))
+      return row("warn", protectedClaudeConfig(path, "The Claude Desktop MCP entry"));
   } catch (e) {
     return row("error", (e as Error).message);
   }
@@ -748,13 +782,15 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
         if (installs.length || skillInstalls.length) writeMarketplace();
         const parts: string[] = [];
         if (installs.length) {
-          const promoted = promoteLocalOnly(installs, version!);
+          const promotable = promotableInstalls(installs);
+          const deferred = protectedPromotion(promotable);
+          const promoted = deferred.length ? undefined : promoteLocalOnly(promotable, version!);
           const current = promoted === undefined ? installs : listPlugins().filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
           const warnings = refreshInstalls("cotal", current, version!);
           if (promoted !== undefined)
             parts.push(`cotal@${MARKETPLACE} (user scope${promoted ? `, replacing ${promoted} project install${promoted === 1 ? "" : "s"}` : ""})`);
           parts.push(`cotal@${MARKETPLACE} ${version}; reload plugins or reopen Claude to load it in running sessions`, ...warnings);
-          parts.push(registerUserServer(cotal));
+          parts.push(...deferred, registerUserServer(cotal, true));
         }
         if (skillInstalls.length) {
           const warnings = refreshInstalls("cotal-skills", skillInstalls, skills!.version);
@@ -813,7 +849,7 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   status(input) {
     const plugins = pluginList();
     const app = desktopRow(input.signedIn);
-    return [pluginRow(plugins, input), userServerRow(), ...(app ? [app] : []), skillsRow(plugins, input)];
+    return [pluginRow(plugins, input), userServerRow(plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false), ...(app ? [app] : []), skillsRow(plugins, input)];
   },
 };
 

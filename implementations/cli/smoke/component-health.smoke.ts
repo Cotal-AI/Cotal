@@ -53,8 +53,9 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, processStopped, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import type { StatusResult } from "../src/commands/status.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -394,6 +395,20 @@ try {
     /Manager\s+not serving \(pid \d+\)/.test(bareText) && bareText.includes("service endpoint not answering") && !/Manager\s+running \(pid/.test(bareText), bareText);
   check("bare status keeps exit 0 when the manager is not serving (#2073)", bare.status === 0, bareText);
 
+  const slash = cli("status", "--space", SPACE, "--server", `${server}/`, "--plain");
+  check("a trailing slash keeps the sole Spaces row reachable and checked",
+    slash.status === 0 && new RegExp(`^ {2}-> ${SPACE} +reachable +open$`, "m").test(slash.stdout) && !slash.stdout.includes("Unselected spaces are not dialed"), slash.stdout);
+  for (const [address, connection, inventory] of [
+    [`${server}/`, "ok", "reachable"],
+    [`nats://127.0.0.1:${await freePort()}`, "unreachable", "not-checked"],
+  ] as const) {
+    const json = cli("status", "--space", SPACE, "--server", address, "--json");
+    const { result } = JSON.parse(json.stdout) as { result: StatusResult | null };
+    check(`status at ${address} checks the registration as ${inventory}`,
+      json.status === 0 && result?.selected.resolved === true && result.selected.connection === connection &&
+      result.meshes.items.length === 1 && result.meshes.items[0]?.space === SPACE && result.meshes.items[0].check === inventory, json.stdout);
+  }
+
   // A missing PID record does not contradict a live lease holder.
   rmSync(managerRecord);
   const leaseOnly = cli("status", "--components", "--space", SPACE, "--server", server);
@@ -475,6 +490,23 @@ try {
   check("a healthy default stack exits 0 with the installed dashboard not-started",
     notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
       ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
+  if (process.platform === "linux") {
+    const pid = Number(readFileSync(join(webRoot, ".cotal", "nats.pid"), "utf8"));
+    assert.ok(Number.isSafeInteger(pid) && pid > 0);
+    process.kill(pid, "SIGSTOP");
+    try {
+      for (let i = 0; i < 100 && !processStopped(pid); i++) await sleep(20);
+      assert.ok(processStopped(pid), `broker ${pid} did not stop`);
+      const stopped = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+      const health = stopped.stdout.split("Component Health")[1] ?? "";
+      check(`a suspended broker exits 3 and names PID ${pid}`,
+        stopped.status === 3 && new RegExp(`broker\\s+not-serving[^\\n]*is served by process ${pid}, which is stopped`).test(health) &&
+        stopped.stdout.includes(`broker process ${pid} is stopped`) && stopped.stdout.includes(`kill -CONT ${pid} `),
+        `${stopped.stdout}${stopped.stderr}`);
+    } finally { process.kill(pid, "SIGCONT"); }
+    const resumed = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+    check("resuming that broker restores serving health", resumed.status === 0 && /broker\s+serving/.test(resumed.stdout), `${resumed.stdout}${resumed.stderr}`);
+  }
   const managerGuidance = (cwd: string, openMesh: boolean) => {
     const roster = cliIn(cwd, ["ps", "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;

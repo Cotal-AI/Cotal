@@ -478,13 +478,15 @@ const OUTCOME: Record<string, string> = { completed: "completed", failed: "faile
 
 /** The last operation and recorded store cap of `space`'s controller stack at `root`, when its
  *  journal names a member it launched. Undefined for a stack that never launched one, or a journal
- *  this read cannot use; the commands that act on the journal check it fully. */
-export function stoppedStack(root: string, space: string): MeshTargetErrorDetails["stopped"] {
+ *  this read cannot use; the commands that act on the journal check it fully. With `cleanStopAt`,
+ *  require this root's completed `down` at that broker URL. */
+export function stoppedStack(root: string, space: string, cleanStopAt?: string): MeshTargetErrorDetails["stopped"] {
   try {
     const path = stackJournalPath(root), file = lstatSync(path);
     if (!file.isFile() || file.size > 64 * 1024) return undefined;
-    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
+    const journal = JSON.parse(readFileSync(path, "utf8")) as { space?: unknown; root?: unknown; server?: unknown; members?: unknown; operation?: { kind?: unknown; phase?: unknown }; broker?: { maxFileStore?: unknown } } | null;
     if (journal?.space !== space || !Array.isArray(journal.members) || !journal.members.some((row) => typeof (row as { instanceId?: unknown } | null)?.instanceId === "string")) return undefined;
+    if (cleanStopAt !== undefined && (journal.root !== canonicalRoot(root) || journal.operation?.kind !== "down" || journal.operation.phase !== "completed" || typeof journal.server !== "string" || brokerUrlKey(journal.server) !== brokerUrlKey(cleanStopAt))) return undefined;
     const operation = OPERATION[String(journal.operation?.kind)], outcome = OUTCOME[String(journal.operation?.phase)];
     if (operation === undefined || outcome === undefined) return undefined;
     const cap = journal.broker?.maxFileStore;
@@ -638,7 +640,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
   if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
-  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with \`cotal space forget ${space}\`, then run ${codeSpan(`cotal space create ${space} --adopt --root ${shellPath(root)}`)}` };
+  if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with ${codeSpan(`cotal space forget ${shellPath(space)}`)}, then run ${codeSpan(`cotal space create ${shellPath(space)} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
 }
 
@@ -660,7 +662,7 @@ export function stackElsewhereRemedy(root: string, recordedRoot: string, space: 
       stoppedRemedy = `forget it with ${codeSpan(`cotal space forget ${name}`)}, then run ${codeSpan(`cotal space create ${name} --adopt --root ${shellPath(root)}`)}`;
     }
   } catch { block = null; }
-  const adopt = block === undefined ? `adopt it with \`cotal space create ${space} --adopt --root ${shellPath(root)}\`` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
+  const adopt = block === undefined ? `adopt it with ${codeSpan(`cotal space create ${space === "<space>" ? space : shellPath(space)} --adopt --root ${shellPath(root)}`)}` : block?.kind === "recorded" ? block.remedy : stoppedRemedy;
   if (adopt === undefined) return movedRootRemedy(recordedRoot);
   if (rootPathProblem(recordedRoot) !== undefined) return `to run it from this folder, ${adopt}; \`cotal up\` refuses the recorded folder, whose path holds a control character or a bidirectional formatting mark`;
   return block === undefined
@@ -1071,7 +1073,7 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
 
 /**
  * Resolve the mesh target by precedence (first match wins):
- *  1. `--space` — registry lookup (errors if that space isn't running).
+ *  1. `--space` — registry lookup, or this project's matching retained static space for file-only signing.
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The `current` selected by `cotal use`, except inside a project whose root has one RUNNING space
  *     other than it, where step 4 applies. A space this folder prepared and never started, and one
@@ -1097,6 +1099,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const m = findMesh(flags.space);
     if (!m) {
       notStarted(flags.space, cwd);
+      const root = findCotalRoot(cwd);
+      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
+        const retained = retainedLegacyBroker(root);
+        if (retained && !retained.open && !legacyStackOtherHome(root)) {
+          const { spaces } = rootInventory(root);
+          if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
+            if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
+            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space });
+          }
+        }
+      }
       throw new MeshTargetError("unknown-space", `no mesh named "${boundedValue(flags.space, SHOWN_VALUE_MAX)}" is running`, {
         requested: flags.space,
       });

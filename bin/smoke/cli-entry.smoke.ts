@@ -35,6 +35,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import { spaceSegment } from "@cotal-ai/workspace";
 import "@cotal-ai/cli";
@@ -356,6 +357,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     shown(json),
   );
   check("version --json reports the version the text prints", `cotal-ai ${env?.result?.version}` === text.stdout.split("\n")[0], { json: env?.result, text: text.stdout });
+  const usage = (await readDocument(join(REPO, "docs", "cli-usage.mdx"))).markdown;
+  const example = /^`cotal version --json` writes:\n\n```json\n([\s\S]+?)\n```$/m.exec(usage)?.[1];
+  const documented = example === undefined ? undefined : JSON.parse(example);
+  const actual = env?.result && { ...env, result: { ...env.result, version: "<version>" } };
+  check("the documented version --json example matches a fresh home", actual !== undefined && isDeepStrictEqual(documented, actual), { documented, actual });
   check("version -j, --version --json and -V -j print the same envelope", same(json, cotal(["version", "-j"])) && same(json, cotal(["--version", "--json"])) && same(json, cotal(["-V", "-j"])));
   const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
   check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
@@ -781,6 +787,13 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   // gets no next step. Root reads through the mode, so those cells run only for an ordinary POSIX user.
   const absent = cotal(["personas", "list"], (home) => mkdirSync(join(home, "..", ".cotal")), noSeed);
   check("personas list reports no personas when the catalog folder does not exist", absent.status === 0 && absent.stdout.includes("no personas in "), shown(absent));
+  const emptyCatalog = (home: string) => mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+  const offline = cotal(["personas", "list", "--space", "entry"], emptyCatalog, noSeed);
+  check("plain personas list works offline and suggests creation with an explicit subscription and target",
+    offline.status === 0 && offline.stdout.includes("no personas in ") && offline.stdout.includes('cotal personas new example --space entry --prompt "Help with this project" --subscribe ""'), shown(offline));
+  const running = cotal(["personas", "list", "--space", "entry", "--running"], emptyCatalog, noSeed);
+  check("personas list --running refuses a prepared but unstarted space even with an empty catalog",
+    running.status === 1 && running.stdout === "" && running.stderr.includes('"entry" is prepared but not started') && running.stderr.includes("start it with `cotal up`"), shown(running));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     let agents = "", mode = "";
     const locked = (home: string) => {

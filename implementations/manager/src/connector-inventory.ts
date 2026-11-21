@@ -65,14 +65,14 @@ export class ConnectorInventory {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; pkg?: string }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; prompts?: boolean; pkg?: string }>;
     if (this.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, prompts: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
@@ -81,23 +81,31 @@ export class ConnectorInventory {
         name: connector.name,
         requires: connector.requires ?? [],
         eventPlane: connector.eventChannel !== undefined,
+        prompts: connector.prompts === true,
       }));
     }
     this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
       requires, needsClaudeWake: !!this.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
     }]));
-    for (const { name, requires, eventPlane } of declared) {
+    for (const { name, requires, eventPlane, prompts = false } of declared) {
       const { binaries, reason: missing } = resolveHarness(name, requires);
       const reason = missing ?? (this.connectorRequirements.get(name)?.needsClaudeWake ? await this.prepareClaudeWake() : undefined);
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
+        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, prompts, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane });
+        rows.push({ agent: name, state: "available", binaries, eventPlane, prompts });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
   }
+}
+
+/** The connector rows a status read serves. A row's `prompts` holds the connector's declaration, and a
+ *  session serves prompts only where its endpoint names a caller, which only a user-auth mesh does
+ *  (SPEC 13.21). The mesh mode is known only after boot inspected the connectors, so it is applied here. */
+export function servedConnectorStatuses(rows: readonly ManagerConnectorStatus[], userMode: boolean): ManagerConnectorStatus[] {
+  return rows.map((row) => ({ ...row, binaries: { ...row.binaries }, prompts: userMode && row.prompts }));
 }

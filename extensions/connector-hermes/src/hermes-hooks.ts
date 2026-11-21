@@ -10,12 +10,13 @@
  * Presence is coarse; only events that cross a state boundary move it. The plugin normalizes its
  * Hermes hook names into the `hook_event_name` values switched on below.
  */
-import type { HookHandle } from "@cotal-ai/connector-core";
+import type { HookEvent, MeshAgent } from "@cotal-ai/connector-core";
 
 /** Last tool the turn started — so `waiting` (approval) and `working` can name what it's doing. */
 let pendingTool: string | undefined;
 
-export const hermesHookHandle: HookHandle = async (agent, ev) => {
+/** A control-server handler that never reads the hook's connection. */
+export const hermesHookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
   const event = String(ev.hook_event_name ?? "");
   try {
     if (event === "pre_llm_call" || event === "pre_tool_call" || event === "post_llm_call") agent.noteActivity();

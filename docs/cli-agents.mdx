@@ -428,7 +428,8 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--space <s>` | resolved mesh | Which space to query |
+| `--server <url>` | registry entry | Broker URL override |
 | `--harness <connector>`, `-H` | all registered applications | Application whose catalog to list |
 | `--on <manager-instance>` | native selection | Ask only the named manager instance, or on a user-auth mesh the manager a name or host picks, as [`ps`](cli-agent-control.mdx#managed-seats) takes them. An unavailable or unauthorized pin refuses without choosing another. On a static or open mesh an id the registry lists for no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on` does. |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
@@ -436,7 +437,10 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 | `--plain` | off | The same report without color |
 
 Asks the selected manager for each application's model catalog (model ids plus their variants)
-for connectors that expose one. An empty or whitespace-only `--harness` or `-H` refuses with
+for connectors that expose one. Authenticated meshes must be registered. Run `cotal models` from
+the mesh's project folder or name the registered space with `--space`. `models` does not accept
+raw credential files (`--creds`).
+An empty or whitespace-only `--harness` or `-H` refuses with
 `USAGE_INVALID`, exit 1, before selecting a space or contacting a manager.
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Claude Code lists the models its login can use, and pi lists the models of providers it holds
@@ -494,6 +498,9 @@ which rule it broke.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
 paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
+With `--from -`, local creation waits for the pipe to close before saving the body.
+Body files and standard input from `--from` must be valid UTF-8. Invalid input is refused with
+`SCHEMA_INVALID` before any persona is written. Convert the input to UTF-8 and retry.
 Complete files must be valid UTF-8, pass validation for all supported fields and name the requested
 persona. Creation keeps their original bytes. An invalid encoding refuses with `SCHEMA_INVALID`,
 names the source and asks you to save it as UTF-8. It writes nothing. A file that names another persona is
@@ -602,7 +609,8 @@ when its output is piped or redirected, so
 `personas show <name> > <file>` copies it. It refuses a missing persona, an invalid definition and a
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
-That overlay heads the list with the mesh it read and marks each persona `running` or `not running`.
+That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
+It heads the list with the mesh it read and marks each persona `running` or `not running`.
 
 
 ### Personas on an exact manager [#personas-on-an-exact-manager]

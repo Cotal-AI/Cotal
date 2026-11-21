@@ -19,7 +19,7 @@
 import { join } from "node:path";
 import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
-import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { claimIdentityRecord, codeSpan, findMesh, findPreparedSpace, hasUserAuthState, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
 import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
@@ -85,9 +85,14 @@ const SENTENCE = {
 export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<ConnectCheckResult> {
   signal?.throwIfAborted();
   const entry = findMesh(space);
-  if (!entry) return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
-  const ua = entry.mode === "user" ? entry.userAuth : undefined;
-  if (!ua) return { outcome: "not-user-auth", space, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
+  if (!entry) {
+    // Stopping a local stack replaces its mesh registration with a preparation record.
+    const prepared = findPreparedSpace(space);
+    if (!prepared || hasUserAuthState(prepared.root, space, { readOnly: true }))
+      return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
+  }
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  if (!entry || !ua) return { outcome: "not-user-auth", space, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],

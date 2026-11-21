@@ -35,7 +35,7 @@ import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 
-const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
+const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
 const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
 const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear and limit: confirm without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;
@@ -535,9 +535,8 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   };
 }
 
-/** The live half of `--follow`: taps the selection's subjects, re-taps after the connection is
- *  re-established (a rebuild drops the old subscriptions), and records that gap. A dropped
- *  connection whose credential can no longer connect ends it with that credential's refusal. */
+/** The live half of `--follow`: taps the selection's subjects and records connection gaps.
+ *  A dropped connection whose credential can no longer connect ends it with that credential's refusal. */
 function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean) {
   const queue: { item?: HistoryItem; gap?: string; error?: string; lost?: true }[] = [];
   let wake: (() => void) | undefined;
@@ -546,29 +545,36 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
     wake?.();
   };
   const prefix = spacePrefix(conn.space);
-  const tapAll = () => {
-    ep.tap((subject, msg) => {
-      if (!msg) return;
-      const p = parseSubject(subject);
-      if (p?.kind === "chat") push({ item: itemOf(msg, { channel: p.rest }) });
-      else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });
-    }, { subject: channel !== undefined ? chatSubject(conn.space, "*", "*", channel) : `${prefix}.chat.>` });
-    if (dms) ep.tap((subject, msg) => { if (msg && parseSubject(subject)?.kind === "inst") push({ item: itemOf(msg, {}) }); }, { subject: `${prefix}.inst.>` });
-  };
   let down = false;
-  ep.on("connection", ({ connected }: { connected: boolean }) => {
+  const edge = (connected: boolean) => {
     if (!connected) {
+      if (down) return;
       down = true;
       push({ lost: true });
       return;
     }
     if (!down) return;
     down = false;
-    tapAll();
     push({ gap: "the connection was re-established; messages sent while it was down are not shown" });
+  };
+  // NATS restores taps on a transport reconnect. A replacement socket reports transport up before
+  // the endpoint rebinds its taps, so wait for the endpoint's bind in that case.
+  let rebinding = false;
+  ep.on("transport", ({ connected }: { connected: boolean }) => {
+    if (!connected || !rebinding) edge(connected);
+  });
+  ep.on("connection", ({ connected }: { connected: boolean }) => {
+    rebinding = !connected;
+    edge(connected);
   });
   ep.on("error", (e: Error) => push({ error: e.message }));
-  tapAll();
+  ep.tap((subject, msg) => {
+    if (!msg) return;
+    const p = parseSubject(subject);
+    if (p?.kind === "chat") push({ item: itemOf(msg, { channel: p.rest }) });
+    else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });
+  }, { subject: channel !== undefined ? chatSubject(conn.space, "*", "*", channel) : `${prefix}.chat.>` });
+  if (dms) ep.tap((subject, msg) => { if (msg && parseSubject(subject)?.kind === "inst") push({ item: itemOf(msg, {}) }); }, { subject: `${prefix}.inst.>` });
 
   return {
     async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, names: Map<string, string>, stopped: () => boolean): Promise<void> {

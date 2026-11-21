@@ -80,8 +80,10 @@ A mesh where nobody is present is a complete roster: `who` says so and exits 0.
 
 ### Watch consumer lifetime
 
-`who` watches the roster and the channel registry on every mesh so it can report those states. On a
-static-auth or user-auth mesh the credential `who` connects with may not delete its watch consumers,
+On an open mesh, `who` reads the roster and channel registry once. It creates neither bucket.
+If the broker confirms there is no roster bucket, `who` reports an empty roster.
+On a static-auth or user-auth mesh, `who` watches both buckets so it can report the watch states.
+The credential `who` connects with may not delete its watch consumers,
 so each one stays on the broker for five minutes after `who` exits. A script that runs `who` in a
 tight loop there can reach the broker's limit of 1000 consumers per stream.
 
@@ -210,7 +212,8 @@ registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no
 A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
 enrollment path, and nothing is written.
 After a local static space is stopped, signer export can still resolve its retained broker
-configuration and validated trust without starting a broker or repeating its address.
+configuration and validated trust from its project folder, including when you name that space
+with `--space <space>`. You do not need to start the broker or repeat its address.
 
 
 ### Protected output

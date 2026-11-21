@@ -74,6 +74,18 @@ const noop = async (): Promise<void> => {};
       assert.doesNotThrow(() => findCommand(registry.all<Command>("command"), "sync")!.validate!({ values: { idp: url }, positionals: [], raw: [] }));
 
     writeFileSync(join(root, "workflow.cotal.js"), 'const ok = await checkpoint("approve-plan", "Approve the plan?");\nlog(ok.status);\n');
+    for (const words of [["start", "workflow.cotal.js"], ["resume", "run_sample"]]) {
+      for (const timeout of ["9007199254740992ms", "9007199254740991s"]) {
+        const invalid = run(["run", ...words, "--timeout", timeout, "--json"]);
+        assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+        assert.equal(invalid.stderr, "");
+        const report = JSON.parse(invalid.stdout);
+        assert.equal(report.outcome, "refused");
+        assert.equal(report.error.code, "USAGE_INVALID");
+        assert.match(report.error.message, /--timeout .* is out of range/);
+        assert.ok(report.error.message.includes(timeout));
+      }
+    }
     writeFileSync(join(root, "bad-results.json"), '{"checkpoints":{"approve-plan":{"status":"done"}}}');
     const refused = run(["r", "simulate", "./workflow.cotal.js", "--handler", "./bad-results.json"]);
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
@@ -81,6 +93,31 @@ const noop = async (): Promise<void> => {};
     assert.match(diagnostic ?? "", /invalid scripted checkpoint 'approve-plan' in \.\/bad-results\.json: status must be "resolved" or "expired"/);
     assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
     assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
+
+    writeFileSync(join(root, "wait.js"), `
+const builder = await spawn("builder");
+const start = now();
+const reply = await wait(replied(builder), { name: "reply", timeout: "1s" });
+log("reply", reply === null ? "timed out" : "received", "elapsed", now() - start);
+`);
+    writeFileSync(join(root, "results.json"), '{"events":{"reply":{"arrived":true}},"clock":{"wait":"2s"}}');
+    const timedOut = run(["run", "simulate", "wait.js", "--handler", "results.json", "--plain"]);
+    assert.equal(timedOut.status, 0, timedOut.stdout + timedOut.stderr);
+    assert.match(timedOut.stdout, /Virtual time:\s+1000 ms/);
+    assert.match(timedOut.stdout, /reply timed out elapsed 1000/);
+
+    writeFileSync(join(root, "expiry-race.js"), `
+const raceResult = await race({
+  approval: async () => await checkpoint("approve", "Approve?", { timeout: "1s", onExpiry: "proceed" }),
+  fallback: async () => await sleep("8s")
+}, { name: "approval-or-fallback" });
+log("winner", raceResult.index);
+`);
+    writeFileSync(join(root, "expiry.json"), '{"checkpoints":{"approve":{"status":"expired"}}}');
+    const expired = run(["run", "simulate", "expiry-race.js", "--handler", "expiry.json", "--plain"]);
+    assert.equal(expired.status, 0, expired.stdout + expired.stderr);
+    assert.match(expired.stdout, /Virtual time:\s+1000 ms/);
+    assert.match(expired.stdout, /winner approval/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -279,6 +316,16 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.match(out, /\bUsage\b/u, "feedback --help prints its usage heading");
   assert.match(out, /cotal feedback\b/u, "feedback --help prints its command usage");
   assert.ok(!out.includes("Unknown option"), "no usage error above the help");
+
+  const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-installation.mdx"), "utf8");
+  const synopsis = /^## feedback\b[^\n]*\n\n```bash\n([\s\S]*?)^```/m.exec(reference)?.[1];
+  assert.ok(synopsis, "the Feedback reference has a command synopsis");
+  const forms = synopsis.split(/^cotal feedback /m).slice(1);
+  assert.equal(forms.length, 2, "the reference shows public and keyed feedback forms");
+  for (const option of ["--severity <severity>", "--area <area>", "--name <name>"]) {
+    assert.ok(out.includes(option), `feedback --help shows ${option}`);
+    for (const form of forms) assert.ok(form.includes(`[${option}]`), `feedback reference is missing [${option}] in ${form.trim()}`);
+  }
 }
 
 // --- `version`, `--version` and `-V` print `cotal-ai <semver>` (+ any extensions) -----------------

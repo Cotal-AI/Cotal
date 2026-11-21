@@ -2,7 +2,7 @@ import "../../implementations/cli/smoke/update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -84,11 +84,13 @@ console.log('LEGACY_READS=' + legacyReads);
     };
     let daemon: ChildProcess | undefined;
     let daemonExit: Promise<number | null> | undefined;
+    let stackStarted = false;
     if (!installerOnly) try {
       const create = cli("space", "create", "demo", "--root", ".");
       assert.equal(create.status, 0, create.stdout + create.stderr);
       const up = cli("up", "--open", "--detach", "--space", "demo", "--server", `nats://127.0.0.1:${await freePort()}`);
       assert.equal(up.status, 0, up.stdout + up.stderr);
+      stackStarted = true;
       assert.match(up.stdout, /Controller stack started/);
       const before = cli("update");
       assert.equal(before.status, 0, before.stdout + before.stderr);
@@ -179,10 +181,78 @@ console.log('LEGACY_READS=' + legacyReads);
       assert.deepEqual(afterStatus.nativeEndpoint, beforeStatus.nativeEndpoint, "updates do not replace its native lifecycle");
       assert.equal(daemon.exitCode, null, "the other installation's updates leave the foreground daemon running");
       console.log("separate installation: updates leave the selected Manager and foreground daemon running");
+
+      const sets = join(env.XDG_CONFIG_HOME!, "cotal", "installs", createHash("sha256").update(entry).digest("hex"), "sets");
+      const selection = join(sets, version, "selection.json");
+      const current = join(sets, "current.json");
+      const saved = readFileSync(selection), savedCurrent = readFileSync(current);
+      const unknown = '{"v":2,"futureSelection":true}\n';
+      writeFileSync(selection, unknown);
+      try {
+        const shown = cli("--version");
+        assert.equal(shown.status, 0, shown.stdout + shown.stderr);
+        assert.equal(shown.stdout.split("\n", 1)[0], `cotal-ai ${version}`);
+        const status = cli("status");
+        assert.match(status.stdout, /This machine/);
+        assert.match(status.stderr, /connector retention selection.*unreadable/);
+        const connectors = cli("ext", "list");
+        assert.equal(connectors.status, 1, connectors.stdout + connectors.stderr);
+        assert.match(connectors.stderr, /connector retention selection.*unreadable.*cotal ext seed --repair/);
+        const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
+        await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
+        try {
+          const update = spawn(process.execPath, [entry, "update", "--self"], {
+            cwd: project, timeout: 30_000,
+            env: { ...env, npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
+          });
+          let output = "";
+          update.stdout.on("data", data => { output += data; });
+          update.stderr.on("data", data => { output += data; });
+          const code = await new Promise<number | null>((resolve, reject) => { update.once("error", reject); update.once("close", resolve); });
+          assert.equal(code, 0, output);
+          assert.match(output, /No newer CLI version\. No connector reconciliation was run\./);
+          assert.match(output, /Registry latest:/);
+        } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
+        const down = cli("down", "--yes");
+        assert.equal(down.status, 0, down.stdout + down.stderr);
+        stackStarted = false;
+        if (down.stdout.includes("Controller stack stopped")) {
+          for (const name of ["manager", "broker"]) assert.match(down.stdout, new RegExp(`^  ${name}\\s+\\S+\\s+stopped$`, "m"));
+        } else {
+          assert.match(down.stdout, /stopped manager/);
+          assert.match(down.stdout, /stopped delivery daemon/);
+          assert.match(down.stdout, /stopped nats-server/);
+        }
+        assert.equal(readFileSync(selection, "utf8"), unknown);
+        console.log("unknown connector selection: installed version, status, self-update and down remain available");
+        // Leave one trusted pointer at a time. Repair must keep the existing connector graph.
+        for (const record of [selection, current]) {
+          writeFileSync(record, unknown, { mode: 0o600 });
+          chmodSync(record, 0o400);
+          const repaired = cli("ext", "seed", "--repair");
+          assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+          const folder = dirname(record), name = record.slice(folder.length + 1);
+          const backups = readdirSync(folder).filter(file => file.startsWith(`${name}.corrupt.`));
+          assert.equal(backups.length, 1);
+          const backup = join(folder, backups[0]!);
+          assert.equal(readFileSync(backup, "utf8"), unknown);
+          assert.equal(statSync(backup).mode & 0o777, 0o400);
+          assert.equal(JSON.parse(readFileSync(record, "utf8")).root, JSON.parse(saved.toString()).root);
+          const after = cli("status");
+          assert.match(after.stdout, /This machine/);
+          assert.doesNotMatch(after.stderr, /connector retention selection.*unreadable/);
+        }
+        console.log("connector selection repair: kept unreadable bytes and mode and restored clean status without replacing the graph");
+      } finally {
+        for (const [path, bytes] of [[selection, saved], [current, savedCurrent]] as const) {
+          chmodSync(path, 0o600);
+          writeFileSync(path, bytes);
+        }
+      }
     } finally {
-      const down = cli("down", "--yes");
+      const down = stackStarted ? cli("down", "--yes") : undefined;
       if (daemon?.exitCode === null) { daemon.kill("SIGTERM"); await daemonExit; }
-      assert.equal(down.status, 0, down.stdout + down.stderr);
+      if (down) assert.equal(down.status, 0, down.stdout + down.stderr);
     }
 
     const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));

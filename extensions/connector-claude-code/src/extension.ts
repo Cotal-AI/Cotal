@@ -261,6 +261,9 @@ export const claudeConnector: Connector = {
   // here would be a second place the subject is decided, and the two would drift the first time
   // either changed.
   eventChannel,
+  // A launched session serves Claude's tool permissions on the agent endpoint (prompts.ts), except on
+  // Windows, where the hook answers each one itself until serving there is built (hook.ts).
+  ...(process.platform === "win32" ? {} : { prompts: true as const }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,

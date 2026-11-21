@@ -1,15 +1,15 @@
-/** Shipped readiness refuses unusable IdP proofs and permits two individually bounded slow reads. */
+/** Shipped readiness distinguishes local spaces, refuses unusable IdP proofs and permits two bounded slow reads. */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { SignJWT, generateKeyPair } from "jose";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
-import { killAndAwaitExit, skipSuite } from "@cotal-ai/smoke-kit";
+import { findMesh, recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
+import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox, skipSuite } from "@cotal-ai/smoke-kit";
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite("daemon-readiness smoke: Linux only");
@@ -27,10 +27,11 @@ mkdirSync(join(config, "systemd/user"), { recursive: true, mode: 0o700 });
 writeFileSync(join(native, "systemctl"), `#!/bin/sh\n[ "$*" = '--user show-environment' ] || exit 89\nprintf '%s\\n' 'XDG_CONFIG_HOME=${config}'\n`, { mode: 0o700 });
 for (const name of ["launchctl", "schtasks"]) writeFileSync(join(native, name), "#!/bin/sh\nexit 89\n", { mode: 0o700 });
 const unitPath = join(config, "systemd/user/cotal-daemon.service");
+const unitReceipt = join(home, "daemon/service-unit.json");
 const unit = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${cliEntry}" daemon serve\nRestart=always\n\n[Install]\nWantedBy=default.target\n`;
 writeFileSync(unitPath, unit, { mode: 0o600 });
 mkdirSync(join(home, "daemon"), { mode: 0o700 });
-writeFileSync(join(home, "daemon/service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath,
+writeFileSync(unitReceipt, JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath,
   unitSha256: createHash("sha256").update(unit).digest("hex"), installedAt: new Date().toISOString() }), { mode: 0o600 });
 const key = await generateKeyPair("EdDSA");
 let mode = "valid", tokenDelay = 0, authorityDelay = 0, tokens = 0, gets = 0, posts = 0, devices = 0;
@@ -72,18 +73,98 @@ recordMesh({ space: "proof", server: "nats://127.0.0.1:4222", root: mesh, mode: 
 const seed = (name: string) => saveIdpSession(home, idp, { token: `fixture-${name}`, expiresAt: 1, sub: "fixture-owner" });
 const counts = () => ({ tokens, gets, posts, devices });
 const identities = () => readdirSync(join(home, "daemon"), { recursive: true }).map(String).filter((p) => p.endsWith("service-identity.json")).length;
-const run = async (...args: string[]) => {
+const cli = async (cwd: string, ...args: string[]) => {
   const started = Date.now();
-  const child = spawn(process.execPath, [cliEntry, "daemon", ...args, "--json"], { cwd: parent, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [cliEntry, ...args, "--json"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "";
   child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
-  const code = await new Promise<number | null>((r, reject) => { child.once("exit", r); child.once("error", reject); });
+  const code = await new Promise<number | null>((r, reject) => { child.once("close", r); child.once("error", reject); });
+  assert.ok(out.trim(), `${args.join(" ")} produced no output (exit ${code}): ${err}`);
   return { code, elapsedMs: Date.now() - started, doc: JSON.parse(out) as Record<string, any>, err };
 };
+const run = (...args: string[]) => cli(parent, "daemon", ...args);
 const daemon = spawn(process.execPath, [cliEntry, "daemon", "serve"], { cwd: parent, env, stdio: ["ignore", "ignore", "ignore"] });
 try {
   for (let i = 0; i < 100 && !existsSync(paths.socket) && daemon.exitCode === null; i++) await sleep(100);
   assert.ok(existsSync(paths.socket), "shipped foreground daemon must bind");
+  const openSpace = "local-open", openProject = join(parent, openSpace);
+  mkdirSync(join(openProject, ".cotal"), { recursive: true, mode: 0o700 });
+  const openStack = spawn(process.execPath, [cliEntry, "up", "--foreground", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--space", openSpace],
+    { cwd: openProject, env, stdio: ["ignore", "pipe", "pipe"] });
+  let openOutput = "";
+  openStack.stdout.on("data", (chunk) => { openOutput += String(chunk); });
+  openStack.stderr.on("data", (chunk) => { openOutput += String(chunk); });
+  try {
+    for (let i = 0; i < 100 && !findMesh(openSpace) && openStack.exitCode === null && openStack.signalCode === null; i++) await sleep(100);
+    assert.equal(findMesh(openSpace)?.mode, "open", openOutput);
+    let manager = await cli(openProject, "ps", "--space", openSpace);
+    for (let i = 0; i < 10 && manager.code !== 0 && openStack.exitCode === null; i++) {
+      await sleep(100);
+      manager = await cli(openProject, "ps", "--space", openSpace);
+    }
+    assert.equal(manager.code, 0, JSON.stringify(manager));
+    const reply = await run("service-connect", "--space", openSpace);
+    assert.equal(reply.code, 2, JSON.stringify(reply));
+    assert.equal(reply.doc.error?.code, "UNSUPPORTED", JSON.stringify(reply));
+    assert.match(reply.doc.error?.message, /this space does not use user sign-in/);
+    assert.equal(reply.doc.error?.remedy, "run `cotal up` in the folder that hosts the local space. Its stack runs the Manager");
+    console.log("PASS running open space directs service-connect to cotal up instead of registration");
+  } finally {
+    await killAndAwaitExit(openStack, "SIGTERM");
+    openStack.stdout.destroy();
+    openStack.stderr.destroy();
+  }
+  const localSpace = "local-static", project = join(parent, localSpace);
+  mkdirSync(project, { mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: project, cotalHome: home, xdgConfigHome: config });
+  const runProject = async (...args: string[]) => {
+    const result = await cli(project, ...args);
+    assert.equal(result.code, 0, JSON.stringify(result));
+    return result.doc.result;
+  };
+  const assertLocalRefusal = async (state: string) => {
+    for (const [mode, ...flags] of [["setup"], ["setup", "--idp", idp], ["connect-check"]] as const) {
+      const reply = await run(mode, "--space", localSpace, ...flags);
+      assert.equal(reply.code, 2, JSON.stringify(reply));
+      assert.equal(reply.doc.error?.code, "UNSUPPORTED");
+      assert.equal(reply.doc.error?.cause?.code, "NOT_USER_AUTH");
+      assert.equal(reply.doc.error?.remedy, "run `cotal up` in the folder that hosts the local space. Its stack runs the Manager");
+    }
+    console.log(`PASS ${state} local space directs setup and connect-check to cotal up`);
+  };
+  const down = ["down", "--with-agents", "--yes"];
+  const stopProject = () => {
+    assertSmokeSandboxDown(sandbox, [...down, "--json"], { cwd: project, env });
+    return cli(project, ...down);
+  };
+  try {
+    const before = counts();
+    await runProject("space", "create", localSpace, "--root", project);
+    await assertLocalRefusal("prepared");
+    await runProject("up", "--detach", "--server", `nats://127.0.0.1:${await freePort()}`);
+    await assertLocalRefusal("running");
+    const stopped = await stopProject();
+    assert.equal(stopped.code, 0, JSON.stringify(stopped));
+    assert.equal((await runProject("space", "show", localSpace)).state, "stopped");
+    await assertLocalRefusal("stopped");
+    // The daemon was started in the foreground. Remove the synthetic install receipt for this case.
+    renameSync(unitReceipt, `${unitReceipt}.saved`);
+    try {
+      await assertLocalRefusal("stopped, with no installed unit");
+      assert.equal(existsSync(unitReceipt), false, "local setup must not install a service");
+    } finally {
+      renameSync(`${unitReceipt}.saved`, unitReceipt);
+    }
+    for (const mode of ["setup", "connect-check"]) {
+      const reply = await run(mode, "--space", "unknown-space");
+      assert.equal(reply.code, 2, JSON.stringify(reply));
+      assert.equal(reply.doc.error?.code, "TARGET_NOT_FOUND");
+    }
+    assert.deepEqual(counts(), before, "local and unknown spaces never contact the sign-in provider");
+    console.log("PASS unknown spaces still return TARGET_NOT_FOUND");
+  } finally {
+    await stopProject();
+  }
   for (const value of ["nonsense", "expired", "no-expiry", "not-yet-valid", "signature-x", "signature-abcde"]) {
     mode = value;
     for (const args of [["connect-check", "--space", "proof"], ["setup", "--no-manager", "--space", "proof", "--idp", idp, "--wait", "0"]]) {

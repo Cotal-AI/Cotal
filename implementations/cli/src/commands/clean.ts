@@ -49,7 +49,7 @@ import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { pidfileState, pidfileTargets } from "./down.js";
 import { localProcessSurface } from "../ext-loader.js";
-import { readStackJournal, STACK_DEFINITION } from "../lib/stack-journal.js";
+import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { maintenanceNextStep } from "../lib/restore.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -59,6 +59,7 @@ import { observeServiceProcess, serviceInstances } from "../lib/service-instance
 import { foreignEntriesRefusal, lastServedStore, listEntries, oldStoreForeignEntries, refuseSharedStoreRemoval } from "../lib/store-dir.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { readStoreIdentity } from "../lib/store-identity.js";
 
 const TARGETS = ["history", "store", "all", "restore-fallback", "restore-attempt"] as const;
 /** How a removed trust record is labeled. A full backup is bound to the trust it was taken under,
@@ -215,11 +216,13 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // the lock included, so it reads the same state without one.
   // From here an interrupt says what the clean left, and releases the lock so the next run does not find it held.
   // The handler is in place before the lock is taken: without one, an interrupt ends the process with the lock held.
+  const storeFlag = values["store-dir"] === undefined ? "" : ` --store-dir ${shellWord(values["store-dir"])}`;
+  const cleanCommand = (preview: boolean) => codeSpan(`${displayCmd()} clean ${target}${storeFlag} ${preview ? "--dry-run" : "--force"}`);
   let lock: ReturnType<typeof acquireMaintenanceLock> | undefined;
   const progress: string[] = [];
   const stopReporting = dryRun ? undefined : reportOnInterrupt(presentationOf(args.values), "clean", () => progress.length
-    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with \`cotal clean ${target} --dry-run\`, then run \`cotal clean ${target} --force\` again` })
-    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run \`cotal clean ${target} --force\` again` }),
+    ? new CommandFailure("unknown", "OPERATION_UNKNOWN", `clean ${target} was interrupted after it removed ${progress.join(", ")}; the rest may remain`, { target: { root }, changed: progress, remedy: `see what remains with ${cleanCommand(true)}, then run ${cleanCommand(false)} again` })
+    : new CommandFailure("failed", "OPERATION_FAILED", `clean ${target} was interrupted before it removed anything`, { target: { root }, remedy: `run ${cleanCommand(false)} again` }),
   () => { if (lock) releaseMaintenanceLock(lock); });
   let removed: string[];
   try {
@@ -229,11 +232,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
       // The store holds the attempt's preserved or restored data, so the step that moves the attempt
       // on is the one `cotal status` shows for it.
       const { attemptId, next } = maintenanceNextStep(root, maintenance);
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `clean ${target} is refused while this root holds maintenance attempt ${attemptId} (state ${maintenance.state}); nothing was removed`, { target: { root, attemptId, state: maintenance.state }, remedy: `${next ?? "cotal status shows this root's maintenance state"}; once the root holds no maintenance state and its mesh is stopped, run \`${displayCmd()} clean ${target} --force\` again` });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `clean ${target} is refused while this root holds maintenance attempt ${attemptId} (state ${maintenance.state}); nothing was removed`, { target: { root, attemptId, state: maintenance.state }, remedy: `${next ?? "cotal status shows this root's maintenance state"}; once the root holds no maintenance state and its mesh is stopped, run ${cleanCommand(dryRun)} again` });
     }
     const running = liveMeshProcess(root, undefined, true);
     if (running) {
-      stderrLine("✗ ", `the mesh is still running (${running}) - stop it first: \`cotal down\`, then \`cotal clean ${target}\``, c.red);
+      stderrLine("✗ ", `the mesh is still running (${running}) - stop it with ${codeSpan(`${displayCmd()} down --yes`)}, then run ${cleanCommand(dryRun)}`, c.red);
       process.exitCode = 1;
       return;
     }
@@ -253,7 +256,22 @@ export async function clean(args: ParsedArgs): Promise<void> {
       const linked = realpathSync.native(requested);
       throw new CommandFailure("refused", "CONFLICT", `the store cleanup path ${requested} is a link to ${linked}, and cleanup removes only a real directory; nothing was removed`, { target: { root, storeDir: requested, linkTarget: linked }, remedy: "replace the link with the directory it points to, then run this command again" });
     }
-    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, dryRun, onRemoved: (label) => progress.push(label) });
+    // An absent store was not removed by this clean. Leave unexpected loss visible in status.
+    const stack = readStackJournal(root)?.journal;
+    const recordedStore = stack?.broker?.storeDir;
+    const recordedIdentity = recordedStore === undefined ? undefined : lstatSync(recordedStore, { bigint: true, throwIfNoEntry: false });
+    const requestedPath = recordedIdentity?.isDirectory() && existsSync(requested) ? realpathSync.native(requested) : undefined;
+    const expectedStore = recordedStore !== undefined && requestedPath !== undefined && realpathSync.native(recordedStore) === requestedPath
+      ? { path: requestedPath, identity: recordedIdentity } : undefined;
+    if (expectedStore) {
+      const dir = dirname(stackJournalPath(root));
+      try { accessSync(dir, constants.W_OK | constants.X_OK); }
+      catch {
+        throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where clean records the empty replacement store; nothing was removed`, { target: { root, path: dir }, remedy: `make it writable with chmod u+w ${shellWord(dir)}, then run ${cleanCommand(dryRun)} again` });
+      }
+    }
+    removed = await removeLocalState(root, { includeAuth: target === "all", storeDir, expectedStore, dryRun, onRemoved: (label) => progress.push(label) });
+    if (!dryRun && stack && recordedStore && expectedStore) recordResetStore(root, stack.space, recordedStore, removed);
     // Keep registry/current-pointer cleanup in the same lock transaction as local identity removal.
     if (target === "all" && dryRun) removed.push(...localMeshesForRoot(root).map((mesh) => `the registration of space ${mesh.space}`));
     else if (target === "all") removeMeshesByRoot(root);
@@ -627,8 +645,13 @@ export function safeStoreCleanupPath(root: string, override: string | undefined)
     const jetstream = join(target, "jetstream");
     const hasGeneration = existsSync(generation) && lstatSync(generation).isFile() && !lstatSync(generation).isSymbolicLink();
     const hasJetStream = existsSync(jetstream) && lstatSync(jetstream).isDirectory() && !lstatSync(jetstream).isSymbolicLink();
-    if (!hasGeneration && !hasJetStream)
-      throw new Error(`refusing custom cleanup target without a Cotal or JetStream store marker: ${target}`);
+    if (!hasGeneration && !hasJetStream) {
+      // Cleanup and reset leave an empty replacement. Its journal pin is the only marker until up.
+      const recorded = readStackJournal(root)?.journal.broker?.storeIdentity;
+      const current = recorded?.path === target && readdirSync(target).length === 0 ? readStoreIdentity(target) : undefined;
+      if (!current || current.dev !== recorded?.dev || current.ino !== recorded?.ino || current.birthtimeNs !== recorded?.birthtimeNs)
+        throw new Error(`refusing custom cleanup target without a Cotal or JetStream store marker: ${target}`);
+    }
   }
   // Check every physical directory before the rename: unlinking a child needs write and search
   // access on its parent. Symlinks are removed as entries, never followed by this preflight.

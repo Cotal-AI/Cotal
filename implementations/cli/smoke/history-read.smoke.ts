@@ -44,7 +44,7 @@ import {
   setupSpaceStreams,
   standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
@@ -248,7 +248,9 @@ try {
   check("--grep matches text case-insensitively within the window", JSON.stringify(texts(grep)) === JSON.stringify(["deploy started", "deploy finished"]) && grep.envelope?.result?.window.read === 4, { texts: texts(grep), window: grep.envelope?.result?.window });
 
   const dms = await run(["history", "--dms", "--json"]);
-  check("--dms adds DMs, each naming its recipient", dms.status === 0 && (dms.envelope?.result?.items ?? []).some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
+  const dmItems = dms.envelope?.result?.items ?? [];
+  check("--dms reads both channels and adds DMs, each naming its recipient", dms.status === 0 && JSON.stringify(dmItems.filter((i) => i.channel !== null).map((i) => i.text).sort()) === JSON.stringify(texts(all).sort())
+    && dmItems.some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
   // A DM to a recipient that had sent nothing used to show its principal; the roster names it.
   const erin = await agent("erin");
   await alice.unicast(`${erin.principal.owner}.${erin.principal.actor}`, "for erin");
@@ -263,6 +265,10 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
+  const help = await run(["history", "--help"]);
+  check("history help lists a channel and --dms as alternatives and names the scope of --dms",
+    help.status === 0 && help.stdout.includes("cotal history [<channel> | --dms]")
+      && help.stdout.includes("read all accessible channels and DMs"), help.stdout);
   for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
@@ -798,6 +804,13 @@ try {
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
   {
+    const openCard = await run(["channel", "show", "general", "--space", openSpace, "--plain"]);
+    check("channel show explains unavailable membership on an open mesh and still suggests history",
+      openCard.status === 0 && openCard.stdout.includes("Broker-observed channel membership is unavailable on open meshes.")
+      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes("cotal history '#general'"), shown(openCard));
+    const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
+    check("channel show still suggests membership on the auth mesh",
+      authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
     const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
@@ -998,6 +1011,41 @@ try {
       general.status === 0 && general.envelope?.completeness === "complete" && (general.envelope?.result?.items ?? []).some((i) => i.text === "channel stays"),
       shown(general),
     );
+  }
+
+  // Keep the same follower and broker store across a short restart of a live channel.
+  for (const ep of endpoints) await ep.stop();
+  await provisioner.stop();
+  const publisher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "operator"),
+    card: { name: "restart-publisher", kind: "endpoint" }, consume: false, watchPresence: false, watchChannels: false, registerPresence: false });
+  publisher.on("error", () => {});
+  const liveChannel = await run(["channel", "set", "updates", "--delivery", "live", "--no-replay", "--json"]);
+  check("restart control: live channel saved", liveChannel.status === 0, shown(liveChannel));
+  const restarted = follow(["history", "updates", "--follow", "--json"]);
+  let replacement: ReturnType<typeof spawn> | undefined;
+  let releaseReplacement: (() => void) | undefined;
+  try {
+    const snap = await restarted.until((line) => line.includes('"type":"snapshot"'));
+    await killAndAwaitExit(broker);
+    await wait(2_000);
+    replacement = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
+    releaseReplacement = teardownOnSignal(replacement, storeDir);
+    await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
+    const gap = await restarted.until((line) => line.includes('"type":"gap"'), 10_000);
+    await publisher.start();
+    const text = "post after broker restart";
+    await publisher.multicast(text, { channel: "updates" });
+    const event = await restarted.until((line) => line.includes(`"text":"${text}"`));
+    const seen = restarted.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; text?: string } });
+    check("a short broker restart reports one loss and one gap before resuming live history",
+      snap && gap && event && seen.map((row) => row.type).join() === "snapshot,error,gap,event"
+        && seen[1]?.data.code === "TARGET_UNAVAILABLE" && seen[3]?.data.text === text,
+      { lines: restarted.lines, stderr: restarted.stderr() });
+  } finally {
+    await killAndAwaitExit(restarted.child, "SIGINT");
+    await publisher.stop().catch(() => {});
+    if (replacement) await killAndAwaitExit(replacement);
+    releaseReplacement?.();
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});

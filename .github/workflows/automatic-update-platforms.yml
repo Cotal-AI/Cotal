@@ -454,13 +454,13 @@ jobs:
             writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-next-origin.json', JSON.stringify(originReceipt));
           }
           NODE
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      # The published release keeps this package; a workflow artifact expires after seven days.
+      - name: Download released desktop package
         if: matrix.scenario == 'candidate-next-stopped-desktop-self'
-        with:
-          name: desktop-release-Linux-X64
-          run-id: 43456519342
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/desktop-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.164.2 --repo "$GITHUB_REPOSITORY" --pattern 'Cotal_0.164.2_amd64.deb' --dir "$RUNNER_TEMP/desktop-release"
       - name: Verify released desktop package for stopped-desktop ownership cell
         if: matrix.scenario == 'candidate-next-stopped-desktop-self'
         shell: bash
@@ -1403,12 +1403,12 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: desktop-release-Linux-X64
-          run-id: 43456519342
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/desktop-release
+      # The published release keeps this package; a workflow artifact expires after seven days.
+      - name: Download released desktop package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.164.2 --repo "$GITHUB_REPOSITORY" --pattern 'Cotal_0.164.2_amd64.deb' --dir "$RUNNER_TEMP/desktop-release"
       - name: Verify released desktop package and prepare disposable user manager
         shell: bash
         run: |

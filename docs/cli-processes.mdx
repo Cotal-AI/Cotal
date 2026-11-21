@@ -565,6 +565,9 @@ object in JSON and desktop status replies. Its fields are `current`, `latest`, `
 `lastResult`, `nextAttempt`, `automatic`, `notify`, `failures` and `channel`. The channel is `npm` for
 standalone installations and `desktop` for the app's bundled runtime. Desktop runtimes keep registry
 checks but report automatic installation off and direct updates to the signed app installer.
+During native service verification, status reports enabled automatic updates as on and names the
+verification in `lastResult`. An explicit off preference still reports off. The daemon cannot
+install an automatic update until it verifies ownership of the native service.
 Older daemons may omit the object, channel or notification preference.
 The closed local request `update-settings` reads the shared preferences and accepts optional
 Boolean `auto` and `notify` fields. It uses the same preferences as the update CLI.
@@ -610,6 +613,9 @@ cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plain]
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
+
+`service-connect`, `service-disconnect` and `service-status` reject malformed space names with
+`USAGE_INVALID` before contacting the daemon. Use 1 to 64 ASCII letters, digits, underscores or hyphens.
 
 On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
 On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
@@ -673,8 +679,10 @@ application, `daemon status` shows this recovery under Next.
 
 To connect directly to a user-auth participant space, use `cotal daemon setup --space <s> [--idp <url>]`.
 For a local static-auth or open space, run `cotal up` in the folder that hosts it. The local stack
-runs its Manager. Daemon setup refuses with `UNSUPPORTED` (`NOT_USER_AUTH`) before turning the
-space on or recording a hosted Manager refusal.
+runs its Manager. For these local spaces, `daemon setup` and `daemon connect-check` report
+`UNSUPPORTED` (`NOT_USER_AUTH`) and point to `cotal up`, even if the stack is not running.
+Daemon setup reports this before it checks for an installed daemon service, including when a
+foreground daemon is running. It does not turn the space on or record a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
@@ -1065,10 +1073,10 @@ the setup command with the pinned provider. This applies to both Manager and `--
 An expired or revoked session rejected by the provider needs a new device sign-in, even when a
 cached session remains on disk. A provider outage or unusable response stops setup with
 `DEPENDENCY_UNAVAILABLE`, without asking for a new sign-in or reporting the session as valid.
-A daemon that is already answering while no installed unit is recorded for it refuses `CONFLICT`
-(`RUNNING_WITHOUT_UNIT`): installing then would start a second daemon that the lifetime lock
-refuses, and the running one is not a persistent service. Stop it and run `setup` again, or keep it
-and use `register` and `service-connect` by hand.
+If setup needs the machine daemon and it is already answering without an installed unit on record,
+setup refuses `CONFLICT` (`RUNNING_WITHOUT_UNIT`). The lifetime lock refuses a second daemon, and
+the running one is not a persistent service. Stop it and run setup again. For a user-auth
+participant space, you can instead keep it and use `register` and `service-connect` by hand.
 
 `install` runs the daemon as the signed-in user's own service, through the native supervisor of
 each OS. It runs as that user, never as root or LocalSystem. A system-wide headless profile, such as
@@ -1205,8 +1213,11 @@ refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). On macOS it is `cotal/daemon.soc
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment
 variable changes it, so the LaunchAgent and your terminal reach the same socket. A socket path longer
 than the kernel accepts (107 bytes on Linux, 103 on macOS) refuses `TARGET_UNAVAILABLE`
-(`NO_RUNTIME_DIR`). On both, the forms refuse `PERMISSION_DENIED` for a runtime directory
-that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
+(`NO_RUNTIME_DIR`). On Linux, set `XDG_RUNTIME_DIR` to a shorter directory you own with mode
+`0700` and use the same value for the daemon and its clients. Shortening the daemon home or
+Cotal home does not shorten the socket path. On both platforms, the daemon refuses
+`PERMISSION_DENIED` for a runtime directory that is a symlink, not a directory, not owned by you,
+or not mode `0700`. `status` also refuses
 `PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`. For
 a socket of another mode (`SOCKET_WRONG_MODE`), Next says to find the process listening there with
 `ss -xlp` and stop it, then start the daemon with `cotal daemon serve`.
@@ -1344,6 +1355,8 @@ step instead of reporting a generic spaces failure. Signing in again cannot repa
 The sign-in cache check includes provider keys and session records, not only the file's JSON shape.
 
 `connect-check` asks the running daemon whether it could register with a space as its own service.
+If the selected daemon is stopped, the refusal gives a foreground startup command that keeps the
+chosen `--daemon-home`. Run that command, then retry the check.
 The daemon is not a Manager and never borrows a Manager's identity or authority. The check reads
 the space's registration on this machine and validates the daemon's sign-in through the provider's
 token exchange, then reads the space's public account identity from its auth service
@@ -1463,12 +1476,14 @@ the space authority. Other unusable proofs retain their existing refusal.
 
 Every other answer is a refusal and nothing is connected. An unregistered space is
 `TARGET_NOT_FOUND` (`NOT_REGISTERED`). Check the name or run `cotal space` to list registered spaces.
+For a registered static-auth or open space, `service-connect` refuses `UNSUPPORTED` and points to
+`cotal up` in the folder that hosts the space. The local stack runs its Manager.
 Not yet approved is `LIFECYCLE_BLOCKED`
 (`APPROVAL_PENDING`). A refused registration is `PERMISSION_DENIED`, and so is a space that ended the
 daemon's authority, with its code as the native code, such as `APPROVAL_REVOKED`; connecting again
 does not reconnect it. A space or broker that cannot be reached is `DEPENDENCY_UNAVAILABLE`, and
-connecting again retries the same requests. Without a register request the answer is
-`TARGET_NOT_FOUND`.
+connecting again retries the same requests. A user-auth space without a register request reports
+`TARGET_NOT_FOUND` (`NOT_REQUESTED`).
 
 While the daemon runs, the connection renews itself and reconnects on its own. The access bearer
 lives at most 60 seconds, so the broker drops the connection when each one expires and the daemon

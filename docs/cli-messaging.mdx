@@ -210,7 +210,8 @@ A named channel is the session's initial channel. On a static or user-auth mesh 
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
 before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
-session to a channel it left. The refusal says to leave and run `cotal chat <channel>` with the
+session to a channel it left. `/join` takes one concrete channel name and refuses wildcards before
+checking the grant. A grant refusal says to leave and run `cotal chat <channel>` with the
 flags this session was started with, such as `--stdio` and `--space`. Choosing such a channel as
 the recipient in the terminal view or `--plain` warns with the same step. Before the session is admitted, `chat` reads the channel registry on the resolved
 mesh the way `send` does, under the same one-shot identity, and says on stderr whether the channel
@@ -515,6 +516,8 @@ record and the current census follow once the feed answers again, so a follow ou
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
 command with that credential gets, as [`history --follow`](#history) does. The delivery service
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
+On an open mesh, `channel show` explains that membership is unavailable and still suggests reading
+retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
@@ -554,8 +557,8 @@ root's default `.cotal/channels.json` would undo at the next start warns that it
 
 Inspects and edits the channel registry: replay and delivery policy, description, and joiner instructions. `live` has no per-member backstop; it does not disable ACL-bounded retained history. Changing a channel's delivery class does not settle already pending durable copies. `--delivery durable` requires a registered static-auth or user-auth space; an open or unregistered target has no established delivery-service support. A recorded auth mode does not prove that daemon is currently healthy. ACL
 semantics (who may read or post) are set at mint / provision time, not here; see
-[Channels and permissions](channels-and-permissions.mdx). On a user-auth mesh, `list` rides your
-own login as is; `set` and `defaults` edit the registry over a short-lived
+[Channels and permissions](channels-and-permissions.mdx). The inventory is bare `cotal channel`;
+there is no `list` subcommand. On a user-auth mesh, the inventory rides your own login as is; `set` and `defaults` edit the registry over a short-lived
 channel-writer view, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.mdx)).
 On a remote user-auth mesh that view is served by the public exchange; space-history `purger`
 and the read-only admin view are not.
@@ -568,16 +571,16 @@ the value of whichever wrote last. When the entry already holds every value you 
 written: the receipt is `Channel unchanged` or `Channel defaults unchanged`, and the outcome is
 `no-op` (exit 0).
 
-With the static credential this machine records for the space, or on an open mesh, `list` reads the
-registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your login has
-no Direct Get row on the registry, and neither has an agent credential passed with `--creds`, so
-`list` scans it with a consumer that stays on the broker for five minutes after the command exits.
+With the static credential this machine records for the space, or on an open mesh, the inventory
+reads the registry with one Direct Get and leaves no consumer on the broker. On a user-auth mesh your
+login has no Direct Get row on the registry, and neither has an agent credential passed with
+`--creds`, so the inventory scans it with a consumer that stays on the broker for five minutes after the command exits.
 
 
 ## history [#history]
 
 ```bash
-cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
+cotal history [<channel> | --dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
 cotal history clear [--dms] [--yes | --dry-run] [--json | --plain] [--space <s>]
 cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [--yes] [--json | --plain] [--space <s>]
 ```
@@ -585,7 +588,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
-| `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
+| `--dms` | off | Read all accessible channels and DMs. Requires a DM read grant. With `clear`, also clear DM history |
 | `--since <time\|seq>` | none | Only messages after an ISO 8601 date and time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence. A date, or a date and time without an offset, is local time |
 | `--limit <n>` | 50 | How many of the newest retained messages to read, a positive safe integer |
 | `--from <name>` | none | Keep messages from this sender name or id |
@@ -602,8 +605,10 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
-Reads the newest retained messages in the selected space, newest last: one channel, or every
-channel the identity may read. To read a channel named `clear`, use `cotal history '#clear'`.
+Reads the newest retained messages in the selected space, newest last. Name a channel to read
+only that channel. Without a channel, `history` reads every accessible channel, and `--dms` also
+includes accessible DMs. Do not combine a channel name with `--dms`.
+To read a channel named `clear`, use `cotal history '#clear'`.
 Use the same quoted `#` form for `limit`. `channel show` uses this form for every channel in its
 history recommendation. A name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards` before connecting. A channel with no retained

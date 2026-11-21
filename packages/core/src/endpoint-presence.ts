@@ -594,8 +594,7 @@ export class EndpointPresence {
   /** `readOnce`: fill the roster from one read of the presence bucket. Stale
    *  and offline records resolve as they do in a watch's initial replay. */
   async readPresenceOnce(): Promise<void> {
-    if (!this.kv) return;
-    for (const e of await lastKvEntries(this.kv)) this.handleKvEntry(e);
+    if (this.kv) for (const e of await lastKvEntries(this.kv)) this.handleKvEntry(e);
     this.presenceSnapshotPopulated = true;
     // No record reached the roster (an empty bucket, or only the TTL canary): nobody is present.
     if (this.lastPresenceWatchAt === 0) this.markPresenceBucketEmpty();

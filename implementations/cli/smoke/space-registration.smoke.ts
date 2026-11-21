@@ -43,8 +43,8 @@
  * legacy route, each with its reason, its remedy and exit 2, and the registration is kept. An `up` in
  * a folder other local accounts can write refuses before it writes anything, naming the folder and its
  * parent with one remedy.
- * Once a started stack is stopped, `down --with-agents` still refuses, and its dry run shows the no-op
- * and warns with that refusal.
+ * A running broker-only stack previews the same manager requirement that `down --with-agents`
+ * refuses on. After stopping that stack, which never ran a manager, retirement is a no-op.
  *
  * Needs `nats-server` on PATH.
  *
@@ -263,6 +263,31 @@ setCurrent("keep");
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
+  // Reading an unserved name on a real open broker must not make it registerable (#8392).
+  {
+    const { dialerFor } = await import("@cotal-ai/core");
+    const { jetstreamManager } = await import("@nats-io/jetstream");
+    const nc = await dialerFor(LIVE)({ servers: LIVE });
+    try {
+      const jsm = await jetstreamManager(nc);
+      const streams = async () => {
+        const names: string[] = [];
+        for await (const name of jsm.streams.names()) names.push(name);
+        return names.sort();
+      };
+      const before = await streams();
+      const lookedUp = await json(["who", "--space", "open", "--server", LIVE]);
+      check("who reports a complete empty roster for an unserved open space",
+        lookedUp.status === 0 && lookedUp.env?.completeness === "complete" && lookedUp.env?.target?.space === "open" && lookedUp.env?.result?.items?.length === 0, shown(lookedUp));
+      const after = await streams();
+      check("who creates no streams or buckets for an unserved open space", before.join() === after.join(), { before, after });
+      const retried = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
+      check("verified registration still refuses after who, and records nothing",
+        refused(retried, 2, "TARGET_NOT_FOUND") && findMesh("open") === undefined, shown(retried));
+    } finally {
+      await nc.close();
+    }
+  }
   // The guided form offers the same served names, so the operator picks one instead of typing it blind.
   {
     const { addWizard } = await import("../src/commands/meshes-wizard.js");
@@ -342,6 +367,21 @@ setCurrent("keep");
   check("the human report says it was added and how to select it", human.status === 0 && /✓ added open4/.test(text) && /broker answered and serves this space/.test(text) && /select it with `cotal use open4`/.test(text), shown(human));
   const plain = await run(["space", "add", "open5", "--server", LIVE, "--root", root, "--plain"], { FORCE_COLOR: "1" });
   check("--plain writes it with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && /added open5/.test(plain.stdout), shown(plain));
+
+  if (process.platform !== "win32") {
+    const spacedRoot = projectRoot("registrations with 'quotes' and `backticks`");
+    const unchecked = await json(["space", "add", "open5", "--server", LIVE, "--root", spacedRoot, "--mode", "open", "--force"]);
+    check("a forced registration keeps a root with spaces and quotes", unchecked.status === 0 && unchecked.env?.result.space.root === spacedRoot && unchecked.env?.result.verified === false, shown(unchecked));
+    const detail = await run(["space", "show", "open5", "--plain"]);
+    const hint = /check its mode by adding it again without --force: (`+)(cotal space forget .+?)\1, then (`+)(cotal space add .+?)\3$/m.exec(detail.stdout);
+    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]} && ${hint[4]}`], {
+      cwd: home, env: runEnv, encoding: "utf8", timeout: 120_000,
+    });
+    const checked = await json(["space", "show", "open5"]);
+    check("the printed verification commands re-register and verify the exact root",
+      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot,
+      { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
+  }
 }
 
 // ── Adding a user-auth space from a bundle ─────────────────────────────────────────────────────────────
@@ -1136,6 +1176,7 @@ if (process.platform === "linux") {
   recordMesh({ space: "a*b", server: DEAD, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
   const odd = await run(["space", "show", "a*b"]);
   check("space show of a registration an earlier release made under such a name still heads it Mesh: <name>", odd.status === 0 && odd.stdout.startsWith("Mesh: a*b"), shown(odd));
+  check("space show quotes a legacy name that a shell could expand", odd.stdout.includes("`cotal use 'a*b'`"), shown(odd));
   removeMesh("a*b");
   // A space name holds at most 64 characters, so its hex fits every local file name that carries it.
   const longName = "y".repeat(65), longest = "y".repeat(64);
@@ -1414,9 +1455,41 @@ if (process.platform === "linux") {
   const unconfirmed = await run(["down"], {}, fresh);
   check("a bare down of the running stack outside a terminal refuses for --yes, with its remedy and without the command help",
     unconfirmed.status === 1 && /requires --yes/.test(unconfirmed.stderr) && /cotal down --yes/.test(unconfirmed.stderr) && !/Usage|Options/.test(unconfirmed.stderr) && findMesh("demo")?.root === fresh, shown(unconfirmed));
+  const beforeAgentStop = readFileSync(stackJournalPath(fresh), "utf8");
+  assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
+  const liveReapPreview = await json(["down", "--with-agents", "--dry-run"], fresh);
+  assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes", "--json"], { cwd: fresh, env: runEnv });
+  const liveReap = await json(["down", "--with-agents", "--yes"], fresh);
+  const liveRefusal = liveReap.env?.error;
+  const liveStopPlan = liveReapPreview.env?.result;
+  check("retiring agents on a running broker-only stack refuses without writing or stopping a member",
+    refused(liveReap, 2, "LIFECYCLE_BLOCKED") && liveRefusal?.message.includes("started without a manager") && liveRefusal.remedy?.includes("`cotal down --yes`") && readFileSync(stackJournalPath(fresh), "utf8") === beforeAgentStop, shown(liveReap));
+  check("the broker-only retirement preview shows the same refusal and alternative without signalling or querying manager impact",
+    liveReapPreview.status === 0 && liveReapPreview.env?.completeness === "partial" && liveStopPlan?.blockedBy?.code === liveRefusal?.code
+      && liveStopPlan?.blockedBy?.message === liveRefusal?.message && liveStopPlan?.blockedBy?.remedy === liveRefusal?.remedy
+      && liveStopPlan?.signalled === false && liveStopPlan?.nativeImpactChecked === false && liveStopPlan?.members?.some((member: { role: string; process: string }) => member.role === "broker" && member.process === "running")
+      && liveReapPreview.env.warnings?.some((warning: { code: string; message: string }) => warning.code === liveRefusal?.code && warning.message === `the real stop would refuse: ${liveRefusal?.message}; ${liveRefusal?.remedy}`), shown(liveReapPreview));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: fresh, env: runEnv });
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
+  const stoppedHistory = await json(["history", "news", "--space", "demo"], elsewhere);
+  for (const args of [
+    ["history", "news", "--server", server],
+    ["history", "news", "--server", `${server}/`],
+    ["send", "-c", "news", "test", "--server", server],
+  ]) {
+    const explicit = await json([...args, "--space", "demo"], elsewhere);
+    check(`${args.join(" ")} reports the clean stop and restart root just like name-only history`,
+      refused(stoppedHistory, 2, "TARGET_UNAVAILABLE") && refused(explicit, 2, "TARGET_UNAVAILABLE") &&
+      explicit.env?.target?.space === "demo" && explicit.env.target.root === fresh &&
+      explicit.env.error.message === stoppedHistory.env?.error.message && explicit.env.error.remedy === stoppedHistory.env?.error.remedy &&
+      explicit.env.error.message === '"demo" is stopped; its last operation, `cotal down`, completed' &&
+      explicit.env.error.remedy === `start it again with \`cotal up\` in ${fresh}`, shown(explicit));
+  }
+  const stoppedHistoryOverride = await json(["history", "news", "--space", "demo", "--server", DEAD], elsewhere);
+  check("history at a different address still refers to that address, not the stopped stack",
+    refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
+    stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
   const seedRemedy = `fix or remove ${defaultSeed}`;
   for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
     writeFileSync(defaultSeed, seed);
@@ -1522,16 +1595,15 @@ if (process.platform === "linux") {
   const stoppedPreview = await json(["down", "--dry-run"], fresh);
   check("--dry-run of the stopped stack shows the same no-op",
     stoppedPreview.status === 0 && stoppedPreview.env?.outcome === "no-op" && stoppedPreview.env.result?.kind === "stack-not-running", shown(stoppedPreview));
-  // The down that stopped it did not take --with-agents, so a real --with-agents still refuses, and
-  // its preview shows the no-op and warns with that refusal.
+  // The down that stopped it did not take --with-agents, but no manager ever ran in this stack.
   assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--dry-run", "--json"], { cwd: fresh, env: runEnv });
   const reapPreview = await json(["down", "--with-agents", "--dry-run"], fresh);
   assertSmokeSandboxDown(sandbox, ["down", "--with-agents", "--yes", "--json"], { cwd: fresh, env: runEnv });
   const reap = await json(["down", "--with-agents", "--yes"], fresh);
-  check("down --with-agents --yes of the stopped stack refuses LIFECYCLE_BLOCKED, exit 2", refused(reap, 2, "LIFECYCLE_BLOCKED"), shown(reap));
-  check("its dry run shows the same no-op and warns with that refusal",
-    reapPreview.status === 0 && reapPreview.env?.outcome === "no-op" && reapPreview.env.result?.kind === "stack-not-running" && reapPreview.env.warnings?.length === 1
-      && reapPreview.env.warnings[0].code === "LIFECYCLE_BLOCKED" && reapPreview.env.warnings[0].message === `the real stop would refuse: ${reap.env?.error?.message}; ${reap.env?.error?.remedy}`, shown(reapPreview));
+  check("down --with-agents --yes of a stopped stack that never ran a manager is a no-op",
+    reap.status === 0 && reap.env?.outcome === "no-op" && reap.env.result?.kind === "stack-not-running", shown(reap));
+  check("its dry run shows the same no-op without a manager warning",
+    reapPreview.status === 0 && reapPreview.env?.outcome === "no-op" && reapPreview.env.result?.kind === "stack-not-running" && reapPreview.env.warnings?.length === 0, shown(reapPreview));
   assertSmokeSandboxDown(sandbox, ["down", "--plain"], { cwd: fresh, env: runEnv });
   const plainAgain = await run(["down", "--plain"], {}, fresh);
   check("--plain of the stopped stack shows the same no-op", plainAgain.status === 0 && /is not running/.test(plainAgain.stdout), shown(plainAgain));
@@ -1625,7 +1697,7 @@ if (process.platform === "linux") {
   const goneListPlain = await run(["space", "--plain"]);
   check("the space listing marks the folder gone and names forget and create for it",
     goneList.status === 0 && goneList.env?.result?.prepared?.find((p: { space: string }) => p.space === "gone")?.rootMissing === true &&
-      goneListPlain.stdout.includes(`${goneRoot} (no longer exists)`) && goneListPlain.stdout.includes("cotal space forget gone") && goneListPlain.stdout.includes("`cotal space create gone --root <dir>`"), { json: shown(goneList), plain: shown(goneListPlain) });
+      goneListPlain.stdout.includes(`${goneRoot} (no longer exists)`) && goneListPlain.stdout.includes(`${launcher} space forget gone`) && goneListPlain.stdout.includes(`\`${launcher} space create gone --root <dir>\``), { json: shown(goneList), plain: shown(goneListPlain) });
   const goneForgot = await run(["space", "forget", "gone"]);
   check("forget says the folder no longer exists", goneForgot.status === 0 && goneForgot.stdout.includes(`its folder ${goneRoot} no longer exists`) && findPreparedSpace("gone") === undefined, shown(goneForgot));
 
@@ -1789,7 +1861,7 @@ if (process.platform === "linux") {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   recordPreparedSpace({ space: "pready", root: projectRoot("prepared-ready"), ts: new Date().toISOString() });
   const damaged = join(dir, `${spaceSegment("pf")}.json`);
-  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}']]) {
+  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}'], ["null", "null"]]) {
     writeFileSync(damaged, body);
     const list = await json(["space"], folder);
     const skipped = list.env?.warnings?.find((w: { code: string }) => w.code === "PREPARED_RECORD_SKIPPED");
@@ -1798,18 +1870,27 @@ if (process.platform === "linux") {
         skipped.message.endsWith("so it is skipped; remove it with `cotal space forget pf`"), shown(list));
     const other = await json(["space", "show", "pready"], folder);
     check(`space show of another space beside that record (${label}) succeeds`, other.status === 0 && other.env?.outcome === "ok", shown(other));
-    if (label === "unparsed") {
+    if (label === "null") {
+      const selected = await json(["use", "pready"], folder);
+      check("use selects the healthy prepared space beside a null record",
+        selected.status === 0 && selected.env?.result?.current === "pready" && getCurrent() === "pready", shown(selected));
+    }
+    if (label !== "unshaped") {
       const report = await json(["status"], folder);
-      check("status names that record under meshes.unreadable, exit 4, with one warning for it",
+      check(`status names that record (${label}) under meshes.unreadable, exit 4, with one warning for it`,
         report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)) &&
           (report.env?.warnings ?? []).filter((w: { target?: { file?: string } }) => w.target?.file === damaged).length === 1, shown(report));
       const text = await run(["status"], {}, folder);
-      check("status text says the record is skipped once on stderr", text.status === 4 && text.stderr.replace(/\n\s+/g, " ").split("so it is skipped").length === 2, shown(text));
+      check(`status text says the record (${label}) is skipped once on stderr`, text.status === 4 && text.stderr.replace(/\n\s+/g, " ").split("so it is skipped").length === 2, shown(text));
     }
     const own = await json(["use", "pf"], folder);
     check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file and the forget that removes it`,
       refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged && own.env.error?.message === `${damaged} is not a usable prepared space record` &&
         own.env.error?.remedy === "remove it with `cotal space forget pf`", shown(own));
+    if (label === "null") {
+      check("refusing to select its null record leaves the selection and record untouched", getCurrent() === "pready" && readFileSync(damaged, "utf8") === body);
+      if (selection === undefined) clearCurrent(); else setCurrent(selection);
+    }
     const forget = await json(["space", "forget", "pf"], folder);
     check(`space forget pf removes its damaged record (${label}), with no root`,
       forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));
