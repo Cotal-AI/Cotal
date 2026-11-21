@@ -261,6 +261,11 @@ for (const [label, config, expected] of [
   check("unknown spawn text and structured data retain the same goal", result.text.includes(`goal "${goalId}"`) && result.structured?.goalId === goalId, result);
   check("unknown spawn gives an existing same-caller goal-result read", result.text.includes('command="goal-result"') && result.text.includes("as this same caller"), result);
   check("unknown spawn forbids retry and treats missing readback as inconclusive", result.text.includes("Do NOT retry") && result.text.includes("missing result does not prove"), result);
+  const denied = await unknown(new EpEnvelopeError("permission-denied", "broker refused the reply read", submitted.details, "unknown"));
+  check("unknown submitted spawns preserve distinct causes in text and structured messages",
+    result.text.includes("deadline-exceeded: submission outcome is unknown") && result.structured?.message === result.text
+    && denied.result.text.includes("permission-denied: broker refused the reply read") && denied.result.structured?.message === denied.result.text,
+    { timeout: result, denied: denied.result });
   check("the unknown result neither resubmits nor claims confirmed acceptance", calls === 1 && result.text.includes("Acceptance has not been confirmed"), { result, calls });
   const pinned = await unknown(submitted, "requested-model");
   check("a requested model does not discard the unknown goal or inspect an unallocated alias", pinned.calls === 1 && pinned.result.structured?.goalId === goalId, pinned);
@@ -382,7 +387,7 @@ for (const [label, config, expected] of [
   check("verified exact-incarnation join releases the pending claim", launches === 3, launches);
 }
 
-const EXPECTED_CELLS = 94;
+const EXPECTED_CELLS = 95;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
