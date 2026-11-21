@@ -286,6 +286,16 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");
 }
 
+/** A JSON history follow that refused before writing its snapshot. */
+export function historySetupFailureRecords(args: ParsedArgs, failure: CommandFailure) {
+  const first = args.positionals[0];
+  const target = failure.target ?? { space: args.values.space ?? null, channel: first === undefined ? null : channelOf(first), dms: Boolean(args.values.dms) };
+  return [
+    streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
+    streamRecord("history", "end", target, { reason: "setup-failed" }),
+  ];
+}
+
 /** `cotal history [channel]`: the newest retained messages in the selected space within the caller's
  *  read grant, or `history clear` or `history limit`. */
 export async function history(args: ParsedArgs): Promise<void> {
@@ -312,9 +322,7 @@ export async function history(args: ParsedArgs): Promise<void> {
     const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);
-    const target = failure.target ?? { space: v.space ?? null, channel: channel ?? null, dms: Boolean(v.dms) };
-    writeStreamRecord(streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
-    writeStreamRecord(streamRecord("history", "end", target, { reason: "setup-failed" }));
+    for (const record of historySetupFailureRecords(args, failure)) writeStreamRecord(record);
     process.exitCode = exitCode(failure.outcome, failure.code);
   }
 }

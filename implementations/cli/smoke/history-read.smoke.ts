@@ -20,6 +20,7 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -124,6 +125,39 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+
+async function checkHistoryFollowValidation(): Promise<void> {
+  let connections = 0;
+  const listener = createServer((socket) => { connections++; socket.destroy(); });
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("expected a loopback TCP listener");
+    const server = `nats://127.0.0.1:${address.port}`;
+    const args = ["history", "--json", "--limit", "0"];
+    const finite = await run(args);
+    const stream = await run([...args, "--follow", "--server", server]);
+    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
+      data?: { code?: string; message?: string; reason?: string };
+    });
+    check("finite history with --limit 0 writes one USAGE_INVALID receipt, exit 1",
+      finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history"
+        && finite.envelope.outcome === "refused" && finite.envelope.error?.code === "USAGE_INVALID", shown(finite));
+    check("invalid JSON history follow writes only error and setup-failed end, exit 1, without connecting",
+      stream.status === 1 && stream.stderr === "" && connections === 0
+        && records.map((r) => r.type).join() === "error,end"
+        && records.every((r) => r.schemaVersion === 1 && r.stream === "history" && r.target?.space === null && r.target?.channel === null && r.target?.dms === false)
+        && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
+        && records[1]?.data?.reason === "setup-failed",
+      { stream: shown(stream), finite: shown(finite), connections });
+  } finally {
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+  }
+}
 
 async function checkMembershipSetupRefusal(targetSpace: string, channel: string, code: string, ...targetFlags: string[]): Promise<void> {
   const args = ["channel", "members", channel, "--space", targetSpace, "--json", ...targetFlags];
@@ -352,10 +386,11 @@ try {
   check("history help lists a channel and --dms as alternatives and names the scope of --dms",
     help.status === 0 && help.stdout.includes("cotal history [<channel> | --dms]")
       && help.stdout.includes("read all accessible channels and DMs"), help.stdout);
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  for (const args of [["general", "--dms"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  await checkHistoryFollowValidation();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);

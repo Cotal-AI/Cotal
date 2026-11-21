@@ -61,6 +61,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { historySetupFailureRecords } from "./commands/history.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
@@ -158,9 +159,9 @@ function debugStacks(failure: Error): void {
 
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
  *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
- *  or subcommand `words` name. The envelope is written synchronously, because stdout to a pipe is
+ *  or subcommand `words` name. Structured output is written synchronously, because stdout to a pipe is
  *  asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = []): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], validationArgs?: ParsedArgs): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
@@ -183,7 +184,11 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    writeSync(1, envelopeLine(failureEnvelope(command, failure, warnings, scope)));
+    const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
+      && !findSubcommand(cmd, validationArgs.positionals[0]);
+    const lines = historyFollow ? historySetupFailureRecords(validationArgs, failure).map((record) => `${JSON.stringify(record)}\n`).join("")
+      : envelopeLine(failureEnvelope(command, failure, warnings, scope));
+    writeSync(1, lines);
   } catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
@@ -517,7 +522,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     cmd.validate?.(canonical);
   } catch (error) {
-    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest);
+    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest, canonical);
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
