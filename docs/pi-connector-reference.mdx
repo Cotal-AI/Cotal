@@ -1,6 +1,6 @@
 ---
 title: "pi connector reference"
-description: "pi host lifecycle, delivery confirmation, continuation attempts, managed recovery, and event persistence."
+description: "pi host lifecycle, delivery confirmation, continuation attempts, managed recovery, agent commands, and event persistence."
 kind: "Reference"
 audience: "integrators"
 ---
@@ -125,6 +125,32 @@ or maintenance cut never restarts the seat.
 
 A manifest agent declared `continuity: exact` is reopened with `pi --session <id>`, which
 fails when Pi no longer has that session instead of creating an empty one under the same id.
+
+## Agent commands [#agent-commands]
+
+On a per-user mesh, Pi 0.84.2 or later runs [agent commands](connector-runtime-reference.mdx#agent-commands)
+in its session. The list is Pi's `getCommands()`. Extension commands and prompt templates are
+commands, and each skill is a skill named without Pi's `skill:` prefix. Pi runs an extension command
+before a prompt template of the same name, so only the extension command is listed. Only each
+entry's name and description leave Pi.
+
+A command runs through Pi's own command path, `sendUserMessage` with `expandPromptTemplates`. Pi
+runs an extension command's handler, and expands a prompt template or a skill before the model
+sees it. Pi sends an unknown `/name` to its model as text, so the connector sends only a name Pi
+lists at that moment, and any other name ends `refused` with `not-found`. A command starts only
+while no turn runs. It also starts while delivery is held, because a held delivery waits for a new
+turn. Right after a command, waiting messages go before the next queued command.
+
+An extension command reads `started` once Pi ran its handler, and the handler decides whether a
+turn follows. A prompt template or a skill reads `started` once its turn starts. When no turn starts
+within 5 s it reads `unknown`: Pi reports a refused prompt only on its own display, and it refuses
+one when no model with credentials is selected. `interrupt` calls Pi's abort and answers
+`interrupted` once the turn ended, or `idle` when no turn ran. The stopped turn ends as one its user
+stopped with Escape.
+
+An older Pi ignores `expandPromptTemplates`, so before 0.84.2 `commands` answers
+`supported: false`. Pi has no API that reports its version. The connector reads it from Pi's own
+module, which Pi resolves to itself unless a copy of Pi is installed beside the extension.
 
 ## Event plane
 

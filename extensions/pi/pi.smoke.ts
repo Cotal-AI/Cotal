@@ -157,6 +157,7 @@ function context(signal?: AbortSignal): PiContextLike & { idle: boolean; notific
     shutdown(): void {
       value.shutdowns++;
     },
+    abort(): void {},
   };
   return value;
 }

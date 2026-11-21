@@ -46,7 +46,7 @@ const mesh = new MeshAgent({
 mesh.on("error", () => {});
 const driver = new PiDriver(mesh);
 let turnOpen = false;
-const ctx: PiContextLike = { isIdle: () => !turnOpen, hasUI: false, ui: { notify: () => {} }, shutdown: () => {} };
+const ctx: PiContextLike = { isIdle: () => !turnOpen, hasUI: false, ui: { notify: () => {} }, shutdown: () => {}, abort: () => {} };
 const received: string[] = [];
 const host: PiHost = {
   sendMessage(message) {
