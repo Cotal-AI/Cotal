@@ -97,6 +97,8 @@ const W = {
   meshEarly: who(A, "agentearly", "managed-agent"),
   meshStopping: who(A, "agentstop", "managed-agent"),
   foreignGrantee: who(B, "builder", "managed-agent"),
+  self: who(A, "term", "interactive"),
+  selfPlain: who(A, "term2", "interactive"),
 };
 const ledger = new Map(Object.values(W).map((w) => [w.uid, w]));
 const resolveAcl: AclResolver = (t) => {
@@ -337,6 +339,28 @@ try {
     check("command-cancel and command-state know no id: not-found, not-executed", byId.every((r) => verdict(r) === "not-found/not-executed"), byId.map(verdict));
   }
 
+  console.log("\nan agent calling its own endpoint");
+  {
+    const termEp = await userEndpoint(W.self);
+    const harness = fake();
+    let toldSelf = 0;
+    const term = await openAgentEndpoint(termEp, { warn: (m) => logs.push(`term: ${m}`), dispatcher: harness, onQueued: () => { toldSelf++; } });
+    stops.push(() => term.close());
+    const self = await settled(call(termEp, W.self, "command", { target: "command", name: "review" }));
+    check("an agent running a command on itself is permission-denied, not-executed, and nothing is queued or started",
+      verdict(self) === "permission-denied/not-executed" && toldSelf === 0 && term.commands.queued === 0 && harness.ran.length === 0,
+      { verdict: verdict(self), toldSelf, queued: term.commands.queued, ran: harness.ran });
+    const fromOwner = await queue(W.self, { target: "command", name: "review" });
+    check("the same command from the owner's other session is accepted and queued once",
+      fromOwner.verdict === "ok" && ID.test(fromOwner.id ?? "") && toldSelf === 1 && term.commands.queued === 1, { fromOwner, toldSelf, queued: term.commands.queued });
+    const plainEp = await userEndpoint(W.selfPlain);
+    const plain = await openAgentEndpoint(plainEp, { warn: (m) => logs.push(`term2: ${m}`) });
+    stops.push(() => plain.close());
+    const plainSelf = await settled(call(plainEp, W.selfPlain, "command", { target: "command", name: "review" }));
+    check("with no dispatcher the self-call is still permission-denied, not unimplemented: the refusal comes first",
+      verdict(plainSelf) === "permission-denied/not-executed", verdict(plainSelf));
+  }
+
   console.log("\nthe queue: ids, the bound, cancel and taking");
   const laneEp = await userEndpoint(W.byHand, { registerPresence: true });
   let mode: "ok" | "unknown-name" | "refused" | "long" | "error" | "hold" = "ok";
@@ -487,7 +511,7 @@ try {
     const direct = createCommandLane(harness, () => { toldDirect++; });
     const handle = (command: string, args: Record<string, unknown>) => {
       const def = direct.handlers.find((h) => h.command === command);
-      return settled(Promise.resolve().then(() => (def ? def.handler({ request: { args } } as never) : Promise.reject(new Error(`the lane has no ${command} handler`)))));
+      return settled(Promise.resolve().then(() => (def ? def.handler({ request: { args }, principal: addressOf(W.byHand), caller: { owner: A, actor: "web", uid: W.ownerSession.uid } } as never) : Promise.reject(new Error(`the lane has no ${command} handler`)))));
     };
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
