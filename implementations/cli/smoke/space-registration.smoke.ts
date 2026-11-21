@@ -1489,6 +1489,17 @@ if (process.platform === "linux") {
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
   const stoppedHistory = await json(["history", "news", "--space", "demo"], elsewhere);
+  for (const requestedSpace of [null, "demo"]) {
+    const watch = await run(["watch", "--json", ...(requestedSpace === null ? [] : ["--space", requestedSpace])], {}, fresh);
+    const records = watch.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      type: string; target: { requestedSpace?: string | null; space?: string }; data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    check(`watch --json reports the stopped space with ${requestedSpace === null ? "automatic" : "explicit"} selection`,
+      watch.status === 2 && records.map((r) => r.type).join() === "error,end" &&
+      records.every((r) => r.target.requestedSpace === requestedSpace && r.target.space === "demo") &&
+      records[0]?.data.code === "TARGET_UNAVAILABLE" && records[0].data.message === stoppedHistory.env?.error?.message &&
+      records[0].data.remedy === stoppedHistory.env?.error?.remedy && records[1]?.data.reason === "setup-failed", shown(watch));
+  }
   for (const args of [
     ["history", "news", "--server", server],
     ["history", "news", "--server", `${server}/`],
