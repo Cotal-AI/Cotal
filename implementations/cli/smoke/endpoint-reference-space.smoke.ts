@@ -92,7 +92,7 @@ try {
     const local = await run(["endpoint", "--space", name, "--json"], telemetry);
     check(`${label}: local JSON retains the exact name and retry`, local.status === 2 && local.stderr === ""
       && local.envelope?.target?.requested === name && local.envelope.error?.message.includes(name)
-      && local.envelope.error.remedy?.includes(retry), local);
+      && local.envelope.error.remedy?.includes(retry) === true, local);
     const bodies = received.slice(before);
     const events = bodies.filter(event => event.event === "command");
     const event = events[0];
