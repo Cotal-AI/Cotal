@@ -6,7 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { accountInventory, authDir, cotalDirLink, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, movedRootRemedy, rootControlProblem, rootPathProblem, soleSpaceOf, stackJournalPath, stackJournalRoot, userAuthSpacesOnDisk } from "./auth-paths.js";
 import { brokerAddressForDisplay } from "./broker-display.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
-import { isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
+import { CommandFailure, isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
 import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
@@ -21,7 +21,7 @@ import {
   type MeshEntry,
   type UserAuthInfo,
 } from "./mesh-registry.js";
-import { ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
+import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
 import { tlsIntent } from "./broker-url.js";
@@ -747,10 +747,16 @@ export function legacyStackElsewhere(root: string, space: string): { recordedRoo
 
 /** The launching home of a retained native stack, while its recorded broker still runs. */
 export function legacyStackOtherHome(root: string): string | undefined {
-  const bytes = readLocalRecordSource(join(root, ".cotal", "stack-home.json"), 4096, true);
+  const path = join(root, ".cotal", "stack-home.json");
+  const bytes = readLocalRecordSource(path, 4096, true);
   if (!bytes) return undefined;
-  const record = JSON.parse(bytes.toString("utf8")) as { home?: unknown };
-  if (typeof record.home !== "string") throw new Error("the stack home record does not name its launching home");
+  const malformed = () => new CommandFailure("refused", "SCHEMA_INVALID", `the stack-home record at ${path} is malformed`, {
+    target: { path }, remedy: "restore the intact stack-home record before retrying",
+  });
+  let record: { home?: unknown } | null;
+  try { record = decodeLocalJson(bytes) as typeof record; }
+  catch { throw malformed(); }
+  if (typeof record?.home !== "string" || !record.home) throw malformed();
   if (canonicalRoot(record.home) === canonicalRoot(homeCotalDir())) return undefined;
   const pid = parsePid(readPidfile(join(root, ".cotal", "nats.pid")) ?? "");
   return pid !== undefined && probeLiveness(pid) !== "dead" ? record.home : undefined;

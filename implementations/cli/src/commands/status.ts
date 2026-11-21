@@ -549,7 +549,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
   // while a maintenance journal holds the store, or if the store is unwritable.
-  if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
+  if ((target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
     const reset = storeResetTarget(root, folder.processSpace);
     // An explicit address is not evidence about a different broker's store.
     if (values.server === undefined || (reset && selected.ok && selected.target.space === reset.space
@@ -1504,6 +1504,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
+    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+      gaps.add(e.code, e.message, e.target);
+      if (e.remedy) hints.push(e.remedy);
+      return { resolved: false, code: e.code, message: e.message };
+    }
     // Resolution reads the whole registry and refuses a directory or record it cannot use. The meshes
     // reader has already named it, so this is the same gap, and the selection is unresolved.
     if (isMeshRegistryError(e)) {
@@ -3021,6 +3026,11 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
   section("Component Health");
   if (!selected.ok) {
     const e = selected.error;
+    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
+      printComponent({ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] });
+      process.exitCode = COMPONENT_EXIT.refused;
+      return;
+    }
     if (isMeshRegistryError(e)) {
       printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
       process.exitCode = COMPONENT_EXIT.refused;
