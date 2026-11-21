@@ -82,6 +82,8 @@ credentials. Per-user-auth spaces refuse too; a cached login does not replace si
 resolved root supplies the persona ACL, signer and default storage together. With no space selected
 or available, start a local static-auth space with `cotal up` in its project folder and retry there.
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
+For a prepared space that has never started, the refusal says how to run `cotal up` to create
+the local signing trust. It keeps an explicit local broker URL when the first startup can use it.
 Conflicting current-folder and selected-root accounts refuse before issuance.
 After a local static space is stopped, its retained broker configuration and validated signing
 trust still resolve file-only fixed-profile minting from its project folder, including when you
@@ -144,7 +146,8 @@ differ, the receipt warns `REPLACED_GRANTS_CHANGED`, naming both and the
 mints a new one and warns `NOTHING_REPLACED`. Exported files stay unchanged; the warning names
 `doctor auth --space <space>` to inspect their state and the guidance for each file, and the
 space's root to run it in, since `doctor auth` reads the root it runs in.
-`--replace` takes no `--out`. An exported file stays outside
+`--replace` takes no `--out`. To re-mint an existing export in place, omit `--replace` and pass
+the same file to `--out` and `--identity`. An exported file stays outside
 managed `.cotal` and workstation state. Its path, label, profile, public key and whether `--provision` ran, without the
 credential, are recorded under `credentials/` in the Cotal home so `doctor auth` lists the file. A pre-existing explicit output must be an owned private
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
@@ -173,14 +176,17 @@ would accept the key again; mint a fresh key without `--identity`.
 Without `--provision`, fixed-profile minting writes credentials only. `--provision` uses one native provisioner
 connection to pre-create that lifecycle's bind-only DM/delivery and role footprint. It performs
 the authenticated preflight against the same recorded broker and TLS requirement, without
-pruning a registration. An acknowledgement proves neither a joined agent nor task completion.
+pruning a registration. When that broker is not running, the refusal names it and the folder to
+restart it from, and offers a mint without `--provision`, which writes only the credential file.
+An acknowledgement proves neither a joined agent nor task completion.
 A partial or unknown result retains the allocated public identity and lifecycle for diagnosis
 and does not retry the mint.
 
 A fixed-profile credential expires 24 hours after it is minted unless `--expires-in` or
-`--expires-at` sets another time, in native seconds. With `--provision`, `--expires-in` must be at
-least 2 seconds. A shorter lifetime refuses before the mint creates a file or an inbox. If a
-credential expires during provisioning, the mint does not report success.
+`--expires-at` sets another time, in native seconds. `--expires-in` takes a whole number of at least
+1 second for a file-only mint or 2 seconds with `--provision`. A shorter lifetime refuses before the
+mint creates a file or an inbox. If a credential expires during provisioning, the mint does not
+report success.
 `--no-expiry` issues one with no expiry claim and
 records that request beside the file, in `<file>.no-expiry.json`, so `doctor auth` reports it as a
 warning rather than a finding. The receipt reports the resulting JWT expiry. The three flags are
@@ -425,7 +431,9 @@ This inspects the current root's local credential claims and recorded renewal st
 prove current broker authorization, daemon adoption, connected agents or task progress. The shared
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
 rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
-spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
+spaces, `--space` names one; it defaults to the sole space. An invalid `--space` value such as `.`
+refuses with `USAGE_INVALID` (exit 1) before reading local signing trust. Run `cotal space` to
+find the registered name. Without `--space`, a root with several
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. This includes multiple open spaces
 registered at the same root. With or without `--fix`, stay in that folder and pass `--space` with
 one of the listed names. In a folder whose root holds no space,

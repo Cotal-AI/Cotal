@@ -18,7 +18,7 @@ const env: Record<string, string | undefined> = { ...host, HOME: home, USERPROFI
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 Object.assign(process.env, env);
 const { check, finish } = createSuite();
-interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; check?: string; spaceState?: string; withAgents?: boolean; signalled?: boolean; next?: { command: string; cwd: string | null }; startup?: { state: string; failure?: { code: string; message?: string } } } }
+interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; check?: string; spaceState?: string; withAgents?: boolean; signalled?: boolean; next?: { command: string; cwd: string | null }; startup?: { state: string; agent?: unknown; failure?: { code: string; outcome?: string; message?: string } } } }
 const unconfirmed = new Set<string>();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const invoke = (cwd: string, ...args: string[]) => {
@@ -166,6 +166,25 @@ try {
     check("the project answers on a distinct registered address", own.status === 0 && own.receipt?.result?.check === "reachable" && own.receipt.result.server !== "nats://127.0.0.1:4222", shown(own));
     const original = run(root, "space", "show", "held");
     check("the original reservation keeps the default address", original.status === 0 && original.receipt?.result?.server === "nats://127.0.0.1:4222", shown(original));
+  }
+
+  if (!selected || selected === "self-hosted-refusal") {
+    const root = join(home, "self-hosted-refused");
+    mkdirSync(root, { mode: 0o700 });
+    const space = "self-hosted-refused";
+    const broker = `nats://127.0.0.1:${await freePort()}`;
+    const registration = run(root, "space", "add", space, "--mode", "open", "--server", broker, "--root", ".", "--force", "--yes");
+    check("self-hosted space registers without a live broker", registration.status === 0, shown(registration));
+    const args = ["setup", "--destination", "self-hosted", "--harness", "setup-smoke", "--project", ".", "--space", space, "--start", "--detach", "--yes"];
+    env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(connector).href}`;
+    const setup = run(root, ...args);
+    const startup = setup.receipt?.result?.startup;
+    check("unreachable broker refuses self-hosted startup but keeps preparation", setup.status === 4 && setup.receipt?.outcome === "partial" && startup?.state === "refused" && startup.agent === null && startup.failure?.code === "TARGET_UNAVAILABLE" && startup.failure.outcome === "refused" && startup.failure.message?.includes(`no broker answered at ${broker}`) === true && existsSync(join(root, ".cotal", "agents", "default.md")), shown(setup));
+    const text = invoke(root, ...args, "--plain");
+    check("plain setup explains that no launch was sent and tells the user to restore the broker", text.status === 4 && text.stdout.includes(`no broker answered at ${broker}`) && text.stdout.includes(`space show ${space}`) && text.stderr.includes("startup was refused before a launch was sent") && text.stderr.includes("start or restore the broker") && !/OPERATION_UNKNOWN|original (?:manager|startup)/.test(text.stdout + text.stderr), shown(text));
+    const inspect = run(root, "space", "show", space);
+    check("the suggested inspection works with the broker still offline", inspect.status === 0 && inspect.receipt?.result?.server === broker, shown(inspect));
+    delete env.NODE_OPTIONS;
   }
 
   if (!selected || selected === "refusal") {

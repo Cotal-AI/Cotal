@@ -67,6 +67,9 @@ A channel need not be in the current session's live subscriptions to leave it.
 If any durable membership cannot be retired, leaving fails and keeps the live subscription open so it can be retried.
 See [SPEC §7](../SPEC.md#7-channels).
 
+On a static-auth mesh, a bare `cotal join` creates a temporary identity. A clean exit retires its durable channel membership.
+Disconnecting a join that uses an explicitly supplied credential keeps its durable membership so that identity can return.
+
 A `durable` join also requests durable membership from the delivery daemon, which writes the privileged membership record.
 If that step fails, the live subscription remains active and the join reports that the durable backstop is unavailable.
 It is not a successful durable join.

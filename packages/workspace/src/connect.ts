@@ -42,7 +42,7 @@ import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from 
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { canonicalRoot, findMesh, movedProject, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { findPreparedSpace } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
@@ -641,6 +641,13 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       // Preparation can guide recovery, but it must not affect which broker we dial.
       const prepared = findPreparedSpace(flags.space);
       const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
+      if (prepared && at) {
+        const stopped = stoppedStack(prepared.root, flags.space, flags.server);
+        if (stopped) {
+          const target = new MeshTargetError("not-started", `"${flags.space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space: flags.space, root: prepared.root, stopped }, { cause: error });
+          throw workspaceRefusal({ kind: "target", error: target }, { cause: target, kind: error.kind, code: error.code });
+        }
+      }
       const local = prepared && existsSync(prepared.root) && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
         && preparedLifecycle(prepared.root, flags.space).state === "prepared";
       const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`);

@@ -407,15 +407,17 @@ async function resume(values: RunValues, runId: string | undefined): Promise<voi
       console.error(`run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be resumed`);
       process.exit(1);
     }
-    source = await resumeSource(values, reader, endpoint, runId);
     status = record.status?.value;
-    activation = lastActivation((await replayRunJournal(reader.js, reader.jsm, reader.space, runId, readerTakeover)).records);
     // The ORIGINAL admission (SPEC 14.8): a resume continues under it, never under a new one.
     admission = await readRunAdmission(reader.jsm, reader.space, endpoint, runId);
     if (admission.revoked !== undefined) {
       console.error(`run ${runId}: revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed`);
       process.exit(1);
     }
+    if (status?.state === "completed" || status?.state === "failed")
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `run ${runId} ${status.state === "completed" ? "is already completed" : "has already failed"}, so there is nothing to resume`, { target: { space: reader.space, endpoint, run: runId } });
+    source = await resumeSource(values, reader, endpoint, runId);
+    activation = lastActivation((await replayRunJournal(reader.js, reader.jsm, reader.space, runId, readerTakeover)).records);
   } finally {
     await reader.close();
   }
@@ -1159,8 +1161,19 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
       usage(`run check: --${flag} decides what a commit does with an orphan, and this verb only checks; nothing was written`, `run the check without --${flag}`);
   for (const [flag, modes] of Object.entries(scopes)) if (args.values[flag] !== undefined && !modes.includes(verb)) usage(`--${flag} is not taken by this run command`);
   // The limit of every checkpoint, ask and turn that sets none of its own, so a zero expires each at once.
-  if (values.timeout !== undefined && !(isDuration(values.timeout) && parseDuration(values.timeout) > 0))
-    usage(isDuration(values.timeout) ? "--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once" : `--timeout ${new DurationError(values.timeout).message}`);
+  const timeout = values.timeout;
+  if (timeout !== undefined) {
+    if (!isDuration(timeout)) usage(`--timeout ${new DurationError(timeout).message}`);
+    const outOfRange = () => usage(`--timeout ${JSON.stringify(boundedValue(timeout, SHOWN_VALUE_MAX))} is out of range; use at most ${Number.MAX_SAFE_INTEGER} milliseconds`);
+    let ms: number;
+    try { ms = parseDuration(timeout); }
+    catch (error) {
+      if (error instanceof DurationError) throw outOfRange();
+      throw error;
+    }
+    if (!Number.isSafeInteger(ms)) outOfRange();
+    if (ms === 0) usage("--timeout must be longer than zero, or every checkpoint, ask and turn that sets no limit of its own expires at once");
+  }
   if (verb === "journal" && values.limit !== undefined) {
     if (!/^[1-9][0-9]*$/.test(values.limit) || Number(values.limit) > 1000) usage(`run ${raw}: --limit must be between 1 and 1000`);
     if (values.json) usage(`run ${raw}: --limit bounds the text view, and --json returns the whole journal`);

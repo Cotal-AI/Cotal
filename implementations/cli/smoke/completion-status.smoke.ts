@@ -462,6 +462,52 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   }
 }
 
+// ── Uninstall needs no startup folder ───────────────────────────────────────────────────────────────
+{
+  const s = sandbox("/bin/zsh");
+  const nowhere = join(s.home, "not-yet-created"), stub = join(s.xdg, "cotal", "completion.zsh");
+  const clean = s.run(["completion", "uninstall", "zsh", "--json"], { ZDOTDIR: nowhere });
+  check("uninstall under a ZDOTDIR that does not exist, with nothing installed, is a no-op, exit 0, and creates no folder",
+    clean.status === 0 && outcomeOf(clean.stdout) === "no-op" && !existsSync(nowhere) && !existsSync(join(s.xdg, "cotal")), shown(clean));
+  s.run(["completion", "install", "bash"]);
+  const beside = s.run(["completion", "uninstall", "zsh", "--json"], { ZDOTDIR: nowhere });
+  check("so is one beside another shell's installed stub", beside.status === 0 && outcomeOf(beside.stdout) === "no-op" && !existsSync(nowhere) && existsSync(join(s.xdg, "cotal", "completion.bash")), shown(beside));
+  const zd = join(s.home, "zd");
+  mkdirSync(zd, { mode: 0o700 });
+  const installed = s.run(["completion", "install", "zsh"], { ZDOTDIR: zd });
+  const elsewhere = s.run(["completion", "uninstall", "zsh"], { ZDOTDIR: nowhere });
+  check("a missing ZDOTDIR does not hide an integration installed under another one: uninstall names that one, exit 2, and keeps the stub",
+    installed.status === 0 && elsewhere.status === 2 && elsewhere.stderr.includes(`wired into ${join(zd, ".zshrc")}`) && existsSync(stub) && !existsSync(nowhere), { install: shown(installed), uninstall: shown(elsewhere) });
+  rmSync(zd, { recursive: true });
+  const gone = s.run(["completion", "uninstall", "zsh", "--json"], { ZDOTDIR: zd });
+  check("with its ZDOTDIR removed, uninstall still removes the recorded stub and record, and does not recreate the folder",
+    gone.status === 0 && outcomeOf(gone.stdout) === "ok" && !existsSync(stub) && !existsSync(`${stub}.ownership.json`) && !existsSync(zd), shown(gone));
+}
+
+// ── A stub with no ownership record is left to its owner ───────────────────────────────────────────
+{
+  const s = sandbox();
+  const stub = join(s.xdg, "cotal", "completion.bash"), rc = join(s.home, ".bashrc");
+  mkdirSync(join(s.xdg, "cotal"), { recursive: true });
+  writeFileSync(stub, s.run(["completion", "script", "bash"]).stdout);
+  const removed = s.run(["completion", "uninstall", "bash", "--json"]);
+  const env = JSON.parse(removed.stdout) as { target: { path?: string }; error: { code: string; message: string; remedy?: string } };
+  check("uninstall refuses an unrecorded stub, exit 2, naming it and keeping it",
+    removed.status === 2 && env.error.code === "LIFECYCLE_BLOCKED" && env.error.message.startsWith(`${stub} has no recorded ownership`) && env.target.path === stub && existsSync(stub), shown(removed));
+  check("its remedy says to remove the startup lines and the stub by hand, and offers no install, which refuses that stub too",
+    env.error.remedy?.startsWith(`to remove it, delete the lines that source it from ${rc} and any other startup file, then delete or move `) === true && !/cotal completion install/.test(env.error.remedy) && s.run(["completion", "install", "bash"]).status === 2, env.error);
+  const status = s.run(["completion", "--plain"]);
+  const next = status.stdout.slice(status.stdout.indexOf("Next"));
+  check("bare completion offers neither install nor uninstall for it, and still offers the script",
+    status.status === 0 && !/cotal completion (?:un)?install/.test(next) && /cotal completion script bash/.test(next), shown(status));
+  const fish = join(s.xdg, "fish", "completions", "cotal.fish");
+  mkdirSync(join(s.xdg, "fish", "completions"), { recursive: true });
+  writeFileSync(fish, s.run(["completion", "script", "fish"]).stdout);
+  const fishRemoved = s.run(["completion", "uninstall", "fish", "--json"]);
+  check("for fish, which has no startup line, the remedy names only the stub",
+    fishRemoved.status === 2 && JSON.parse(fishRemoved.stdout).error.remedy === `to remove it, delete or move ${fish} yourself` && existsSync(fish), shown(fishRemoved));
+}
+
 // ── A relative XDG_CONFIG_HOME ──────────────────────────────────────────────────────────────────────
 {
   const s = sandbox();

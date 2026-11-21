@@ -12,6 +12,8 @@
  * with `cotal up` next, and `install --dry-run` names the `ExecStart=` line. A plain follow of your
  * own service ends with a sentence too. A broker saved with the broker preset and a --log-file, in a
  * space `space create` prepared, stops when its log file was moved away while it ran.
+ * A controller stack refuses manager overrides with a broker-only alternative. When both the stack
+ * manager and a stopped standalone manager are saved, an unpinned stop follows the live manager.
  *
  * Linux only: the native manager child is Linux-only. Every directory is a sandbox this suite
  * removes; teardown stops what still runs, then `cotal down` stops the stack it started.
@@ -387,14 +389,15 @@ try {
     customBrokerUp = customStop.status !== 0;
     check("the direct-process control stops through its own service record", customStop.status === 0, out(customStop));
 
-    const controllerRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-commands-controller-`));
+    const controllerRoot = realpathSync(mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service commands controller-`)));
     const controllerSpace = "servicecommandscontroller";
     const prepared = cotal(["space", "create", controllerSpace, "--root", controllerRoot]);
     check("a separate space is prepared for the real controller-member control", prepared.status === 0, out(prepared));
     controllerAt = { root: controllerRoot, env, anchor: recordSmokeSandbox({ root: controllerRoot, cotalHome: join(home, ".cotal"), xdgConfigHome: xdg }) };
     const controller = (args: string[]) => cotal(args, 180_000, controllerAt);
-    const controllerUp = controller(["up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`]);
-    check("the controller control starts its broker", controllerUp.status === 0, out(controllerUp));
+    const controllerServer = `nats://127.0.0.1:${await freePort()}`;
+    const controllerUp = controller(["up", "--open", "--space", controllerSpace, "--server", controllerServer, "--seat-cap", "2", "--max-sessions", "3"]);
+    check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
     const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
@@ -405,6 +408,64 @@ try {
       const refusal = JSON.parse(refused.stdout) as { error?: { code?: string } };
       check(`a real controller member still refuses an individual ${action}`, refused.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED", refusal);
     }
+
+    // #8301: no command in the remedy should try to start a stopped stack member directly or
+    // pass its preset-only options to up. The root has spaces and the caller named the space.
+    const consolePort = String(await freePort());
+    const stackManagerStatus = () => controller(["service", "status", "stack-manager", "--space", controllerSpace, "--json"]);
+    const savedManagerIdentity = (status: ReturnType<typeof cotal>) => {
+      const { instanceId, definitionRevision, revision, recordedState, observedProcess } = JSON.parse(status.stdout).result ?? {};
+      return { instanceId, definitionRevision, revision, recordedState, observedProcess };
+    };
+    const beforeOverride = stackManagerStatus();
+    const overridePreview = controller(["manager", "start", "--space", controllerSpace, "--dry-run", "--console-port", consolePort, "--json"]);
+    const override = JSON.parse(overridePreview.stdout);
+    const upCommand = `cotal up --root '${controllerRoot}' --space ${controllerSpace}`;
+    check("a stack manager override names working stack commands and the separate manager preset",
+      overridePreview.status === 2 && override.error?.code === "CONFLICT" && override.target?.name === "stack-manager"
+      && override.error.remedy?.includes(`\`${upCommand}\``) && override.error.remedy?.includes(`\`${upCommand} --no-manager\``)
+      && override.error.remedy?.includes("`cotal service add custom-manager --preset manager --help`")
+      && !/--console-port|service start stack-manager/.test(override.error.remedy), override);
+    const afterOverride = stackManagerStatus();
+    const beforeIdentity = savedManagerIdentity(beforeOverride), afterIdentity = savedManagerIdentity(afterOverride);
+    check("the refusal leaves the saved stack manager and its stopped instance unchanged",
+      beforeOverride.status === 0 && afterOverride.status === 0 && beforeIdentity.recordedState === "stopped"
+      && beforeIdentity.observedProcess === "gone" && typeof beforeIdentity.revision === "string"
+      && JSON.stringify(beforeIdentity) === JSON.stringify(afterIdentity), { beforeIdentity, afterIdentity });
+    const brokerOnly = controller(["up", "--root", controllerRoot, "--space", controllerSpace, "--no-manager"]);
+    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort]);
+    const startStandalone = controller(["service", "start", "manager", "--space", controllerSpace, "--json"]);
+    const standalone = JSON.parse(startStandalone.stdout).result;
+    check("the broker-only route starts a separately configured manager",
+      brokerOnly.status === 0 && addStandalone.status === 0 && startStandalone.status === 0
+      && standalone?.definition === "manager" && standalone.observedProcess === "running",
+      { brokerOnly: out(brokerOnly), add: out(addStandalone), start: out(startStandalone) });
+    const stopStandalone = controller(["manager", "stop", "--space", controllerSpace, "--yes", "--json"]);
+    check("the standalone manager stops before the stack starts its own",
+      stopStandalone.status === 0 && JSON.parse(stopStandalone.stdout).outcome === "ok", out(stopStandalone));
+    const secondDown = controller(["down", "--yes"]);
+    const secondUp = controller(["up", "--open", "--space", controllerSpace, "--server", controllerServer]);
+    check("the stack restarts with its own manager", secondDown.status === 0 && secondUp.status === 0, { down: out(secondDown), up: out(secondUp) });
+
+    // #8297: explicitly pinning the older instance still reaches it, but the bare stop follows
+    // manager status to the live stack manager without stopping the broker.
+    const pinnedRun = controller(["manager", "stop", "--instance", standalone.instanceId, "--yes", "--json"]);
+    const pinnedStop = JSON.parse(pinnedRun.stdout);
+    check("a pinned stop still targets the older stopped standalone manager",
+      pinnedRun.status === 0 && pinnedStop.outcome === "no-op" && pinnedStop.target?.name === "manager", pinnedStop);
+    const liveRun = controller(["manager", "status", "--json"]);
+    const liveManager = JSON.parse(liveRun.stdout).result;
+    const brokerBefore = JSON.parse(controller(["service", "status", "stack-broker", "--json"]).stdout).result;
+    const stopRun = controller(["manager", "stop", "--yes", "--json"]);
+    const controllerStop = JSON.parse(stopRun.stdout);
+    const afterStop = JSON.parse(stackManagerStatus().stdout).result;
+    const brokerAfter = JSON.parse(controller(["service", "status", "stack-broker", "--json"]).stdout).result;
+    check("an unpinned stop follows manager status to the live stack manager and keeps the broker running",
+      liveRun.status === 0 && liveManager?.definition === "stack-manager" && liveManager.observedProcess === "running"
+      && stopRun.status === 0 && controllerStop.outcome === "ok" && controllerStop.target?.name === "stack-manager" && controllerStop.target?.instanceId === liveManager.instanceId
+      && afterStop?.recordedState === "stopped" && afterStop.observedProcess === "gone"
+      && brokerBefore?.observedProcess === "running" && brokerAfter?.observedProcess === "running" && brokerAfter.pid === brokerBefore.pid,
+      { liveManager, stop: controllerStop, afterStop, brokerBefore, brokerAfter });
 
     const { findNatsServer } = await import("../../implementations/cli/src/lib/nats-bin.js");
     const presetServer = `nats://127.0.0.1:${await freePort()}`, log = join(presetRoot, "logs", "broker.log"), config = join(presetRoot, ".cotal", "broker.conf");

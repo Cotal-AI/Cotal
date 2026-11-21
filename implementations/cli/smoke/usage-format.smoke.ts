@@ -52,7 +52,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -110,6 +110,9 @@ check("linear serve --json is refused naming the flag, that serve has no --json 
 // after a space, and an option typed with a typographic dash is named with hyphens.
 const dashWord = run(["send", "-c", "general", "-n is a flag here"]);
 check("an unknown option names -- for a word that starts with -", usageShape(dashWord, /Unknown option '-n'/) && /put -- before it/.test(dashWord.stderr), shown(dashWord));
+const spaceTypo = run(["space", "--json", "--jso"]);
+check("an unknown option cannot become the space subcommand", spaceTypo.status === 1 && spaceTypo.stderr === ""
+  && JSON.parse(spaceTypo.stdout).error.remedy === "run `cotal help space`", shown(spaceTypo));
 const dashValue = run(["history", "--from", "-bob"]);
 check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
 if (process.platform !== "win32") {
@@ -132,6 +135,18 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+const historyTypo = run(["history", "\u2013\u2013limit=10", "--json"]);
+check("the typographic history option correction retains the attached limit", historyTypo.status === 1 && historyTypo.stderr === ""
+  && JSON.parse(historyTypo.stdout).error.remedy === "type the option with hyphens: --limit=10", shown(historyTypo));
+if (process.platform !== "win32") {
+  const query = "reviewer's $HOME = usage";
+  const refused = run(["docs", `\u2013\u2013search=${query}`]);
+  const correction = /^  type the option with hyphens: (.+)$/m.exec(refused.stderr)?.[1];
+  const copied = correction && runShell(`docs ${correction} --json`);
+  check("the typographic option correction quotes the attached value for the shell",
+    usageShape(refused, /starts with a typographic dash/) && !!copied && copied.status === 0 && JSON.parse(copied.stdout).result.query === query,
+    { refused: shown(refused), copied });
+}
 // Before the command word the same word was an unknown command: `––json status` got no suggestion
 // and `−−version` was offered the version command.
 for (const [args, flag] of [
@@ -151,6 +166,33 @@ check("control: a leading typographic-dash word that names no leading flag is an
 
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
+
+if (process.platform !== "win32") {
+  const cwd = realpathSync(neutral);
+  const parent = "reviewer's $draft/nested";
+  const dir = `${parent}/reviews`;
+  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--plain"], {}, cwd);
+  const next = /^Next\n  (.+)$/m.exec(scaffold.stderr)?.[1];
+  const unchanged = !existsSync(join(neutral, "reviewer's $draft"));
+  const retry = next && spawnSync("sh", ["-c", `node=$1\nbin=$2\ncotal() { "$node" "$bin" "$@"; }\n${next}`, "endpoint-init", process.execPath, BIN], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+  check("endpoint init names its missing parent without creating it, and its Next creates the scaffold",
+    scaffold.status === 2 && scaffold.stdout === "" && scaffold.stderr.split("\nNext")[0]!.includes("reviewer'\\''s $draft/nested") && unchanged
+    && !!retry && retry.status === 0 && existsSync(join(neutral, dir, "contract.json")) && existsSync(join(neutral, dir, "handler.mjs")),
+    { scaffold: shown(scaffold), retry });
+
+  const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
+  const wrong = "reviews/wrong.json";
+  const path = join(cwd, wrong);
+  const text = [run(["endpoint", "check", wrong, "--plain"]), run(["endpoint", "check", wrong])];
+  const json = run(["endpoint", "check", wrong, "--json"]);
+  const envelope = JSON.parse(json.stdout);
+  const corrected = run(["endpoint", "check", "reviews/contract.json", "--json"]);
+  check("endpoint check names the missing file and asks for an existing contract in every format",
+    authoring.status === 0 && json.status === 2 && json.stderr === "" && envelope.target.path === path
+    && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
+    && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
+    && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+}
 
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
@@ -203,6 +245,14 @@ for (const args of [["space", "create", "--help"], ["history", "general", "--hel
 
 const createHelp = run(["space", "create", "--help"]);
 check("space create help documents adopt in usage and options", createHelp.status === 0 && /Usage\n[^\n]*\[--adopt\]/.test(createHelp.stdout) && /--adopt\s+create: take over the stack journal a copied or moved project folder holds/.test(createHelp.stdout), shown(createHelp));
+
+const modelsHelp = run(["models", "--help"]);
+const modelsHelpText = modelsHelp.stdout.replace(/\s+/g, " ");
+check("models help explains the registration requirement without offering --creds",
+  modelsHelp.status === 0 && modelsHelpText.includes("Authenticated meshes must be registered.")
+  && modelsHelpText.includes("Raw credential files are not accepted.")
+  && /--space <s>/.test(modelsHelp.stdout) && /--server <url>/.test(modelsHelp.stdout)
+  && !/--creds/.test(modelsHelp.stdout), shown(modelsHelp));
 
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [

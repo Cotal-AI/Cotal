@@ -1,12 +1,14 @@
 /** Controller broker process summaries retain the legacy observation without treating it as ownership.
  * Run: pnpm exec tsx implementations/cli/smoke/status-broker-process.smoke.ts
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { MANAGER_PIDFILE, canonicalLocalProcessPath } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
+import { observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-status-broker-"));
 console.log(`Evidence: ${scratch}`);
@@ -229,5 +231,86 @@ try {
     check("legacy-only nats summaries retain their state and name the pidfile source",
       nats(legacy)?.source === "legacy-pidfile" && nats(legacy)?.state === "stopped" && nats(legacy)?.detail === "no pidfile" && nats(legacy)?.ownedService === null, nats(legacy));
   } finally { writeFileSync(journal, bytes, { mode: 0o600 }); }
+}
+if (process.platform !== "win32") {
+  const other = join(scratch, "other"), project = join(scratch, "override-project");
+  for (const dir of [other, project]) mkdirSync(dir, { mode: 0o700 });
+  const server = async () => `nats://127.0.0.1:${await freePort()}`;
+  const recorded = await server(), live = await server(), override = await server();
+  const space = "override-project";
+  for (const args of [
+    ["space", "add", "manual-a", "--server", recorded, "--root", other, "--mode", "open", "--force"],
+    ["use", "manual-a"],
+    ["space", "create", space, "--root", project],
+  ]) {
+    const prepared = run(...args);
+    if (prepared.status !== 0) throw new Error(`override fixture: ${prepared.stdout}${prepared.stderr}`);
+  }
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli, "up", "--foreground", "--open", "--no-manager", "--server", live], {
+    cwd: project, env, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const state = observeOwnedChild(child);
+  let output = "";
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { output += String(chunk); });
+  try {
+    await waitForOwnedChild(() => {
+      if (state.error || state.exited) throw state.error ?? new Error(output);
+      return output.includes("commands here still target the selected space");
+    }, 60_000, "broker-only foreground stack registered");
+    const status = runFrom(project, "status", "--server", override, "--plain");
+    check("an unreachable server override names the checked address and offers no store reset",
+      status.status === 0 && /Connection:\s+unreachable/.test(status.stdout) &&
+      status.stdout.includes(`nothing answered at ${override}, the broker address --server named`) &&
+      !/\b(?:reset|clean) store\b/.test(status.stdout), status.stdout + status.stderr);
+    const history = runFrom(project, "history", "general", "--space", space, "--limit", "1");
+    check("the folder's independent broker still serves history",
+      history.status === 0 && history.stdout.includes(`Mesh: ${space}`), history.stdout + history.stderr);
+  } finally {
+    if (!state.exited && !state.error) child.kill("SIGTERM");
+    await waitForOwnedChild(() => state.closed, 60_000, "broker-only foreground stack stopped");
+    check("the foreground owner stopped the override fixture", state.code === 143 && output.includes("Controller stack stopped"), output);
+    const cleared = run("use", "--clear");
+    if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+  }
+}
+if (process.platform === "linux") {
+  const legacyRoot = join(scratch, "legacy-zombie");
+  mkdirSync(legacyRoot);
+  const pidfile = join(legacyRoot, ".cotal", "nats.pid");
+  const managerPidfile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: legacyRoot, space: "legacy-zombie" });
+  const foreground = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli,
+    "up", "--foreground", "--open", "--space", "legacy-zombie",
+    "--server", `nats://127.0.0.1:${await freePort()}`], { cwd: legacyRoot, env, stdio: "ignore" });
+  const finished = new Promise<void>((resolve, reject) => {
+    foreground.once("error", reject);
+    foreground.once("close", () => resolve());
+  });
+  const sleep = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
+  try {
+    for (let i = 0; i < 600 && (!existsSync(pidfile) || !existsSync(managerPidfile)) && foreground.exitCode === null; i++) await sleep();
+    if (!existsSync(managerPidfile)) throw new Error("foreground CLI did not record its manager PID");
+    const pid = Number(readFileSync(pidfile, "utf8"));
+    const stat = () => readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.split(" ");
+    if (!foreground.pid || Number(stat()[1]) !== foreground.pid) throw new Error("broker is not a child of the foreground CLI");
+    const running = runFrom(legacyRoot, "status", "--plain");
+    check("legacy status reports the live foreground broker as running", running.status === 0 && /Broker[^\n]*running/.test(running.stdout), running.stdout);
+    foreground.kill("SIGSTOP");
+    const parentState = () => readFileSync(`/proc/${foreground.pid}/stat`, "utf8").split(") ").at(-1)![0];
+    for (let i = 0; i < 100 && parentState() !== "T"; i++) await sleep();
+    if (parentState() !== "T") throw new Error("foreground CLI did not stop");
+    process.kill(pid, "SIGTERM");
+    for (let i = 0; i < 100 && stat()[0] !== "Z"; i++) await sleep();
+    if (stat()[0] !== "Z") throw new Error("broker did not become a zombie");
+    const plain = runFrom(legacyRoot, "status", "--plain");
+    check("legacy status reports the unreaped broker as stale", /Broker[^\n]*stale pidfile/.test(plain.stdout) && !/Broker[^\n]*running/.test(plain.stdout), plain.stdout);
+    const components = runFrom(legacyRoot, "status", "--components");
+    check("component health distinguishes the zombie from a live broker that is not serving",
+      /broker\s+absent[^\n]*stale pidfile/.test(components.stdout), components.stdout);
+  } finally {
+    foreground.kill("SIGCONT");
+    foreground.kill("SIGTERM");
+    const timeout = setTimeout(() => foreground.kill("SIGKILL"), 10_000);
+    try { await finished; } finally { clearTimeout(timeout); }
+  }
 }
 finish();

@@ -122,6 +122,16 @@ try {
   const refusedReplacement = conflictingStore("2");
   check("a refused restart leaves the last accepted seat cap intact", refusedReplacement.status === 2 && refusedReplacement.env?.error?.code === "CONFLICT" && cap() === 3,
     { refused: shown(refusedReplacement), seatCap: cap() });
+  const limited = cotal("up", "--no-manager", "--max-payload", "131072", "--json");
+  check("fixture: restart the earlier manager's stack without a manager and with a lower payload", limited.status === 0 && running("stack-manager") === undefined, shown(limited));
+  const limitedDown = cotal("down", "--yes");
+  check("fixture: stop the broker-only stack again", limitedDown.status === 0, shown(limitedDown));
+  const retire = cotal("down", "--with-agents", "--yes", "--json");
+  const retirementPreview = cotal("down", "--with-agents", "--dry-run", "--json");
+  check("an earlier manager keeps retirement guarded without telling the operator to restart at an incompatible payload",
+    retire.status === 2 && retire.env?.error?.code === "LIFECYCLE_BLOCKED" && retire.env.error.message.includes("agents from an earlier manager may still be running")
+      && retire.env.error.remedy?.includes("131072 bytes") === true && retire.env.error.remedy.includes("263168 bytes") && !retire.env.error.remedy.includes("`cotal up`")
+      && retirementPreview.status === 0 && retirementPreview.env?.outcome === "no-op" && retirementPreview.stdout.includes(retire.env.error.message), { apply: shown(retire), preview: shown(retirementPreview) });
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

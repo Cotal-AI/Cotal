@@ -132,16 +132,29 @@ try {
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
   const daemonDir = join(npmHome, "cotal", "daemon");
-  mkdirSync(daemonDir, { recursive: true });
-  writeFileSync(join(daemonDir, "service-unit.json"), "{}\n");
+  const receipt = join(daemonDir, "service-unit.json");
   // The defaults no longer collide. Explicitly point the installer at npm's bin to test refusal.
-  const cutover = spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup", "--no-modify-path"], {
+  const runCutover = (...args: string[]) => spawnSync("/bin/sh", [resolve(import.meta.dirname, "../../../install.sh"), "--no-setup", "--no-modify-path", ...args], {
     env: { ...npmEnv, COTAL_HOME: dirname(daemonDir), COTAL_BIN_DIR: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000,
   });
-  assert.equal(cutover.status, 1, output(cutover));
-  assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
-  assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
-  assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage a second installation");
+  const noReceiptPreview = runCutover("--dry-run");
+  assert.equal(noReceiptPreview.status, 0, output(noReceiptPreview));
+  assert.match(output(noReceiptPreview), /Would write[\s\S]*~\/\.npm-global\/bin\/cotal/);
+  assert.equal(readlinkSync(npmLauncher), npmLink, "the preview keeps npm's launcher");
+  assert(!existsSync(join(npmHome, ".local/share/cotal")), "the preview does not stage an installation");
+
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(receipt, "{}\n");
+  for (const args of [[], ["--dry-run"]]) {
+    const cutover = runCutover(...args);
+    assert.equal(cutover.status, 1, output(cutover));
+    assert.match(output(cutover), /belongs to an npm installation and a Cotal daemon service is recorded/);
+    assert.match(output(cutover), /Keep this installation and run .* update --self\./);
+    assert.doesNotMatch(output(cutover), /Would write/);
+    assert.equal(readlinkSync(npmLauncher), npmLink, "the refused switch keeps npm's launcher");
+    assert.equal(readFileSync(receipt, "utf8"), "{}\n", "the refused switch keeps the daemon receipt");
+    assert(!existsSync(join(npmHome, ".local/share/cotal")), "the refusal does not stage an installation");
+  }
 
   {
     const staging = join(npmHome, ".npm-global");
@@ -271,13 +284,29 @@ exec "$FIXTURE_NODE" -e 'console.log(require("node:fs").readlinkSync(process.arg
   const occupiedLauncher = join(obstructed.newBin, "cotal");
   mkdirSync(occupiedLauncher);
   writeFileSync(join(occupiedLauncher, "sentinel"), "keep-me\n");
-  const blocked = spawnSync("/bin/sh", [driver, library], { env: { ...obstructed.env, PATH: toolPath }, encoding: "utf8" });
-  assert.equal(blocked.status, 1, output(blocked));
-  assert.deepEqual(readdirSync(occupiedLauncher), ["sentinel"], "refusal does not leave a hidden launcher inside the directory");
-  assert.equal(readFileSync(join(occupiedLauncher, "sentinel"), "utf8"), "keep-me\n");
-  assert(!existsSync(join(obstructed.home, ".local/share/cotal")), "refusal leaves the install root absent");
-  assert(output(blocked).includes(`${quote(occupiedLauncher)} is a directory.`), "refusal names the obstructing path");
-  assert.match(output(blocked), /Move the directory aside or set COTAL_BIN_DIR/);
+  const runLauncherCheck = (args: string[], binDir?: string) => spawnSync("/bin/sh", [
+    resolve(import.meta.dirname, "../../../install.sh"), "--no-setup", "--version", "0.172.0", ...args,
+  ], {
+    env: { ...obstructed.env, PATH: toolPath, ...(binDir ? { COTAL_BIN_DIR: binDir } : {}), npm_config_offline: "true" },
+    encoding: "utf8", timeout: 10_000,
+  });
+  const alternateBin = join(obstructed.home, "alt-bin");
+  const preview = runLauncherCheck(["--dry-run"], alternateBin);
+  assert.equal(preview.status, 0, output(preview));
+  assert.match(output(preview), /Would write[\s\S]*~\/alt-bin\/cotal/);
+  assert(!existsSync(alternateBin), "preview does not create the alternate launcher directory");
+  assert(!existsSync(join(obstructed.home, ".local/share/cotal")), "preview leaves the install root absent");
+  for (const args of [[], ["--dry-run"]]) {
+    const blocked = runLauncherCheck(args);
+    assert.equal(blocked.status, 1, output(blocked));
+    assert(output(blocked).includes(`${quote(occupiedLauncher)} is a directory.`), "refusal names the obstructing path");
+    assert.match(output(blocked), /Move the directory aside or set COTAL_BIN_DIR/);
+    assert.doesNotMatch(output(blocked), /Would write/);
+    assert.deepEqual(readdirSync(occupiedLauncher), ["sentinel"], "refusal leaves only the original directory contents");
+    assert.equal(readFileSync(join(occupiedLauncher, "sentinel"), "utf8"), "keep-me\n");
+    assert(!existsSync(join(obstructed.home, ".local/share/cotal")), "refusal leaves the install root absent");
+    assert.deepEqual(readdirSync(obstructed.home).sort(), [".local", "old-bin"], "refusal writes no shell startup files");
+  }
 
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
@@ -530,7 +559,7 @@ main --no-setup --no-modify-path --version "$FIXTURE_TARGET"
   assert.equal(evalExport.stdout, weirdBin, "manual PATH export evaluates to the exact literal BIN_DIR");
 
   console.log("INSTALLER SELECTION: all real-shell main-path controls passed");
-  emitSentinel({ passed: process.platform === "linux" ? 153 : 132, failed: 0 });
+  emitSentinel({ passed: process.platform === "linux" ? 181 : 160, failed: 0 });
   passed = true;
 } finally {
   if (passed) rmSync(root, { recursive: true, force: true });

@@ -8,7 +8,15 @@ import {
   mintLifecycleUid,
   assertLifecycleToken,
   newIdentity,
+  mintCreds,
   provisionAgent,
+  deleteAcl,
+  deleteMember,
+  isChannelFamily,
+  isConcreteChannel,
+  openAclRegistry,
+  openMembersRegistry,
+  principalKey,
   partsToText,
   peerLabel,
   isConsumerNotFound,
@@ -33,6 +41,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
@@ -269,8 +278,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       const spaceAuth = target.auth;
       const identity = newIdentity();
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
-      // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
-      // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
+      // grants, and the endpoint's binds all carry this uid.
       // A launcher-supplied uid (flag/env, resolved above) wins; the session mints only when bare.
       lifecycleUid ??= mintLifecycleUid();
       // The session's credential is an issuance (SPEC 13.15) whose evidence names this lifecycle's
@@ -281,7 +289,23 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       try {
         await withProvisioner({ space, servers: server, auth: spaceAuth }, "join-provisioner", async (prov) => {
           await activateTerminalSeat(seatTarget, thisSeat);
-          retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
+          retireSeat = async () => {
+            await retireTerminalSeat(seatTarget, thisSeat);
+            if (!isConcreteChannel(channel) && !isChannelFamily(channel)) return;
+            const principal = principalKey(DEV_OWNER, thisSeat.actor).key;
+            try {
+              const creds = await mintCreds(spaceAuth, newIdentity(), "deprovisioner", {
+                deprovisionTarget: { principal, lifecycleUid: thisSeat.lifecycleUid, memberChannels: [channel] },
+              });
+              await withControlConnection(server, { creds, tls: seatTarget.tlsRequired }, async (nc) => {
+                // An in-flight boot join must not recreate the row after retirement.
+                await deleteAcl(await openAclRegistry(nc, space), principal, thisSeat.lifecycleUid);
+                await deleteMember(await openMembersRegistry(nc, space), channel, principal, thisSeat.lifecycleUid);
+              });
+            } catch (e) {
+              stderrLine("! ", `this session's durable channel membership was not retired: ${(e as Error).message}`, c.yellow);
+            }
+          };
           // Record the read ACL so the endpoint can self-join its channel's durable backstop.
           auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
             acceptedToken = issue.issued.acceptedToken;
@@ -359,8 +383,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       ? `ask the space's owner to grant this identity permission to post to #${channel}`
       : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision --allow-subscribe ${channel} --allow-publish ${channel} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
-  // Interactive only when attached to a real terminal; headless when spawned
-  // detached (manager) — then we just hold presence and log mesh events.
+  // A headless join holds presence and logs mesh events without reading stdin.
   const interactive = process.stdin.isTTY === true && !inputDisabledByFlag();
   let rlClosed = false;
   const rl = interactive
@@ -370,9 +393,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         prompt: c.dim(`${name}> `),
       })
     : undefined;
-  rl?.on("close", () => {
-    rlClosed = true;
-  });
 
   const print = (line: string) => {
     if (rl && !rlClosed) {
@@ -457,6 +477,10 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
     process.exit(code);
   };
+  rl?.once("close", () => {
+    rlClosed = true;
+    if (started) void shutdown();
+  });
   const checkCredential = () => {
     if (!started || leaving || checking || credential === undefined) return;
     checking = true;
@@ -517,6 +541,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     throw joinAuthFailure(e, space, values.creds ? { lifecycleUid: lifecycleUid!, channel } : undefined) ?? e;
   }
   started = true;
+  if (rlClosed) return shutdown();
   if (mintedFrom !== undefined && expiresAt !== undefined) {
     const endAtLifetime = () => {
       if (leaving) return;
@@ -528,7 +553,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     endAtLifetime();
   }
 
-  // `/quit` and a requested session lifetime leave with 0; a signal leaves the same way and exits with its code.
+  // `/quit`, terminal EOF and a requested session lifetime leave with 0. A signal leaves the same way with its code.
   process.on("SIGINT", () => void shutdown(130));
   process.on("SIGTERM", () => void shutdown(143));
 
@@ -544,7 +569,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   );
   console.log(
     c.dim(
-      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n`,
+      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n`,
     ),
   );
   setTimeout(() => {
@@ -586,15 +611,17 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
-      else if (line.startsWith("/working"))
+      else if (/^\/working(?:\s|$)/.test(line))
         await setStatus("working", line.slice(8).trim() || undefined);
-      else if (line.startsWith("/waiting"))
+      else if (/^\/waiting(?:\s|$)/.test(line))
         await setStatus("waiting", line.slice(8).trim() || undefined);
-      else if (line.startsWith("/me "))
-        await ep.setActivity(line.slice(4).trim()).then(() => print(c.dim("(activity updated)")));
-      else if (line.startsWith("/dm ")) {
-        const rest = line.slice(4).trim();
-        const sp = rest.indexOf(" ");
+      else if (/^\/me(?:\s|$)/.test(line)) {
+        const activity = line.slice(3).trim();
+        if (!activity) print(c.red("usage: /me <activity>"));
+        else await ep.setActivity(activity).then(() => print(c.dim("(activity updated)")));
+      } else if (/^\/dm(?:\s|$)/.test(line)) {
+        const rest = line.slice(3).trim();
+        const sp = rest.search(/\s/);
         if (sp < 1) print(c.red("usage: /dm <name> <message>"));
         else {
           const target = rest.slice(0, sp);
@@ -614,9 +641,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
             for (const cand of e.candidates) print(c.dim(`  ${joinPeerLabel({ name: cand.name, id: cand.id })} (${cand.status})  ${cand.id}`));
           }
         }
-      } else if (line.startsWith("/anycast ")) {
-        const rest = line.slice(9).trim();
-        const sp = rest.indexOf(" ");
+      } else if (/^\/anycast(?:\s|$)/.test(line)) {
+        const rest = line.slice(8).trim();
+        const sp = rest.search(/\s/);
         if (sp < 1) print(c.red("usage: /anycast <role> <message>"));
         else {
           const service = rest.slice(0, sp);

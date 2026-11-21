@@ -113,8 +113,10 @@ remedy. For `--server`, the `--force` route follows either one.
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
 its mode was not checked: `space` and `space show` show the mode as not checked, with
-`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact. Declining the question is a
-`no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
+`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact.
+Once the broker is up, `space show` prints commands to forget the unchecked registration and add it
+again without `--force`. The command quotes the root when the shell would otherwise split or expand it.
+Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
 
 
@@ -134,6 +136,8 @@ it does not refresh a catalog, contact a broker, issue a credential or verify cu
 The receiving user still needs their own sign-in and current space grant. Legacy custody that
 needs migration refuses without moving it. Open, static-auth and locally hosted registrations
 refuse this command. It never substitutes an account signer.
+If the name is not registered, export leaves the output untouched and points to `cotal space`
+to list local registrations.
 
 The output parent must already exist and pass the protected-directory checks. Managed `.cotal`
 and workstation state are forbidden destinations. Publication creates a private file and
@@ -294,6 +298,9 @@ Its Next names the recorded broker and says to drop `--server` to reach it. If r
 no registration, the Next says to check the address instead. For a prepared space and an explicit
 `nats://127.0.0.1:<port>` address, it also gives `cotal up --root <root> --space <space> --server <url>`
 to start that project there. The request is not sent to the recorded broker in its place.
+When `--space` and `--server` name a cleanly stopped local stack and its saved broker address,
+`history` and `send` report the completed `cotal down` if that address does not answer. They name
+the folder where `cotal up` restarts the stack, without starting it themselves.
 A trailing slash or scheme case change in `--server` retains the
 registered space, including when its broker does not answer. The refusal gives the same next step
 as `--space` for that registration, including where to restart a stopped local space. Matching
@@ -1035,6 +1042,9 @@ Outside a project, without a default selection, `--space` or `--server`, `status
 the sole reachable registration. It does not change the default
 selection. Without `--all`, status lists multiple registrations as unchecked rather than assuming
 their brokers are running.
+
+An unreachable `--server` address that does not name this folder's recorded broker gets an
+address check, not a suggestion to reset the folder's store.
 
 
 ### JSON report

@@ -92,9 +92,8 @@ export async function who(args: ParsedArgs): Promise<void> {
   const errors: string[] = [];
   const { ep, space } = await openTransient(v, "who", {
     throwOnRefusal: true,
-    // ROSTER_INCOMPLETE, ROSTER_STALE and ROSTER_ERROR are states of a live watch, and the broker
-    // denies a watch by name to a credential that may not read the roster. A one-time read has none
-    // of those states, and its denied read times out instead.
+    // Keep the watch states and permission diagnostics on credentialed meshes. On an open mesh,
+    // the transient endpoint reads once without creating the roster or channel registry.
     watch: true,
     report: (level, e) => (level === "error" ? errors.push(e.message) : console.error(c.yellow(`! ${e.message}`))),
   }).catch((e: unknown) => {

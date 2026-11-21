@@ -20,7 +20,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  cachedUpdateSummary,
+  boundedValue, cachedUpdateSummary,
   CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, writeResult,
   agentCredsDir,
   authDir,
@@ -43,6 +43,8 @@ import {
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
+  SHOWN_VALUE_MAX,
+  spaceKey,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -111,6 +113,15 @@ interface RepairObservation {
 export function validateDoctorArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   if (args.positionals.length !== 1 || args.positionals[0] !== "auth") throw new CommandFailure("refused", "USAGE_INVALID", "use doctor auth [--fix] [--space <space>] [--json|--plain]");
+  const space = args.values.space;
+  if (typeof space === "string") {
+    try { spaceKey(space); } catch {
+      throw new CommandFailure("refused", "USAGE_INVALID", `${JSON.stringify(boundedValue(space, SHOWN_VALUE_MAX))} is not a valid space name for --space`, {
+        remedy: "run `cotal space` to see the registered names, then pass the name of this space with --space",
+        selfContained: true,
+      });
+    }
+  }
 }
 
 /** The space recorded as open at this root, in its stack journal or registration. Missing signing

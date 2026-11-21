@@ -6,7 +6,8 @@
  * not a byte count nats-server starts on, one below the manager start floor, one below the caller floor beside `--service-endpoints`,
  * and one passed to the open broker configuration, which renders no payload limit. An
  * `--account-resolver` other than memory or full refuses too, and so does one passed to the open
- * broker configuration, which has no accounts to resolve.
+ * broker configuration, which has no accounts to resolve. `--max-file-store` beside `-f`, and
+ * `--rotate-sys` on an open mesh or open manifest, refuse with the flag to drop.
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
@@ -52,7 +53,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { connect, createServer, type AddressInfo } from "node:net";
+import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -113,6 +114,35 @@ for (const { args, message } of cases) {
   check(`up ${args.join(" ")} --json is one USAGE_INVALID refusal, exit 1`, json.status === 1 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "USAGE_INVALID" && message.test(json.envelope.error.message ?? ""), shown(json));
   const text = run(["up", ...args]);
   check(`up ${args.join(" ")} prints the error and the help on stderr, nothing on stdout, exit 1`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Usage/.test(text.stderr), shown(text));
+}
+
+// A flag the launch cannot honor is a usage refusal with its fix, exit 1. These were plain errors,
+// reported as an unconfirmed outcome with exit 3. A manifest's own openness is checked after the
+// structured-output refusal of `up -f`, so that case is read in text only. Without -f the run
+// resolves this folder's space first, so the refusal is followed by the help, as a parser error is.
+{
+  const manifests = mkdtempSync(join(tmpdir(), "cotal-up-usage-manifests-"));
+  process.on("exit", () => rmSync(manifests, { recursive: true, force: true }));
+  const authManifest = join(manifests, "cotal.yaml"), openManifest = join(manifests, "open.yaml");
+  writeFileSync(authManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagaudit\nchannels: {}\n");
+  writeFileSync(openManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagauditopen\nbroker:\n  auth: false\nchannels: {}\n");
+  for (const { label, args, json, help, message, remedy } of [
+    { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
+      message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
+    { label: "--open --rotate-sys", args: ["--open", "--rotate-sys"], json: true, help: true,
+      message: "--rotate-sys is for auth meshes: an open mesh (--open) has no system account or $SYS credentials to rotate, so nothing was started", remedy: "drop --rotate-sys, or drop --open to rotate an auth mesh's system account" },
+    { label: "-f <open manifest> --dry-run --rotate-sys", args: ["-f", openManifest, "--dry-run", "--rotate-sys"], json: false, help: false,
+      message: "--rotate-sys is for auth meshes: this manifest sets broker.auth: false (open), so there is no system account or $SYS credentials to rotate, and nothing was started", remedy: "drop --rotate-sys for this open manifest" },
+  ]) {
+    if (json) {
+      const structured = run(["up", ...args, "--json"]);
+      check(`up ${label} --json is one USAGE_INVALID refusal, exit 1, with its fix`,
+        structured.status === 1 && structured.envelope?.outcome === "refused" && structured.envelope.error?.code === "USAGE_INVALID" && structured.envelope.error.message === message && structured.envelope.error.remedy === remedy, shown(structured));
+    }
+    const text = run(["up", ...args]);
+    check(`up ${label} refuses on stderr with its fix${help ? " and the help" : " and no help"}, exit 1, not as an unconfirmed outcome`,
+      text.status === 1 && text.stdout === "" && text.stderr.includes(message) && text.stderr.includes(remedy) && /Usage/.test(text.stderr) === help && !text.stderr.includes("OPERATION_UNKNOWN"), shown(text));
+  }
 }
 
 for (const [flag, value] of [
@@ -560,8 +590,18 @@ try {
       .map((row) => row.trim().split(/\s+/)).filter(([, at]) => at && local.includes(at.slice(0, at.lastIndexOf(":"))) && Number.parseInt(at.slice(at.lastIndexOf(":") + 1), 16) === port).map(([, , , state]) => state);
     const peer = createServer((socket) => socket.on("end", () => socket.end()).on("error", () => {}));
     const at = await new Promise<number>((resolve) => peer.listen(0, "127.0.0.1", () => resolve((peer.address() as AddressInfo).port)));
-    const client = connect(at, "127.0.0.1");
-    await once(client, "connect");
+    // Linux gives an automatic port to connections bound for other destinations too, so another
+    // process's open connection can share the client's and still hold it after the client closes.
+    // The client keeps a port no other socket has. Binding one itself would not hold it: Node binds
+    // with SO_REUSEADDR, and the broker then binds beside it.
+    const dial = async (): Promise<Socket> => {
+      const socket = connect(at, "127.0.0.1");
+      await once(socket, "connect");
+      if (states(socket.localPort!).length === 1) return socket;
+      socket.destroy();
+      return dial();
+    };
+    const client = await dial();
     const port = client.localPort!;
     const open = run(["up", "--server", `nats://127.0.0.1:${port}`, "--json"], prepared);
     const openLegacy = run(["up", "--server", `nats://127.0.0.1:${port}`], unprepared);

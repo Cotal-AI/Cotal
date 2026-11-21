@@ -574,10 +574,14 @@ try {
     const restart = /^  (.+?) {2}Start the stack again from its journal and saved definitions$/m.exec(down.stdout)?.[1];
     const expectedRestart = `${launcher} up --no-manager`;
     check("down --yes tells the operator to restart the broker-only stack without a manager", down.status === 0 && launcher !== undefined && restart === expectedRestart, shown(down));
+    const retire = cli(second, "down", "--yes", "--with-agents", "--plain");
+    const retireRestart = /^  (.+?) {2}Start the stack without a manager$/m.exec(retire.stdout)?.[1];
+    check("retirement on a stopped low-payload stack that never ran a manager is a no-op and names the broker-only restart",
+      retire.status === 0 && retire.stdout.includes("Nothing was stopped.") && launcher !== undefined && retireRestart === expectedRestart, shown(retire));
     const bare = cli(second, "up", "--plain");
     check("bare up still refuses to add a manager below its payload floor", bare.status === 1 && bare.stderr.includes("--max-payload 262144 is below 263168 bytes"), shown(bare));
-    if (launcher !== undefined && restart === expectedRestart) {
-      const resumed = cli(second, ...restart.slice(launcher.length + 1).split(" "), "--json");
+    if (launcher !== undefined && retireRestart === expectedRestart) {
+      const resumed = cli(second, ...retireRestart.slice(launcher.length + 1).split(" "), "--json");
       track(other);
       check("the printed restart starts the same broker without a manager", resumed.status === 0 && pidOf(other, "stack-broker") !== null && pidOf(other, "stack-manager") === null, shown(resumed));
       check("down --yes stops the restarted stack", cli(second, "down", "--yes", "--json").status === 0);
@@ -1359,8 +1363,9 @@ try {
   }
 
   // The same down must see completion when the manager exits between the receipt read and PID check.
-  if (process.platform === "linux") {
-    const space = "stopreceiptwindow";
+  for (const releaseOn of ["accepted", "failed"]) {
+    if (process.platform !== "linux") break;
+    const space = `stopreceiptwindow${releaseOn}`;
     const root = prepare(space);
     const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
     track(space);
@@ -1370,9 +1375,10 @@ try {
     check(`${space}: up records a running manager`, started.status === 0 && pid !== undefined && states !== undefined, shown(started));
     if (manager && pid !== undefined && states !== undefined) {
       const hook = join(home, "hold-stop-reader.cjs");
-      const crossed = join(home, "stop-reader-crossed");
+      const crossed = join(home, `stop-reader-crossed-${releaseOn}`);
       // Only the down process loads this hook. It returns real I/O results without changing the
-      // manager's receipts, stop policy or PID verdict. The missing failed phase is read last.
+      // manager's receipts, stop policy or PID verdict. Resume after either a missing accepted
+      // receipt or the two missing terminal receipts.
       writeFileSync(hook, `
         const fs = require("node:fs");
         const { syncBuiltinESMExports } = require("node:module");
@@ -1406,13 +1412,16 @@ try {
           catch (error) {
             if (paused && error.code === "ENOENT" && typeof path === "string" && path.startsWith(${JSON.stringify(states + "/")})) {
               if (path.endsWith(".completed.json")) missingCompletion = path;
-              if (missingCompletion && path === missingCompletion.replace(/\\.completed\\.json$/, ".failed.json")) {
+              const releaseOn = ${JSON.stringify(releaseOn)};
+              if (releaseOn === "accepted" && path.endsWith(".accepted.json") ||
+                  releaseOn === "failed" && missingCompletion && path === missingCompletion.replace(/\\.completed\\.json$/, ".failed.json")) {
+                const completion = path.replace(/\\.(accepted|failed)\\.json$/, ".completed.json");
                 kill(pid, "SIGCONT");
                 paused = false;
                 waitFor(() => {
                   try { kill(pid, 0); return false; } catch (probe) { if (probe.code === "ESRCH") return true; throw probe; }
                 });
-                if (fs.existsSync(missingCompletion)) fs.writeFileSync(${JSON.stringify(crossed)}, "");
+                if (fs.existsSync(completion)) fs.writeFileSync(${JSON.stringify(crossed)}, "");
               }
             }
             throw error;

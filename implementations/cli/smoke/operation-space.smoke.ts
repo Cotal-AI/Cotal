@@ -159,6 +159,7 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
+  [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
@@ -179,6 +180,8 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
+  [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
   [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
 ] as const) {
@@ -316,7 +319,7 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; connectorArgumentValidation?: string }
+interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -353,6 +356,16 @@ const knownDirect = cotal("spawn", "--file", "pv.md", "--harness", "opencode", "
 const knownPreview = knownDirect.envelope as unknown as { result?: Preview; warnings?: unknown[] } | undefined;
 check("an installed harness validates and previews the file's source without warnings",
   knownDirect.status === 0 && knownPreview?.result?.harness === "opencode" && knownPreview.result.persona?.source === "file" && knownPreview.result.connectorArgumentValidation === "checked" && same(knownPreview.warnings, []), shown(knownDirect));
+
+const agentFilesDoc = readFileSync(join(import.meta.dirname, "..", "..", "..", "docs", "agent-files.mdx"), "utf8");
+const agentFileExample = /^```markdown\r?\n([\s\S]*?)^```\r?$/m.exec(agentFilesDoc)?.[1];
+if (!agentFileExample) throw new Error("missing Markdown example in docs/agent-files.mdx");
+writeFileSync(join(root, "dave.md"), agentFileExample);
+const docsPreview = cotal("spawn", "--file", "./dave.md", "--dry-run", "--space", "opsp", "--harness", "claude", "--json");
+const docsResult = (docsPreview.envelope as { result?: Preview } | undefined)?.result;
+check("the opening Agent files example previews with Claude and validates its model",
+  docsPreview.status === 0 && docsPreview.envelope?.outcome === "ok" && docsResult?.harness === "claude"
+    && docsResult.model === "opus" && docsResult.variant === null && docsResult.connectorArgumentValidation === "checked", shown(docsPreview));
 
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.

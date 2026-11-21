@@ -8,7 +8,8 @@
  *     `terminated`.
  *  B. on a terminal: the `watch`, `chat` and `console` views exit 130 on SIGINT, after the view has
  *     stopped, rather than dying by the signal. The chat view closes its session first. The watch
- *     view exits 143 on SIGTERM. A join exits cleanly when /quit is pasted after a status command.
+ *     view exits 143 on SIGTERM. A join exits cleanly on /quit or terminal EOF and refuses incomplete slash commands.
+ *     A headless join stays present with stdin at EOF.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:signal-exits:live
@@ -18,7 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { clean, cotalPty, COTAL, repoRoot } from "./_console-pty.js";
+import { clean, cotalPty, COTAL, repoRoot, wait } from "./_console-pty.js";
 
 const TSX = join(repoRoot, "node_modules", ".bin", "tsx");
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
@@ -102,6 +103,29 @@ try {
     check(`${name} exits 130 on SIGINT`, ended.sent && ended.code === 130, ended);
   }
 
+  for (const flags of [[], ["--no-input"]]) {
+    const name = flags.length ? "HeadlessNoInput" : "HeadlessEof";
+    const child = spawn(TSX, [COTAL, "join", "--name", name, ...flags], { cwd: s, env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (chunk: Buffer) => { out += chunk; });
+    child.stderr.on("data", (chunk: Buffer) => { out += chunk; });
+    const exited = new Promise((done) => child.once("close", done));
+    const deadline = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    try {
+      const readyBy = Date.now() + 30_000;
+      while (!out.includes("holding presence") && child.exitCode === null && Date.now() < readyBy) await wait(100);
+      await wait(3_000);
+      const roster = cotal("who", "--plain");
+      check(`headless join${flags.length ? " --no-input" : ""} stays present with stdin at EOF`,
+        child.exitCode === null && child.signalCode === null && out.includes("holding presence") &&
+        roster.status === 0 && roster.out.includes(name), { out, roster });
+    } finally {
+      child.kill("SIGTERM");
+      await exited;
+      clearTimeout(deadline);
+    }
+  }
+
   console.log("\nB. on a terminal");
   for (const [name, args, ready] of [["watch", ["watch"], "q leave"], ["chat", ["chat"], "Enter send"], ["console", ["console"], "cmd"]] as [string, string[], string][]) {
     const ended = await onTerminal(args, "SIGINT", ready);
@@ -111,24 +135,33 @@ try {
   const term = await onTerminal(["watch"], "SIGTERM", "q leave");
   check("the watch view exits 143 on SIGTERM, not by the signal", term.code === 143 && term.signal === undefined, term);
 
-  const pasted = await new Promise<{ code: number; out: string }>((done) => {
-    const pty = cotalPty(["join", "--name", "PasteAudit", "--channel", "general"], { cwd: s, env });
+  const joinTerminal = (name: string, input: string) => new Promise<{ code: number; out: string }>((done) => {
+    const pty = cotalPty(["join", "--name", name, "--channel", "general"], { cwd: s, env });
     let out = "", sent = false;
     const deadline = setTimeout(() => (pty.kill as (signal?: string) => void)("SIGKILL"), 60_000);
     pty.onData((data) => {
       out += data;
       const text = clean(out);
-      if (sent || !text.includes("Type to broadcast.") || !text.endsWith("PasteAudit> ")) return;
+      if (sent || !text.includes("Type to broadcast.") || !text.endsWith(`${name}> `)) return;
       sent = true;
-      pty.write("/working audit\n/quit\n");
+      pty.write(input);
     });
     pty.onExit(({ exitCode }) => {
       clearTimeout(deadline);
       done({ code: exitCode, out: clean(out) });
     });
   });
+  const pasted = await joinTerminal("PasteAudit", "/working audit\n/quit\n");
   check("join exits 0 when /working and /quit arrive in one paste",
     pasted.code === 0 && pasted.out.includes("leaving") && !/ERR_USE_AFTER_CLOSE|connection closed/.test(pasted.out), pasted);
+  const bare = await joinTerminal("SlashAudit", "/dm\n/anycast\n/me\n/quit\n");
+  check("bare /dm, /anycast and /me print local usage", bare.code === 0 && [
+    "usage: /dm <name> <message>", "usage: /anycast <role> <message>", "usage: /me <activity>",
+  ].every((usage) => bare.out.includes(usage)), bare);
+  const history = cotal("history", "general", "--grep", "/", "--json");
+  check("no incomplete slash command reached channel history", history.status === 0 && JSON.parse(history.out).result.items.length === 0, history.out);
+  const ttyEof = await joinTerminal("TerminalEof", "\x04");
+  check("join leaves cleanly with exit 0 on terminal Ctrl-D", ttyEof.code === 0 && ttyEof.out.includes("leaving"), ttyEof);
 } finally {
   if (up) {
     const down = cotal("down", "--yes");

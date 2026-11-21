@@ -325,11 +325,12 @@ function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[] = 
   const selected = status.shells.find((shell) => shell.shell === status.shell);
   // An unsafe folder, a refused file or an unreadable record makes install and uninstall refuse, so its
   // chmod comes first. They are offered only when every block has one. Uninstall is offered only when
-  // something is installed.
+  // something is installed. A stub with no ownership record refuses both, so neither is offered for it.
   const blocking = selected ? unsafe.filter((folder) => folder.shells.has(selected.shell)) : [];
   const fileRepairs = selected ? repairs.filter((repair) => repair.shell === selected.shell) : [];
   const fileChmods = [...new Set(fileRepairs.flatMap((repair) => repair.chmod ? [repair.chmod] : []))];
-  const changeable = selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod) && fileRepairs.every((repair) => repair.chmod);
+  const unowned = selected?.ownership === "unrecorded" && (selected.state === "current" || selected.state === "differs");
+  const changeable = !unowned && selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod) && fileRepairs.every((repair) => repair.chmod);
   const installed = !selected || selected.state !== "missing" || selected.wiredIn !== null || selected.ownership === "managed" || selected.ownership === "modified";
   const dangling = status.shells.filter((shell) => shell.state === "missing" && shell.wiredIn !== null);
   return {

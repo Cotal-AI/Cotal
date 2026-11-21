@@ -28,7 +28,7 @@
     },
     {
       "name": "the CLI replaces the manager's refusal reason with a generic line",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "file": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "find": "reply.error ? oneLine(reply.error) : \"the manager refused the launch before execution\"",
       "replace": "\"the manager refused the launch before execution\"",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",

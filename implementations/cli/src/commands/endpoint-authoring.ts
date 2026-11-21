@@ -1,7 +1,8 @@
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, endpointContractTemplate, MAX_ENDPOINT_CONTRACT_BYTES, parseEndpointContract, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, endpointContractTemplate, MAX_ENDPOINT_CONTRACT_BYTES, parseEndpointContract, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { readLocalRecordSource } from "../lib/protected-records.js";
 
 const HANDLER = `#!/usr/bin/env node
@@ -54,7 +55,10 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   if (mode === "check") {
     const file = resolve(name);
     const bytes = readLocalRecordSource(file, MAX_ENDPOINT_CONTRACT_BYTES);
-    if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the endpoint contract file was not found", { target: { path: file } });
+    if (!bytes) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the endpoint contract file was not found at ${codeSpan(shellWord(file))}`, {
+      target: { path: file },
+      remedy: "retry with the path to an existing endpoint contract file",
+    });
     let text: string;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the contract file is not UTF-8; file contents were not printed"); }
@@ -70,7 +74,16 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   const destination = resolve(typeof args.values.dir === "string" ? args.values.dir : name);
   const source = endpointContractTemplate(name);
   parseEndpointContract(JSON.stringify(source));
-  if (!directory(dirname(destination))) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the scaffold's parent directory must already exist", { target: { path: dirname(destination) } });
+  const parent = dirname(destination);
+  if (!directory(parent)) {
+    const formatFlag = presentation === "rich" ? "" : ` --${presentation}`;
+    const retry = `cotal endpoint init ${shellWord(name)} --dir ${shellWord(destination)}${formatFlag}`;
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the scaffold's parent directory does not exist: ${codeSpan(shellWord(parent))}`, {
+      target: { path: parent },
+      remedy: `(umask 077 && mkdir -p -- ${shellWord(parent)}) && ${retry}`,
+      remedyIsCommand: true,
+    });
+  }
   const existing = directory(destination);
   const files = [{ path: join(destination, "contract.json"), bytes: JSON.stringify(source, null, 2) + "\n", mode: 0o600 }, { path: join(destination, "handler.mjs"), bytes: HANDLER, mode: 0o700 }];
   for (const file of files) missing(file.path);

@@ -246,7 +246,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(start ? [["up", start, "Start this space"] as [string, string, string]] : folderStart ? [["up", folderStart, "Start this folder's space"] as [string, string, string]] : []),
     ...(start ? [] : [["spawn", "spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "setup", "Review setup and defaults"],
-    ["use", "use", "Choose another space"],
+    ["space", "space", "List the spaces on this machine"],
+    ["use", "use <name>", "Switch to another space"],
   ] : manifest ? [
     ["team", `team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
     ["space", `space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],

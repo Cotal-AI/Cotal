@@ -75,17 +75,24 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     const items = listEndpointReferences(space).map(projection);
     let live: Awaited<ReturnType<typeof readEndpointInventory>> | undefined;
     let unavailable: { code: string; message: string } | undefined;
+    let remedy: string | undefined;
     if (args.values.live) {
       try { live = await readEndpointInventory({ ...args.values, space } as { space?: string; server?: string; creds?: string }); }
-      catch (error) { unavailable = { code: isCommandFailure(error) ? error.code : isConnectRefusal(error) ? error.code : "TARGET_UNAVAILABLE", message: "Authorized native registration reads were unavailable. The live inventory is not an empty complete result." }; }
+      catch (error) {
+        const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
+        unavailable = { code: failure?.code ?? "TARGET_UNAVAILABLE", message: failure?.message ?? "Authorized native registration reads were unavailable. The live inventory is not an empty complete result." };
+        remedy = failure?.remedy;
+      }
     }
     const warnings = [...(live?.warnings ?? []), ...(unavailable ? [{ ...unavailable, target: { space } }] : [])];
     const partial = warnings.length > 0;
-    writeResult(presentation, { command: "endpoint", target: { space }, result: { kind: "endpoint-references", items, live: live ?? null, liveUnavailable: unavailable ?? null, liveCompleteness: args.values.live ? partial ? "partial" : "complete" : "not-checked" }, warnings, ...(partial ? { completeness: "partial", partial: { message: "Some requested native registration reads were unavailable or bounded; local references are retained, but the live inventory is incomplete." } } : {}) }, (result): Report => ({ sections: [
+    writeResult(presentation, { command: "endpoint", target: { space }, result: { kind: "endpoint-references", items, live: live ?? null, liveUnavailable: unavailable ?? null, liveCompleteness: args.values.live ? partial ? "partial" : "complete" : "not-checked" }, warnings, ...(partial ? { completeness: "partial", partial: { message: "Some requested native registration reads were unavailable or bounded; local references are retained, but the live inventory is incomplete.", remedy } } : {}) }, (result): Report => ({ sections: [
       { title: "Saved endpoint references", blocks: [{ kind: "fields", rows: [["Space", space], ["Native registration reads", result.liveCompleteness], ["Serving responses", "not checked"]] }, result.items.length ? { kind: "table", columns: [{ key: "name", label: "Reference" }, { key: "endpoint", label: "Native class" }, { key: "instance", label: "Instance pin" }, { key: "credential", label: "Caller reference" }], rows: result.items.map((row) => ({ name: { text: row.name, tone: "command" }, endpoint: row.reference.endpoint, instance: row.reference.instanceId ?? "class selection", credential: row.reference.credentialRef ? "file reference; not checked" : "normal resolved caller" })) } : { kind: "lines", lines: ["No saved references in this selected local space."] }, { kind: "lines", lines: [{ text: "Saving a reference creates no native registration or caller capability. Only an explicit --live requests native registration reads.", tone: "hint" }] }] },
       ...(result.live ? [{ title: "Native registrations", blocks: [{ kind: "fields" as const, rows: [["Observed", result.live.observedAt], ["Enumeration", "bounded-lag metadata list"], ["Coordinates", "leader-served reads"], ["Liveness and responses", "not checked"]] as const }, result.live.items.length ? { kind: "table" as const, columns: [{ key: "endpoint", label: "Native class" }, { key: "instance", label: "Full instance" }, { key: "owner", label: "Owner" }, { key: "state", label: "Reported state" }, { key: "projection", label: "Status projection" }], rows: result.live.items.map((row) => ({ endpoint: row.endpoint, instance: row.instanceId, owner: row.owner, state: row.reportedState ?? "not reported", projection: row.projection })) } : { kind: "lines" as const, lines: ["No readable registrations in this authorized snapshot. Consult the read completeness and warnings above."] }, { kind: "lines" as const, lines: ["Registration metadata is not process ownership or proof that an endpoint currently answers. No service was started or controlled."] }] }] : []),
       ...(result.liveUnavailable ? [{ title: "Live reads unavailable", blocks: [{ kind: "lines" as const, lines: [{ text: result.liveUnavailable.message, tone: "waiting" as const }] }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ep add <name> --file <reference.json>", description: "Save a validated local reference without launching anything" }, { command: "cotal ep show <name>", description: "Read its pinned space, class and local revision" }] }] },
+      ...(remedy ? [{ title: "Next", blocks: [{ kind: "lines" as const, lines: [remedy] }] }] : result.liveUnavailable ? [] : [
+        { title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal ep add <name> --file <reference.json>", description: "Save a validated local reference without launching anything" }, { command: "cotal ep show <name>", description: "Read its pinned space, class and local revision" }] }] },
+      ]),
     ] }));
     return;
   }
