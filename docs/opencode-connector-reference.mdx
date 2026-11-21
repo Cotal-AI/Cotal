@@ -37,8 +37,12 @@ and `started` once OpenCode answers. Right after a command, waiting messages go 
 queued command. The first turn the plugin submits carries the agent's persona in the `system` field,
 also when that turn is a command. OpenCode 2.2.5 does not pass that field to the model, for a message
 or a command. An unknown name ends `refused` with `not-found`, any other 4xx answer ends `refused`
-with `failed-precondition`, and any other failure ends `unknown`. The 1.x plugin runs no commands, so
-its agent answers `supported: false`.
+with `failed-precondition`, and any other failure ends `unknown`. `interrupt` posts
+`/api/session/:id/interrupt` and answers what OpenCode answers: `interrupted`, or `idle` when no
+execution ran. A stopped execution ends as `session.execution.interrupted`, which the plugin handles
+as a Stop at the terminal: the messages the turn carried count as delivered, and the next queued
+command runs. The 1.x plugin runs no commands, so its agent answers `supported: false` and
+`interrupt` is `unimplemented`.
 
 ## Tool configuration
 

@@ -245,6 +245,15 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       }
       if (system) primed = true;
     },
+    // Measured on OpenCode 2.2.5: the route answers `{ interrupted }`, false when no execution ran, and
+    // a stopped execution ends as `session.execution.interrupted`, which completes the turn below. Without
+    // `resume`, OpenCode resumes nothing of its own, so the next queued command runs next.
+    async interrupt() {
+      if (!sessionID) return "idle"; // no session yet, so no turn of ours runs
+      const r = await opencodeApi<{ interrupted?: unknown } | undefined>(`/api/session/${encodeURIComponent(sessionID)}/interrupt`, { method: "POST" });
+      if (typeof r?.interrupted !== "boolean") throw new Error("OpenCode answered /interrupt with no interrupted flag");
+      return r.interrupted ? "interrupted" : "idle";
+    },
   };
   const agent = new MeshAgent(config, undefined, { commands });
   const controller = new AbortController(); // aborted when teardown begins

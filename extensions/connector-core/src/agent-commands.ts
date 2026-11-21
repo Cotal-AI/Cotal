@@ -1,7 +1,7 @@
 /**
  * An agent's own harness commands and skills on its `agent` endpoint (SPEC 13.22): the `commands`,
- * `command`, `command-cancel` and `command-state` handlers, and the queue between a `command` request
- * and the connector's next idle turn.
+ * `command`, `command-cancel`, `command-state` and `interrupt` handlers, and the queue between a
+ * `command` request and the connector's next idle turn.
  *
  * A command starts only while no turn runs, which only the connector can see, so the connector takes
  * each queued command with {@link CommandQueue.dispatchNext}.
@@ -11,7 +11,7 @@ import {
   AGENT_COMMAND_DESCRIPTION_MAX, AGENT_COMMAND_INPUT_HINT_MAX, AGENT_COMMAND_LIST_MAX, AGENT_COMMAND_MESSAGE_MAX, AGENT_COMMAND_STATE_DETAIL,
   AGENT_CONTRACTS, EpEnvelopeError, isAgentCommandName,
   type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
-  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext,
+  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext, type InterruptOutput,
 } from "@cotal-ai/core";
 
 /** A `commands` reply waits at most this long for the harness's list. */
@@ -39,6 +39,11 @@ export interface CommandDispatcher {
    *  {@link CommandRefused} when the harness refused it and nothing started; any other throw leaves
    *  the outcome unknown. */
   dispatch(command: AgentCommand): Promise<void>;
+  /** Stop the turn the harness is running, resolving once the harness answered: `interrupted` when it
+   *  stopped one, `idle` when none ran. The connector then ends that turn as it ends one its user
+   *  stopped, so the next queued command can start. Without it, `interrupt` is `unimplemented`. A
+   *  throw leaves the outcome unknown. */
+  interrupt?(): Promise<InterruptOutput["state"]>;
 }
 
 /** The harness refused a command, and nothing started. */
@@ -134,10 +139,14 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     return { supported: true, commands };
   }
 
-  function run(ctx: EpPrincipalServeContext): CommandOutput {
-    // An agent never runs a command on itself, whatever its row.
+  /** An agent never runs a command on itself or stops its own turn, whatever its row. */
+  function notSelf(ctx: EpPrincipalServeContext, what: string): void {
     if (ctx.caller.owner === ctx.principal.owner && ctx.caller.actor === ctx.principal.actor)
-      throw refused("permission-denied", "an agent never runs a command on itself");
+      throw refused("permission-denied", `an agent never ${what}`);
+  }
+
+  function run(ctx: EpPrincipalServeContext): CommandOutput {
+    notSelf(ctx, "runs a command on itself");
     const input = ctx.request.args as unknown as CommandInput;
     if (!dispatcher) throw refused("unimplemented", "this agent's connector runs no commands or skills");
     if (!dispatcher.targets.has(input.target)) throw refused("unimplemented", `this agent's connector runs no ${input.target}s`);
@@ -148,6 +157,17 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     entries.set(id, { id, command: { target: input.target, name: input.name, args: input.args ?? "" }, state: { kind: "queued" } });
     onQueued();
     return { id };
+  }
+
+  async function interrupt(ctx: EpPrincipalServeContext): Promise<InterruptOutput> {
+    notSelf(ctx, "interrupts its own turn");
+    if (!dispatcher?.interrupt) throw refused("unimplemented", "this agent's connector cannot interrupt a turn");
+    if (closed) throw refused("unavailable", "this agent is stopping");
+    try {
+      return { state: await dispatcher.interrupt() };
+    } catch (e) {
+      throw new EpEnvelopeError("internal", `the harness failed, so the turn may have been interrupted: ${String((e as Error)?.message ?? e)}`, undefined, "unknown");
+    }
   }
 
   function cancel({ id }: CommandIdInput): CommandStateOutput {
@@ -165,6 +185,7 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
       { command: "command", contract: AGENT_CONTRACTS.command, handler: (ctx) => run(ctx) },
       { command: "command-cancel", contract: AGENT_CONTRACTS["command-cancel"], handler: (ctx) => cancel(ctx.request.args as unknown as CommandIdInput) },
       { command: "command-state", contract: AGENT_CONTRACTS["command-state"], handler: (ctx) => ({ state: known((ctx.request.args as unknown as CommandIdInput).id).state }) },
+      { command: "interrupt", contract: AGENT_CONTRACTS.interrupt, handler: (ctx) => interrupt(ctx) },
     ],
     get queued() {
       return queued().length;

@@ -1,9 +1,10 @@
 /**
- * The `agent` endpoint, revision 2 (SPEC 13.22): the fixed command set an agent serves about itself
+ * The `agent` endpoint, revision 3 (SPEC 13.22): the fixed command set an agent serves about itself
  * on the principal route (SPEC 13.21). `prompts`, `prompt` and `prompt-answer` serve the questions
  * an agent's harness stops to ask: a tool permission, a question, a plan, a form. `commands` lists
  * the harness commands and skills the agent runs, `command` queues one, `command-cancel` cancels a
- * queued one and `command-state` reads how far one got.
+ * queued one and `command-state` reads how far one got. `interrupt` stops the turn the agent is
+ * running.
  *
  * The contract is a core constant, like the registry's: every agent serves the same cluster, a
  * caller embeds these artifacts and pins their digests, and nothing is published to the contract
@@ -17,7 +18,7 @@ import type { PrincipalAuthority } from "./endpoint-subjects.js";
 
 export const AGENT_ENDPOINT = "agent";
 export const AGENT_CLUSTER_URN = "ai.cotal.agent";
-export const AGENT_CLUSTER_REVISION = 2;
+export const AGENT_CLUSTER_REVISION = 3;
 
 export const AGENT_CMD_PROMPTS = "prompts";
 export const AGENT_CMD_PROMPT = "prompt";
@@ -26,6 +27,7 @@ export const AGENT_CMD_COMMANDS = "commands";
 export const AGENT_CMD_COMMAND = "command";
 export const AGENT_CMD_COMMAND_CANCEL = "command-cancel";
 export const AGENT_CMD_COMMAND_STATE = "command-state";
+export const AGENT_CMD_INTERRUPT = "interrupt";
 
 /** The canonical `content` of one prompt is at most this many bytes (SPEC 13.22). */
 export const AGENT_PROMPT_CONTENT_MAX_BYTES = 262144;
@@ -219,6 +221,12 @@ export interface CommandStateOutput {
   state: CommandState;
 }
 
+/** What `interrupt` did: `interrupted` stopped the turn the agent was running, and `idle` found no
+ *  turn running and changed nothing. */
+export interface InterruptOutput {
+  state: "interrupted" | "idle";
+}
+
 const COMMAND_NAME_PATTERN = "^[^\\s\\p{C}]{1,128}$";
 const COMMAND_NAME_RE = new RegExp(COMMAND_NAME_PATTERN, "u");
 
@@ -402,10 +410,12 @@ export const AGENT_COMMAND_CANCEL_INPUT_SCHEMA = deepFreeze(closed(["id"], { id:
 export const AGENT_COMMAND_CANCEL_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: COMMAND_STATE }));
 export const AGENT_COMMAND_STATE_INPUT_SCHEMA = deepFreeze(closed(["id"], { id: COMMAND_ID }));
 export const AGENT_COMMAND_STATE_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: COMMAND_STATE }));
+export const AGENT_INTERRUPT_INPUT_SCHEMA = deepFreeze(closed([], {}));
+export const AGENT_INTERRUPT_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { state: { enum: ["interrupted", "idle"] } }));
 
-/** The command rows of revision 2. Every command is untargeted. The prompt commands admit both
- *  authority words; `commands`, `command`, `command-cancel` and `command-state` admit `owner` only,
- *  so only the owner's interactive session runs an agent's commands. */
+/** The command rows of revision 3. Every command is untargeted. The prompt commands admit both
+ *  authority words; `commands`, `command`, `command-cancel`, `command-state` and `interrupt` admit
+ *  `owner` only, so only the owner's interactive session runs an agent's commands or stops its turn. */
 export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_PROMPTS, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPTS_INPUT_SCHEMA, output: AGENT_PROMPTS_OUTPUT_SCHEMA },
   { name: AGENT_CMD_PROMPT, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPT_INPUT_SCHEMA, output: AGENT_PROMPT_OUTPUT_SCHEMA },
@@ -414,6 +424,7 @@ export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_COMMAND, capability: "agent.commands.run", authorities: ["owner"], input: AGENT_COMMAND_INPUT_SCHEMA, output: AGENT_COMMAND_OUTPUT_SCHEMA },
   { name: AGENT_CMD_COMMAND_CANCEL, capability: "agent.commands.run", authorities: ["owner"], input: AGENT_COMMAND_CANCEL_INPUT_SCHEMA, output: AGENT_COMMAND_CANCEL_OUTPUT_SCHEMA },
   { name: AGENT_CMD_COMMAND_STATE, capability: "agent.commands.read", authorities: ["owner"], input: AGENT_COMMAND_STATE_INPUT_SCHEMA, output: AGENT_COMMAND_STATE_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_INTERRUPT, capability: "agent.turn.interrupt", authorities: ["owner"], input: AGENT_INTERRUPT_INPUT_SCHEMA, output: AGENT_INTERRUPT_OUTPUT_SCHEMA },
 ].map((row) => ({ ...row, targeted: false, authorities: row.authorities as PrincipalAuthority[] })));
 
 const TABLE = serviceContractTable(AGENT_COMMANDS);
@@ -421,7 +432,7 @@ const TABLE = serviceContractTable(AGENT_COMMANDS);
 /** The compiled input and output pair per command, compiled on first access. */
 export const AGENT_CONTRACTS = TABLE.contracts;
 
-/** The cluster document of revision 2, deep-frozen. */
+/** The cluster document of revision 3, deep-frozen. */
 export const AGENT_CLUSTER: Readonly<ClusterDocument> = deepFreeze(buildClusterDocument(AGENT_CLUSTER_URN, AGENT_CLUSTER_REVISION, AGENT_COMMANDS));
 
 /** The cluster document's two digests: the root artifact and the closure manifest a caller pins
