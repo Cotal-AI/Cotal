@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -8,6 +8,9 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const allowlistPath = new URL("./function-length-allowlist.json", import.meta.url);
 const updateCommand = "pnpm check:function-length:update";
 const limit = 150;
+// How far a listed function may run past its recorded length, so a small fix to a long function does
+// not need an extraction first. Update mode never raises a recorded length, so the room is used once.
+const allowance = 10;
 const source = /^(?:(?:packages|implementations|extensions)\/[^/]+\/src\/|bin\/(?!scripts\/)).*\.(?:[cm]?[jt]s|[jt]sx)$/;
 const excluded = /(?:^|\/)(?:smoke|tests?|__tests__|mutations|dist|node_modules|vendor)\/|\.(?:smoke|test|spec|selftest|generated)\.|\.d\.[cm]?ts$|^packages\/smoke-kit\//;
 
@@ -19,11 +22,13 @@ function scriptKind(name) {
 
 function isFunction(node) {
   return ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) ||
-    ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node);
+    ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node) ||
+    ts.isClassStaticBlockDeclaration(node);
 }
 
 function nameOf(node, file) {
   if (ts.isConstructorDeclaration(node)) return "constructor";
+  if (ts.isClassStaticBlockDeclaration(node)) return "static block";
   const holder = node.parent;
   const named = node.name ?? (ts.isVariableDeclaration(holder) || ts.isPropertyAssignment(holder) || ts.isPropertyDeclaration(holder) ? holder.name : undefined);
   return named ? named.getText(file) : "(anonymous)";
@@ -65,18 +70,28 @@ function writeAllowlist(files) {
 }
 
 // A listed file passes while it has no more long functions than its row and each one, longest
-// first, is no longer than the row's entry at that position.
+// first, is at most `allowance` lines longer than the row's entry at that position.
 function grade(name, recorded, current) {
   const lengths = current.map((fn) => fn.length);
   const shown = current.map((fn) => `${fn.name} ${fn.length} (line ${fn.line})`).join(", ");
   const change = `[${recorded.join(", ")}] -> [${lengths.join(", ")}] lines`;
   if (lengths.length > recorded.length)
     return { failure: `${name}: ${lengths.length} functions over ${limit} lines, its row lists ${recorded.length}: ${shown}` };
-  if (lengths.some((length, index) => length > recorded[index]))
-    return { failure: `${name}: ${change}; a listed function may not grow: ${shown}` };
+  if (lengths.some((length, index) => length > recorded[index] + allowance))
+    return { failure: `${name}: ${change}; a listed function may run ${allowance} lines past its recorded length and no further: ${shown}` };
   if (!lengths.length) return { note: `${name}: no function over ${limit} lines; its row can go: ${updateCommand}` };
-  if (lengths.join() !== recorded.join()) return { note: `${name}: ${change}; record the new lengths: ${updateCommand}` };
-  return {};
+  const grew = lengths.some((length, index) => length > recorded[index]);
+  const shrank = lengths.length < recorded.length || lengths.some((length, index) => length < recorded[index]);
+  if (!grew && !shrank) return {};
+  return { note: `${name}: ${change}` + (grew ? `; inside the ${allowance}-line allowance` : "") + (shrank ? `; record the new lengths: ${updateCommand}` : "") };
+}
+
+// The row update mode writes for one file. An entry is never raised: where the function at a position
+// is now longer than the row says, the row keeps its entry, so recording cannot hand the allowance out
+// again. A file with more long functions than its row is recorded as it stands, which a reviewed split
+// or move needs.
+function nextRow(recorded, lengths) {
+  return recorded && lengths.length <= recorded.length ? lengths.map((length, index) => Math.min(length, recorded[index])) : lengths;
 }
 
 function scan() {
@@ -96,7 +111,9 @@ function main() {
     throw new Error("usage: node scripts/check-function-length.mjs [--update-allowlist]");
   const { names, long } = scan();
   if (args.length) {
-    writeAllowlist(Object.fromEntries([...long].map(([name, found]) => [name, found.map((fn) => fn.length)])));
+    const previous = existsSync(allowlistPath) ? readAllowlist() : {};
+    writeAllowlist(Object.fromEntries([...long].map(([name, found]) =>
+      [name, nextRow(Object.hasOwn(previous, name) ? previous[name] : undefined, found.map((fn) => fn.length))])));
     console.log(`check:function-length: allowlist rewritten for ${long.size} files with a function over ${limit} lines`);
     return;
   }

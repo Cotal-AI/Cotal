@@ -29,6 +29,7 @@ const shapes = {
   method: (id, lines) => `export class Probe${id} {\n  run${id}() {\n${filler(lines - 2)}  }\n}\n`,
   arrow: (id, lines) => `export const probe${id} = () => {\n${filler(lines - 2)}};\n`,
   expression: (id, lines) => `export const probe${id} = function () {\n${filler(lines - 2)}};\n`,
+  "static block": (id, lines) => `export class Probe${id} {\n  static {\n${filler(lines - 2)}  }\n}\n`,
   nested: (id, lines) => `export function probe${id}() {\n  const inner${id} = () => {\n${filler(lines - 5)}  };\n  return inner${id};\n}\n`,
 };
 // Writes one function per entry of `lengths`, each that many lines long, in the given shape.
@@ -61,7 +62,7 @@ try {
   put(big, [151]);
   let result = run();
   check("an unlisted function over the limit fails", result.status === 1 && result.stderr.includes(`${big}:1: probe0 is 151 lines, over the 150-line limit`) && result.stderr.includes("pnpm check:function-length:update"));
-  for (const [shape, name] of [["method", "run0"], ["arrow", "probe0"], ["expression", "probe0"]]) {
+  for (const [shape, name] of [["method", "run0"], ["arrow", "probe0"], ["expression", "probe0"], ["static block", "static block"]]) {
     put(big, [151], { shape });
     check(`counts a ${shape}`, run().stderr.includes(`${name} is 151 lines`));
     put(big, [150], { shape });
@@ -80,9 +81,15 @@ try {
   put(listed, [300, 200]);
   baseline({ [listed]: [300, 200] });
   check("a listed file at its recorded lengths passes", run().status === 0);
-  put(listed, [300, 201]);
+  put(listed, [300, 210]);
   result = run();
-  check("a grown listed function fails", result.status === 1 && result.stderr.includes(`${listed}: [300, 200] -> [300, 201] lines; a listed function may not grow`));
+  check("a listed function inside the allowance passes and says so", result.status === 0 && result.stdout.includes(`${listed}: [300, 200] -> [300, 210] lines; inside the 10-line allowance`) && !result.stdout.includes("check:function-length:update"));
+  put(listed, [300, 211]);
+  result = run();
+  check("a listed function past the allowance fails", result.status === 1 && result.stderr.includes(`${listed}: [300, 200] -> [300, 211] lines; a listed function may run 10 lines past its recorded length and no further`));
+  put(listed, [305, 180]);
+  result = run();
+  check("one function inside the allowance and one shorter prints both", result.status === 0 && result.stdout.includes(`${listed}: [300, 200] -> [305, 180] lines; inside the 10-line allowance; record the new lengths`));
   put(listed, [300, 200, 151]);
   result = run();
   check("a new long function in a listed file fails", result.status === 1 && result.stderr.includes(`${listed}: 3 functions over 150 lines, its row lists 2`));
@@ -99,6 +106,7 @@ try {
   result = run();
   check("a listed file that is no longer tracked says its row can go", result.status === 0 && result.stdout.includes(`${listed}: not a tracked source file; its row can go`));
 
+  baseline();
   put(listed, [160, 400]);
   put(big, [700]);
   result = run("--update-allowlist");
@@ -112,6 +120,17 @@ try {
   run("--update-allowlist");
   check("update drops a file with no long function", Object.keys(JSON.parse(readFileSync(allowlist, "utf8")).files).join(",") === big);
   put(big, [1]);
+  run("--update-allowlist");
+  put(listed, [305, 180]);
+  baseline({ [listed]: [300, 200] });
+  run("--update-allowlist");
+  check("update lowers a recorded length and does not raise one", JSON.stringify(JSON.parse(readFileSync(allowlist, "utf8")).files) === JSON.stringify({ [listed]: [300, 180] }));
+  put(listed, [311, 180]);
+  check("the allowance is still measured from the first recorded length after update", run().status === 1);
+  put(listed, [305, 180, 160]);
+  run("--update-allowlist");
+  check("update records a file with more long functions than its row as it stands", JSON.stringify(JSON.parse(readFileSync(allowlist, "utf8")).files[listed]) === JSON.stringify([305, 180, 160]));
+  put(listed, [1]);
   run("--update-allowlist");
 
   for (const name of ["packages/probe/smoke/x.ts", "packages/probe/src/x.smoke.ts", "packages/probe/src/x.test.ts", "packages/probe/src/x.d.ts", "packages/probe/src/x.generated.ts", "implementations/probe/src/vendor/x.ts", "packages/smoke-kit/src/x.ts", "bin/scripts/x.mjs", "examples/probe/src/x.ts", "scripts/x.mjs"]) {
@@ -135,8 +154,10 @@ try {
   check("refuses a row outside the scanned scope", run().status === 2);
   writeFileSync(allowlist, "not json");
   check("refuses a malformed allowlist", run().status === 2);
+  check("update refuses a malformed allowlist", run("--update-allowlist").status === 2 && readFileSync(allowlist, "utf8") === "not json");
   rmSync(allowlist);
   check("refuses a missing allowlist", run().status === 2);
+  check("update writes an allowlist when none exists", run("--update-allowlist").status === 0 && run().status === 0);
   check("refuses an unknown CLI option", run("--unknown").status === 2);
 } finally {
   rmSync(root, { recursive: true, force: true });

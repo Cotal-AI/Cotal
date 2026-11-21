@@ -204,7 +204,7 @@ they stay unedited.
 - **Keep functions short**, about 50 lines or fewer. If a function needs comments to mark its
 sections, split it at those sections. Do not grow a long function whose sections share mutable
 locals: it cannot be split later without rewriting it. `pnpm check:function-length` fails on a new
-function over 150 lines and on a listed one that grows.
+function over 150 lines and on a listed one that grows more than 10 lines past its recorded length.
 - **Keep module interfaces narrow.** Export only what another file imports, and keep the rest
 private to the module. Do not add a wrapper that only forwards a call, except to keep a public
 API in place after a split. A module must not import a value from a module that imports it back;
