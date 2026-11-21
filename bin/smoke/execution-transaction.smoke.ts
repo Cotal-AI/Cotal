@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -64,6 +64,10 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(selectedEntry.status, 0, selectedEntry.stderr);
     assert.equal(selectedEntry.stdout.trim(), "new generation");
     assert.equal(lstatSync(join(installed, "package.json")).mode & 0o022, 0);
+    const published = readFileSync(executionDescriptorPath(installed));
+    utimesSync(join(installed, "package.json"), 1, 1);
+    assert.equal(repairExecutionInstallModes(installed, () => repairInstallModes(join(scratch, "prefix"))), 0);
+    assert.deepEqual(readFileSync(executionDescriptorPath(installed)), published, "a no-op repair leaves the active descriptor unchanged after a manifest touch");
     assert.equal(retireSupersededExecutionDescriptor(installed), false, "active matching descriptor is never retired");
     for (const [path, mode] of [[join(installed, "dist/cotal.js"), 0o755], [store, 0o755], [executionDescriptorPath(installed), 0o644]] as const)
       assert.equal(lstatSync(path).mode & 0o777, mode, `${path} stays readable by the other accounts that run this package`);

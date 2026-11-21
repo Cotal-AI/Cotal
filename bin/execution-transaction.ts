@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
 import { assertWritableExecutionDirectory, retainExecutionGeneration, type RetainedExecutionGeneration, writableExecutionStore, writeExecutionDescriptor } from "./execution-store.js";
@@ -109,10 +109,12 @@ export function executionStagingPrefix(installed: string): string {
 export function repairExecutionInstallModes(installed: string, repair: () => number): number {
   const selected = selectExecutionProgram(installed);
   const descriptor = selected.retained ? executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor : undefined;
+  const before = descriptor?.launch && (descriptor.launch.path === join(realpathSync.native(installed), "package.json")
+    ? executionLaunchBinding(installed, descriptor.launch.entry).ctime : descriptor.launch.ctime);
   const changed = repair();
   if (descriptor?.launch) {
     const launch = executionLaunchBinding(installed, descriptor.launch.entry);
-    const { ctime: before, ...previous } = descriptor.launch;
+    const { ctime: _, ...previous } = descriptor.launch;
     const { ctime: after, ...current } = launch;
     if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error("execution launch route changed during permission repair");
     if (before !== after) {

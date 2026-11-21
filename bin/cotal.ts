@@ -230,8 +230,13 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
     const launch = object(descriptor.launch);
     if (!["entry", "path", "dev", "ino", "birth", "ctime"].every(key => typeof launch[key] === "string") || !isAbsolute(launch.entry as string) || !isAbsolute(launch.path as string))
       throw new Error("invalid execution launch binding");
-    try { if (JSON.stringify(executionLaunchBinding(installed, launch.entry as string)) !== JSON.stringify(launch)) return initial(); }
-    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) return initial(); throw error; }
+    try {
+      const currentLaunch = executionLaunchBinding(installed, launch.entry as string);
+      if (currentLaunch.entry !== launch.entry || currentLaunch.path !== launch.path || currentLaunch.dev !== launch.dev ||
+          currentLaunch.ino !== launch.ino || currentLaunch.birth !== launch.birth) return initial();
+      // ctime can change on an unchanged npm manifest. Keep it for the symlinked launch route.
+      if (currentLaunch.path !== join(installed, "package.json") && currentLaunch.ctime !== launch.ctime) return initial();
+    } catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) return initial(); throw error; }
   }
   const matches = (candidate: Record<string, unknown>): boolean => candidate.name === current.name && candidate.version === current.version && candidate.bootstrapSha256 === current.bootstrapSha256;
   if (descriptor.bindings !== undefined && (!Array.isArray(descriptor.bindings) || descriptor.bindings.length > 4 ||
