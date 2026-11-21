@@ -32,7 +32,7 @@
     },
     {
       "name": "M2 abort steer when session_status reports idle",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "        if (!items.length || !sessionBusy()) return;",
       "replace": "        if (!items.length || !hostState.turnActive) return;",
       "expectRed": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)",
@@ -49,7 +49,7 @@
     },
     {
       "name": "M4 do not publish the initial drive batch",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "    releaseUnheldReservations();\n    relayTurnCondition(null);\n    publishInboundHealth();",
       "replace": "    releaseUnheldReservations();\n    relayTurnCondition(null);\n    void agent.setStatus(\"working\").catch(() => {});",
       "expectRed": "presence activity names the initial automatic inbound batch while its run is open (#1075)",

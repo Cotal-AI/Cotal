@@ -22,7 +22,7 @@
   "mutations": [
     {
       "name": "M1 leave directed mid-turn DMs parked in the connector inbox",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "        const pending = softInterruptWithLateReply(current, hostState.sessionId, injection, (accepted) => {\n          // The SDK emits a correlated reply as an event after its waiter times out. Only this\n          // still-owned request's positive reply promotes it; the normal turn boundary still acks.\n          if (!unansweredSteers.has(release) || hostState.client !== current) return;\n          if (accepted) promoteToSurfaced(keys);\n          release();\n        });\n        dispose = pending.dispose;\n        const request = pending.request;\n        hostState.steerSettled = request.catch(() => {});",
       "replace": "        release();\n        return;",
       "expectRed": "short, 4 KiB, and 64 KiB DMs reach the recipient session before the active turn ends (#910)",
@@ -30,7 +30,7 @@
     },
     {
       "name": "M2 accept the soft interrupt but commit only the turn's initial ids",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "      await hostState.steerSettled;\n      const committed = hostState.surfacedIds;",
       "replace": "      await hostState.steerSettled;\n      const committed = ids;",
       "expectRed": "the clean containing turn commits the steered DMs exactly once"
