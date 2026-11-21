@@ -18,7 +18,7 @@
  */
 
 import { run } from "./interpret.js";
-import { SimHandler, type SimScript } from "./sim.js";
+import { isSimFaultCode, SimHandler, type SimScript } from "./sim.js";
 import { stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 import { Journal } from "./journal.js";
@@ -255,7 +255,7 @@ export async function dryRunOutcome(
     }));
   } catch (e) {
     const code = (e as { code?: unknown }).code;
-    if (!(e instanceof Error) || typeof code !== "string" || !/^L[34][0-9]{3}$/.test(code)) throw e;
+    if (!(e instanceof Error) || !isSimFaultCode(code)) throw e;
     fault = e as DryRunFailure["fault"];
   }
 

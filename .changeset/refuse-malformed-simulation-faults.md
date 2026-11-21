@@ -1,4 +1,5 @@
 ---
+"@cotal-ai/lang": patch
 "@cotal-ai/runtime": patch
 ---
 

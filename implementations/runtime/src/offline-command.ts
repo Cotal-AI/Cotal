@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, isSimFaultCode, isSimFaultSelector, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -154,11 +154,10 @@ function faultProblem(fault: unknown): string | undefined {
   const fields = fault as Record<string, unknown>;
   const unknown = Object.keys(fields).find((key) => !Object.hasOwn(faultFields, key));
   if (unknown !== undefined) return `unknown field '${unknown}'`;
-  if (typeof fields.at !== "string" || !fields.at.trim()) return "at must be a non-empty step key";
-  if (typeof fields.kind !== "string") return "kind must be a string";
-  for (const key of ["code", "message"]) {
-    if (fields[key] !== undefined && typeof fields[key] !== "string") return `${key} must be a string`;
-  }
+  if (!isSimFaultSelector(fields.at)) return "at must be a full or short step key such as /sleep#0 or turn:build#1";
+  if (fields.kind !== undefined && typeof fields.kind !== "string") return "kind must be a string";
+  if (fields.code !== undefined && !isSimFaultCode(fields.code)) return "code must be an L3xxx or L4xxx language error code";
+  if (fields.message !== undefined && typeof fields.message !== "string") return "message must be a string";
   return undefined;
 }
 

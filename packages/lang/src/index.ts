@@ -139,6 +139,8 @@ export {
 } from "./dryrun.js";
 
 export {
+  isSimFaultCode,
+  isSimFaultSelector,
   SimHandler,
   SimUnscriptedError,
   type Scripted,

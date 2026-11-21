@@ -33,7 +33,8 @@ import type {
 } from "./effects.js";
 import { Cancelled, EffectError, askSchemaShape, conformsToAskSchema } from "./effects.js";
 import { parseDuration } from "./duration.js";
-import { stepKeyString } from "./keys.js";
+import { KEY_RESERVED_RE, scopeTraits, stepKeyString } from "./keys.js";
+import { EFFECT_KINDS, type EffectKind } from "./primitives.js";
 
 /** A scripted outcome: one value used for every occurrence, or one per occurrence in order. */
 export type Scripted<T> = T | readonly T[];
@@ -41,9 +42,38 @@ export type Scripted<T> = T | readonly T[];
 export interface SimFault {
   /** The step key, either in full (`/parallel:x#0/b:a/turn:build#1`) or short (`turn:build#1`). */
   readonly at: string;
-  readonly kind: string;
+  readonly kind?: string;
   readonly code?: string;
   readonly message?: string;
+}
+
+/** The codes a dry run reports as a program fault. */
+export function isSimFaultCode(value: unknown): value is string {
+  return typeof value === "string" && /^L[34][0-9]{3}$/.test(value);
+}
+
+function selectorKind(segment: string, allowEmptyName: boolean): string | undefined {
+  const match = /^([^/#:]+)(?::([^/#:]*))?#(0|[1-9][0-9]*)$/.exec(segment);
+  if (match && (allowEmptyName || match[2] !== "") && Number.isSafeInteger(Number(match[3]))) return match[1];
+  return undefined;
+}
+
+/** Syntax only. A valid selector can name a step the program does not reach. */
+export function isSimFaultSelector(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const full = value.startsWith("/");
+  const segments = (full ? value.slice(1) : value).split("/");
+  const step = selectorKind(segments.pop()!, false);
+  if (step === undefined || (!EFFECT_KINDS.includes(step as EffectKind) && !scopeTraits(step))) return false;
+  if (!full) return segments.length === 0;
+  if (segments.length % 2 !== 0) return false;
+  for (let i = 0; i < segments.length; i += 2) {
+    const kind = selectorKind(segments[i]!, true);
+    const branch = segments[i + 1]!;
+    if (kind === undefined || (kind !== "waitUntil" && !scopeTraits(kind))
+      || !branch.startsWith("b:") || KEY_RESERVED_RE.test(branch.slice(2))) return false;
+  }
+  return true;
 }
 
 export interface SimScript {
@@ -245,10 +275,11 @@ export class SimHandler implements EffectHandler {
     const short = full.slice(full.lastIndexOf("/") + 1);
     const fault = this.script.faults?.find((f) => f.at === full || f.at === short);
     if (fault === undefined) return;
+    const kind = fault.kind ?? "fault";
     throw new EffectError(
       fault.code ?? "L4002",
-      fault.kind,
-      fault.message ?? `simulated ${fault.kind} at ${full}`,
+      kind,
+      fault.message ?? `simulated ${kind} at ${full}`,
     );
   }
 

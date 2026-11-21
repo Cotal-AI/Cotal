@@ -374,33 +374,56 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     const write = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
     const to = { kind: "spawned", agent: "sim.ana", persona: "ana" };
-    let handoff: unknown, clock: unknown, fault: unknown;
+    let handoff: unknown, clock: unknown;
     try {
       writeFileSync(program, 'const builder = await spawn("builder");\nconst ana = await spawn("ana");\nfor (const attempt of [1, 2]) {\n  const result = await turn(builder, { name: "build" });\n  log(result.status, result.to?.agent === ana.agent);\n}\n');
       handoff = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to, note: "yours" }] } }, { json: true });
       writeFileSync(program, 'await sleep("1ms");\nlog("done");\n');
       clock = await simulate({ clock: { start: 1000 } }, { json: true });
-      fault = await simulate({ faults: [{ at: "/sleep#0", kind: "unreachable" }] }, { json: true });
     } finally { process.stdout.write = write; }
-    const [turnOut, clockOut, faultOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
+    const [turnOut, clockOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
     c("sequential turn results preserve their order and carry the agent handle", handoff === undefined && turnOut.result?.outcome === "completed"
       && JSON.stringify(turnOut.result.log.map((entry: { values: unknown }) => entry.values)) === JSON.stringify([["blocked", false], ["handoff", true]]), { handoff, turnOut });
     c("a finite nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
-    c("a valid scripted fault fails the named step with L4002 before it advances time", fault === undefined && faultOut?.result?.outcome === "failed"
-      && faultOut.result.failure?.code === "L4002" && faultOut.result.failure.step === "/sleep#0" && faultOut.result.elapsedMs === 0, { fault, faultOut });
   }
+  const scopedKey = "/parallel:checks#0/b:branch one/parallel#0/b:0/sleep#0";
+  const sleep = 'await sleep("1ms");\n';
+  for (const [label, source, fault, expected] of [
+    ["an at-only fault uses L4002", sleep, { at: "/sleep#0" }, ["L4002", "/sleep#0", "simulated fault at /sleep#0"]],
+    ["a short selector preserves the custom fault code and message", sleep,
+      { at: "sleep#0", kind: "unreachable", code: "L3100", message: "planned fault" }, ["L3100", "/sleep#0", "planned fault"]],
+    ["a valid fault selector for a step not reached is allowed", sleep, { at: "/sleep#9" }, null],
+    ["a full fault selector matches a step inside nested branches",
+      'await parallel({ "branch one": async () => { await parallel([async () => { await sleep("1ms"); }]); } }, { name: "checks" });\n',
+      { at: scopedKey }, ["L4002", scopedKey, `simulated fault at ${scopedKey}`]],
+  ] as const) {
+    writeFileSync(program, source);
+    const shown: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    let error: unknown;
+    try { error = await simulate({ faults: [fault] }, { json: true }); }
+    finally { process.stdout.write = write; }
+    const result = shown.length ? JSON.parse(shown.join("")).result : undefined;
+    const failure = result?.failure;
+    c(label, error === undefined && (expected === null
+      ? result?.outcome === "completed" && result.elapsedMs === 1
+      : result?.outcome === "failed" && result.elapsedMs === 0 && failure?.code === expected[0]
+        && failure.step === expected[1] && failure.title === expected[2]), { error, result });
+  }
+  writeFileSync(program, sleep);
   const faultTable = await simulate({ faults: {} });
   c("a non-array faults field is refused naming the results file", scriptRefusal(faultTable, `faults in the simulation results script ${handler} must be an array`), faultTable);
   for (const [fault, problem] of [
-    [{ att: "/sleep#0", kind: "unreachable" }, "unknown field 'att'"],
+    [{ att: "/sleep#0" }, "unknown field 'att'"],
     [{ at: "/sleep#0", kind: "unreachable", extra: true }, "unknown field 'extra'"],
     [null, "a fault must be an object"],
     [[], "a fault must be an object"],
-    [{ kind: "unreachable" }, "at must be a non-empty step key"],
-    [{ at: "  ", kind: "unreachable" }, "at must be a non-empty step key"],
-    [{ at: 42, kind: "unreachable" }, "at must be a non-empty step key"],
-    [{ at: "/sleep#0" }, "kind must be a string"],
-    [{ at: "/sleep#0", kind: "unreachable", code: 42 }, "code must be a string"],
+    ...[undefined, "  ", 42, "sleep#00", "/sleep#0 ", "/sleep#0\n", "/slep#0", "/parallel#0/sleep#0", "parallel#0/b:a/sleep#0"].map((at) =>
+      [{ at }, "at must be a full or short step key"] as const),
+    [{ at: "/sleep#0", kind: null }, "kind must be a string"],
+    ...[42, "E_TIMEOUT", "L9999", "l4002", "", " ", "L4002\n"].map((code) =>
+      [{ at: "/sleep#0", code }, "code must be an L3xxx or L4xxx language error code"] as const),
     [{ at: "/sleep#0", kind: "unreachable", message: null }, "message must be a string"],
   ] as const) {
     const invalid = await simulate({ faults: [{ at: "/sleep#0", kind: "unreachable" }, fault] });
