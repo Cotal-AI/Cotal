@@ -767,14 +767,22 @@ rejects it the Next says to run the follow again, which mints one from the curre
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
 When the follow starts, it writes a `snapshot` holding the window, then one `event` per message
 that matches the filters. A time-based `--since` applies to both the snapshot and live messages.
-A sequence cutoff applies only to the snapshot because live events have no `seq`. To read on from a follow, give
-`--since` the last event's `ts`. An `error` record names a failure on the live feed, and a lost
+A sequence cutoff applies only to the snapshot because live events have no `seq`.
+An `error` record names a failure on the live feed, and a lost
 connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. If the follow cannot open its target or read the snapshot, it writes an `error` with the code
 and any remedy, then an `end` with `reason: "setup-failed"`, without a snapshot. An `end` record closes
 the stream. The exit code is the snapshot's, the failure's when setup or the credential ends the
 follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+
+To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
+you processed at that timestamp. Restart with `--since` set to one millisecond before the saved
+time. For example, if the saved time is `2026-11-21T17:14:49.666Z`, pass
+`--since 2026-11-21T17:14:49.665Z`. A time cutoff is exclusive, so passing the saved time itself
+skips every message at that time. The overlap replays those messages. Skip only IDs you already
+processed, comparing `id` in the snapshot's `data.items` and `data.id` in live events.
+Raise `--limit` if the snapshot's window does not reach back to the cutoff.
 
 `history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
