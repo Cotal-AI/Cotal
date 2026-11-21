@@ -285,7 +285,6 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
   if (explicitNoInputFlag())
     throw new ConfirmationRequired("persona edit opens an editor, and --no-input forbids one", { remedy: "edit interactively without --no-input" });
   const source = requirePersonaSource(path);
-  validatePersona(source.bytes, path);
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });

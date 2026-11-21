@@ -76,7 +76,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
         ["Role", result.definition.role ?? "not set"],
         ["Application", result.definition.agent ? `${result.definition.agent} · pinned` : "user default"],
         ["Model", result.definition.model ?? "application default"],
-        ["Read", (result.definition.allowSubscribe ?? result.definition.subscribe ?? []).join(", ") || "no channels"],
+        ["Read", resolveReadAcl(result.definition.subscribe ?? [], result.definition.allowSubscribe).join(", ") || "no channels"],
         ["Post", (result.definition.allowPublish ?? []).join(", ") || "no channels"],
         ["File", result.path],
       ] }] },
