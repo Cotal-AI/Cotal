@@ -116,7 +116,7 @@ try {
   nc = await connect({ servers, ...core.standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   let service = await core.resolveService(nc, space, "manager", caller, { deadlineMs: 10_000 });
   const call = async (command: string, args: Record<string, unknown>, deadlineMs = 30_000): Promise<EndpointReply> =>
-    (await core.invokeCommand(nc!, space, service, command, args, { deadlineMs, currentEpoch: async () => 0 })).reply;
+    (await core.invokeCommand(nc!, space, service, command, args, { deadlineMs, currentEpoch: async () => service.responder.epoch })).reply;
 
   console.log(`1. ${RUNS} seatless runs complete with no delay on the manager's link`);
   const runIds: string[] = [];
