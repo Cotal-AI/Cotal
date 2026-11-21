@@ -535,9 +535,14 @@ export async function stackUp(request: StackUpRequest, native: StackUpNative): P
     const view: Report = { ...members, sections: [...members.sections, ...listening, ...(result.written.length ? [{ blocks: [{ kind: "fields" as const, rows: result.written.map((w): [string, string] => ["wrote", `${w.what}: ${w.path}`]) }] }] : [])] };
     // `down` stops only the stack of the folder it runs in, so from another folder the Next says where.
     const elsewhere = request.invokedRoot !== undefined && request.invokedRoot !== canonicalRoot(root);
+    // The payload limit is fixed at the broker's start, so a bare up cannot add a manager to a
+    // broker-only stack whose limit is below the floor the manager starts on: the Next names the
+    // stop and restart that can, instead of the bare up that would refuse.
+    const brokerPayload = request.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
+    const managerBelowFloor = !managed && brokerPayload !== undefined && brokerPayload < MANAGER_START_PAYLOAD_FLOOR;
     const next: Report["sections"] = request.foreground ? [] : [{ title: "Next", blocks: [{ kind: "commands", items: [
       // A bare spawn targets the selected space, which this up does not change when one is set.
-      managed ? { command: `${displayCmd()} spawn --space ${space}`, description: "Launch your default agent" } : { command: elsewhere ? `${displayCmd()} up --root ${shellWord(root)}` : `${displayCmd()} up`, description: "Add the manager to this stack" },
+      managed ? { command: `${displayCmd()} spawn --space ${space}`, description: "Launch your default agent" } : managerBelowFloor ? { command: `${displayCmd()} up${elsewhere ? ` --root ${shellWord(root)}` : ""} --max-payload ${NATS_DEFAULT_MAX_PAYLOAD}`, description: "Add the manager: stop the broker first, then restart it with a payload it can start on" } : { command: elsewhere ? `${displayCmd()} up --root ${shellWord(root)}` : `${displayCmd()} up`, description: "Add the manager to this stack" },
       { command: `${displayCmd()} down`, description: elsewhere ? `Stop every recorded member; run it from ${root}` : "Stop every recorded member" },
     ] }] }];
     const selection = keptCurrent ? keptOnUp(space, keptCurrent) : selected ? selectedOnUp(space) : undefined;
