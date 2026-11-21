@@ -4,7 +4,9 @@ import type { DmOnlyOptions } from "./endpoint-options.js";
 import type { AgentCard } from "./types.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 
-/** Written only by the `CotalEndpoint` constructor; every part takes it as `Readonly`. */
+/** Written only by the `CotalEndpoint` constructor; every part takes it as `Readonly`. A part must not
+ *  read it in its own constructor, because the endpoint's constructor fills it after the parts are
+ *  constructed. */
 export interface EndpointIdentity {
   /** The card the endpoint presents; its `meta` is updated in place. */
   card: AgentCard;

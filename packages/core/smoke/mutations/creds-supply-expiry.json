@@ -71,7 +71,7 @@
       "name": "the self-heal never runs after a credential refusal (the guard strands a renewable endpoint)",
       "file": "packages/core/src/endpoint.ts",
       "find": "      void this.reestablishLoop();\n",
-      "replace": "      if (!this.credsSource) void this.reestablishLoop();\n",
+      "replace": "      if (!this.identity.credsSource) void this.reestablishLoop();\n",
       "expectRed": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
       "cell": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
       "note": "This is the wrong repair that a guard-only fix invites: refuse the expired credential and never come back, which satisfies every ZERO cell in the suite while leaving a renewable endpoint permanently dead. The mutation is conditioned on credsSource so it severs the self-heal only for endpoints with a renewal source, leaving the static-cred cells untouched and confining the red to the recovery half. It is also the mutation that proves the recovery cell is no longer vacuous: against the previous setActivity-based version this mutation SURVIVED, because with registerPresence:false that call returns without a wire and reports success on a dead endpoint."
