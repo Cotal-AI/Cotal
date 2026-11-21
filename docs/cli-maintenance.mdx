@@ -12,8 +12,9 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ## Updating local Managers
 
-On Linux, `cotal update --self` reads every local Manager that loaded this installation,
-including Managers outside the selected space. Each request uses that Manager's local instance
+On Linux, `cotal update --self` reads every running local Manager that loaded this installation,
+including Managers outside the selected space. It skips Managers that exit before their launch
+details can be read. Each request uses that Manager's local instance
 identity. `--space`, `--server`, `--creds`, and `--on` narrow the request. Missing or conflicting
 identity records refuse rather than selecting a Manager on another computer.
 
