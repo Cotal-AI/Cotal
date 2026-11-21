@@ -550,8 +550,11 @@ try {
   const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
   check("the dashboard's protected credential file is minted", minted.status === 0 && existsSync(creds), `${minted.stdout}${minted.stderr}`);
   const webPort = await freePort();
-  check("space create prepares an open controller stack", cliIn(openRoot, ["space", "create", "component-health-open"]).status === 0);
-  const openUp = cliIn(openRoot, ["up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const openSpace = "component-health-open";
+  const openServer = `nats://127.0.0.1:${await freePort()}`;
+  const openStore = join(openRoot, "custom-store");
+  check("space create prepares an open controller stack", cliIn(openRoot, ["space", "create", openSpace]).status === 0);
+  const openUp = cliIn(openRoot, ["up", "--open", "--server", openServer, "--store-dir", openStore], 120_000);
   openStack = openUp.status === 0;
   check("an open controller stack starts", openStack, `${openUp.stdout}${openUp.stderr}`);
   const openHealth = cliIn(openRoot, ["status", "--components"]);
@@ -561,11 +564,10 @@ try {
   const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
   openStack = openDown.status !== 0;
   check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
-  const stoppedStore = (cwd: string) => {
+  const stoppedStore = (cwd: string, store = join(cwd, ".cotal", "nats"), target?: { space: string; server: string; otherServer: string }) => {
     if (process.platform === "win32" || process.getuid?.() === 0) return;
     const cleared = cliIn(cwd, ["use", "--clear"]);
     check("clear the sibling selection before inspecting this stopped stack", cleared.status === 0, `${cleared.stdout}${cleared.stderr}`);
-    const store = join(cwd, ".cotal", "nats");
     spawnSync("chmod", ["-R", "a-w", store]);
     try {
       for (const command of ["status", "ps"]) for (const output of ["--plain", "--json"]) {
@@ -574,9 +576,22 @@ try {
         check(`${command} ${output} names the stopped store permission repair before restart`,
           report.status === (command === "status" ? 0 : 2) && text.includes("not writable by this account") && text.includes("chmod -R u+w") && !text.includes("reset store") && !text.includes("there to restart") && !/cotal up +Start this folder's stopped stack/.test(text), text);
       }
+      if (target) {
+        const ps = (server: string) => cliIn(cwd, ["ps", "--plain", "--space", target.space, "--server", server]);
+        const matching = ps(target.server);
+        const text = `${matching.stdout}${matching.stderr}`;
+        check("ps at the saved broker URL names the read-only custom JetStream directory",
+          matching.status === 2 && text.includes("PERMISSION_DENIED") && text.includes(`${store} is not writable`) && text.includes(`chmod -R u+w ${store}`) && !text.includes("there to restart"), text);
+        const other = ps(target.otherServer);
+        const otherText = `${other.stdout}${other.stderr}`;
+        check("ps at a different broker URL keeps the broker refusal",
+          other.status === 2 && otherText.includes("TARGET_UNAVAILABLE") && !otherText.includes(store), otherText);
+      }
     } finally { spawnSync("chmod", ["-R", "u+rwX", store]); }
   };
-  stoppedStore(openRoot);
+  let otherServer: string;
+  do { otherServer = `nats://127.0.0.1:${await freePort()}`; } while (otherServer === openServer);
+  stoppedStore(openRoot, join(openStore, "jetstream"), { space: openSpace, server: openServer, otherServer });
   const defaultDown = cliIn(webRoot, ["down", "--yes"], 120_000);
   webStack = defaultDown.status !== 0;
   check("stop the default stack before inspecting its retained store", defaultDown.status === 0, `${defaultDown.stdout}${defaultDown.stderr}`);
