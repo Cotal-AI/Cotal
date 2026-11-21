@@ -140,7 +140,7 @@ try {
   mkdirSync(cHome, { recursive: true });
   const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, {}, { cols: 140, rows: 36 });
   stops.push(async () => cs.close());
-  check("the console paints against the open mesh", await cs.waitFor(`${space} · #`, 40_000), clean(cs.out).slice(-200));
+  check("the console opens on the all feed", await cs.waitFor(`${space} · #all`, 40_000), clean(cs.out).slice(-200));
 
   // Identify the console's peer by what it IS, not by a name this file already used: section A's
   // own operator is still on the roster as an offline record, and the console names its peer after
@@ -151,6 +151,13 @@ try {
   check("before the operator sends anything, the console has put nobody on the roster", operators().length === 0, seats());
 
   let mk = cs.mark();
+  await cs.command("msg #other");
+  check("a channel without message text shows usage", await cs.waitFor("usage: msg [#channel] <text>", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
+  const general = await watcher.channelHistory("general");
+  const other = await watcher.channelHistory("other");
+  check("a channel without message text writes neither history", general.length === 0 && other.length === 0, { general, other });
+  check("a channel without message text leaves the operator off the roster", operators().length === 0, seats());
+
   await cs.compose("from-the-console");
   const joined = await until(() => (operators().length === 1 ? true : undefined), 12_000);
   check("the console's FIRST send activates participant mode by itself", joined === true, seats());
@@ -172,6 +179,11 @@ try {
   await cs.command("MSG #general Keep Channel Case");
   const msg = await until(() => readPaletteMessage("Keep Channel Case"), 4000);
   check("uppercase MSG sends the unchanged body to #general", msg?.channel === "general" && msg?.text === "Keep Channel Case", msg ?? clean(cs.out).slice(-500));
+  mk = cs.mark();
+  await cs.command("msg #other To Other Channel");
+  check("a channel with message text sends to that channel", await cs.waitFor("→ #other", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
+  const sent = await watcher.channelHistory("other");
+  check("the explicit channel retains the unchanged body", sent.length === 1 && sent[0].channel === "other" && sent[0].parts[0]?.kind === "text" && sent[0].parts[0].text === "To Other Channel", sent);
 
   // Idempotence is NOT visible as a second roster row: a duplicate peer registers under the same
   // card id, so the roster still shows one. What it is visible as is an ORPHAN. Without the guard

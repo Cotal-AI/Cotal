@@ -77,15 +77,17 @@ Its Next gives a shell-quoted `chmod` command when the path can be displayed unc
 choose a writable folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
-says to stop the process that listens there and run the same `backup create` again. Any other
-refusal or failure shows the check's own sentence as its native detail.
+says to stop the process that listens there and run the same `backup create` again. Retry commands
+quote the destination and any `--store-dir` path for a POSIX shell when both can be displayed
+unchanged. Otherwise, Next asks you to rerun your original command. Run either from the same
+project folder. Any other refusal or failure shows the check's own sentence as its native detail.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
 `backup create` to run again once that cause is fixed.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
 what it wrote and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
 writing: the store copy under `.cotal/maintenance/attempts`, or the backup in its destination. It
-also says that no backup was published and that the preserved cut is still ready. Its Next frees
-space on that disk and runs the same `backup create` again.
+also says that no backup was published and that the preserved cut is still ready. Its Next asks
+you to free space on the disk named in the error and retry the same `backup create`.
 
 A `backup create` interrupted by SIGINT, SIGTERM or SIGHUP after it claims the cut exits 130, 143
 or 129 and names its attempt, the partial artifact it left and `cotal backup recover <attempt> --yes`.
@@ -233,10 +235,11 @@ where it is until `backup cleanup-fallback` deletes it, so to keep the space on 
 new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
 already exists, or whose parent directory does not, refuses `USAGE_INVALID` (exit 1) before anything
 is staged. Restore needs the stopped preserved cut from `down --preserve-state`. A root with no
-maintenance journal refuses before the restore takes its maintenance lock, so the folder keeps no
-state from the attempt, and `up --restore` refuses the same way. Its next step says to start a stack a
-plain `cotal down` stopped with `cotal up` first, since that stop records no cut. An artifact path that names
-nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same point. It names the path, and its JSON
+maintenance journal refuses before the restore takes its maintenance lock. Both `backup restore`
+and `up --restore` leave the project folder and the connector installation unchanged in that case.
+The refusal says to start a stack a plain `cotal down` stopped with `cotal up` first, since that stop
+records no cut. An artifact path that names nothing refuses `TARGET_NOT_FOUND` (exit 2) at the same
+point. It names the path, and its JSON
 target says in `missing` whether the folder that should hold the artifact (`folder`) or only the
 artifact (`artifact`) is missing. A path that is not an artifact, or is an incomplete one, refuses
 there too, as `backup verify` refuses it. A path that is, holds or sits inside the preserved store
@@ -253,8 +256,7 @@ The preserved store and its ready journal stay unchanged. After their startup li
 starts name the restore attempt and give the cleanup step that retires it, with `--discard-history`
 for a restore that left history or workflow runs out. When `up --restore --root` selects another
 project, the cleanup step starts with `cd <project> &&` so you can run it from the folder where you
-ran the restore. Unlike the other backup modes, `backup restore` runs the connector seed first, as
-`up` does, because it resumes seats.
+ran the restore. `backup restore` defers connector reconciliation to startup, as `up --restore` does.
 
 Three commands refuse an active restore. `down --preserve-state`, in each of its forms, refuses
 `LIFECYCLE_BLOCKED` (exit 2) and stops nothing: a new cut begins only after the restore journal is

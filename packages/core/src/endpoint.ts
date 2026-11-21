@@ -103,10 +103,7 @@ import {
   readChannelDefaults,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
-import {
-  AnycastRequestAuthority,
-  type AnycastStatus,
-} from "./anycast-requests.js";
+import type { AnycastStatus } from "./anycast-requests.js";
 import {
   assertValidRole,
   chatStream,
@@ -328,17 +325,11 @@ export class CotalEndpoint extends EventEmitter {
     sendMentionNotice: (...args) => this.anycastRail.sendMentionNotice(...args),
     emit: (event, ...args) => this.emit(event, ...args),
   });
-  /** The anycast take responder, the request records it writes, and their maintenance timer
-   *  (delivery daemon, SPEC §8.1). Bound with the other Plane-3 responders and dropped with them. */
-  private takeServeSub?: import("@nats-io/transport-node").Subscription;
-  private anycastAuthority?: AnycastRequestAuthority;
   /** The TASK stream's creation time for the role consumer this endpoint pumps, stamped on each copy
    *  it delivers and carried by that copy's take (SPEC §8.1). */
   private taskEpoch?: string;
   /** Why the records are not open, when this daemon's credential cannot open them. */
   private anycastUnavailable?: string;
-  private anycastSweep?: ReturnType<typeof setInterval>;
-  private takesInFlight = 0;
   /** Local cache of the channel registry (key = channel token), kept by a KV watch or, on an
    *  endpoint that reads it on demand, by {@link readChannels}. */
   private readonly channelConfigs = new Map<string, ChannelConfig>();
@@ -406,18 +397,6 @@ export class CotalEndpoint extends EventEmitter {
    *  the backstop survives a reconnect on its own; the agent can't re-read the privileged members KV,
    *  so this in-memory mirror is kept, not rebuilt. Cleared only on full stop. */
   private readonly plane3Channels = new Map<string, number>();
-  /** Channels whose live sub was REFUSED while they held a Plane-3 durable membership, whose §7
-   *  tombstone has not yet confirmed (channel → join generation). {@link EndpointDurable.closeRefusedMembership} retries
-   *  the tombstone until it lands; until then this is a `durable-unclosed` state surfaced via
-   *  {@link pendingDurableLeaves} (the connector shows it in `cotal_channels`, never as ordinary
-   *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
-  private readonly pendingDurableLeave = new Map<string, number>();
-  /** Boot durable channels whose self-join hasn't yet established a membership (daemon down/absent at
-   *  first connect, or a transient `durable:false`). {@link reconcileBootJoin} retries with capped
-   *  backoff until the membership exists or the channel is left — so a first-connect daemon outage
-   *  self-heals on recovery instead of leaving the channel silently live-only. Surfaced to the connector
-   *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
-  private readonly pendingBootJoins = new Set<string>();
   /** The refusals a channel's live subscription callback received. nats.js hands a subscription
    *  refusal to the refused subscription's callback and then dispatches that same instance on the
    *  connection status, so the callback owns it (see {@link EndpointConsumers.subscribeChat}) and watchStatus skips it. */
@@ -2862,7 +2841,6 @@ export class CotalEndpoint extends EventEmitter {
     js: () => this.js,
     jsm: () => this.jsm,
     space: () => this.space,
-    pendingDurableLeave: () => this.pendingDurableLeave,
     stopped: () => this.stopped,
     plane3Channels: () => this.plane3Channels,
     aclRegistry: () => this.aclRegistry(),
@@ -2963,14 +2941,6 @@ export class CotalEndpoint extends EventEmitter {
     subs: () => this.subs,
     anycastUnavailable: () => this.anycastUnavailable,
     setAnycastUnavailable: (value) => { this.anycastUnavailable = value; },
-    anycastAuthority: () => this.anycastAuthority,
-    setAnycastAuthority: (value) => { this.anycastAuthority = value; },
-    takeServeSub: () => this.takeServeSub,
-    setTakeServeSub: (value) => { this.takeServeSub = value; },
-    anycastSweep: () => this.anycastSweep,
-    setAnycastSweep: (value) => { this.anycastSweep = value; },
-    takesInFlight: () => this.takesInFlight,
-    setTakesInFlight: (value) => { this.takesInFlight = value; },
     emitRecoverable: (err) => this.emitRecoverable(err),
     plane3MayAct: () => this.deliveryPlane.plane3MayAct(),
     notLiveMsg: () => this.notLiveMsg(),
@@ -3279,7 +3249,6 @@ export class CotalEndpoint extends EventEmitter {
   private readonly bootMemberships = new EndpointBootMemberships({
     channels: () => this.channels,
     plane3Channels: () => this.plane3Channels,
-    pendingBootJoins: () => this.pendingBootJoins,
     stopped: () => this.stopped,
     requestDelivery: (op, args, timeoutMs) => this.requestDelivery(op, args, timeoutMs),
     requireLifecycleUid: (what) => this.requireLifecycleUid(what),

@@ -16,12 +16,12 @@
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
@@ -59,14 +59,15 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean }): Promise<boolean> {
-  const root = join(base, name), home = join(root, "home"), mesh = join(root, options.externalDown === "folder" ? name : "mesh");
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
+  const root = join(base, name), home = join(root, "home"), folderNamed = options.externalDown === "folder" || options.openManagerExit;
+  const mesh = join(root, folderNamed ? name : "mesh"), store = join(mesh, "store");
   for (const p of [root, home, mesh, ...(options.nativeLog ? [] : [join(mesh, ".cotal")]), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = options.nativeLog ? undefined : recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
   const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true, throwIfNoEntry: false });
   const port = await freePort(); assert.notEqual(port, 4222);
-  const space = options.externalDown === "folder" ? name : `foreground-${name}`;
+  const space = folderNamed ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const logFile = join(mesh, "broker.log");
   if (options.repairDelivery) {
@@ -79,7 +80,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -131,11 +132,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         console.log(`PASS foreground-up-signals ${name}: manager exit during an interrupted startup is not reported as degradation`);
         return true;
       }
-      await until(() => /control plane degraded:.*exited before it came up/.test(err), 20_000, () => err.slice(-3000));
+      // The consequence is the last line of the degraded notice on stderr.
+      await until(() => err.includes("Spawn and retirement require a functioning control plane.\n"), 20_000, () => err.slice(-3000));
       assert.equal(live(manager), false, "the failed manager's recorded birth is gone"); passed++;
       assert.equal(state.exited, false, "a genuine startup failure does not masquerade as an operator stop"); passed++;
       assert.equal(await portOpen(port), true, "the degraded stack's broker remains running"); passed++;
-      assert.match(err, /Spawn and retirement require a functioning control plane/); passed++;
+      assert.match(err, /control plane degraded:.*exited before it came up/); passed++;
       console.log(`PASS foreground-up-signals ${name}: genuine manager startup failure reported before any stop request`);
       return true;
     }
@@ -213,13 +215,48 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.match(repaired.out, /Delivery responder:\s+● bound/);
       assert.match(next(repaired), spawnLine); passed++;
     }
-    if (options.openBrokerExit) {
+    if (options.openBrokerExit || options.openManagerExit) {
       let health: Awaited<ReturnType<typeof foregroundCliProbe>> | undefined;
       const components = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components"], 60_000);
       await until(async () => {
         health = await components();
         return health.code === 0 && /^ {2}manager +serving/m.test(health.out);
       }, 90_000, () => (health?.out ?? "") + (health?.err ?? ""));
+      if (options.openManagerExit) {
+        const manager = token(managerPath), broker = token(brokerPath);
+        assert.ok(manager && live(manager) && broker && live(broker));
+        process.kill(manager.pid, "SIGTERM");
+        await until(() => !existsSync(managerPath) && !live(manager), 30_000, () => err);
+        const inspect = (command: string) => foregroundCliProbe(cliEntry, tsx, mesh, env, [command, "--space", space, "--plain"], 60_000);
+        const status = await inspect("status");
+        assert.equal(status.code, 0, status.out + status.err);
+        assert.match(status.out, new RegExp(`^  Broker +running.*pid ${broker.pid}`, "m"));
+        assert.match(status.out, /^  Manager +stopped$/m);
+        assert.match(status.out, /cotal down --yes[^\n]*exited manager[^]*cotal up --foreground/);
+        assert.ok(live(broker) && await portOpen(port));
+        passed++;
+
+        const downArgs = ["down", "--yes"];
+        assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+        const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 60_000);
+        assert.equal(down.code, 0, down.out + down.err);
+        assert.equal(await portOpen(port), false);
+        if (process.getuid?.() !== 0) {
+          const jetstream = join(store, "jetstream");
+          chmodSync(jetstream, 0o500);
+          try {
+            for (const command of ["status", "ps"]) {
+              const report = await inspect(command), text = report.out + report.err;
+              assert.equal(report.code, command === "status" ? 0 : 2, text);
+              assert.ok(text.includes(`the broker store ${jetstream} is not writable by this account`), text);
+              assert.ok(text.includes(`chmod -R u+w ${jetstream}`), text);
+              assert.doesNotMatch(text, /there to restart/);
+            }
+            passed++;
+          } finally { chmodSync(jetstream, 0o700); }
+        }
+        return true;
+      }
       const broker = token(brokerPath);
       assert.ok(broker && live(broker));
       process.kill(broker.pid, "SIGTERM");
@@ -531,14 +568,15 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
-async function controllerHoldCell(): Promise<void> {
-  const name = "controller-hold";
+async function controllerHoldCell(otherHome = false): Promise<void> {
+  const name = otherHome ? "controller-hold-other-home" : "controller-hold";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
-  for (const p of [root, home, mesh, join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
-  recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
+  const machine = join(home, otherHome ? "launching home's machine" : "machine");
+  for (const p of [root, home, mesh, join(home, "xdg"), machine]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: machine, xdgConfigHome: join(home, "xdg") });
   const port = await freePort(); assert.notEqual(port, 4222);
   const space = `foreground-${name}`;
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
   const foreground = (args: string[]) => {
@@ -557,8 +595,27 @@ async function controllerHoldCell(): Promise<void> {
       return holder.io.out.includes("Controller stack started");
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
-    const second = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
+    const secondEnv = otherHome ? { ...env, COTAL_HOME: join(home, "other-machine") } : env;
+    const secondSandbox = otherHome ? recordSmokeSandbox({ root: mesh, cotalHome: secondEnv.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }) : sandbox;
+    const second = await foregroundCliProbe(cliEntry, tsx, mesh, secondEnv, ["up", "--foreground"], 60_000);
     assert.ok(second.code === 2 && second.err.includes(`a foreground \`cotal up\` in process ${holder.child.pid} already holds this stack's lifetime`) && !holder.state.exited, `a second foreground up refuses CONFLICT, naming the holder, and the holder keeps the stack: ${second.out}${second.err}`); passed++;
+    if (otherHome) {
+      const commands = [...second.err.matchAll(/`(COTAL_HOME=[^`]+)`/g)].map(([, command]) => command!);
+      assert.equal(commands.length, 2, second.err); passed++;
+      assert.ok(commands[0]!.startsWith(`COTAL_HOME=${shellPath(machine)} `) && commands[0]!.endsWith(" down --yes"), second.err); passed++;
+      assert.equal(commands[1], commands[0]!.replace(/ down --yes$/, " up --foreground"), second.err); passed++;
+      assert.doesNotMatch(second.err, /`cotal down --yes`/, "no unqualified stop is offered to the other home"); passed++;
+      assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: mesh, env: secondEnv });
+      const wrongDown = await foregroundCliProbe(cliEntry, tsx, mesh, secondEnv, ["down", "--yes"], 120_000);
+      assert.ok(wrongDown.code === 2 && /TARGET_UNAVAILABLE/.test(wrongDown.err) && await portOpen(port), wrongDown.out + wrongDown.err); passed++;
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+      assert.equal(down.code, 0, down.out + down.err); passed++;
+      await until(() => holder.state.exited, 10_000, () => holder.io.err.slice(-3000));
+      assert.ok(holder.state.code === 0 && !(await portOpen(port)), "the stop releases the holder and closes the broker"); passed++;
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
     // A killed holder leaves its record and the running stack, which the next foreground up takes over.
     process.kill(holder.child.pid, "SIGKILL");
     await until(() => holder.state.exited, 10_000, () => "the killed foreground up did not exit");
@@ -579,6 +636,7 @@ async function controllerHoldCell(): Promise<void> {
     try {
       for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
       // A failed cell still stops what its start left, through the product's own down.
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
     } finally {
       writeFileSync(join(root, "stdout.log"), holder.io.out + (taker?.io.out ?? ""), { mode: 0o600 });
@@ -603,6 +661,7 @@ await cell("auth-ready", { auth: true, ready: true });
 await cell("auth-ready-term", { auth: true, ready: true, signal: "SIGTERM" });
 await cell("delivery-repair", { auth: true, ready: true, repairDelivery: true });
 await cell("open-broker-exit", { openBrokerExit: true });
+await cell("custom-open", { openManagerExit: true });
 let refusalObserved = false;
 for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
   refusalObserved = await cell(`auth-refused-${attempt}`, { auth: true, refusal: true });
@@ -615,5 +674,6 @@ await controllerStartupCell("team");
 await controllerHangupCell();
 await controllerSighupCell();
 await controllerHoldCell();
+await controllerHoldCell(true);
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

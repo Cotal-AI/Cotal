@@ -1065,7 +1065,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   // way the control resolver's own peek does (offline-swept when no space is named, `--space`
   // unfiltered) and skip the mint entirely for a remote entry, before it ever reaches the exchange.
   // The control resolve below reads the same sweep, so the whole chain sees one liveness verdict.
-  let offline: readonly string[] | undefined;
+  let sweep: Awaited<ReturnType<typeof pruneStaleMeshes>> | undefined;
   let remoteSpace: string | undefined;
   if (typeof flags.creds !== "string") {
     const space = typeof flags.space === "string" ? flags.space : undefined;
@@ -1073,8 +1073,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     let peek: MeshTarget | undefined;
     try {
       // This sweep only probes. Read-only staged checks need the same liveness verdict.
-      offline = (await pruneStaleMeshes(server)).offline;
-      peek = resolveMeshTarget(process.cwd(), { server, space, offline });
+      sweep = await pruneStaleMeshes(server, space === undefined ? "targets" : "brokers");
+      peek = resolveMeshTarget(process.cwd(), { server, space, ...sweep });
     } catch (e) {
       // An unreadable prepared record is not evidence about Manager custody. The updater can
       // leave it alone only if it was not asked for a broker or instance and has no potentially
@@ -1082,7 +1082,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       if (isMeshRegistryError(e) && e.refusal === "PERMISSION_DENIED" && dirname(e.file) === preparedSpacesDir()) {
         const name = preparedRecordSpace(e.file);
         if (name !== undefined && server === undefined && on === undefined &&
-            !registry.entries.some(entry => space === undefined ? !offline?.includes(entry.space) : entry.space === space) &&
+            !registry.entries.some(entry => space === undefined ? !sweep?.offline.includes(entry.space) : entry.space === space) &&
             !supervisorMayServe(name, options.installedEntry)) return "none";
       }
       if (!isWorkspaceTargetError(e)) throw e;
@@ -1153,7 +1153,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
     // Explicit and in-folder targets are not filtered by the resolver's offline set.
-    if (peek && offline?.includes(peek.space) && on === undefined &&
+    if (peek && sweep?.offline.includes(peek.space) && on === undefined &&
         !supervisorMayServe(peek.space, options.installedEntry)) return "none";
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
     // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
@@ -1169,7 +1169,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       ...(typeof flags.space === "string" ? { space: flags.space } : {}),
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
-      offline,
+      ...sweep,
     }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
   } catch (e) {
     const failure = e instanceof ConnectRefusal ? e.failure() : isCommandFailure(e) ? e : undefined;

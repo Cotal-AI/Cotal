@@ -72,7 +72,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs. It runs in the background by default and records the mesh so `cotal spawn` from
 any directory can find it; `--detach` explicitly names the same mode. `--foreground` keeps the
-native stack in this terminal.
+native stack in this terminal. Omit `--json` and `--plain` in foreground mode. For a finite
+startup receipt from a controller-owned stack, use `--json` or `--plain` without `--foreground`.
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
@@ -223,8 +224,10 @@ runs no stop. The command prints that the stack is still running and names `cota
 starting lets the start settle, prints the same line and exits 129, and leaves what the start left.
 While a foreground `up` holds the stack, it records its process in `.cotal/stack-foreground.hold`,
 and a second foreground `up` on that stack refuses `CONFLICT`, exit 2, names that process, and
-starts nothing. The holding process removes that record as it exits, a hangup included. A holder
-that was killed leaves it, and the next `cotal down` removes it once that process is gone. A
+starts nothing. If the journal records a different launching `COTAL_HOME`, the suggested stop and
+retry commands set it explicitly. Run them from the stack's folder. The holding process removes
+that record as it exits, a hangup included. A holder that was killed leaves it, and the next
+`cotal down` removes it once that process is gone. A
 foreground `up` on a stack that is already running without such a holder, because a background `up`
 started it or the holding terminal closed, takes over its lifetime. Before it blocks it says that
 the stack is already running and that Ctrl-C or `SIGTERM` there stops the whole stack. A closed
@@ -303,6 +306,8 @@ keeps its mode. A `.cotal`, or a root without one, that this account cannot writ
 broker store this account cannot write refuses the same way, naming the store's `jetstream` folder,
 or the store itself when its root is unwritable, before a broker has made `jetstream`, or when this account cannot open it, and
 `chmod -R u+w`. This check also runs for `up -f` and for a bare `up` reopening a recorded custom store.
+When a local stack is stopped, `status` and `ps` check the same store as bare `up` and name the
+permission repair before a restart, including for a recorded custom store.
 If that unwritable folder also lacks read or search access, the step names
 `chmod -R u+rwX` instead, since `u+w` alone leaves it closed. A writable store root without read
 access refuses before startup too, naming that root and `chmod -R u+rwX`; a writable `jetstream`
@@ -521,10 +526,14 @@ observations could not be read, with that code.
 
 A controller stack opens three listeners. The broker serves clients at its `--server` port, and a
 websocket for the browser console's mesh session on a port `up` picks, which is always plaintext.
-`up` picks that port as it writes the broker's configuration, and nothing holds the port until the
-broker binds it. When another process binds it first, the broker exits before readiness and `up`
-launches it again on a newly picked port, at most four times; a text `up` says so on stderr each
-time. When the last launch fails the same way, the failure names those relaunches.
+When `up` starts a manager against a running broker, it gives the manager the broker's WebSocket
+port. When `up` restarts the broker while its manager is still running, it keeps the port that
+manager advertises. If another process holds that port, the repair fails and names the port to free
+before retrying.
+When `up` can choose a new port, it picks one as it writes the broker's configuration. Nothing holds
+it until the broker binds it. If another process binds it first, `up` launches the broker again on a
+new port, at most four times. A text `up` reports each retry on stderr. If the last launch fails the
+same way, the failure names those retries.
 The manager serves its console over plain HTTP on a port it picks when it starts. All three bind the
 `--host` address, and loopback without it, so `--host 0.0.0.0` opens each of them on every interface.
 The receipt's `Listeners` section names each one with its address, how far it reaches and whether it
@@ -793,6 +802,9 @@ pidfile, `cotal status` in that folder shows the row as `stale pidfile` and puts
 Next, which starts it again on the recorded address and store. A manager stopped by SIGTERM removes
 its pidfile. When its retained manager records belong to this broker start, status shows `stopped`
 and offers the same restart. A stack started with `--no-manager` still shows `not started`.
+In the root of a locally started legacy open stack, `status` shows the running broker and the
+stopped manager even after the manager removes its pidfile. Next names `cotal down --yes`, then
+`cotal up --foreground` to start both again. The first command stops the broker and its hosted work.
 `up` does not record `--runtime`, so pass it again when the manager ran on one.
 While such a stopped folder's broker store remains, Next also names the step for a stale store:
 `cotal reset store <space>` when that reset reaches this folder's store, and `cotal clean store --force`

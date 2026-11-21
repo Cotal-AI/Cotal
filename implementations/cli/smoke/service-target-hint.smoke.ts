@@ -26,7 +26,7 @@
  * Run: pnpm smoke:service-target-hint
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -67,6 +67,22 @@ check("the text refusal carries one mark, not two", !/✗\s*✗/.test(text.stder
 
 const refused = run(["service", "--server", "nats://127.0.0.1:4222"]);
 check("control: service does refuse --server as an unknown option", refused.status === 1 && /Unknown option '--server'/.test(refused.stderr), shown(refused));
+
+const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-services.mdx"), "utf8");
+const example = /^## Adding a service [^\n]*\n[^#]*?^```bash\ncotal space create ([\w-]+) --root \.\ncotal service add ([\w-]+) --exec "([^"]+)"\n```/m.exec(reference);
+check("the first add example prepares a space in the project folder", example !== null);
+if (example) {
+  const [, space, name, command] = example;
+  const project = join(home, "service-example");
+  mkdirSync(project);
+  const prepared = run(["space", "create", space!, "--root", "."], project);
+  const added = run(["service", "add", name!, "--exec", command!], project);
+  check("the documented space create and service add save a definition", prepared.status === 0 && added.status === 0, [shown(prepared), shown(added)]);
+  const state = run(["service", "--json"], project);
+  const inventory = state.status === 0 ? JSON.parse(state.stdout).result : undefined;
+  check("the inventory has the saved definition but no instances or running broker",
+    inventory?.definitions.some((row: { name: string }) => row.name === name) && inventory.instances.length === 0 && !inventory.processes.some((row: { processState: string }) => row.processState === "alive"), shown(state));
+}
 
 // remove takes --instance to forget one stopped instance record; its help did not list it.
 const removeHelp = run(["help", "service", "remove"]);

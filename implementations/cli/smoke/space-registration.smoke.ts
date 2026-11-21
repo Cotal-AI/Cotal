@@ -178,6 +178,13 @@ const bundle = (over: Record<string, unknown> = {}) => ({
 const file = join(home, "hosted.json");
 writeFileSync(file, JSON.stringify(bundle()));
 const userRoot = projectRoot("hosted-root");
+const emptyInventory = await run(["space", "--plain"]);
+const registrationTemplate = /^[ \t]*(cotal space add <name> --server <url>[^\n]*?)[ \t]{2,}Register an existing broker/m;
+const emptyCommand = registrationTemplate.exec(emptyInventory.stdout)?.[1];
+const outsideCommand = "cotal space add <name> --server <url> --root <dir>";
+check("empty inventory outside a project names the required root and which folder to use",
+  emptyInventory.status === 0 && emptyCommand === outsideCommand &&
+    emptyInventory.stdout.includes("any existing folder for an open space") && emptyInventory.stdout.includes(".cotal/auth"), shown(emptyInventory));
 recordMesh({ space: "keep", server: DEAD, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
 setCurrent("keep");
 
@@ -220,7 +227,14 @@ setCurrent("keep");
 
 // ── Adding a space from --server ───────────────────────────────────────────────────────────────────────
 {
-  const added = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
+  const outside = await run(["space", "--plain"]);
+  const inside = await run(["space", "--plain"], {}, root);
+  check("nonempty inventory names --root only when the project cannot be inferred",
+    outside.status === 0 && registrationTemplate.exec(outside.stdout)?.[1] === outsideCommand &&
+    inside.status === 0 && registrationTemplate.exec(inside.stdout)?.[1] === "cotal space add <name> --server <url>", { outside: shown(outside), inside: shown(inside) });
+  if (!emptyCommand) throw new Error(`inventory printed no registration command: ${emptyInventory.stdout}`);
+  const args: Record<string, string> = { "<name>": "open1", "<url>": LIVE, "<dir>": root };
+  const added = await json(emptyCommand.split(" ").slice(1).map((arg) => args[arg] ?? arg));
   const r = added.env?.result;
   check("an open broker is added: ok, verified, not a replacement", added.status === 0 && added.env?.outcome === "ok" && r?.kind === "space-added" && r.verified === true && r.replaced === false, shown(added));
   check("its record is the space show detail: open, manual, reachable", r?.space?.space === "open1" && r.space.mode === "open" && r.space.origin === "manual" && r.space.check === "reachable" && r.space.root === root, r?.space);
@@ -342,11 +356,26 @@ setCurrent("keep");
   const listedUnchecked = await json(["space"]);
   check("space --json marks that mode unchecked and a checked one checked",
     listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "dead1")?.modeChecked === false && listedUnchecked.env?.result.items.find((item: { space: string }) => item.space === "started")?.modeChecked === true, listedUnchecked.env?.result.items);
+  setCurrent("dead1");
   const shownUnchecked = await run(["space", "show", "dead1", "--plain"]);
-  check("space show names the mode not checked and how to check it", /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) && shownUnchecked.stdout.includes("cotal space forget dead1"), shown(shownUnchecked));
+  check("space show tells the user to wait for an offline broker without forgetting it",
+    shownUnchecked.status === 0 && /broker:\s+unreachable/.test(shownUnchecked.stdout) && /mode:\s+open, not checked: added with --force/.test(shownUnchecked.stdout) &&
+    shownUnchecked.stdout.includes("wait for the broker to answer") && !shownUnchecked.stdout.includes("cotal space forget"), shown(shownUnchecked));
+  const beforeVerify = registryFiles();
+  const verifyOffline = await json(["space", "add", "dead1", "--server", DEAD, "--root", root]);
+  const retarget = await json(["space", "add", "dead1", "--server", LIVE, "--root", root]);
+  check("offline verification preserves the registration and selection and cannot retarget it",
+    refused(verifyOffline, 2, "TARGET_UNAVAILABLE") && refused(retarget, 2, "CONFLICT") &&
+    JSON.stringify(registryFiles()) === JSON.stringify(beforeVerify) && getCurrent() === "dead1", { verify: shown(verifyOffline), retarget: shown(retarget) });
   const whoUnchecked = await json(["whoami", "--space", "dead1"]);
   check("whoami does not state an unchecked mode as fact: partial, exit 4, MODE_NOT_CHECKED",
     whoUnchecked.status === 4 && whoUnchecked.env?.outcome === "partial" && whoUnchecked.env.result.modeChecked === false && whoUnchecked.env.warnings.some((w: { code: string }) => w.code === "MODE_NOT_CHECKED"), shown(whoUnchecked));
+  const next = /^run `cotal (space show dead1)` to check the broker without removing its registration$/.exec(whoUnchecked.env?.error?.remedy ?? "");
+  const inspected = next && await run(next[1]!.split(" "));
+  check("following the whoami remedy leaves the offline space selected and registered",
+    inspected?.status === 0 && inspected.stdout.includes("wait for the broker to answer") &&
+    JSON.stringify(registryFiles()) === JSON.stringify(beforeVerify) && getCurrent() === "dead1", { who: shown(whoUnchecked), inspected: inspected && shown(inspected) });
+  setCurrent("keep");
   const legacyForced = await run(["meshes", "add", "legacy-unchecked", "--server", DEAD, "--root", root, "--mode", "open", "--force"]);
   check("legacy meshes add also records the mode as unchecked when forced",
     legacyForced.status === 0 && legacyForced.stdout.includes("recorded without verifying") && findMesh("legacy-unchecked")?.unchecked === true, shown(legacyForced));
@@ -372,15 +401,17 @@ setCurrent("keep");
     const spacedRoot = projectRoot("registrations with 'quotes' and `backticks`");
     const unchecked = await json(["space", "add", "open5", "--server", LIVE, "--root", spacedRoot, "--mode", "open", "--force"]);
     check("a forced registration keeps a root with spaces and quotes", unchecked.status === 0 && unchecked.env?.result.space.root === spacedRoot && unchecked.env?.result.verified === false, shown(unchecked));
+    setCurrent("open5");
     const detail = await run(["space", "show", "open5", "--plain"]);
-    const hint = /check its mode by adding it again without --force: (`+)(cotal space forget .+?)\1, then (`+)(cotal space add .+?)\3$/m.exec(detail.stdout);
-    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]} && ${hint[4]}`], {
+    const hint = /check its mode without removing the registration: (`+)(cotal space add .+?)\1$/m.exec(detail.stdout);
+    const verified = hint && spawnSync("sh", ["-c", `cotal() { ${shellPath(process.execPath)} ${shellPath(BIN)} "$@"; }\n${hint[2]}`], {
       cwd: home, env: runEnv, encoding: "utf8", timeout: 120_000,
     });
     const checked = await json(["space", "show", "open5"]);
-    check("the printed verification commands re-register and verify the exact root",
-      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot,
+    check("the printed verification command verifies the exact root and keeps the selection",
+      detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot && checked.env?.result.current === true,
       { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
+    setCurrent("keep");
   }
 }
 
@@ -1489,6 +1520,17 @@ if (process.platform === "linux") {
   const down = await run(["down", "--yes"], {}, fresh);
   check("down stops it", down.status === 0, shown(down));
   const stoppedHistory = await json(["history", "news", "--space", "demo"], elsewhere);
+  for (const requestedSpace of [null, "demo"]) {
+    const watch = await run(["watch", "--json", ...(requestedSpace === null ? [] : ["--space", requestedSpace])], {}, fresh);
+    const records = watch.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      type: string; target: { requestedSpace?: string | null; space?: string }; data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    check(`watch --json reports the stopped space with ${requestedSpace === null ? "automatic" : "explicit"} selection`,
+      watch.status === 2 && records.map((r) => r.type).join() === "error,end" &&
+      records.every((r) => r.target.requestedSpace === requestedSpace && r.target.space === "demo") &&
+      records[0]?.data.code === "TARGET_UNAVAILABLE" && records[0].data.message === stoppedHistory.env?.error?.message &&
+      records[0].data.remedy === stoppedHistory.env?.error?.remedy && records[1]?.data.reason === "setup-failed", shown(watch));
+  }
   for (const args of [
     ["history", "news", "--server", server],
     ["history", "news", "--server", `${server}/`],

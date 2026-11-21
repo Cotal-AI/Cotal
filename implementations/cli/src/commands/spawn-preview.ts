@@ -1,11 +1,11 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { agentFilePath, connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { callerHarness, checkSpawnExpiryTarget, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import type { spawnFlags } from "./spawn.js";
@@ -44,8 +44,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     // A space this folder registered is the target only while it runs, which the launch reads from
     // the recorded brokers before it resolves. The preview reads the same, without signing in.
     const flags = { space: values.space, server: values.server };
-    const offline = resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(values.server)).offline : [];
-    selected = resolveMeshTarget(process.cwd(), { ...flags, offline, readOnly: true });
+    const sweep = resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(values.server, "targets") : {};
+    selected = resolveMeshTarget(process.cwd(), { ...flags, ...sweep, readOnly: true });
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
@@ -85,7 +85,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     ] }));
     return;
   }
-  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : agentFilePath(root, ref);
+  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : directPersonaPath(root, ref, values.config === undefined && args.positionals.length > 0);
   let definition: AgentDef;
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.

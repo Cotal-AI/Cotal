@@ -550,6 +550,19 @@ try {
     invalidEncoding.status === 1 && invalidEncoding.stderr.includes("SCHEMA_INVALID") &&
     invalidEncoding.stderr.includes(`${encodedSource}: it is not valid UTF-8`) &&
     invalidEncoding.stderr.includes(`save ${encodedSource} as UTF-8`) && !existsSync(encodedFile), invalidEncoding.stderr);
+  writeFileSync(encodedFile, readFileSync(encodedSource));
+  try {
+    const modern = native(["persona", "--json"]);
+    const inventory = JSON.parse(modern.stdout);
+    check("persona inventory marks invalid UTF-8 as partial and invalid",
+      modern.status === 4 && inventory.completeness === "partial" &&
+      inventory.result.items.some((item: { name: string; valid: boolean }) => item.name === "encoded" && !item.valid) &&
+      modern.stdout.includes("it is not valid UTF-8"), modern.stdout);
+    const legacy = native(["personas", "list", "--verbose"]);
+    check("legacy persona inventory reports invalid UTF-8 without printing replacement text",
+      legacy.status === 4 && (legacy.stdout + legacy.stderr).includes("it is not valid UTF-8") &&
+      !legacy.stdout.includes("Review caf� changes."), legacy.stdout + legacy.stderr);
+  } finally { rmSync(encodedFile); }
   const utf8 = Buffer.from("---\r\nname: encoded\r\n---\r\nReview café and the literal � symbol.\r\n");
   writeFileSync(encodedSource, utf8);
   const validEncoding = native(encodedArgs);

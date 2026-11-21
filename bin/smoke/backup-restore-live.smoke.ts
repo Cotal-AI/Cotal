@@ -149,6 +149,26 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
 
     must("full backup", run("backup", "create", artifact));
     must("registry backup", run("backup", "create", registryArtifact, "--only", "registry"));
+    if (mode === "open") {
+      const cold = mkdtempSync(join(tmpdir(), "cotal-backup-restore-cold-"));
+      try {
+        const project = join(cold, "project"), config = join(cold, "config");
+        mkdirSync(project);
+        const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("COTAL_")));
+        const refused = spawnSync(tsx, [cliPath, "backup", "restore", registryArtifact, "--plain"], {
+          cwd: project, encoding: "utf8", timeout: 30_000,
+          env: { ...cleanEnv, COTAL_HOME: join(cold, "home"), XDG_CONFIG_HOME: config, COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_offline: "true" },
+        });
+        const output = `${refused.stdout}\n${refused.stderr}`;
+        assert.equal(refused.status, 2, output);
+        assert.match(output, /restore requires stable ready maintenance state, found none/);
+        assert.match(output, /LIFECYCLE_BLOCKED/);
+        assert.deepEqual(readdirSync(project), [], "a refused restore leaves the project empty");
+        assert.equal(existsSync(join(config, "cotal")), false, "a refused restore leaves connector configuration untouched");
+      } finally {
+        rmSync(cold, { recursive: true, force: true });
+      }
+    }
     assert.ok(existsSync(join(artifact, "manifest.json")));
     const fullManifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
     assert.equal(fullManifest.format, "cotal-space-backup/v3");
@@ -436,6 +456,13 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       // The previous store holds the only copy of what the restore left out, so the preview warns and
       // both cleanup commands refuse to delete it without --discard-history.
       const previous = active.restore.previousSource!.identity.path;
+      const { run: runElsewhere } = sandboxRun(join(home, "other-project"), home);
+      const wrongFolder = runElsewhere("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
+      assert.equal(wrongFolder.status, 2, `${mode} cleanup from another project refuses\n${wrongFolder.stderr}`);
+      assert.match(wrongFolder.stderr, /Code: +TARGET_NOT_FOUND/);
+      assert.match(wrongFolder.stderr, /Check that you are in the original project folder and verify the attempt ID/);
+      assert.doesNotMatch(wrongFolder.stderr, /has settled/);
+      assert.ok(existsSync(previous), `${mode} cleanup from another project keeps the previous store`);
       const preview = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run", "--json");
       must("cleanup-fallback preview", preview);
       assert.ok((JSON.parse(preview.stdout) as { warnings: { code: string }[] }).warnings.some((w) => w.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), `${mode} preview warns about the only copy\n${preview.stdout}`);
@@ -472,10 +499,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       rmSync(join(root, "notes.txt"));
     }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
-    // A repeat finds no record of the attempt, because the cleanup retired it, and says so by name.
     const repeated = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
-    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`) &&
-      repeated.stderr.includes("a completed restore-fallback retires its journal, so the restore has settled"), `${mode} a repeated clean restore-fallback says the restore settled\n${repeated.stderr}`);
+    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`), `${mode} a repeated clean restore-fallback refuses without a matching record\n${repeated.stderr}`);
+    assert.doesNotMatch(repeated.stderr, /has settled/);
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
@@ -797,20 +823,21 @@ async function boundForeignListenerScenario(): Promise<void> {
 async function missingPidfileListenerScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-home-")));
-  const artifact = join(root, "registry-backup");
+  const artifact = "./registry's `retry` backup";
+  const store = "-jetstream store";
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_missing_pid_listener";
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const pidPath = join(root, ".cotal", "nats.pid");
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   let foreign: ChildProcess | undefined;
   try {
-    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
+    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space, `--store-dir=${store}`).status, 0);
     assert.equal(run("channel", "set", "preserved", "--desc", "listener probe", "--space", space).status, 0);
     const brokerPid = Number(readFileSync(pidPath, "utf8"));
     rmSync(pidPath);
-    const refusedCut = run("down", "--preserve-state");
+    const refusedCut = run("down", "--preserve-state", `--store-dir=${store}`);
     assert.notEqual(refusedCut.status, 0, "a pidless live broker cannot become a ready cut");
     assert.match(refusedCut.stderr, /recorded NATS endpoint .* no listener/);
     // The manager's commitment is journaled BEFORE any stop, so the failed cut parks at the
@@ -818,21 +845,76 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "cut-committed");
     process.kill(brokerPid, "SIGTERM");
     await waitUntil(async () => (await probeConnect(server, { timeoutMs: 200 })).ok === false, "pidless broker shutdown");
-    const finished = run("down", "--preserve-state");
+    const finished = run("down", "--preserve-state", `--store-dir=${store}`);
     assert.equal(finished.status, 0, `cut retry with stopped manager\nstdout:\n${finished.stdout}\nstderr:\n${finished.stderr}`);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
 
     foreign = await occupy(port);
-    const refusedBackup = run("backup", "create", artifact, "--only", "registry");
+    const refusedBackup = run("backup", "create", artifact, "--only", "registry", `--store-dir=${store}`);
     assert.equal(refusedBackup.status, 2, "backup refuses a pidless listener immediately before cloning, exit 2");
     assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
     assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
-    assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run \`cotal backup create ${artifact} --only registry\` again`), `its Next says to stop that process and names the same create\n${refusedBackup.stderr}`);
-    assert.equal(existsSync(artifact), false, "listener refusal happens before artifact creation");
+    assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run`), refusedBackup.stderr);
+    const retry = /then run (`{2,})(cotal backup create .+?)\1 again/.exec(refusedBackup.stderr)?.[2];
+    assert.ok(retry, `its Next encloses the whole command, including the path's backticks\n${refusedBackup.stderr}`);
+    assert.equal(existsSync(join(root, artifact)), false, "listener refusal happens before artifact creation");
+    assert.equal(readMaintenanceJournal(root)?.state, "ready");
     await closeServer(foreign);
     foreign = undefined;
+    const copied = spawnSync("sh", ["-c", `cotal() { "$COTAL_TEST_TSX" "$COTAL_TEST_CLI" "$@"; }\n${retry}`], {
+      cwd: root, env: { ...env, COTAL_TEST_TSX: tsx, COTAL_TEST_CLI: cliPath }, encoding: "utf8", timeout: 240_000,
+    });
+    assert.equal(copied.status, 0, `the printed retry publishes the backup\n${copied.stdout}${copied.stderr}`);
+    const manifest = JSON.parse(readFileSync(join(root, artifact, "manifest.json"), "utf8")) as BackupManifest;
+    assert.equal(manifest.selection, "registry", "the printed retry keeps the requested selection");
+    const verified = run("backup", "verify", artifact);
+    assert.equal(verified.status, 0, `${verified.stdout}${verified.stderr}`);
   } finally {
     if (foreign) await closeServer(foreign).catch(() => {});
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+async function undisplayableBackupRetryScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-retry-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-retry-home-")));
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const store = "./jetstream\u200d store";
+  const cases = [
+    { artifact: "./retry\u200b backup", flags: [] },
+    { artifact: "./retry backup", flags: ["--store-dir", store, "--plain"] },
+  ];
+  const { run } = sandboxRun(root, home);
+  const must = (result: SpawnSyncReturns<string>) => assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  try {
+    must(run("up", "--detach", "--open", "--server", server, "--space", "backup_undisplayable_retry", "--store-dir", store));
+    must(run("down", "--preserve-state", "--store-dir", store));
+    const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+    const ready = readFileSync(journal, "utf8");
+    assert.equal(readMaintenanceJournal(root)?.state, "ready");
+    const occupied = await occupy(port);
+    try {
+      for (const { artifact, flags } of cases) {
+        const refused = run("backup", "create", artifact, "--only", "registry", ...flags);
+        assert.equal(refused.status, 2, `${refused.stdout}${refused.stderr}`);
+        assert.match(refused.stderr, /Code: +CONFLICT/);
+        const next = refused.stderr.split("\nNext\n")[1] ?? "";
+        assert.match(next, /stop the process .* then rerun your original backup command from the same folder/);
+        assert.doesNotMatch(next, /`+cotal backup create /, "no command names a changed path");
+        assert.equal(readFileSync(journal, "utf8"), ready);
+        assert.equal(existsSync(join(root, artifact)), false);
+      }
+    } finally {
+      await closeServer(occupied);
+    }
+    for (const { artifact, flags } of cases) {
+      must(run("backup", "create", artifact, "--only", "registry", ...flags));
+      must(run("backup", "verify", artifact));
+    }
+  } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
@@ -1298,6 +1380,7 @@ async function linkedStoreScenario(): Promise<void> {
 }
 
 await missingPidfileListenerScenario();
+await undisplayableBackupRetryScenario();
 await linkedStoreScenario();
 await missingCustomSourceScenario();
 await restoredStoreRestartScenario();

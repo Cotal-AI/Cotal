@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { credsClaims, dlvStream, dmStream, principalKey, resolveAuthProvider, spacePrefix, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
 import { authDir, brokerAddressForDisplay, brokerUrlKey, recordOperationSpace, CLI_USER_ACTOR, CommandFailure, findMesh, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSpaceAuth, MeshTargetError, plainFlag, presentationOf, readCredsFile, recordedRevocation, resolveMeshTarget, serverFlag, spaceFlag, spaceInCreds, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Presentation, type Report, type Section } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 
 const credsFlag = { name: "creds", type: "string", value: "<file>", description: "report what this credential file may do, from its own claims; no broker is contacted" } as const satisfies FlagSpec;
@@ -175,9 +176,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
       completeness: warnings.length ? "partial" : "complete",
       warnings,
       ...(warnings.length ? { partial: result.identity.kind === "unknown"
-        ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: registered ? `run \`cotal whoami --space ${t.space}\` without --server to read it at the address it is registered at` : "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
+        ? { message: "whoami could not tell what this identity may do at that address; the warning names why", remedy: registered ? `run \`cotal whoami --space ${shellWord(t.space)}\` without --server to read it at the address it is registered at` : "add the space with `cotal space add <name> --server <url> --root <dir>`, which checks the broker, then run `cotal whoami --space <name>`" }
         : result.modeChecked === false
-          ? { message: "whoami could not tell whether the broker enforces the registered mode; the warning names why", remedy: `check it by adding it again without --force: \`cotal space forget ${t.space}\`, then \`cotal space add ${t.space} --server ${server} --root ${t.root}\`` }
+          ? { message: "whoami could not tell whether the broker enforces the registered mode; the warning names why", remedy: `run \`cotal space show ${shellWord(t.space)}\` to check the broker without removing its registration` }
           : { message: "whoami could not read this identity's grant; the warning names why", remedy: "run `cotal whoami` on the machine that hosts the space's auth service" } } : {}),
     },
     (r) => whoamiView(r),

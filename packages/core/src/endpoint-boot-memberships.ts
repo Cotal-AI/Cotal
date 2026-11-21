@@ -8,7 +8,6 @@ import type { ControlReply, DeliveryClass } from "./types.js";
 export interface EndpointBootMembershipsDeps {
   channels: () => string[];
   plane3Channels: () => Map<string, number>;
-  pendingBootJoins: () => Set<string>;
   stopped: () => boolean;
   requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
   requireLifecycleUid: (what: string) => string;
@@ -24,11 +23,17 @@ export interface EndpointBootMembershipsDeps {
  *  check the leave path and the delivery-health surface use. Internal: `CotalEndpoint` keeps the
  *  public methods and forwards to it. */
 export class EndpointBootMemberships {
+  /** Boot durable channels whose self-join hasn't yet established a membership (daemon down/absent at
+   *  first connect, or a transient `durable:false`). {@link reconcileBootJoin} retries with capped
+   *  backoff until the membership exists or the channel is left — so a first-connect daemon outage
+   *  self-heals on recovery instead of leaving the channel silently live-only. Surfaced to the connector
+   *  via {@link hasDurableMembership} (a joined durable channel NOT yet a member renders degraded). */
+  private readonly pendingBootJoins = new Set<string>();
+
   constructor(private readonly deps: EndpointBootMembershipsDeps) {}
 
   private get channels() { return this.deps.channels(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
-  private get pendingBootJoins() { return this.deps.pendingBootJoins(); }
   private get stopped() { return this.deps.stopped(); }
   private requestDelivery(op: string, args: Record<string, unknown>, timeoutMs?: number) { return this.deps.requestDelivery(op, args, timeoutMs); }
   private requireLifecycleUid(what: string) { return this.deps.requireLifecycleUid(what); }

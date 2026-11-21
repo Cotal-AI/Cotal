@@ -1,5 +1,19 @@
 # @cotal-ai/runtime
 
+## 0.173.0
+
+### Patch Changes
+
+- 980dd2f: Reject invalid simulation clock durations before running the workflow, and keep the supplied arguments in the retry commands for `run answer` and `run check`.
+- Updated dependencies [e268f34]
+- Updated dependencies [e489bae]
+- Updated dependencies [7bce605]
+- Updated dependencies [5beae54]
+- Updated dependencies [871b5b3]
+  - @cotal-ai/core@0.173.0
+  - @cotal-ai/workspace@0.173.0
+  - @cotal-ai/lang@0.173.0
+
 ## 0.172.2
 
 ### Patch Changes

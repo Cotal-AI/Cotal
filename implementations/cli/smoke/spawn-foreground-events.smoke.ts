@@ -204,12 +204,27 @@ try {
     const previous = process.cwd();
     writeFileSync(join(caller, "probe.md"), "---\nname: caller-probe\n---\nCaller persona.\n");
     writeFileSync(join(root, "probe.md"), "---\nname: mesh-probe\n---\nMesh persona.\n");
+    const dotted = join(root, ".cotal", "agents", "probe.md.md");
+    writeFileSync(dotted, "---\nname: catalog-probe\n---\nCatalog persona.\n");
     try {
       process.chdir(caller);
       const local = await run(["spawn", "--foreground", "--file", "probe.md", "--space", "fgevents", "-H", "fg-probe-live"]);
       check("foreground --file uses the caller's persona even when the mesh has the same filename", local.opts?.name === "caller-probe", local.stderr);
       const named = await run(["spawn", "--foreground", "probe", "--space", "fgevents", "-H", "fg-probe-live"]);
       check("foreground catalog names still read the selected mesh persona", named.opts?.name === "probe", named.stderr);
+      const dottedArgs = ["spawn", "--foreground", "probe.md", "--space", "fgevents", "-H", "fg-probe-live"];
+      const shadowed = await run(dottedArgs);
+      check("a catalog name ending in .md wins over a same-named project file", shadowed.opts?.name === "catalog-probe", shadowed.stderr);
+      const explicit = await run(["spawn", "--foreground", "--file", join(root, "probe.md"), "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("an explicit file selects the project file even when its basename is a catalog name", explicit.opts?.name === "mesh-probe", explicit.stderr);
+      rmSync(join(root, "probe.md"));
+      const unshadowed = await run(dottedArgs);
+      check("a catalog name ending in .md works without a same-named project file", unshadowed.opts?.name === "catalog-probe", unshadowed.stderr);
+      const malformed = join(root, ".cotal", "agents", "bad-utf8.md");
+      writeFileSync(malformed, Buffer.from("---\nname: bad-utf8\n---\nbefore\xffafter\n", "latin1"));
+      const bad = await run(["spawn", "--foreground", "--file", malformed, "--space", "fgevents", "-H", "fg-probe-live"]);
+      check("foreground spawn refuses invalid UTF-8 before building a launch", bad.opts === undefined && bad.exited === 1, bad);
+      rmSync(malformed);
     } finally { process.chdir(previous); }
   }
   {
@@ -416,7 +431,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 30;
+const EXPECTED = 34;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

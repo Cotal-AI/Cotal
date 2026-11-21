@@ -236,7 +236,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   if (name === "login") return true; // device approval does not launch or install a connector
   if (name === "logout") return true; // signing out does not install a connector, and a seed refusal must not keep the cached login
   if (name === "sync") return true; // refreshing account catalogs does not install connectors
-  if (name === "use" && sub === undefined) return true; // bare `use` shows the selection: a read
+  if (name === "use") return true; // selecting or showing the current space does not launch or install connectors
   if (name === "meshes" && (sub === undefined || sub === "list")) return true;
   if (name === "config" && (sub === "set" || sub === "unset")) return true; // editing a preference does not require installing connectors
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
@@ -480,10 +480,17 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
     if (isArgError(e)) {
-      const first = metadataPositionals(cmd, rest).positionals[0]?.value;
+      const { positionals } = metadataPositionals(cmd, rest);
+      const first = positionals[0]?.value;
+      let selected: Command | Subcommand = cmd;
+      for (const { value } of positionals) {
+        const sub = findSubcommand(selected, value);
+        if (!sub) break;
+        selected = sub;
+      }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, flagNames, takesOperands);
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
@@ -798,9 +805,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
   if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
-    // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
-    // in its own body leaves the operator-global store as it found it.
-    const deferred = cmd?.name === "up";
+    // Startup checks seed compatibility here and reconciles at launch. A restore that refuses
+    // before launch leaves the operator-global store as it found it.
+    const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) {
         // Broker-only startup still checks the store generation. An explicit restore can start its

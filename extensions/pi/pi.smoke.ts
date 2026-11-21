@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, type PresenceCondition } from "@cotal-ai/core";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -59,6 +59,7 @@ class FakeMesh {
   items: InboxItem[] = [];
   drained: string[] = [];
   statuses: Array<{ status: string; activity?: string }> = [];
+  conditions: Array<PresenceCondition | null> = [];
   modes = new Map<string, "quiet" | "muted">();
   pullOnly = new Set<string>();
 
@@ -124,6 +125,10 @@ class FakeMesh {
     await new Promise((resolve) => setTimeout(resolve, status === "working" && activity === "thinking" ? 3 : 0));
     this.statuses.push({ status, activity });
   }
+
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.conditions.push(condition);
+  }
 }
 
 class FakeHost implements PiHost {
@@ -152,6 +157,7 @@ function context(signal?: AbortSignal): PiContextLike & { idle: boolean; notific
     shutdown(): void {
       value.shutdowns++;
     },
+    abort(): void {},
   };
   return value;
 }
@@ -889,6 +895,57 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     "a long error is bounded, and its control character is escaped rather than reaching the presence line",
   );
   long.requestShutdown();
+}
+
+// A failed turn is relayed as the presence condition observers read for it (SPEC §6), carrying
+// Pi's own error. Without it a failed turn read as plain `waiting` (a held batch) or plain `idle`
+// (no batch) everywhere presence is shown. An aborted turn is someone's Stop, not a failure.
+{
+  const strip = (c: PresenceCondition | null | undefined) => (c ? { code: c.code, source: c.source, message: c.message, since: typeof c.since } : c);
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "Unknown provider:\n  unknown" };
+  const expected = { code: "failed", source: "error", message: "Unknown provider: unknown", since: "number" };
+
+  const held = new FakeMesh();
+  held.items = [item("m1")];
+  const heldHost = new FakeHost();
+  const heldCtx = context();
+  const heldDriver = new PiDriver(held as unknown as MeshAgent, 200);
+  heldDriver.bind(heldHost);
+  heldDriver.onSessionStart(heldCtx);
+  startBatch(heldDriver, heldHost);
+  heldDriver.onAgentStart(heldCtx);
+  heldDriver.onAgentEnd([failed], heldCtx);
+  await heldDriver.flushPresence();
+  assert.deepEqual(held.conditions.map(strip), [expected], "a held failed turn relays exactly one failed condition with Pi's error");
+  checks++;
+  ok(held.statuses.at(-1)?.status === "waiting", "the held failed turn still reads waiting beside its condition");
+  heldDriver.requestShutdown();
+
+  const bare = new FakeMesh();
+  const bareCtx = context();
+  const bareDriver = new PiDriver(bare as unknown as MeshAgent, 200);
+  bareDriver.bind(new FakeHost());
+  bareDriver.onSessionStart(bareCtx);
+  bareDriver.onAgentStart(bareCtx);
+  bareDriver.onAgentEnd([{ role: "assistant", stopReason: "error" }], bareCtx);
+  await bareDriver.flushPresence();
+  assert.deepEqual(bare.conditions.map(strip), [{ code: "failed", source: "error", message: undefined, since: "number" }], "a failed turn with no batch and no error text still relays failed, with no invented message");
+  checks++;
+  bareDriver.requestShutdown();
+
+  for (const end of [{ role: "assistant", stopReason: "aborted" }, { role: "assistant", stopReason: "stop" }]) {
+    const quiet = new FakeMesh();
+    const quietCtx = context();
+    const quietDriver = new PiDriver(quiet as unknown as MeshAgent, 200);
+    quietDriver.bind(new FakeHost());
+    quietDriver.onSessionStart(quietCtx);
+    quietDriver.onAgentStart(quietCtx);
+    quietDriver.onAgentEnd([end], quietCtx);
+    quietCtx.idle = true;
+    await quietDriver.flushPresence();
+    ok(quiet.conditions.length === 0, `a turn that ended on ${end.stopReason} relays no condition`);
+    quietDriver.requestShutdown();
+  }
 }
 
 // Controls that must not weaken: zero batches still returns to idle on the same error boundary.

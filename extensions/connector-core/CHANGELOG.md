@@ -1,5 +1,16 @@
 # @cotal-ai/connector-core
 
+## 0.173.0
+
+### Minor Changes
+
+- e268f34: An agent's owner can now interrupt the agent's running turn, so commands queued behind a turn that hangs can run. The `agent` endpoint advances to revision 3 with `interrupt`, which only the owner's interactive session may call and which answers `interrupted`, or `idle` when no turn ran. A connector offers it through an optional `interrupt()` on its command dispatcher; the OpenCode 2.x plugin posts OpenCode's own `/api/session/:id/interrupt`, and the stopped turn ends as a Stop at the terminal does. An agent never interrupts its own turn.
+
+### Patch Changes
+
+- a223165: An agent can no longer run one of its own commands through its `agent` endpoint. `command` from the agent's own identity is now `permission-denied`, `not-executed`, before any other check, as `prompt-answer` already refuses an agent answering its own prompt.
+- a042b38: Document the digests and skipped verification checks in `cotal endpoint check --json`.
+
 ## 0.172.2
 
 ### Patch Changes

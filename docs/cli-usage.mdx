@@ -82,10 +82,11 @@ not change that restart command. Membership and artifact stores reserve no capac
 there is no per-space `--max-file-store` floor. With spaces on the machine but none selected
 or in this folder, it names `cotal use <name>` and `cotal space` instead. When the entry screen names a
 space, its Start here section shows `cotal space` to list spaces and `cotal use <name>` to switch.
-Every command generates its own help, usage, and shell completion from its declared
-flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. A word after the
-command that names none of its subcommands refuses with `--help` too, as `cotal help` and the command
-itself do (exit 1), rather than print the command's help. A subcommand's help gives its whole
+Every command generates its own help, usage, and shell completion from its declared flags.
+`cotal <command> --help` prints the same help as `cotal help <command>`.
+Both forms accept operands after the final subcommand. For example, `cotal help service status manager`
+and `cotal service status manager --help` both show the usage for `service status`.
+Both forms refuse a misspelled subcommand and exit 1. A subcommand's help gives its whole
 usage, from `cotal` through its arguments, and lists only the options that subcommand takes.
 `-v` is not a version flag.
 
@@ -109,7 +110,8 @@ command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), 
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
-or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. `cotal despawn`
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. Option suggestions
+use the flags for the selected subcommand. `cotal despawn`
 suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.

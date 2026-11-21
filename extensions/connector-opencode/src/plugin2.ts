@@ -14,7 +14,7 @@
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { randomUUID } from "node:crypto";
-import { loadAgentFile, principalKey, type CommandEntry, type CommandTarget, type PresenceStatus } from "@cotal-ai/core";
+import { loadAgentFile, principalKey, type CommandEntry, type CommandTarget, type PresenceCondition, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   eventPlaneArmed,
@@ -44,6 +44,7 @@ import { createOpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
+import { opencode2FailureCondition } from "./failure-condition.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -370,6 +371,13 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       /* presence is best-effort — never throw into opencode, same rule as plugin.ts's safeStatus */
     }
   };
+  const safeCondition = async (condition: PresenceCondition): Promise<void> => {
+    try {
+      if (agent.connected) await agent.setCondition(condition);
+    } catch {
+      /* best-effort, as safeStatus */
+    }
+  };
 
   /** Drive a turn carrying the current inbox batch into the owned session, via
    *  `POST /api/session/:id/prompt` (2.x has no `prompt_async` — measured 404). Never prompts into
@@ -539,7 +547,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
    *  batch driven below before its turn ran. The latter's position is still recorded, so a replay of
    *  it closes nothing either once an execution is running. An end at or before the running
    *  execution's start belongs to an earlier one, so it is not recorded and closes nothing. */
-  async function completeTurn(ev: OpenCode2Event, settle: () => void, succeeded: boolean): Promise<void> {
+  async function completeTurn(ev: OpenCode2Event, settle: () => void, succeeded: boolean, failure?: PresenceCondition): Promise<void> {
     // An end with no log position closes nothing, but a submission in flight cannot order itself
     // against it, so it counts as a turn end for that submission's once task.
     if (!positioned(ev)) unorderedEnds += 1;
@@ -550,6 +558,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     const carried = new Set(batch.keys);
     settle();
     replyCheck.ended(succeeded);
+    // A failed turn says why before it reads idle, so no observer sees a bare idle for it. The
+    // next turn's `working` clears it (connector-core).
+    if (failure) await safeCondition(failure);
     await safeStatus("idle");
     // Not awaited: the event loop must keep consuming while the POST is unanswered, so a turn that
     // starts meanwhile sets `execution` and `drive` declines instead of submitting into it.
@@ -711,7 +722,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
           }
           case "session.execution.failed": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.abandon(), false); // leave the inbox unacked so the batch can retry on a later safe turn
+            await completeTurn(ev, () => batch.abandon(), false, opencode2FailureCondition(data)); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {

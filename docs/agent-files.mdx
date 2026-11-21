@@ -23,8 +23,9 @@ capabilities: [spawn, run] # may manage teammates and start workflow runs
 You are a builder on a shared mesh of peer agents…
 ```
 
-The file accepts LF or CRLF line endings and an optional UTF-8 byte order mark.
-A UTF-16 file is refused by name with the instruction to save it as UTF-8.
+The file must be valid UTF-8. It accepts LF or CRLF line endings and an optional UTF-8 byte order mark.
+A direct spawn refuses a file with invalid UTF-8, names it, and asks you to save it as UTF-8.
+Both local persona listings mark such a file unreadable and exit 4.
 
 The frontmatter supplies the presence [AgentCard](../SPEC.md#6-presence-and-discovery).
 The body supplies the persona text that the connector applies to the session's system prompt at launch.
