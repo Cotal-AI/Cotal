@@ -183,6 +183,24 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
   const last = await run(["down", "--yes"]);
   ok("the final down exits 0", last.status === 0, last.out.slice(-1500));
 
+  if (mode === "auth") {
+    const brokerOnly = await run(["up", "--no-manager", "--space", space, "--server", server, "--max-payload", "131072"]);
+    try {
+      ok("the static-auth broker serves the low limit", brokerOnly.status === 0 && await servedMaxPayload(port) === 131072, brokerOnly.out);
+      for (const args of [["ps"], ["spawn", "-d"]]) {
+        const result = await run([...args, "--space", space, "--plain"]);
+        ok(`${args[0]} refuses and explains how to restart with enough payload`, result.status === 2 &&
+          result.out.includes("payload limit is 131072 bytes, below the manager's minimum of 263168 bytes") &&
+          result.out.includes("fixed while the broker runs") && result.out.includes("cotal down --yes") &&
+          result.out.includes("cotal up --foreground --max-payload 1048576"), result.out);
+      }
+      ok("the agent commands leave the low-payload broker running", await servedMaxPayload(port) === 131072);
+    } finally {
+      const clean = await run(["down", "--yes"]);
+      ok("the low-payload static-auth broker stops", clean.status === 0, clean.out);
+    }
+  }
+
   if (open) {
     const brokerOnly = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "8192"]);
     try {

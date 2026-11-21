@@ -6,6 +6,7 @@ import {
   EP_UNANSWERED,
   EpEnvelopeError,
   GOAL_BEARING_COMMANDS,
+  MANAGER_START_PAYLOAD_FLOOR,
   goalFollowRefusal,
   epProbeInstanceInterest,
   freezeExpectedSet,
@@ -45,7 +46,9 @@ import {
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
+import { readBrokerPolicy } from "../broker-policy.js";
 import { c } from "../colors.js";
+import { shellPath } from "../local-record-source.js";
 import { controlCaller, type ControlAuth } from "../control-target.js";
 import { staleStoreHint } from "../maintenance.js";
 import { brokerUrlKey, findMesh } from "../mesh-registry.js";
@@ -874,9 +877,19 @@ export async function scatterManager(
 export function startStackManagerRemedy(space: string, server: string): string {
   let recorded: ReturnType<typeof findMesh>;
   try { recorded = findMesh(space); } catch { recorded = undefined; }
-  return recorded && recorded.origin !== "manual" && recorded.origin !== "catalog" && brokerUrlKey(recorded.server) === brokerUrlKey(server)
-    ? `start the stack's manager with bare \`cotal up\` in ${recorded.root}; a stack started with --no-manager has none`
-    : "start this space's manager where its stack runs; a stack started with --no-manager has none";
+  if (!recorded || recorded.origin === "manual" || recorded.origin === "catalog" || brokerUrlKey(recorded.server) !== brokerUrlKey(server))
+    return "start this space's manager where its stack runs; a stack started with --no-manager has none";
+
+  let maxPayload: number | undefined;
+  try {
+    maxPayload = readBrokerPolicy(recorded.root)?.maxPayload;
+  } catch (error) {
+    return `check the stack's broker policy before starting its manager: ${oneLine(String(error))}`;
+  }
+  if (maxPayload !== undefined && maxPayload < MANAGER_START_PAYLOAD_FLOOR) {
+    return `bare \`cotal up\` cannot add a manager: the broker's payload limit is ${maxPayload} bytes, below the manager's minimum of ${MANAGER_START_PAYLOAD_FLOOR} bytes. The limit is fixed while the broker runs. In ${shellPath(recorded.root)}, run \`cotal down --yes\`, then \`cotal up --foreground --max-payload 1048576\`.`;
+  }
+  return `start the stack's manager with bare \`cotal up\` in ${recorded.root}; a stack started with --no-manager has none`;
 }
 
 /** The refusal `ps` gives, raised before an unpinned operator read when the registry lists no live
