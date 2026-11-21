@@ -32,9 +32,11 @@ const DOCTOR_NEXT = "run `cotal doctor auth` in a space's root folder; `cotal sp
 const startCwd = process.cwd();
 const priorHome = process.env.COTAL_HOME;
 const base = realpathSync(mkdtempSync(join(tmpdir(), "cotal-no-space-next-")));
-process.env.COTAL_HOME = join(base, "home");
 const bare = join(base, "bare");
-mkdirSync(bare);
+// Stop root discovery here even when the temp directory is below another Cotal project.
+// The workstation home is not a space project.
+process.env.COTAL_HOME = join(bare, ".cotal");
+mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 
 /** The refusal one `persona` run in `bare` ends with. */
 async function personaRefusal(values: Record<string, string | boolean | undefined>, positionals: string[]): Promise<CommandFailure> {
@@ -85,7 +87,7 @@ async function diagnose(values: Record<string, string | boolean | undefined>, cw
 }
 
 try {
-  assert.equal(findCotalRoot(bare), bare, "fixture: no .cotal directory above the temp dir");
+  assert.equal(findCotalRoot(bare), bare, "fixture: discovery stops at the private workstation home");
 
   // 1. auth mint with no mesh: a target refusal that names the next step, and no file written.
   {
@@ -101,7 +103,7 @@ try {
     assert.match(out, /Code:\s+TARGET_NOT_FOUND/, "auth mint with no mesh refuses the target");
     assert.match(out, /local static-auth space with `cotal up`.*`--space <name>`.*signing trust on this machine/, "auth mint names both ways to select local signing authority");
     assert.doesNotMatch(out, /cotal login|--server/, "auth mint does not suggest a login or bare broker address");
-    assert.deepEqual(readdirSync(bare), [], "auth mint with no mesh writes nothing");
+    assert.deepEqual(readdirSync(bare, { recursive: true }), [".cotal"], "auth mint with no mesh writes nothing");
 
     for (const identity of [[], ["--identity", "./example.creds"]]) {
       const refused = mint(["--replace", "--out", "./example.creds", ...identity, "--json"]);
@@ -110,7 +112,7 @@ try {
       assert.equal(envelope.outcome, "refused");
       assert.equal(envelope.error.code, "USAGE_INVALID");
       assert.equal(envelope.error.remedy, "drop --out to replace the standing credential, or drop --replace to re-mint an existing export using the same file for --out and --identity");
-      assert.deepEqual(readdirSync(bare), [], "conflicting output flags write nothing");
+      assert.deepEqual(readdirSync(bare, { recursive: true }), [".cotal"], "conflicting output flags write nothing");
     }
   }
 
@@ -140,7 +142,7 @@ try {
     // A terminal may wrap the line, so compare with whitespace collapsed.
     assert.ok(err.replace(/\s+/g, " ").includes(`↳ ${DOCTOR_NEXT}`), `doctor with no space: the text report names the next step: ${err}`);
     assert.equal(code, 4, "doctor text with no space: exit 4");
-    assert.deepEqual(readdirSync(bare), [], "doctor with no space writes nothing");
+    assert.deepEqual(readdirSync(bare, { recursive: true }), [".cotal"], "doctor with no space writes nothing");
   }
 
   // 4. persona with a --server that no registration names: outside a project there is no catalog,
@@ -150,7 +152,7 @@ try {
     const what = `persona ${positionals.join(" ")} --server <unregistered>`.replace("  ", " ");
     assert.equal(failure.code, "TARGET_NOT_FOUND", `${what}: code (${failure.message})`);
     assert.equal(failure.message, "no space registered here is at nats://127.0.0.1:1, and this folder is not a space's project", `${what}: the refusal names the address`);
-    assert.deepEqual(readdirSync(bare), [], `${what} writes nothing here`);
+    assert.deepEqual(readdirSync(bare, { recursive: true }), [".cotal"], `${what} writes nothing here`);
   }
 
   // 4b. persona with a --server that no registration names, in a folder a space is prepared for: the
