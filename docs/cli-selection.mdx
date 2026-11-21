@@ -43,7 +43,9 @@ An unoccupied folder still offers `cotal space create <name>` for this folder.
 A discovered space is never dialed by a listing and
 reads `not checked`. `space show [<name>]` shows one space in full and probes only that broker.
 With no name it is about this folder: the space it has registered, else the one it holds prepared or
-stopped, else the selected one. This does not change what other commands target. If `cotal use`
+stopped, else the selected one. If the folder has several registrations, `space show` refuses with
+`TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
+the selection. This does not change what other commands target. If `cotal use`
 explicitly selected a different space, `space show` says that commands such as `cotal who` still
 target the selection here. Pass `--space <name>` or run `cotal use --clear` to target the folder's
 space instead. Neither `space` nor `space show` writes anything. A registry record that cannot be
@@ -547,7 +549,9 @@ refuse `TARGET_UNAVAILABLE` rather than report a missing seed. Both name moving 
 `history` give the refusal they give there without `--space`, which names the move and the way back.
 
 With nothing selected, a command run in a project targets the space registered for that project's
-root. A root with no registration whose `.cotal/` holds the stack journal `cotal up` writes is
+root. If the root has several registrations, a noninteractive `cotal who` refuses with
+`TARGET_AMBIGUOUS`, exit 2, and gives the exact roster command for each space. A root with no
+registration whose `.cotal/` holds the stack journal `cotal up` writes is
 refused with `TARGET_UNAVAILABLE`, exit 2, naming the broker the journal recorded and
 `cotal space create <space> --root <root>`, which prepares the journal's space there again so that
 `cotal up` starts it. That is the state after an `up` that failed to start or a `space forget`, and the
@@ -587,7 +591,8 @@ With no `--space`, `--server` or `--creds`, nothing selected and no project in t
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the
 target of that one run, and the selection stays as it is; cancelling the question does nothing and
 exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
-`TARGET_AMBIGUOUS`, exit 2, naming the candidates. When an unchecked open registration competes
+`TARGET_AMBIGUOUS`, exit 2, naming the candidates. `cotal who` gives a runnable command for each
+candidate without changing the selection. When an unchecked open registration competes
 with another reachable record, the CLI checks the broker's space inventory. It leaves the
 registration intact and excludes it from automatic selection if the broker does not serve that
 space. If the CLI cannot read the inventory and still has to refuse, it marks the unchecked

@@ -1080,9 +1080,9 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  dead-recorded mesh the operator is recovering with a live `--server` override. A `readOnly`
  *  resolve takes no sweep and keeps a stale entry. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const sweep = flags.offline === undefined && !flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : {};
   let target: MeshTarget;
   try {
+    const sweep = flags.offline === undefined && !flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : {};
     target = resolveMeshTarget(process.cwd(), { ...flags, ...sweep });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
