@@ -52,7 +52,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -166,6 +166,33 @@ check("control: a leading typographic-dash word that names no leading flag is an
 
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
+
+if (process.platform !== "win32") {
+  const cwd = realpathSync(neutral);
+  const parent = "reviewer's $draft/nested";
+  const dir = `${parent}/reviews`;
+  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--plain"], {}, cwd);
+  const next = /^Next\n  (.+)$/m.exec(scaffold.stderr)?.[1];
+  const unchanged = !existsSync(join(neutral, "reviewer's $draft"));
+  const retry = next && spawnSync("sh", ["-c", `node=$1\nbin=$2\ncotal() { "$node" "$bin" "$@"; }\n${next}`, "endpoint-init", process.execPath, BIN], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
+  check("endpoint init names its missing parent without creating it, and its Next creates the scaffold",
+    scaffold.status === 2 && scaffold.stdout === "" && scaffold.stderr.split("\nNext")[0]!.includes("reviewer'\\''s $draft/nested") && unchanged
+    && !!retry && retry.status === 0 && existsSync(join(neutral, dir, "contract.json")) && existsSync(join(neutral, dir, "handler.mjs")),
+    { scaffold: shown(scaffold), retry });
+
+  const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
+  const wrong = "reviews/wrong.json";
+  const path = join(cwd, wrong);
+  const text = [run(["endpoint", "check", wrong, "--plain"]), run(["endpoint", "check", wrong])];
+  const json = run(["endpoint", "check", wrong, "--json"]);
+  const envelope = JSON.parse(json.stdout);
+  const corrected = run(["endpoint", "check", "reviews/contract.json", "--json"]);
+  check("endpoint check names the missing file and asks for an existing contract in every format",
+    authoring.status === 0 && json.status === 2 && json.stderr === "" && envelope.target.path === path
+    && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
+    && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
+    && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+}
 
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
