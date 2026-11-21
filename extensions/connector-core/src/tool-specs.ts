@@ -1,3 +1,12 @@
+/**
+ * The Cotal tool surface, defined once and platform-neutrally.
+ *
+ * Each {@link CotalToolSpec} is a name + description + optional Zod arg shape + a `run`
+ * that drives the {@link MeshAgent}. Renderers turn the set into their host's tool API:
+ * {@link registerCotalTools} (in `tools.ts`) renders onto an MCP server (Claude Code);
+ * the OpenCode connector renders the same specs as native plugin tools. One source of
+ * truth, so the cotal_* surface can't drift across adapters.
+ */
 import { z } from "zod";
 import { isConcreteChannel, isChannelFamily, assertValidChannel, MAX_CHANNEL_LENGTH, channelInAllow, patternInAllow, AmbiguousPeerError, peerLabel, sharedNameIds, assertLifecycleToken, isPermissionDenied, EpEnvelopeError, EP_UNANSWERED, REGISTRY_PAGE_LIMIT, formatAge, presenceAges, presenceText, isAnycastSeq, type AnycastStatus, type PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent, InboxItem } from "./agent.js";
