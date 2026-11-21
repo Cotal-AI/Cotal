@@ -54,10 +54,9 @@ let configDir!: string;
 let sandbox!: SmokeSandboxAnchor;
 let establishIdpSession!: typeof import("../src/index.js").establishIdpSession;
 
-// Was `cotal up` ever INVOKED? Not "did it succeed" — a failed, timed-out or signalled `up` can still
-// have launched detached processes, and those are exactly the ones whose pidfiles must survive.
-// Attribution evidence is earned by the attempt, not by the outcome.
-let upAttempted = false;
+// A failed or interrupted `up` may leave detached processes. Keep each root's records until its
+// own `down` confirms the stop.
+const unconfirmedStops = new Set<string>();
 // Step 3b replaces the stack's own registry entry with a discovered one and records other entries on
 // the same root and broker. `cotal down` stops a stack only through its one owned registration, and
 // leaves a broker running while another registered space names its address, so teardown puts the
@@ -202,12 +201,18 @@ async function checkStartingManager(sub: string): Promise<void> {
     if (result.status !== 0) throw new Error(`startup fixture ${args[0]} exited ${result.status}: ${result.out.slice(-400)}`);
   };
   const down = ["down", "--yes", "--space", space];
+  const stop = async () => {
+    await requireOk(down);
+    unconfirmedStops.delete(project);
+  };
   await requireOk(["space", "create", space]);
   try {
+    unconfirmedStops.add(project);
     await requireOk([...start, "--no-manager"]);
     await requireOk(["actor", "grant", "cli", "--space", space, "--sub", sub, "--full", "--scope", "spawn,role:default,admin"]);
-    await requireOk(down);
+    await stop();
     setCurrent(SPACE);
+    unconfirmedStops.add(project);
     const up = run(start);
     const retry = ["ps", "--wide", "--plain", "--server", server];
     try {
@@ -234,7 +239,7 @@ async function checkStartingManager(sub: string): Promise<void> {
     check("the same user-auth ps arguments list managed seats once startup completes",
       listed.status === 0 && listed.out.includes(`Mesh: ${space}\n`) && listed.out.includes("No managed agents."), listed.out);
   } finally {
-    try { await requireOk(down); }
+    try { await stop(); }
     finally { if (selected === undefined) clearCurrent(); else setCurrent(selected); }
   }
 }
@@ -366,7 +371,7 @@ try {
   const captor = foreignRootFor(root);
   check("...and therefore outranks any ancestor", captor === null, captor);
   if (captor) { process.exitCode = 1; throw new Error(`anchor missing: ${root} resolves to ${captor}`); }
-  upAttempted = true;
+  unconfirmedStops.add(root);
   const up = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", SERVER, "--space", SPACE,
     "--exchange-public-port", String(PUBLIC_EXCHANGE_PORT)]);
   // Attribute HOW `up` ended before reading its status: a signalled or timed-out `up` reports
@@ -915,7 +920,6 @@ try {
   // `.cotal` and signals pids this fixture never started — another lane's manager, on the one path
   // where the suite has already concluded something is wrong. Cleanup must not be the most
   // dangerous thing the suite does.
-  let meshStopped = false;
   await step("stop the mesh", async () => {
     // AN ANCHOR, NOT A GATE. `cotal down` is a child that re-resolves its own root from cwd, so no
     // check performed here can bind what it will decide a moment later — a pre-spawn `foreignRootFor`
@@ -931,7 +935,7 @@ try {
       throw new Error(
         `refusing \`cotal down\`: ${root} does not own a .cotal, so the child would resolve to whatever root `
           + `wins from its cwd and could signal processes this suite never started`
-          + (upAttempted
+          + (unconfirmedStops.has(root)
             ? `. A mesh may have started under ${foreign ? join(foreign, ".cotal") : "another root"} — stop it by hand.`
             : `. Nothing was started.`),
       );
@@ -942,7 +946,7 @@ try {
     // launch failure alike, so an unchecked `await` treats every one of those as a successful stop.
     mustHaveRun(down, "`cotal down`");
     if (down.status !== 0) throw new Error(`\`cotal down\` exited ${down.status}: ${down.out.slice(-300)}`);
-    meshStopped = true;
+    unconfirmedStops.delete(root);
   });
   // Same callback shape as the setup handler: `close()` never throws, so `step` would have graded
   // this successful no matter what happened. Reject on a real error so the step goes red; treat
@@ -952,14 +956,11 @@ try {
     idpSrv.close((err) => (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? rej(err) : res()));
   }));
   await step("remove the scratch", () => {
-    // Only once nothing is left to find. The scratch's `.cotal` holds the pidfiles that are the only
-    // way to locate a mesh this suite failed to stop; deleting them turns a recoverable orphan into
-    // an anonymous one.
-    if (upAttempted && !meshStopped) {
+    if (unconfirmedStops.size > 0) {
       process.exitCode = 1;
       console.error(
-        `  ! PRESERVING ${scratch}: the mesh was not confirmed stopped, and its .cotal holds the pidfiles `
-          + `needed to find and stop whatever is still running.`,
+        `  ! PRESERVING ${scratch}: stop was not confirmed for ${[...unconfirmedStops].join(", ")}. `
+          + `The scratch holds the records needed to find and stop any remaining processes.`,
       );
       return;
     }
