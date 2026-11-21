@@ -128,6 +128,23 @@ try {
   const noNode = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(noNode.status, 0, output(noNode));
   assert.equal(noNode.stdout.trim(), "cotal-ai 0.0.0", "npm launcher uses the install-time Node without Node on PATH");
+  const pathNode = join(npmHome, "project-bin", "node");
+  mkdirSync(dirname(pathNode));
+  const projectEnv = { ...npmEnv, PATH: dirname(pathNode), FIXTURE_NODE: process.execPath, NODE_EXEC_MARKER: join(npmHome, "path-node-executed") };
+  for (const version of ["22.9.0", "22.10.0"]) {
+    writeFileSync(pathNode, `#!/bin/sh
+if [ "$1" = --version ]; then
+  printf 'v${version}\\n'
+else
+  printf 'selected\\n' > "$NODE_EXEC_MARKER"
+  exec "$FIXTURE_NODE" "$@"
+fi
+`, { mode: 0o755 });
+    const selected = spawnSync(npmLauncher, ["--version"], { env: projectEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(selected.status, 0, output(selected));
+    assert.equal(selected.stdout.trim(), "cotal-ai 0.0.0");
+    assert.equal(existsSync(projectEnv.NODE_EXEC_MARKER), version === "22.10.0", `PATH Node ${version} is selected only if supported`);
+  }
   const launched = spawnSync(npmLauncher, ["--entry"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
