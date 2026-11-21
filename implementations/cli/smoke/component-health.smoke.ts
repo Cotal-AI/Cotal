@@ -828,6 +828,24 @@ try {
   const selectedHealth = selectedStopped.stdout.split("Component Health")[1] ?? "";
   check("component health preserves the header's stopped selection instead of probing the folder's space",
     selectedStopped.status === 1 && selectedStopped.stdout.includes(`Mesh: ${controllerSpace}`) && selectedHealth.includes(`"${controllerSpace}" is stopped`) && !selectedHealth.includes(WEB_SPACE), `${selectedStopped.stdout}${selectedStopped.stderr}`);
+  const journal = join(controllerRoot, ".cotal", "stack-controller.json"), wholeJournal = readFileSync(journal);
+  const truncatedJournal = '{"schemaVersion":1,"kind":\n';
+  writeFileSync(journal, truncatedJournal);
+  try {
+    const message = `the stack journal ${journal} is not valid JSON`;
+    const remedy = `no member of this stack is running, so remove ${journal}`;
+    const ps = cliIn(controllerRoot, ["ps", "--plain", "--space", controllerSpace]);
+    const psText = ps.stdout + ps.stderr;
+    check("ps refuses a truncated journal and names its recovery, not an unstarted space",
+      ps.status === 1 && /Code:\s+SCHEMA_INVALID/.test(psText) && psText.includes(message) && psText.includes(remedy) && !psText.includes("is prepared but not started"), psText);
+    const status = cliIn(webRoot, ["status", "--components", "--space", controllerSpace]);
+    const health = status.stdout.split("Component Health")[1] ?? "";
+    check("component health refuses the selected root's truncated journal (3), even from another folder",
+      status.status === 3 && /target\s+refused.*SCHEMA_INVALID/.test(health) && health.includes(message) && health.includes(remedy), status.stdout + status.stderr);
+    check("the diagnostics leave the journal unchanged", readFileSync(journal, "utf8") === truncatedJournal);
+  } finally {
+    writeFileSync(journal, wholeJournal);
+  }
 
   const legacyUp = cliIn(webRoot, ["up", "--no-manager", "--space", WEB_SPACE], 120_000);
   webStack = legacyUp.status === 0;

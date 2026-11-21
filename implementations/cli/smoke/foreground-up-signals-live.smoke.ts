@@ -16,7 +16,7 @@
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -228,6 +228,16 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         process.kill(manager.pid, "SIGTERM");
         await until(() => !existsSync(managerPath) && !live(manager), 30_000, () => err);
         const inspect = (command: string) => foregroundCliProbe(cliEntry, tsx, mesh, env, [command, "--space", space, "--plain"], 60_000);
+        const seed = join(mesh, ".cotal", "channels.json");
+        writeFileSync(seed, '{"channels":\n');
+        const blocked = await inspect("status");
+        assert.equal(blocked.code, 0, blocked.out + blocked.err);
+        const blockedNext = blocked.out.split("\nNext\n")[1] ?? "";
+        assert.ok(blockedNext.trimStart().startsWith(`Restart blocked: the channels file ${seed} is not valid JSON`), blocked.out);
+        assert.ok(blockedNext.includes(`fix or remove ${seed}`), blocked.out);
+        assert.doesNotMatch(blockedNext, /cotal down --yes|cotal up --foreground/);
+        assert.ok(live(broker) && await portOpen(port));
+        rmSync(seed);
         const status = await inspect("status");
         assert.equal(status.code, 0, status.out + status.err);
         assert.match(status.out, new RegExp(`^  Broker +running.*pid ${broker.pid}`, "m"));
