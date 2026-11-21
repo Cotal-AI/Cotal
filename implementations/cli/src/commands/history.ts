@@ -42,7 +42,7 @@ import { registryFailure } from "../lib/registry-errors.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
-const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
+const forceFlag = { name: "force", type: "boolean", description: "removed flag. Omit it from reads and previews" } as const;
 const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear and limit: confirm without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;
 const sinceFlag = { name: "since", type: "string", value: "<time|seq>", description: "only messages after a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence" } as const;
@@ -255,19 +255,23 @@ const channelOf = (name: string): string => name.replace(/^#/, "");
 export function validateHistoryArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof historyFlags>;
   presentationOf(values);
-  if (values.force !== undefined) throw usage("--force is no longer a history flag; use `cotal history clear --yes`");
+  const omitForce = "--force is not supported. Omit --force and keep the other arguments.";
+  const replaceForce = "--force is not supported. Replace --force with --yes and keep the other arguments.";
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
     if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
+    if (values.force !== undefined) throw usage(values["dry-run"] || values.yes !== undefined ? omitForce : replaceForce);
     return;
   }
   if (args.positionals[0] === "limit") {
     if (args.positionals.length !== 1) throw usage("history limit takes no channel; one limit holds for every channel in the space");
     if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only its limit flags, --yes, --space and an output flag; it reaches the broker from the space root");
-    historyLimitRequest(values);
+    const request = historyLimitRequest(values);
+    if (values.force !== undefined) throw usage(request.size > 0 && values.yes === undefined ? replaceForce : omitForce);
     return;
   }
+  if (values.force !== undefined) throw usage(omitForce);
   if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
   if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes belongs to history clear and history limit, and --dry-run to history clear");
   if (args.positionals.length > 1) throw usage("history reads one channel at a time");
@@ -292,7 +296,6 @@ export async function history(args: ParsedArgs): Promise<void> {
   if (first === "limit") return historyLimit(v);
   const presentation = presentationOf(v);
   if (rest.length) throw usage(`history reads one channel at a time; got ${args.positionals.length} names`);
-  if (v.force) throw usage("--force applies to `history clear` only");
   const channel = first === undefined ? undefined : channelOf(first);
   if (channel !== undefined && v.dms) throw usage("name a channel or pass --dms, not both: --dms adds DMs to the history of every channel");
   const now = Date.now();
