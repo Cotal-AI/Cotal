@@ -278,6 +278,7 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+If reconciliation succeeds but the registry version cannot be read, `cotal update` succeeds and reports the latest version as unknown.
 A self-update inherits the extension state captured by the updating CLI, including added extensions
 and deliberate connector removals, even when that release has an older retained connector set.
 It reuses a matching retained copy or replaces an idle copy at the directory older releases expect.
@@ -304,7 +305,10 @@ If the machine daemon closes a status connection while restarting, reconciliatio
 status read for up to two minutes. It reports a failure if the daemon does not answer in time.
 When no Cotal Claude plugin or Desktop integration is installed, reconciliation only reads Claude's
 installation records. It creates no Claude directories or lock files, including in a read-only
-configuration directory. Unreadable or damaged installation records still refuse the update.
+configuration directory. If an integration is installed and the Claude profile or plugin directory is
+read-only, Cotal reports that the Claude refresh is deferred and continues the update without changing
+the protected directory. If you want to finish the refresh, make the directory writable and run
+`cotal update`. Unreadable or damaged installation records still refuse the update.
 After a manual `npm install -g`, the first command that runs the launch gate also brings installed
 first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check

@@ -166,7 +166,11 @@ refuses `PERMISSION_DENIED`, naming the folder. None of them writes anything.
 `--identity` reuses the native nkey. The out-of-band agent mint reports its newly allocated
 lifecycle UID, with a warning that it did not reuse the old inbox/delivery footprint. Use that
 reported UID for the resulting client; do not infer it from the label or assume the old UID was
-preserved. No private nkey or JWT appears in a receipt. A key revoked with `auth revoke-credential`
+preserved. With `--provision`, if this key already has a read ACL, the supplied credential must
+prove that the ACL belongs to its expired out-of-band lifecycle. Mint then retires that ACL and
+provisions the new lifecycle so it can establish durable channel membership when it joins. If
+the old credential has not expired, wait until it does or mint a fresh key to a separate file.
+No private nkey or JWT appears in a receipt. A key revoked with `auth revoke-credential`
 refuses `CONFLICT`, because a credential signed now would postdate the revocation and the broker
 would accept the key again; mint a fresh key without `--identity`.
 
@@ -511,7 +515,9 @@ again with the same grants. One whose key was revoked, or that an earlier space 
 names a mint with a new key instead, because the broker refuses that key and `auth mint --identity`
 refuses a revoked one. For an agent file, that mint names the file's read and post channels and its
 role with `--allow-subscribe`, `--allow-publish` and `--role`, since a new key holds only the grants
-its mint names. When the exported agent file was minted with `--provision`, both repair commands include `--provision` so the new lifecycle gets its inbox.
+its mint names. When the exported agent file was minted with `--provision`, both repair commands
+include `--provision` so the new lifecycle gets its inbox. Run a same-key provisioned renewal after
+expiry. To move to a new join credential before expiry, mint a fresh key to a separate file.
 A run with no findings says so in its heading only when nothing else is printed. While an exported
 file needs attention, or a credential is unbounded by request, the heading starts `No findings;` and
 names each, such as `2 exported credential files need attention`. The exit code stays 0.

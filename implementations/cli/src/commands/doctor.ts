@@ -403,8 +403,12 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
       Object.assign(row, { state: "other-account", repair: `the space's identity changed after it was written, so its broker refuses it; ${fresh}` });
     else if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt))
       Object.assign(row, { state: "revoked", revokedAt, repair: `its key was revoked at ${at(revokedAt)}, and auth mint --identity refuses that key; ${fresh}` });
-    else if (health.state === "expired" || health.state === "near-expiry")
-      row.repair = `\`${cmd} auth mint ${entry.label}${profile}${provision} --identity ${quotedPath} --out ${quotedPath}\` signs the same key again${entry.profile === "agent" ? ` with the same grants${provision ? " and provisions its new lifecycle" : ""}` : ""}`;
+    else if (health.state === "expired" || health.state === "near-expiry") {
+      const renewal = `\`${cmd} auth mint ${entry.label}${profile}${provision} --identity ${quotedPath} --out ${quotedPath}\``;
+      row.repair = provision && health.state === "near-expiry"
+        ? `after expiry, run ${renewal} to keep the same key and grants. To switch before expiry, ${fresh}`
+        : `${renewal} signs the same key again${entry.profile === "agent" ? ` with the same grants${provision ? " and provisions its new lifecycle" : ""}` : ""}`;
+    }
     rows.push(row);
   }
   return rows.sort((x, y) => x.label.localeCompare(y.label) || x.path.localeCompare(y.path));

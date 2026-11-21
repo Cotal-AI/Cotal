@@ -18,7 +18,7 @@
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -237,6 +237,16 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         process.kill(manager.pid, "SIGTERM");
         await until(() => !existsSync(managerPath) && !live(manager), 30_000, () => err);
         const inspect = (command: string) => foregroundCliProbe(cliEntry, tsx, mesh, env, [command, "--space", space, "--plain"], 60_000);
+        const seed = join(mesh, ".cotal", "channels.json");
+        writeFileSync(seed, '{"channels":\n');
+        const blocked = await inspect("status");
+        assert.equal(blocked.code, 0, blocked.out + blocked.err);
+        const blockedNext = blocked.out.split("\nNext\n")[1] ?? "";
+        assert.ok(blockedNext.trimStart().startsWith(`Restart blocked: the channels file ${seed} is not valid JSON`), blocked.out);
+        assert.ok(blockedNext.includes(`fix or remove ${seed}`), blocked.out);
+        assert.doesNotMatch(blockedNext, /cotal down --yes|cotal up --foreground/);
+        assert.ok(live(broker) && await portOpen(port));
+        rmSync(seed);
         const status = await inspect("status");
         assert.equal(status.code, 0, status.out + status.err);
         assert.match(status.out, new RegExp(`^  Broker +running.*pid ${broker.pid}`, "m"));
@@ -382,6 +392,86 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
     }
   }
 }
+async function restoreStartupCell(): Promise<void> {
+  const mesh = join(base, "restore-startup"), home = join(mesh, "home");
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(p, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const port = await freePort(), space = "foreground-restore";
+  const server = `nats://127.0.0.1:${port}`;
+  const journalPath = join(mesh, ".cotal", "maintenance", "v1", "journal.json");
+  const journal = (): { state?: string; restore?: { attemptId: string }; listenerProof?: { processOwner: { pid: number } } } =>
+    JSON.parse(readFileSync(journalPath, "utf8"));
+  const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args, 120_000);
+  const must = async (args: string[]) => {
+    assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
+    const result = await probe(args);
+    assert.equal(result.code, 0, `${args.join(" ")}: ${result.out}${result.err}`);
+  };
+  const owned = new Map<string, ProcessIdentityRecord>();
+  const collect = () => {
+    for (const file of [join(mesh, ".cotal/nats.pid"), canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space })]) {
+      const row = token(file);
+      if (row) owned.set(`${row.pid}:${row.token}`, row);
+    }
+  };
+  const foreground = (args: string[]) => {
+    const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+    const state = observeOwnedChild(child);
+    let output = "";
+    for (const pipe of [child.stdout, child.stderr]) pipe.on("data", (data: Buffer) => { output += data.toString(); });
+    return { child, state, log: () => output };
+  };
+  let run: ReturnType<typeof foreground> | undefined;
+  try {
+    await must(["up", "--detach", "--open", "--space", space, "--server", server, "--store-dir", "./source store"]);
+    await until(async () => {
+      const result = await probe(["channel", "set", "restore-probe", "--desc", "before restore", "--space", space]);
+      return result.code === 0;
+    }, 90_000, () => "source manager did not register");
+    await must(["down", "--preserve-state", "--store-dir", "./source store"]);
+    await must(["backup", "create", "./full backup", "--store-dir", "./source store", "--plain"]);
+
+    const restore = run = foreground(["--foreground", "--restore", "./full backup", "--store-dir", "./phase target"]);
+    let attempt: string | undefined;
+    let broker: ProcessIdentityRecord | undefined;
+    await until(() => {
+      if (restore.state.error || restore.state.exited) throw new Error(restore.log());
+      const record = journal();
+      if (record.state !== "commit-intent" || !record.listenerProof) return false;
+      broker = token(join(mesh, ".cotal/nats.pid"));
+      assert.equal(broker?.pid, record.listenerProof.processOwner.pid);
+      collect();
+      attempt = record.restore?.attemptId;
+      assert.ok(restore.child.kill("SIGTERM"));
+      return true;
+    }, 120_000, restore.log, 2);
+    await until(() => restore.state.exited, 90_000, restore.log);
+    await waitForOwnedChild(() => restore.state.closed, 3_000, "interrupted restore streams drained");
+    assert.equal(restore.state.code, 143, restore.log()); passed++;
+    assert.ok(attempt && restore.log().includes(`Interrupted: restore attempt ${attempt}`), restore.log()); passed++;
+    assert.match(restore.log(), /Continue it with bare `(?:pnpm )?cotal up`/); passed++;
+    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED/); passed++;
+    assert.ok(broker && !live(broker) && !await portOpen(port), "the interrupted restore stopped its own listener"); passed++;
+
+    const recovery = run = foreground([]);
+    await until(() => {
+      collect();
+      if (recovery.state.error || recovery.state.exited) throw new Error(recovery.log());
+      const record = journal();
+      return record.state === "active" && record.restore?.attemptId === attempt;
+    }, 120_000, recovery.log);
+    await must(["channel", "set", "restore-probe", "--desc", "after recovery", "--space", space]);
+    await must(["down", "--yes"]);
+    await until(() => recovery.state.exited, 20_000, recovery.log);
+    assert.equal(recovery.state.code, 0, recovery.log()); passed++;
+    console.log("PASS foreground-up-signals restore-startup: SIGTERM preserves forward recovery of the same attempt");
+  } finally {
+    if (run) await finishOwnedChild(run.child, run.state, collect, () => owned.values(), mesh);
+    else if (await portOpen(port)) await must(["down", "--yes"]);
+  }
+}
+
 /** A prepared root takes the controller route. Ctrl-C while its foreground `up` waits for the
  *  manager's readiness lets the start settle, then runs the guarded whole-stack stop: exit 130, the
  *  stop completed for every member, and the broker listener closed. With `receipt`, the CLI sends
@@ -708,6 +798,7 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 }
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
+await restoreStartupCell();
 await controllerStartupCell();
 await controllerStartupCell("receipt");
 await controllerStartupCell("team");

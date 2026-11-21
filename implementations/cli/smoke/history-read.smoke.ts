@@ -915,6 +915,12 @@ try {
       listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
     const defaultsCard = await channel("defaults");
     check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    const observerDefaults = await run(["channel", "defaults", "--creds", observer, "--server", servers, "--space", space, "--json"]);
+    const observerRegistry = (observerDefaults.envelope?.result as { registry?: ChannelRegistryRead })?.registry;
+    check("channel defaults JSON scopes the registry read with an observer credential",
+      observerDefaults.status === 0 && observerDefaults.stderr === ""
+        && Object.keys(observerRegistry ?? {}).join() === "defaults" && observerRegistry?.defaults?.replay === false
+        && observerRegistry.defaults.replayWindow === "1h" && observerRegistry.defaults.deliveryClass === "live", shown(observerDefaults));
     const missing = await channel("show", "policy-unregistered");
     check("an unsaved channel marks every field inherited too", policyIs(missing, "off - inherited", "1h - inherited", "live - inherited"), shown(missing));
     const mixedSet = await channel("set", "policy", "--no-replay");
@@ -937,12 +943,15 @@ try {
         && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
   }
 
-  // Named JSON includes the same raw defaults as the inventory and only the requested entry.
+  // Scoped channel reads return the raw defaults and only the entries they request.
   {
     const registrySpace = `histreg-${randomUUID().slice(0, 8)}`;
     const json = (...args: string[]) => run(["channel", ...args, "--space", registrySpace, "--server", openServers, "--json"]);
     const registryOf = (r: Awaited<ReturnType<typeof run>>) =>
       (r.envelope?.result as { registry?: ChannelRegistryRead } | null | undefined)?.registry;
+    const absent = await json("defaults");
+    check("channel defaults JSON leaves absent defaults unset",
+      absent.status === 0 && absent.stderr === "" && JSON.stringify(registryOf(absent)) === "{}", shown(absent));
     const defaults = await json("defaults", "--delivery", "live", "--no-replay", "--window", "2h");
     const saved = await json("set", "__proto__", "--desc", "Operations");
     const other = await json("set", "elsewhere", "--desc", "Elsewhere");
@@ -954,6 +963,10 @@ try {
         && Object.hasOwn(full?.channels ?? {}, "__proto__") && full?.channels?.__proto__?.description === "Operations"
         && full?.defaults?.deliveryClass === "live" && full.defaults?.replay === false && full.defaults?.replayWindow === "2h",
       { defaults: shown(defaults), saved: shown(saved), other: shown(other), inventory: shown(inventory) });
+    const savedDefaults = await json("defaults");
+    check("channel defaults JSON returns raw defaults without channel metadata",
+      savedDefaults.status === 0 && savedDefaults.stderr === ""
+        && JSON.stringify(registryOf(savedDefaults)) === JSON.stringify({ defaults: full?.defaults }), shown(savedDefaults));
     const named = await json("show", "__proto__");
     const missing = await json("show", "constructor");
     check("channel show JSON returns only the named saved entry and raw defaults",
@@ -977,6 +990,10 @@ try {
     check("channel show JSON keeps decode errors for the requested channel and defaults only",
       bad.status === 0 && registryOf(bad)?.defaults === undefined && JSON.stringify(registryOf(bad)?.channels) === "{}"
         && JSON.stringify(registryOf(bad)?.undecodable) === JSON.stringify(entries?.filter(({ key }) => key !== "bad.other")), shown(bad));
+    const badDefaults = await json("defaults");
+    check("channel defaults JSON keeps only the defaults-key decode error",
+      badDefaults.status === 0 && badDefaults.stderr === ""
+        && JSON.stringify(registryOf(badDefaults)) === JSON.stringify({ undecodable: entries?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY) }), shown(badDefaults));
   }
 
   {

@@ -61,7 +61,7 @@ A one-shot sender displays the OS login and host as `<login>@<host>`, not the la
 seat's name. On a local static-auth mesh, the account signer binds that label to a stable
 `local.cli_<sha256>` principal. Each send still uses a fresh, short-lived connection credential
 with the existing operator permissions. An explicit `--creds` keeps that credential's principal,
-and a signed-in mesh keeps the user's `cli` actor. Open meshes do not authenticate a sender.
+and a signed-in mesh keeps the user's `cli` actor. On POSIX, if a directory in the `--creds` path is a symbolic link, the CLI refuses before connecting. When it can resolve the directory, the suggested path includes the filename. Open meshes do not authenticate a sender.
 A peer message is not proof of the person's authorization to perform an action.
 
 
@@ -510,6 +510,10 @@ saved and decodable. `result.registry.channels` contains only the named channel'
 an empty object if the entry is absent or cannot be decoded. `result.registry.undecodable` reports
 decode errors for the defaults and named channel when present. The command does not apply
 inheritance or fill in built-in defaults. Use `channel --json` for the full inventory.
+
+`channel defaults --json` with no settings reports only the space defaults. It returns saved,
+decodable defaults in `result.registry.defaults` or reports a defaults-key decode error in
+`result.registry.undecodable`. It does not include channel entries or fill in built-in defaults.
 
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.

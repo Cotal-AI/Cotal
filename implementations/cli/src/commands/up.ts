@@ -260,7 +260,7 @@ import {
   type StackUpNative,
   unparsableDaemonCredsNotice,
 } from "./stack-up.js";
-import { handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
+import { exitInterrupted, handOverStartupNotice, noticeOnInterrupt, releaseStartupNotice } from "../lib/interrupt-notice.js";
 import { claimForegroundHold, foregroundHolder, foregroundStackEnd, releaseForegroundHold } from "../lib/foreground-hold.js";
 import { settleInterruptedLaunches } from "../lib/service-process.js";
 import { assertUserStackTransport, preflightUserStack } from "./stack-user-auth.js";
@@ -304,6 +304,7 @@ import {
   rearmUnboundRestore,
   replacePreparedDeadRestoreListener,
   restoreComposition,
+  restoreInterruptNotice,
   restoreNextStep,
   restoreOnlyCopy,
   type PreparedRestore,
@@ -364,7 +365,7 @@ export const upFlags: FlagSpec[] = [
   { name: "auth-timeout", type: "string", value: "<seconds>", description: "user-auth only: how long the broker waits for the auth callout, 1 to 60 seconds (default: nats-server's 2); the auth service answers inside it. Fixed at broker start and recorded for the next `up`" },
   { name: "max-payload", type: "string", value: "<bytes>", description: `broker-wide message size limit in bytes (default: nats-server's ${NATS_DEFAULT_MAX_PAYLOAD}). A manager-backed start needs at least 263168, and service endpoint caller grants need at least 2098176. Fixed at broker start and recorded for the next \`up\`` },
   { name: "account-resolver", type: "string", value: "<memory|full>", description: "how the broker resolves space accounts: memory (default) knows only the accounts its configuration lists, so adding one means a reload; full also keeps pushed account claims in .cotal/account-jwts, so a host can add and retire accounts on the running broker without a reload. Fixed at broker start and recorded for the next `up`" },
-  { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json)" },
+  { name: "channels", type: "string", value: "<path>", description: "channel-registry seed file (JSON; default .cotal/channels.json); not used with -f" },
   { name: "tls-cert", type: "string", value: "<file>", description: "serve the broker over TLS with this certificate (requires --tls-key)" },
   { name: "tls-key", type: "string", value: "<file>", description: "the private key for --tls-cert" },
   { name: "restore", type: "string", value: "<dir>", description: "restore an offline backup before exposing the normal listener" },
@@ -896,9 +897,9 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     checkNewUpSpace(args.values.space, root ?? fresh);
-    // The broker reads an explicit channels file only once it is being prepared, so a file it would
-    // refuse is named here, before the stack journal or anything else is written.
-    if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
+    // Validate a seed before writing stack records only on the route that uses it.
+    if (typeof args.values.channels === "string" && args.values.file) recordOperationWarning({ code: "MANIFEST_CHANNEL_SEED_IGNORED", target: null, message: "--channels is not used with -f. Set channels and defaults in the manifest." }, { echo: args.values.json !== true });
+    else if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
     const folderNamed = folderNamedSpace(args.values);
     if (folderNamed) args = { ...args, values: { ...args.values, space: folderNamed, __folderNamed: true } };
     // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
@@ -2406,11 +2407,8 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
     if (!resumeAttempt) process.exit(1);
   });
-  // The control plane is coupled to the broker: stop the detached manager AND the delivery daemon
-  // (AND the space's user-auth service) when this `up` stops (Ctrl-C), so none outlives the broker
-  // it serves — a surviving manager would reconnect-loop invisibly against the dead (or the NEXT)
-  // broker (the documented orphan-supervisor failure mode). All kill by pidfile, symmetric; the
-  // auth service's pid is space-scoped so no other space's daemon can ever be hit.
+  // Stop the detached manager, delivery daemon and space's user-auth service before their broker,
+  // so none outlives it. The auth service's process record is space-scoped.
   // The manager goes first, in `cotal down`'s order, through the stop `cotal down` runs (#1307): it
   // holds the stop reservation, asserts the exact manager can spare its seats before any signal,
   // reports the seats left behind, and escalates a wedged manager to SIGKILL. When that stop throws
@@ -2423,10 +2421,9 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
   // signalled, so it never races a broker that is already going away.
   let stopping = false;
-  // The signal that asked for the stop. The broker is then signalled SIGTERM, so its own exit
-  // status is not the command's: SIGINT exits 130 and SIGTERM exits 143, as a controller stack's
-  // foreground stop does.
+  // The operator's signal sets the command's exit status, not the broker's SIGTERM.
   let stopSignal: "SIGINT" | "SIGTERM" | undefined;
+  let stoppedListener = false;
   let teardown: Promise<void> | undefined;
   const stop = (signal: "SIGINT" | "SIGTERM") => {
     if (stopping) return; // a second Ctrl-C during teardown must not start a second teardown
@@ -2447,15 +2444,13 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       }
       await stopDelivery(space).catch((e: Error) => console.error(`! delivery teardown: ${e.message}`));
       await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
-      child.kill("SIGTERM");
+      stoppedListener = child.kill("SIGTERM");
     })();
   };
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
   restored?.releaseInterruptNotice?.();
-  // The broker is gone. Drop the registration this stop recorded, and the `current` pointer when it
-  // names that registration, so a later `cotal spawn` does not join a dead mesh. A space named after
-  // its folder keeps both, as `cotal down` does, so the name stays the folder's.
+  // On exit, drop only this stop's registration and matching `current` pointer, unless folder-named.
   child.on("exit", async (code, signal) => {
     if (failedListeners.has(child)) return;
     removePidPair(cotalPath(NATS_PIDFILE), String(child.pid));
@@ -2515,7 +2510,11 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     }
   });
 
-  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener });
+  await awaitSpawnedListener({ child, executable: natsServer, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: brokerOutput, boundListener }).catch((error: unknown) => {
+    if (!restored || !stoppedListener || !stopSignal || (child.exitCode === null && child.signalCode === null)) throw error;
+    releaseStartupLock();
+    exitInterrupted(stopSignal, restoreInterruptNotice(restored.root, restored.attemptId));
+  });
   listenerReady = true;
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
