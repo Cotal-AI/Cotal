@@ -36,7 +36,7 @@ const BACKUP_STAGES = {
   close: /smoke-injected failure after snapshot close/,
   manifest: /smoke-injected failure before manifest publication/,
   // A full disk names its cause and directory, what was and was not written, and a retry.
-  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on the disk that holds [^\n]*artifact-nospace, then run `cotal backup create [^\n]*artifact-nospace` again/,
+  nospace: /ran out of disk space \(ENOSPC\) writing the backup in [^\n]*artifact-nospace; it removed the partial backup and published none, and the preserved cut is still ready[\s\S]*free space on that disk, then run /,
 } as const;
 
 const journalState = (root: string): string | undefined => {
@@ -269,18 +269,27 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.equal(journalState(root), "ready", "the refused create and restores leave the cut ready");
     assert.deepEqual(attemptResidue(root), [], "the refused create and restores leave nothing in the attempts dir");
 
+    const plainRetry = process.platform !== "win32";
+    const quotaFolder = join(root, "quota ` folder – Unicode");
+    const lookalike = join(root, "quota ` folder - Unicode");
+    if (plainRetry) {
+      mkdirSync(quotaFolder);
+      mkdirSync(lookalike);
+    }
     for (const [stage, injected] of Object.entries(BACKUP_STAGES)) {
-      const destination = join(root, `artifact-${stage}`);
-      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination], {
+      const quotaCase = stage === "nospace" && plainRetry;
+      const destination = join(quotaCase ? quotaFolder : root, `artifact-${stage}`);
+      const faulted = spawnSync(tsx, [cliPath, "backup", "create", destination, ...(quotaCase ? ["--plain"] : [])], {
         cwd: root,
         env: { ...env, COTAL_SMOKE_FAIL_BACKUP_STAGE: stage },
         encoding: "utf8",
         timeout: 240_000,
       });
-      assert.notEqual(faulted.status, 0, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}`);
+      assert.equal(faulted.status, 5, `${stage} fault must fail the backup\nstdout:\n${faulted.stdout}\nstderr:\n${faulted.stderr}`);
       assert.match(faulted.stderr, injected, `${stage} fault reports its injected failure`);
       // The cleanup completed, so the next step is the same create, not a recovery.
-      assert.match(faulted.stderr, new RegExp(`then run \`cotal backup create \\S*artifact-${stage}\` again`), `${stage} fault names the same create as its next step`);
+      const retry = /then run (`+)(cotal backup create .+?)\1 again/.exec(faulted.stderr)?.[2];
+      assert.ok(retry?.includes(`artifact-${stage}`), `${stage} fault names the same create as its next step\n${faulted.stderr}`);
       if (stage !== "nospace") assert.match(faulted.stderr, /the preserved cut is still ready; fix the cause in the native detail/, `${stage} fault says the cut is still ready`);
       assert.equal(journalState(root), "ready", `${stage} fault returns the maintenance journal to ready`);
       assert.equal(existsSync(destination), false, `${stage} fault leaves no unpublished artifact at the destination`);
@@ -290,7 +299,14 @@ async function backupStageFaultScenario(): Promise<void> {
       assert.equal(sourceAfter.ino, sourceBefore.ino, `${stage} fault leaves the preserved source inode unchanged`);
 
       // The retry is the point: a faulted attempt must not poison its own destination path.
-      must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      if (quotaCase) {
+        must("unedited plain ENOSPC retry", spawnSync("sh", ["-c", `cli=$1; entry=$2\ncotal() { "$cli" "$entry" "$@"; }\n${retry}`, "backup-retry", tsx, cliPath], {
+          cwd: root, env, encoding: "utf8", timeout: 240_000,
+        }));
+        assert.equal(existsSync(join(lookalike, `artifact-${stage}`)), false, "the retry did not use the ASCII lookalike");
+      } else {
+        must(`${stage} retry at the same destination`, run("backup", "create", destination));
+      }
       assertValidManifest(destination, space, "full");
       assert.equal(journalState(root), "ready", `${stage} retry leaves the cut ready`);
       assert.deepEqual(attemptResidue(root), [], `${stage} retry leaves no attempt residue`);

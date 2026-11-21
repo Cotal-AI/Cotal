@@ -799,6 +799,9 @@ async function missingPidfileListenerScenario(): Promise<void> {
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-home-")));
   const artifact = join(root, "registry 'backup' with `notes`");
   const unicodeArtifact = join(root, "registry backup with heart ❤\uFE0F");
+  const child = join(root, "retry\tchild");
+  const relativeArtifact = "-relative backup";
+  const relativeDestination = join(child, relativeArtifact);
   const store = "-jetstream ❤\uFE0F store";
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
@@ -836,18 +839,33 @@ async function missingPidfileListenerScenario(): Promise<void> {
       assert.ok(!command.includes("\uFE0F"), "the terminal command contains no invisible variation selector");
       assert.equal(existsSync(destination), false, "listener refusal happens before artifact creation");
       assert.equal(readMaintenanceJournal(root)?.state, "ready", "listener refusal leaves the cut ready");
-      return { command, destination, selection };
+      return { command, destination, selection, cwd: root };
     });
+    if (process.platform !== "win32") {
+      mkdirSync(child);
+      const refused = spawnSync(tsx, [cliPath, "backup", "create", "--only", "registry", `--store-dir=../${store}`, "--", relativeArtifact], {
+        cwd: child, env, encoding: "utf8", timeout: 240_000,
+      });
+      assert.equal(refused.status, 2, refused.stderr);
+      assert.match(refused.stderr, /CONFLICT/);
+      const command = /then run (`+)(cotal backup create .+?)\1 again/.exec(refused.stderr)?.[2];
+      assert.ok(command, refused.stderr);
+      assert.equal(existsSync(relativeDestination), false);
+      assert.equal(readMaintenanceJournal(root)?.state, "ready");
+      retries.push({ command, destination: relativeDestination, selection: "registry", cwd: child });
+    }
     await closeServer(foreign);
     foreign = undefined;
     if (process.platform !== "win32") {
-      for (const { command, destination, selection } of retries) {
+      for (const { command, destination, selection, cwd } of retries) {
         const retried = spawnSync("sh", ["-c", `cli=$1; entry=$2\ncotal() { "$cli" "$entry" "$@"; }\n${command}`, "backup-retry", tsx, cliPath], {
-          cwd: root, env, encoding: "utf8", timeout: 240_000,
+          cwd, env, encoding: "utf8", timeout: 240_000,
         });
         assert.equal(retried.status, 0, `the printed retry works unedited\n${retried.stdout}${retried.stderr}`);
         assert.equal(existsSync(join(destination, "manifest.json")), true, "the artifact is published at the byte-exact destination");
-        const verified = run("backup", "verify", destination, "--json");
+        const verified = cwd === child
+          ? spawnSync(tsx, [cliPath, "backup", "verify", "--json", "--", relativeArtifact], { cwd, env, encoding: "utf8", timeout: 240_000 })
+          : run("backup", "verify", destination, "--json");
         assert.equal(verified.status, 0, `the retried artifact verifies\n${verified.stdout}${verified.stderr}`);
         assert.equal(JSON.parse(verified.stdout).result.selection, selection, "the retry preserves selection");
       }
