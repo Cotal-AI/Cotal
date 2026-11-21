@@ -4,7 +4,7 @@
     "implementations/cli/src/commands/status.ts": 3044,
     "implementations/cli/src/commands/up.ts": 6066,
     "implementations/cli/src/commands/update.ts": 2127,
-    "implementations/manager/src/manager.ts": 2343,
+    "implementations/manager/src/manager.ts": 2432,
     "packages/core/src/endpoint.ts": 3514
   }
 }
