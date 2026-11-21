@@ -440,8 +440,10 @@ one of the listed names. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
-space registered as open, with or without `--fix`, the report says that the space issues no
-credentials, so there are none to check, and the result is a no-op (exit 0). The same applies after
+space registered as open, with or without `--fix`, the local credential check is a no-op (exit 0).
+If `space add --force` recorded the mode without checking it, `doctor auth` warns with
+`MODE_NOT_CHECKED` and points to `cotal space show <name>` for verification. It makes no claim
+about what that broker enforces. A checked open space has no credentials to inspect. The same applies after
 `cotal down` when this root's stack journal still records that space as open, including with
 `--space` naming it. This is a local mode observation, not proof that a broker is running or accepts
 connections. With `--space` naming
