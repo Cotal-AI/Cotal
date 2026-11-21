@@ -436,6 +436,13 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       // The previous store holds the only copy of what the restore left out, so the preview warns and
       // both cleanup commands refuse to delete it without --discard-history.
       const previous = active.restore.previousSource!.identity.path;
+      const { run: runElsewhere } = sandboxRun(join(home, "other-project"), home);
+      const wrongFolder = runElsewhere("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
+      assert.equal(wrongFolder.status, 2, `${mode} cleanup from another project refuses\n${wrongFolder.stderr}`);
+      assert.match(wrongFolder.stderr, /Code: +TARGET_NOT_FOUND/);
+      assert.match(wrongFolder.stderr, /Check that you are in the original project folder and verify the attempt ID/);
+      assert.doesNotMatch(wrongFolder.stderr, /has settled/);
+      assert.ok(existsSync(previous), `${mode} cleanup from another project keeps the previous store`);
       const preview = run("backup", "cleanup-fallback", active.restore.attemptId, "--dry-run", "--json");
       must("cleanup-fallback preview", preview);
       assert.ok((JSON.parse(preview.stdout) as { warnings: { code: string }[] }).warnings.some((w) => w.code === "HISTORY_ONLY_IN_PREVIOUS_STORE"), `${mode} preview warns about the only copy\n${preview.stdout}`);
@@ -472,10 +479,9 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       rmSync(join(root, "notes.txt"));
     }
     assert.equal(existsSync(join(root, ".cotal", "maintenance", "v1", "journal.json")), false, "fallback cleanup retires the restore journal");
-    // A repeat finds no record of the attempt, because the cleanup retired it, and says so by name.
     const repeated = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history");
-    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`) &&
-      repeated.stderr.includes("a completed restore-fallback retires its journal, so the restore has settled"), `${mode} a repeated clean restore-fallback says the restore settled\n${repeated.stderr}`);
+    assert.ok(repeated.status === 2 && /Code: +TARGET_NOT_FOUND/.test(repeated.stderr) && repeated.stderr.includes(`no maintenance record at this root names restore attempt ${active.restore.attemptId}; nothing was deleted`), `${mode} a repeated clean restore-fallback refuses without a matching record\n${repeated.stderr}`);
+    assert.doesNotMatch(repeated.stderr, /has settled/);
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });

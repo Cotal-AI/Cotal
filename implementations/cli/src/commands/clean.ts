@@ -179,11 +179,10 @@ export async function clean(args: ParsedArgs): Promise<void> {
     try {
       // A restore that left something out set its old store aside as the only copy of it.
       const journal = readMaintenanceJournal(root);
-      // A completed fallback cleanup retires the journal, so a repeat finds no record of its attempt.
       if (!journal || !("restore" in journal) || journal.restore.attemptId !== values.attempt)
         throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no maintenance record at this root names restore attempt ${values.attempt}; nothing was deleted`, {
           target: { root, attemptId: values.attempt },
-          remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt: a completed restore-fallback retires its journal, so the restore has settled and a repeat has nothing to remove; `cotal status` shows the root's maintenance state"),
+          remedy: recordedAttemptStep(root, journal, "this root holds no restore attempt. Check that you are in the original project folder and verify the attempt ID before retrying"),
         });
       const active = journal.state === "active" && journal.restore.attemptId === values.attempt && !journal.restore.cleanup ? journal : undefined;
       const leftOut = active ? restoreLeftOut(active) : undefined;
