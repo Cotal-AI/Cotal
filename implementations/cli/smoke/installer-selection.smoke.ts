@@ -132,15 +132,69 @@ try {
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
   if (process.platform === "linux") {
-    const projectAlias = join(root, "project alias's");
-    symlinkSync(npmHome, projectAlias);
-    for (const pwd of [projectAlias, undefined, root]) {
-      const project = spawnSync(npmLauncher, ["--cwd"], {
-        cwd: npmHome, env: { ...npmEnv, PATH: dirname(npmLauncher), PWD: pwd }, encoding: "utf8", timeout: 10_000,
-      });
-      assert.equal(project.status, 0, output(project));
-      assert.deepEqual(JSON.parse(project.stdout), [realpathSync(npmHome), pwd === projectAlias ? pwd : realpathSync(npmHome)]);
+    const split = 'COTAL_NPM_PWD=${PWD} PWD=/proc/self/cwd /bin/sh';
+    const probe = spawnSync("/usr/bin/env", ["-S", split, "-c", '[ "$PWD" = /proc/self/cwd ] && [ . -ef . ] && exit 0'], {
+      env: npmEnv, encoding: "utf8", timeout: 1000,
+    });
+    const expectedHeader = existsSync("/proc/self/cwd") && probe.status === 0 ? `#!/usr/bin/env -S ${split}` : "#!/bin/sh";
+    assert.equal(launcherText.split("\n")[0], expectedHeader);
+    const fallback = join(root, "fallback");
+    const pkg = join(fallback, "lib/node_modules/cotal-ai");
+    const bin = join(fallback, "bin");
+    for (const directory of [bin, join(pkg, "dist"), join(pkg, "scripts")]) mkdirSync(directory, { recursive: true });
+    for (const file of ["package.json", postinstall, "dist/cotal.js"]) copyFileSync(join(npmPackage, file), join(pkg, file));
+    const fallbackLauncher = join(bin, "cotal");
+    symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", fallbackLauncher);
+    const refusedProbe = spawnSync(process.execPath, ["-e", `
+      const assert = require("node:assert/strict");
+      let probed = false;
+      require("node:child_process").spawnSync = (file, args, options) => {
+        assert.equal(file, "/usr/bin/env");
+        assert.equal(args[0], "-S");
+        assert.equal(args[1], ${JSON.stringify(split)});
+        assert.ok(options.timeout > 0 && options.timeout <= 1000);
+        probed = true;
+        return { status: 1 };
+      };
+      require(process.argv[1]);
+      if (require("node:fs").existsSync("/proc/self/cwd")) assert.ok(probed);
+    `, join(pkg, postinstall)], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(refusedProbe.status, 0, output(refusedProbe));
+    assert.equal(readlinkSync(fallbackLauncher), "../lib/node_modules/cotal-ai/dist/cotal-npm");
+    assert.equal(readFileSync(fallbackLauncher, "utf8").split("\n")[0], "#!/bin/sh");
+    const fallbackEnv = { ...npmEnv, PATH: bin };
+    const fallbackRun = spawnSync(fallbackLauncher, ["--version"], { env: fallbackEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(fallbackRun.status, 0, output(fallbackRun));
+    assert.equal(fallbackRun.stdout.trim(), "cotal-ai 0.0.0");
+    const busyboxOptions = { env: { ...fallbackEnv, PATH: `${toolPath}:${process.env.PATH ?? ""}` }, encoding: "utf8" as const, timeout: 10_000 };
+    const busybox = spawnSync("busybox", ["env", "-S", split, "-c", "exit 0"], busyboxOptions);
+    if ((busybox.error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+      const launch = spawnSync("busybox", ["sh", fallbackLauncher, "--version"], busyboxOptions);
+      assert.equal(launch.status, 0, output(launch));
+      assert.equal(launch.stdout.trim(), "cotal-ai 0.0.0");
+      console.log(`NPM LAUNCHER: BusyBox env -S exited ${busybox.status}; BusyBox sh fallback ran ${launch.stdout.trim()}`);
+      if (expectedHeader !== "#!/bin/sh") {
+        const cwd = realpathSync(npmHome);
+        const enhanced = spawnSync("busybox", ["sh", npmLauncher, "--cwd"], {
+          ...busyboxOptions, cwd, env: { ...busyboxOptions.env, COTAL_NPM_PWD: cwd, PWD: "/proc/self/cwd" },
+        });
+        assert.equal(enhanced.status, 0, output(enhanced));
+        assert.deepEqual(JSON.parse(enhanced.stdout), [cwd, cwd]);
+        console.log("NPM LAUNCHER: BusyBox sh enhanced body preserved the project directory");
+      }
     }
+    if (expectedHeader !== "#!/bin/sh") {
+      const projectAlias = join(root, "project alias's");
+      symlinkSync(npmHome, projectAlias);
+      for (const pwd of [projectAlias, undefined, root]) {
+        const project = spawnSync(npmLauncher, ["--cwd"], {
+          cwd: npmHome, env: { ...npmEnv, PATH: dirname(npmLauncher), PWD: pwd }, encoding: "utf8", timeout: 10_000,
+        });
+        assert.equal(project.status, 0, output(project));
+        assert.deepEqual(JSON.parse(project.stdout), [realpathSync(npmHome), pwd === projectAlias ? pwd : realpathSync(npmHome)]);
+      }
+    }
+    console.log(`NPM LAUNCHER: real postinstall selected ${expectedHeader}; forced probe refusal selected #!/bin/sh and ran ${fallbackRun.stdout.trim()}`);
   }
   const daemonDir = join(npmHome, "cotal", "daemon");
   const receipt = join(daemonDir, "service-unit.json");

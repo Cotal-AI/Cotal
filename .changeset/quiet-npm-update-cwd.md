@@ -3,4 +3,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Keep successful updates from reporting a working directory error through the Linux npm launcher or failing plain reconciliation because the registry version is unavailable.
+Avoid the Linux npm launcher warning from a deleted directory where the shell supports it, and make plain `cotal update` exit 0 after successful reconciliation with the registry version reported as not established instead of exiting 1 with “version check failed”.
