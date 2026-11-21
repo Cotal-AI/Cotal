@@ -13,7 +13,9 @@ import { installSystemdService } from "../lib/service-systemd-install.js";
 import { uninstallSystemdService } from "../lib/service-systemd-uninstall.js";
 import { controlSystemdService } from "../lib/service-systemd-control.js";
 import { reserveStoppedServiceInstance } from "../lib/service-stopped-allocation.js";
-import { selfArgv } from "../lib/self-exec.js";
+import { displayCmd, selfArgv } from "../lib/self-exec.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { seedWriterKind } from "../seed/paths.js";
 import { serviceInstallIntentFor, serviceInstallIntentProjection } from "../lib/service-install-intent.js";
 import { serviceUninstallIntentFor, serviceUninstallIntentProjection } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionFor } from "../lib/service-unit-action.js";
@@ -172,7 +174,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status");
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
   const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
@@ -259,6 +261,12 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     return;
   }
   if (mode === "logs") {
+    if (!selected) {
+      const cli = seedWriterKind() === "checkout" ? selfArgv().map(shellWord).join(" ") : displayCmd();
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition, so there is no log to read. An instance must run before it can produce a log.", {
+        remedy: `${cli} service status ${shellWord(name)} --space ${shellWord(space)} --plain`, remedyIsCommand: true,
+      });
+    }
     const recorded = instanceProjection(selected!).supervisorRecord;
     if (recorded.mechanism !== "none-recorded") {
       const tail = values.tail === undefined ? 100 : Number(values.tail);

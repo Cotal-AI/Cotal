@@ -21,6 +21,7 @@
  *
  * `service logs` on a log this account cannot read is refused PERMISSION_DENIED with a chmod step,
  * and `--follow` ends with that refusal as its error record.
+ * A saved service with no recorded instance instead points to a read-only status command.
  *
  * Run: pnpm smoke:service-target-hint
  */
@@ -40,6 +41,7 @@ const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-service-hint-"));
 const neutral = join(home, "neutral");
 mkdirSync(neutral);
+mkdirSync(join(home, ".cotal"), { mode: 0o700 });
 process.on("exit", (code) => { if (code === 0) rmSync(home, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -95,6 +97,21 @@ check("help service remove lists --instance <full-id> in its usage and options",
   const again = run(["service", "add", "tick", "--file", forA, "--json"], a);
   check("control: a file for sa under its existing name is still refused as already existing",
     again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
+
+  const unstartedLogs = run(["service", "logs", "tick", "--space", "sa", "--tail", "30", "--plain"], b);
+  const statusStep = /^Next\n\s+(.+ service status tick --space sa --plain)$/m.exec(unstartedLogs.stderr)?.[1];
+  check("logs for an unstarted service explains why there is no log and names the explicit status command",
+    unstartedLogs.status === 2 && unstartedLogs.stderr.includes("TARGET_NOT_FOUND") &&
+    /An instance must run before it can produce a log\./.test(unstartedLogs.stderr.replace(/\s+/g, " ")) && statusStep !== undefined, shown(unstartedLogs));
+  if (process.platform !== "win32") {
+    const status = statusStep ? spawnSync("sh", ["-c", statusStep], { cwd: b, env, encoding: "utf8", timeout: 120_000 }) : undefined;
+    check("running the printed step in another space's folder reports not started without allocating an instance",
+      status?.status === 0 && /Recorded state:\s+not started/.test(status.stdout), status);
+  }
+  const missingLog = run(["service", "logs", "tick", "--space", "sa", "--instance", "00000000-0000-4000-8000-000000000000", "--json"], b);
+  check("logs still refuses an explicitly named instance that does not belong to the service",
+    missingLog.status === 2 && missingLog.stdout.includes('"code":"TARGET_NOT_FOUND"') &&
+    missingLog.stdout.includes("the full instance ID does not belong") && !missingLog.stdout.includes('"remedy"'), shown(missingLog));
 
   const config = join(a, ".cotal", "broker.conf");
   writeFileSync(config, "", { mode: 0o600 });
