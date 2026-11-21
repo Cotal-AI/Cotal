@@ -1,4 +1,4 @@
-import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
+import { BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, MANAGER_ABSOLUTE_PATH_REQUIRED, unansweredRequest, type EpAttributedReply } from "@cotal-ai/core";
 import { CommandFailure, codeSpan, isCommandFailure, isConnectRefusal, nativeEndpointRefusal } from "@cotal-ai/workspace";
 
 export class NativeReplyError extends Error {
@@ -16,7 +16,14 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
     return new CommandFailure("refused", "TARGET_UNAVAILABLE", `no instance of ${endpoint} answered its contract read, so nothing is serving it or none could be reached`, { target, native, remedy: `start the service that serves ${endpoint}, then run the command again; \`cotal service${space}\` lists this space's services`, cause: error });
   }
   const code = nativeEndpointRefusal(native?.code);
-  if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", { target, native, cause: error });
+  if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) {
+    const remedy = mayHaveInvoked && error instanceof NativeReplyError && error.phase === "invocation" &&
+      error.response.responder.endpoint === BASELINE_LIFECYCLE_ENDPOINT &&
+      (target.command === "resolve-cwd" || target.command === "list-dir") && native?.code === "failed-precondition" &&
+      error.response.reply.error?.details?.some((detail) => detail.kind === MANAGER_ABSOLUTE_PATH_REQUIRED)
+      ? "pass an absolute directory path on the manager host" : undefined;
+    return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", { target, native, remedy, cause: error });
+  }
   if (!mayHaveInvoked || native?.outcome === "executed") return new CommandFailure("failed", "OPERATION_FAILED", mayHaveInvoked ? "the native endpoint reported an executed failure" : "the endpoint contract read did not complete", { target, native, cause: error });
   return new CommandFailure("unknown", "OPERATION_UNKNOWN", "the invocation outcome is not confirmed; no blind retry was made", { target, native, remedy: "inspect the original endpoint and request before another invocation", cause: error });
 }

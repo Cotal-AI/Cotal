@@ -808,6 +808,24 @@ try {
     resolveCwdRetry.status === 0 && strip(resolveCwdRetry.out).includes(`"cwd": ${JSON.stringify(realpathSync(root1))}`),
     { status: resolveCwdRetry.status, out: strip(resolveCwdRetry.out).slice(-900) });
 
+  const relative = "private-relative-directory";
+  const absolutePathRemedy = "pass an absolute directory path on the manager host";
+  for (const [command, field] of [["resolve-cwd", "cwd"], ["list-dir", "path"]] as const) {
+    const argv = ["endpoint", "invoke", "manager", command, "--space", space, "--server", SERVERS, "--args", JSON.stringify({ [field]: relative })];
+    const text = await cotal(argv, root1);
+    const json = await cotal([...argv, "--json"], root1);
+    mustHaveRun(text, `${command} with a relative path`);
+    mustHaveRun(json, `${command} with a relative path in JSON mode`);
+    const out = strip(text.out);
+    const reply = JSON.parse(json.stdout);
+    check(`${command} refuses a relative path before execution and names the manager-host requirement without echoing it`,
+      text.status === 2 && /Code:\s+LIFECYCLE_BLOCKED/.test(out) && nextOf(out) === absolutePathRemedy && !out.includes(relative) &&
+        json.status === 2 && reply.outcome === "refused" && reply.error?.code === "LIFECYCLE_BLOCKED" &&
+        reply.error?.cause?.code === "failed-precondition" && reply.error?.cause?.outcome === "not-executed" &&
+        reply.error?.remedy === absolutePathRemedy && !json.out.includes(relative),
+      { status: [text.status, json.status], out, reply });
+  }
+
   // The manager serves, so a contract read that runs out of `--timeout` after its describe was
   // answered is the flag's deadline, not a missing service. A budget that short can also end before
   // the describe is answered, which is cell 13's refusal, so the budget starts at 1ms and doubles

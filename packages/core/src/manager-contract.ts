@@ -3,6 +3,9 @@
  * Keeping one definition makes those suites validate the commands the manager actually serves.
  */
 
+/** The manager rejected a relative directory path before probing its filesystem. */
+export const MANAGER_ABSOLUTE_PATH_REQUIRED = "ai.cotal.manager.absolute-path-required";
+
 /** Optional spawn strings must be nonblank when present. Omission can inherit a value;
  *  a blank string must not silently select that value. A fresh object per field is needed because
  *  the canonical serializer refuses a shared reference as circular. */

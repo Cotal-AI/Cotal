@@ -1059,6 +1059,9 @@ The `resolve-cwd` launch read is limited by execution mode. A manager whose runt
 seats outside its host MUST refuse it with `failed-precondition` before any filesystem lookup.
 The refusal MUST be independent of the requested path's existence, type and symlink target,
 and MUST NOT return a host name or canonical path. Such a runtime cannot use a manager-host cwd.
+When execution mode permits host directory reads, `resolve-cwd` and `list-dir` MUST reject a
+relative path before filesystem lookup with `failed-precondition`, `outcome: not-executed` and
+`details[].kind = ai.cotal.manager.absolute-path-required`. This detail does not carry the path.
 
 The `list-dir` command is an untargeted ephemeral `manager.spawn` launch read. It MUST be
 minted alongside `resolve-cwd` in operator instruments and spawn-scoped instance-pinned
