@@ -516,6 +516,8 @@ record and the current census follow once the feed answers again, so a follow ou
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
 command with that credential gets, as [`history --follow`](#history) does. The delivery service
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
+On an open mesh, `channel show` explains that membership is unavailable and still suggests reading
+retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
