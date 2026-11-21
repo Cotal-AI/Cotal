@@ -198,21 +198,6 @@ console.log('LEGACY_READS=' + legacyReads);
         const connectors = cli("ext", "list");
         assert.equal(connectors.status, 1, connectors.stdout + connectors.stderr);
         assert.match(connectors.stderr, /connector retention selection.*unreadable.*cotal ext seed --repair/);
-        const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
-        await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
-        try {
-          const update = spawn(process.execPath, [entry, "update", "--self"], {
-            cwd: project, timeout: 30_000,
-            env: { ...env, npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
-          });
-          let output = "";
-          update.stdout.on("data", data => { output += data; });
-          update.stderr.on("data", data => { output += data; });
-          const code = await new Promise<number | null>((resolve, reject) => { update.once("error", reject); update.once("close", resolve); });
-          assert.equal(code, 0, output);
-          assert.match(output, /No newer CLI version\. No connector reconciliation was run\./);
-          assert.match(output, /Registry latest:/);
-        } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
         const down = cli("down", "--yes");
         assert.equal(down.status, 0, down.stdout + down.stderr);
         stackStarted = false;
@@ -224,7 +209,6 @@ console.log('LEGACY_READS=' + legacyReads);
           assert.match(down.stdout, /stopped nats-server/);
         }
         assert.equal(readFileSync(selection, "utf8"), unknown);
-        console.log("unknown connector selection: installed version, status, self-update and down remain available");
         // Leave one trusted pointer at a time. Repair must keep the existing connector graph.
         for (const record of [selection, current]) {
           writeFileSync(record, unknown, { mode: 0o600 });
@@ -243,6 +227,68 @@ console.log('LEGACY_READS=' + legacyReads);
           assert.doesNotMatch(after.stderr, /connector retention selection.*unreadable/);
         }
         console.log("connector selection repair: kept unreadable bytes and mode and restored clean status without replacing the graph");
+
+        const registry = createRegistry((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: version }, versions: { [version]: { name: "cotal-ai", version } } })));
+        await new Promise<void>(resolve => registry.listen(0, "127.0.0.1", resolve));
+        const selfUpdate = async () => {
+          const update = spawn(process.execPath, [entry, "update", "--self"], {
+            cwd: project, timeout: 30_000,
+            env: { ...env, npm_config_registry: `http://127.0.0.1:${(registry.address() as AddressInfo).port}` },
+          });
+          let output = "";
+          update.stdout.on("data", data => { output += data; });
+          update.stderr.on("data", data => { output += data; });
+          const code = await new Promise<number | null>((resolve, reject) => { update.once("error", reject); update.once("close", resolve); });
+          return { code, output };
+        };
+        try {
+          const damaged = "{\n";
+          const root = JSON.parse(saved.toString()).root;
+          const manifest = join(root, "extensions", "extensions.json");
+          const inventory = readFileSync(manifest);
+          writeFileSync(selection, unknown);
+          writeFileSync(current, JSON.stringify({ ...JSON.parse(savedCurrent.toString()), root: project }));
+          try {
+            const refused = await selfUpdate();
+            assert.equal(refused.code, 0, refused.output);
+            assert.match(refused.output, /connector retention selection.*unreadable.*cotal ext seed --repair/);
+            assert.match(refused.output, /invalid previous connector retention selection/);
+            assert.match(refused.output, /No newer CLI version\. No connector reconciliation was run\./);
+            assert.match(refused.output, /Registry latest:/);
+            assert.equal(readFileSync(selection, "utf8"), unknown);
+          } finally { writeFileSync(current, savedCurrent); }
+          console.log("unknown connector selection: installed version, status, self-update and down remain available");
+
+          writeFileSync(selection, damaged);
+          writeFileSync(manifest, damaged);
+          try {
+            const refused = await selfUpdate();
+            assert.equal(refused.code, 0, refused.output);
+            assert.match(refused.output, /connector retention selection.*unreadable.*cotal ext seed --repair/);
+            assert.match(refused.output, /corrupt extensions manifest/);
+            assert.match(refused.output, /No newer CLI version\. No connector reconciliation was run\./);
+            assert.match(refused.output, /Registry latest:/);
+          } finally { writeFileSync(manifest, inventory); }
+
+          writeFileSync(selection, damaged);
+          const repaired = await selfUpdate();
+          assert.equal(repaired.code, 0, repaired.output);
+          assert.match(repaired.output, /^No newer CLI version\.$/m);
+          const backup = /^Set aside unreadable connector selection: (.+)$/m.exec(repaired.output)?.[1];
+          assert.ok(backup, repaired.output);
+          const path = JSON.parse(backup) as string;
+          assert.ok(path.startsWith(`${selection}.corrupt.`), path);
+          assert.equal(readFileSync(path, "utf8"), damaged);
+          assert.equal(JSON.parse(readFileSync(selection, "utf8")).root, root);
+          const listed = cli("ext", "list");
+          assert.equal(listed.status, 0, listed.stdout + listed.stderr);
+          assert.match(listed.stdout, /@cotal-ai\/connector-jcode/);
+          const repeated = await selfUpdate();
+          assert.equal(repeated.code, 0, repeated.output);
+          assert.match(repeated.output, /Registry latest:/);
+          assert.doesNotMatch(repeated.output, /Set aside unreadable connector selection/);
+          console.log("current self-update: verifies the repaired connector selection and preserves the damaged record");
+        } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
       } finally {
         for (const [path, bytes] of [[selection, saved], [current, savedCurrent]] as const) {
           chmodSync(path, 0o600);
