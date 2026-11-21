@@ -1,5 +1,22 @@
 # @cotal-ai/runtime
 
+## 0.174.0
+
+### Patch Changes
+
+- 1fba601: `cotal run simulate` now refuses a results script whose `clock` has a field it does not know, such as `clock.checkpoints`. The misspelled field used to be ignored, so the simulation ran with the one-minute default instead of the delay the author wrote. The refusal is `SCHEMA_INVALID`, names the field and the file, and names the singular field when the typo is its plural.
+- 8fcd1b0: When `run revoke` rejects `--json` or `--plain`, it tells you to remove that flag from the original command so the supplied actor, reason, and target stay intact.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+- Updated dependencies [9cc5f7a]
+- Updated dependencies [f670fe9]
+- Updated dependencies [5faf2c8]
+- Updated dependencies [f3e469a]
+  - @cotal-ai/core@0.174.0
+  - @cotal-ai/workspace@0.174.0
+  - @cotal-ai/lang@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes
