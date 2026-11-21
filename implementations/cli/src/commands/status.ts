@@ -1644,7 +1644,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     const store = offline ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
-    if (preflight.kind === "unreachable" && (overridden || offline) && !(servedStack(folder, base) && folder.stackBlock)) {
+    if (preflight.kind === "unreachable" && (overridden || offline || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);
@@ -2288,13 +2288,13 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   }
   if (r.selected.resolved) {
     const s = r.selected;
+    const reachable = s.connection === "ok" || s.connection === "reachable";
     // Name what fixes the default persona alone; setup does far more than that.
     if (!noApplication) {
-      if (s.personas.default === "missing") items.push({ command: `${cmd} spawn`, description: "Open your default agent; creates the shipped default persona" });
-      else if (s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
-      else items.push({ command: `${cmd} spawn`, description: "Open your default agent" });
+      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
+      else if (reachable) items.push({ command: `${cmd} spawn`, description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
     }
-    items.push({ command: `${cmd} who`, description: "See the live roster" });
+    if (reachable) items.push({ command: `${cmd} who`, description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
       items.push({ command: `${cmd} ps`, description: "List managed agents" });
   }

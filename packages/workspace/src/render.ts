@@ -181,7 +181,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       if (t.origin === "manual" || t.origin === "catalog")
         return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, t.origin === "catalog"
           ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
-          : `start it where it runs, or \`cotal space forget ${t.space}\` to unregister it`);
+          : `start it where it runs, or ${codeSpan(`cotal space forget ${shellPath(t.space)}`)} to unregister it`);
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
