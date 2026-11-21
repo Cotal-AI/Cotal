@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
+import { chatStream, CotalEndpoint, createSpaceAccountAuth, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -57,10 +57,11 @@ mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
 process.env.COTAL_HOME = join(home, ".cotal");
 
 const auth = await createSpaceAuth(space);
+const mainAuth = { ...auth, ...await createSpaceAccountAuth(auth, DEFAULT_SPACE) };
 saveSpaceAuth(authDir(root), auth);
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth, mainAuth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, dir);
 const openPort = await freePort();
@@ -203,6 +204,18 @@ try {
   const brokerOnly = run(["send", "--channel=--audit", "registered broker with explicit creds", "--server", servers, "--creds", credsPath("audit_poster"), "--json"], empty);
   check("--server with --creds and no --space stores in the broker's registered space", brokerOnly.status === 0
     && brokerOnly.envelope?.target?.space === space && brokerOnly.envelope.result?.stored === true, shown(brokerOnly));
+  const mainCreds = await mintCreds(mainAuth, newIdentity(), "provisioner");
+  const mainRoot = join(dir, "main-project");
+  mkdirSync(mainRoot, { mode: 0o700 });
+  saveSpaceAuth(authDir(mainRoot), mainAuth);
+  await setupSpaceStreams({ servers, space: DEFAULT_SPACE, creds: mainCreds });
+  await seedChannelRegistry({ servers, space: DEFAULT_SPACE, creds: mainCreds, file: { channels: { general: {} } } });
+  recordMesh({ space: DEFAULT_SPACE, server: servers, root: mainRoot, mode: "auth", ts: new Date().toISOString() });
+  const mainMinted = run(["auth", "mint", "main_poster", "--space", DEFAULT_SPACE, "--allow-subscribe", "general", "--allow-publish", "general", "--no-persona", "--out", credsPath("main"), "--json"], mainRoot);
+  if (mainMinted.status !== 0) throw new Error(`auth mint main_poster failed: ${JSON.stringify(shown(mainMinted))}`);
+  const sharedBroker = run(["send", "-c", "general", "shared broker with explicit creds", "--server", servers, "--creds", credsPath("main"), "--json"], empty);
+  check("--server with --creds keeps main when two spaces share the broker", sharedBroker.status === 0
+    && sharedBroker.envelope?.target?.space === DEFAULT_SPACE && sharedBroker.envelope.result?.stored === true, shown(sharedBroker));
 
   // #7045: an open space that runs elsewhere gets its streams from its first participant, and a
   // one-shot send may be that participant. The space is not registered and its broker is open.

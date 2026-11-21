@@ -563,12 +563,7 @@ export function staticOperatorActor(): string {
 function credsBrokerEntry(server: string): MeshEntry | undefined {
   const key = brokerUrlKey(server);
   const matches = loadMeshes().filter((entry) => brokerUrlKey(entry.server) === key);
-  if (matches.length > 1) throw new MeshTargetError(
-    "ambiguous-target",
-    `${matches.length} spaces are recorded at ${server} (${matches.map((entry) => entry.space).join(", ")}) - name one with --space`,
-    { server, available: matches.map((entry) => `${entry.space} (${entry.root})`) },
-  );
-  return matches[0];
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
