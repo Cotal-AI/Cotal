@@ -304,7 +304,10 @@ names the command that writes one: `cotal up` in the root of a space this machin
 `cotal persona create default --file <persona.md>` for any other space. The file must name the
 persona `default`. Add `--space <name>` if the target space is not selected. If you use `--prompt`
 or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe ""` for no channels).
-`--dry-run` refuses a missing persona with the same text, as `TARGET_NOT_FOUND` (exit 2).
+For an ordinary launch in this terminal, a missing catalog default is written from the shipped
+template when the persona is omitted or named as `default`. The preview uses that template and
+reports the planned write without creating the file. A direct preview refuses other missing
+personas with `TARGET_NOT_FOUND` (exit 2).
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
 to create there, and the Next gives the spawn again with `--on` for each of your other live managers

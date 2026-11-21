@@ -25,6 +25,12 @@ export function callerHarness(space: string): string | undefined {
  *  `--on`. Any other spawn runs the application in this terminal, on every kind of mesh. */
 export const spawnUsesManager = (values: { detach?: boolean; on?: string }): boolean => values.detach === true || values.on !== undefined;
 
+/** Only a static mesh's seat carries an issuance whose expiry the caller sets. */
+export function checkSpawnExpiryTarget(values: { "expires-in"?: string; "expires-at"?: string }, target: Pick<MeshTarget, "space" | "mode" | "auth">): void {
+  if ((values["expires-in"] !== undefined || values["expires-at"] !== undefined) && (target.mode === "user" || !target.auth))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of a seat's issued credential on a static mesh, and mesh "${target.space}" is ${target.mode === "user" ? "a user-auth mesh, where the seat's bearer comes from your login" : "open and mints no credential"}`, { remedy: "drop the flag" });
+}
+
 /** The refusal for a harness with no installed connector, naming the package when it is official. */
 export function missingConnector(name: string, target: object): CommandFailure {
   const pkg = OFFICIAL_CONNECTORS[name];

@@ -83,7 +83,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -503,6 +503,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", "the managed handoff's space is registered here as a local mesh, so it cannot host a managed handoff", c.red);
     process.exit(1);
   }
+  checkSpawnExpiryTarget(values, target);
   let policy: typeof target.policy;
   try {
     policy = await refreshRegistrationPolicy(target);
@@ -518,9 +519,6 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   const { space, server, auth } = target;
-  // Only a static mesh's seat carries an issuance whose expiry the person sets here.
-  if ((values["expires-in"] !== undefined || values["expires-at"] !== undefined) && (target.mode === "user" || !auth))
-    throw new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of a seat's issued credential on a static mesh, and mesh "${space}" is ${target.mode === "user" ? "a user-auth mesh, where the seat's bearer comes from your login" : "open and mints no credential"}`, { remedy: "drop the flag" });
 
   // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
@@ -529,8 +527,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const personaProject = resolvePath(target.personaRoot, "..", "..");
   const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : agentFilePath(personaProject, ref);
   // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
-  // written from the shipped template here and launched. A named or preferred persona is the
-  // user's own choice, so one that is missing is still refused.
+  // written from the shipped template here and launched. This also applies to positional `default`.
+  // A missing file, preference or other catalog name is still refused.
   const implicitDefault = ref === "default" && personaFrom === undefined && values.config === undefined && handoffText === undefined && redeemedEnrollment === undefined;
   let def: AgentDef;
   try {
