@@ -488,7 +488,8 @@ cotal input --name reviewer --text=--verbose          # dash-leading text: use -
 
 Enter is pressed by default, since a command typed but never submitted has not been delivered.
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
-send it later.
+send it later. If a manager selection refusal prints a retry command, it keeps `--no-enter` when
+you supplied it.
 
 At a Claude selection menu, including `AskUserQuestion`, text input is refused before any bytes
 are written. Pasting a number or an answer there can otherwise confirm the highlighted option

@@ -272,12 +272,14 @@ function onRemedyVerb(verb: string, v: { name?: unknown; space?: unknown; server
   return onRerun(verb, v, [String(v.name), ...rest]);
 }
 
-/** The text `input` was given, as the words that give it again: `--text` for a value that starts
- *  with a dash, which a positional cannot carry. */
-const inputText = (text: string): string[] => text.startsWith("-") ? ["--text", text] : [text];
+/** The words a terminal input retry needs to keep the original text and Enter behavior. */
+const inputRetryWords = (text: string, noEnter?: boolean): string[] => [
+  text.startsWith("-") ? `--text=${text}` : text,
+  ...(noEnter === true ? ["--no-enter"] : []),
+];
 
 /** Resolve a targeted verb's manager and retain the presence-selected seat for its fresh caller.
- *  `rest` is the positionals after the agent name that a remedy has to repeat. */
+ *  `rest` is the command words after the agent name that a remedy has to repeat. */
 async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string, rest: readonly string[] = [], options: { openMesh?: boolean; onRefusal?: "throw" } = {}): Promise<ManagerPin> {
   const named = onRemedyVerb(verb, v, rest);
   const on = await managerPin(v, named);
@@ -1049,7 +1051,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
   if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
-  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputText(text)));
+  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values["no-enter"])));
   return { name, text };
 }
 
@@ -1057,7 +1059,7 @@ export async function input(args: ParsedArgs): Promise<void> {
   const parsed = inputArguments(args);
   const v = { ...args.values, ...parsed } as FlagValues<typeof inputFlags> & { name: string; text: string };
   refuseControlCreds(v.creds, v.space);
-  const pin = await pinForTarget(v as never, "cotal input", inputText(v.text), { onRefusal: "throw" });
+  const pin = await pinForTarget(v as never, "cotal input", inputRetryWords(v.text, v["no-enter"]), { onRefusal: "throw" });
   const on = pin.instanceId;
   // A typed pin the registry does not list is refused at once, as stop refuses it.
   if (v.on !== undefined && on !== undefined) {

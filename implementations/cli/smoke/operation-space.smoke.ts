@@ -159,6 +159,7 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
+  [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
@@ -179,6 +180,8 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --on <instance>"],
+  [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
+  [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
   [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
 ] as const) {
