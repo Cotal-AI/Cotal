@@ -19,7 +19,7 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 const { check, finish } = createSuite();
 
 const shipped = managerShippedSurface();
-check("the Manager cluster advances to revision 52 for the prompts fact", shipped.revision === 52, shipped);
+check("the Manager contract keeps the prompts fact after the exclusion grant lists advance it to revision 53", shipped.revision === 53, shipped);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,
