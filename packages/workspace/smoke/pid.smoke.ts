@@ -346,7 +346,9 @@ try {
 // ── shipped doc comments state the contract rules without revision history ────────────────────
 const pidSrc = readFileSync(join(import.meta.dirname, "../src/pid.ts"), "utf8");
 const livenessSrc = readFileSync(join(import.meta.dirname, "../src/liveness.ts"), "utf8");
-const downSrc = readFileSync(join(import.meta.dirname, "../../../implementations/cli/src/commands/down.ts"), "utf8");
+const downFile = (rel: string): string => ["down", "down-preserve"]
+  .map((name) => readFileSync(join(import.meta.dirname, "../../../implementations/cli", rel.replace("down.", `${name}.`)), "utf8")).join("\n");
+const downSrc = downFile("src/commands/down.ts");
 const pidSurfaces: Array<[label: string, text: string]> = [
   ["src/pid.ts", pidSrc],
   ...(existsSync(join(import.meta.dirname, "../dist/pid.js")) ? [["dist/pid.js", readFileSync(join(import.meta.dirname, "../dist/pid.js"), "utf8")] as [string, string]] : []),
@@ -359,8 +361,8 @@ const livenessSurfaces: Array<[label: string, text: string]> = [
 ];
 const downSurfaces: Array<[label: string, text: string]> = [
   ["src/commands/down.ts", downSrc],
-  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js")) ? [["dist/commands/down.js", readFileSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js"), "utf8")] as [string, string]] : []),
-  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts")) ? [["dist/commands/down.d.ts", readFileSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts"), "utf8")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.js")) ? [["dist/commands/down.js", downFile("dist/commands/down.js")] as [string, string]] : []),
+  ...(existsSync(join(import.meta.dirname, "../../../implementations/cli/dist/commands/down.d.ts")) ? [["dist/commands/down.d.ts", downFile("dist/commands/down.d.ts")] as [string, string]] : []),
 ];
 for (const phrase of [
   "had drifted",
