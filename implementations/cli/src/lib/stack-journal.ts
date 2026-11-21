@@ -1046,5 +1046,19 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   }
   if (brokerStopped) return;
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);
-  if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) } });
+  if (!sharing.length) return;
+  const spaces = sharing.map((mesh) => mesh.space);
+  const cmd = displayCmd();
+  const commands = (sub: "show" | "forget", names: string[]) => names.map((space) =>
+    codeSpan(`${cmd} space ${sub} ${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`)).join(", ");
+  const local = sharing.filter((mesh) => mesh.origin !== "catalog").map((mesh) => mesh.space);
+  throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${spaces.length === 1 ? "another registration names" : "other registrations name"} this stack's exact broker address (${spaces.map((space) => JSON.stringify(space)).join(", ")}). The broker was not stopped`, {
+    target: { server: journal.server, spaces },
+    remedy: [
+      `inspect with ${commands("show", spaces)}.`,
+      ...(local.length ? [`Only forget registrations that are no longer needed and whose spaces are not using the broker: ${commands("forget", local)}.`] : []),
+      ...(local.length < spaces.length ? [`For any stale catalog registration, ask its catalog owner to remove it, then run ${codeSpan(`${cmd} sync`)}.`] : []),
+      `Once the address is no longer shared, retry ${next}`,
+    ].join(" "),
+  });
 }
