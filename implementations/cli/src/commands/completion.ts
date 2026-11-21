@@ -175,7 +175,7 @@ export async function completion(args: ParsedArgs): Promise<void> {
   if (!paths) throw new CommandFailure("refused", "UNSUPPORTED", "owned PowerShell profile installation is unavailable on this host or the shell is not installed; no profile path was guessed", { remedy: `review your profile manually; the supported loading command is: ${codeSpan(LOAD_NOW.powershell)}` });
   if (sh === "zsh" && process.env.ZDOTDIR && !isAbsolute(process.env.ZDOTDIR)) throw new CommandFailure("refused", "USAGE_INVALID", "relative ZDOTDIR makes the startup target depend on the shell's working directory", { remedy: "use an absolute ZDOTDIR or manage the printed script manually" });
   const operation = sub as "install" | "uninstall";
-  const result = changeCompletion(operation, sh, paths, SCRIPTS[sh]!, Boolean(values.force));
+  const result = await changeCompletion(operation, sh, paths, SCRIPTS[sh]!, Boolean(values.force));
   writeResult(presentation, { command: `completion ${operation}`, target: { shell: sh }, noOp: result.noOp, result }, (data): Report => ({ sections: [
     { title: data.noOp ? "Shell completion unchanged" : operation === "install" ? "Shell completion installed" : "Shell completion removed", blocks: [
       { kind: "fields", rows: [["Shell", data.shell], ["Script", data.stub], ["Startup", data.startup ?? "fish completion directory"], ["Changed files", String(data.changed.length)]] },

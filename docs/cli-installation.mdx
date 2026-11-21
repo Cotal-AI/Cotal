@@ -1145,8 +1145,10 @@ A stub from an earlier release without an ownership record needs manual review; 
 generated text alone is not treated as ownership. `install` refuses it, even with `--force`.
 `uninstall` refuses it, exit 2, names it, and says to delete the startup lines that source it and
 then delete or move the stub yourself. Bare `completion` offers neither command for it.
-An unowned startup reference to a managed stub must be reviewed
-before removing the stub. These commands cannot unload functions in a parent shell.
+An unowned startup reference to a managed stub must be reviewed before removing the stub.
+`uninstall bash` ignores standalone Bash comments that name the stub and leaves them in `.bashrc`.
+If it cannot verify that those mentions are comments, it refuses without changing the files.
+These commands cannot unload functions in a parent shell.
 
 Cotal writers use a per-shell lock and recheck file identity and bytes before changing them.
 An unconfirmed filesystem mutation is reported as unknown and is not retried. A confirmed change

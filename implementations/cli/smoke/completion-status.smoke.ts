@@ -705,10 +705,54 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   s.run(["completion", "install", "bash"]);
   const again = s.run(["completion", "install", "bash", "--plain"]);
   check("a repeated install says nothing needed changing, not that material was changed", again.status === 0 && /Nothing needed changing/.test(again.stdout) && !/material was changed/.test(again.stdout), shown(again));
-  writeFileSync(rc, readFileSync(rc, "utf8") + `source '${stub}'\n`);
+  const record = `${stub}.ownership.json`;
+  const original = readFileSync(rc, "utf8") + `# Completion script: ${stub}\nsource '${stub}'\n`;
+  const stubBytes = readFileSync(stub), recordBytes = readFileSync(record);
+  writeFileSync(rc, original);
   const blocked = s.run(["completion", "uninstall", "bash"]);
-  check("uninstall refuses a hand-added line that sources the stub, naming the file, the line and what to do",
-    blocked.status === 2 && blocked.stderr.includes(`${rc} still names this stub outside the cotal block, in "source '${stub}'"`) && blocked.stderr.includes(`remove that line from ${rc} yourself`) && existsSync(stub), shown(blocked));
+  check("uninstall names the unowned source line rather than the comment and leaves all three files unchanged",
+    blocked.status === 2 && blocked.stderr.includes(`${rc} still names this stub outside the cotal block, in "source '${stub}'"`) && blocked.stderr.includes(`remove that line from ${rc} yourself`) && readFileSync(rc, "utf8") === original && readFileSync(stub).equals(stubBytes) && readFileSync(record).equals(recordBytes), shown(blocked));
+}
+
+for (const managedBlockPresent of [true, false]) {
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash");
+  const marker = join(s.home, "startup-ran");
+  const installed = s.run(["completion", "install", "bash", "--plain"]);
+  const notes = `# Completion script: ${stub}\nif true; then\n\t# répertoire : ${stub}\r\n  touch '${marker}'\nfi\n# ${stub}`;
+  writeFileSync(rc, (managedBlockPresent ? readFileSync(rc, "utf8") : "") + notes);
+  const removed = s.run(["completion", "uninstall", "bash", "--plain"]);
+  check(`uninstall preserves Bash comments verbatim without running .bashrc when the managed block is ${managedBlockPresent ? "present" : "already removed"}`,
+    installed.status === 0 && removed.status === 0 && !existsSync(stub) && !existsSync(`${stub}.ownership.json`) && !existsSync(marker) && readFileSync(rc, "utf8") === notes, { install: shown(installed), uninstall: shown(removed) });
+}
+
+{
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash");
+  const original = `\uFEFF:\n# Completion script: ${stub}\n`;
+  s.run(["completion", "install", "bash"]);
+  writeFileSync(rc, original + readFileSync(rc, "utf8"));
+  const removed = s.run(["completion", "uninstall", "bash"]);
+  check("uninstall preserves the UTF-8 BOM before other Bash startup content", removed.status === 0 && readFileSync(rc, "utf8") === original, shown(removed));
+}
+
+for (const context of ["quoted word", "here-document", "continued word", "invalid syntax"] as const) {
+  const s = sandbox();
+  const rc = join(s.home, ".bashrc"), stub = join(s.xdg, "cotal", "completion.bash"), record = `${stub}.ownership.json`;
+  s.run(["completion", "install", "bash"]);
+  const mention = `# directory: ${stub}`;
+  const custom = {
+    "quoted word": `value='\n${mention}\n'\n`,
+    "here-document": `cat <<'EOF'\n${mention}\nEOF\n`,
+    "continued word": `echo prefix\\\n${mention}\n`,
+    "invalid syntax": `if true; then\n${mention}\n`,
+  }[context];
+  const original = readFileSync(rc, "utf8") + custom;
+  const stubBytes = readFileSync(stub), recordBytes = readFileSync(record);
+  writeFileSync(rc, original);
+  const removed = s.run(["completion", "uninstall", "bash", "--force", "--json"]);
+  check(`uninstall --force protects comment-like text in Bash ${context}`,
+    removed.status === 2 && codeOf(removed.stdout) === "LIFECYCLE_BLOCKED" && readFileSync(rc, "utf8") === original && readFileSync(stub).equals(stubBytes) && readFileSync(record).equals(recordBytes), shown(removed));
 }
 
 // ── A startup file install created goes with the integration ───────────────────────────────────────

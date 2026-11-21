@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
 import { LOAD_NOW, SCRIPTS } from "./completion-scripts.js";
+import { completionStartupReference } from "./completion-startup-reference.js";
 import { CommandFailure, codeSpan, localWriterGap } from "@cotal-ai/workspace";
 
 interface Snapshot { bytes: Buffer; hash: string; dev: number; ino: number; mode: number; gid: number }
@@ -191,9 +192,9 @@ function remove(path: string, expected: Snapshot): void {
   try { unlinkSync(path); }
   catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "shell-file removal was submitted but its outcome is unconfirmed; no removal was retried", { target: { path } }); }
 }
-function text(snapshot: Snapshot | undefined): string | undefined {
+function text(snapshot: Snapshot | undefined, keepBom = false): string | undefined {
   if (!snapshot) return undefined;
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(snapshot.bytes); }
+  try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: keepBom }).decode(snapshot.bytes); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the shell integration file is not UTF-8; its contents were not rewritten or printed"); }
 }
 function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?: Snapshot } {
@@ -232,7 +233,7 @@ export function readCompletionText(path: string): string | undefined {
 /** Hold one writer lock and change only the recorded stub and unchanged owned startup block. With
  *  `force`, a modified recorded stub and the complete marked blocks are rewritten or removed too, and
  *  startup content outside the markers is still kept. */
-export function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string, force = false) {
+export async function changeCompletion(operation: "install" | "uninstall", shell: string, paths: Paths, script: string, force = false) {
   supported();
   // Every unsafe file or folder this change reads or writes is named in one refusal before anything is
   // created. A linked startup file is left to its own refusal below, which names the line to add.
@@ -268,7 +269,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
   const changed: string[] = [];
   try {
     const owned = ownership(paths, shell), stub = read(paths.stub), startup = paths.rc ? read(paths.rc) : undefined;
-    const current = text(startup) ?? "";
+    const current = text(startup, shell === "bash") ?? "";
     let record = owned.record;
     if (!record && operation === "uninstall") {
       // Install refuses the same stub, so the way out is by hand.
@@ -294,7 +295,8 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     const created = record.wiring?.created === true || (paths.rc !== undefined && startup === undefined);
     if (record.wiring) {
       const count = current.split(record.wiring.block).length - 1;
-      if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion"))) {
+      const checkStubBeforeUnwiring = operation !== "uninstall" || shell !== "bash";
+      if (count > 1 || count === 0 && (current.includes(BEGIN) || current.includes("# cotal shell completion") || checkStubBeforeUnwiring && current.includes(paths.stub))) {
         // Only complete marked blocks can be rewritten; without one, the owner has to say which lines are cotal's.
         const marked = current.match(MARKED)?.length ?? 0;
         if (!force || !marked) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten", { target: { shell, path: paths.rc }, remedy: marked
@@ -313,16 +315,19 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     // A startup file its owner made read-only is never replaced. Asked once its next content is known.
     const readOnly = () => paths.rc !== undefined && nextStartup !== current && startup !== undefined && (startup.mode & 0o200) === 0;
     if (operation === "uninstall") {
-      if (paths.rc && nextStartup.includes(paths.stub)) {
-        const line = nextStartup.split("\n").find((text) => text.includes(paths.stub))!.trim();
+      const line = paths.rc ? await completionStartupReference(nextStartup, paths.stub, shell, paths.rc) : undefined;
+      if (line !== undefined) {
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       }
       if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
-      if (paths.rc && nextStartup !== current) {
-        // A startup file install created, with nothing else in it now, goes rather than staying empty.
-        if (created && nextStartup === "" && startup) remove(paths.rc, startup);
-        else write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644);
-        changed.push(paths.rc);
+      if (paths.rc) {
+        if (nextStartup === current) same(paths.rc, startup);
+        else {
+          // A startup file install created, with nothing else in it now, goes rather than staying empty.
+          if (created && nextStartup === "" && startup) remove(paths.rc, startup);
+          else write(paths.rc, startup, nextStartup, startup?.mode ?? 0o644);
+          changed.push(paths.rc);
+        }
       }
       if (stub) { remove(paths.stub, stub); changed.push(paths.stub); }
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }

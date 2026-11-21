@@ -649,6 +649,9 @@ importers:
       react:
         specifier: ^19.0.0
         version: 19.2.7
+      sh-syntax:
+        specifier: 0.8.7
+        version: 0.8.7
       ws:
         specifier: ^8.21.0
         version: 8.21.0
@@ -5850,6 +5853,10 @@ packages:
 
   setprototypeof@1.2.0:
     resolution: {integrity: sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==}
+
+  sh-syntax@0.8.7:
+    resolution: {integrity: sha512-zaJUdXFCbDFgtREm3KiqvX3dBlngGY0tumPzHvC5RqX67UuaBLIIZqb16MCbYLGyk5rPYrM+5FlghF+w6WdVUw==}
+    engines: {node: '>=18.0.0'}
 
   shadcn@4.23.0:
     resolution: {integrity: sha512-lKgq7QPFgkV/6EOrMCwvEn7ZAw/YnM/grhxzJmK4cZdw3E4F3Ut2EmWvrn2E+vzJp1y/76mxU185OSkXo9Ff+Q==}
@@ -11363,6 +11370,8 @@ snapshots:
   set-cookie-parser@3.1.1: {}
 
   setprototypeof@1.2.0: {}
+
+  sh-syntax@0.8.7: {}
 
   shadcn@4.23.0:
     dependencies:
