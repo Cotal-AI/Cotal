@@ -1927,11 +1927,21 @@ if (process.platform === "linux") {
   // must clear it (#7335): the refusal names that forget, and the forget removes the file.
   mkdirSync(meshesDir(), { recursive: true, mode: 0o700 });
   const registration = join(meshesDir(), `${spaceSegment("pold")}.json`);
-  writeFileSync(registration, '{"space":"pold",');
+  const corrupt = '{"space":"pold",';
+  writeFileSync(registration, corrupt);
   const blocked = await json(["space"], folder);
   check("space with a damaged registration record refuses SCHEMA_INVALID, exit 1, naming the forget that removes it",
     refused(blocked, 1, "SCHEMA_INVALID") && blocked.env?.target?.file === registration &&
       blocked.env.error?.remedy === "restore the record from backup, or remove it with `cotal space forget pold`", shown(blocked));
+  const preview = await run(["space", "delete", "pold", "--dry-run", "--plain"], {}, folder);
+  check("delete preview names the damaged registration and its recovery without contacting a broker",
+    preview.status === 2 && preview.stderr.includes("TARGET_UNAVAILABLE") && preview.stderr.includes(registration) &&
+      preview.stderr.includes("no broker was contacted") && preview.stderr.includes(blocked.env?.error?.remedy ?? "missing remedy"), shown(preview));
+  const applied = await json(["space", "delete", "pold", "--yes"], folder);
+  check("confirmed delete reports the same registry refusal and keeps the damaged record",
+    refused(applied, 2, "TARGET_UNAVAILABLE") && applied.env?.target?.space === "pold" &&
+      applied.env.error?.message === `${blocked.env?.error?.message}; no broker was contacted for this read` &&
+      applied.env.error?.remedy === blocked.env?.error?.remedy && readFileSync(registration, "utf8") === corrupt, shown(applied));
   const forgetRegistration = await json(["space", "forget", "pold"], folder);
   check("space forget pold removes its damaged registration record, with no broker, root or origin",
     forgetRegistration.status === 0 && forgetRegistration.env?.result?.kind === "space-forgotten" && forgetRegistration.env.result.server === null &&
