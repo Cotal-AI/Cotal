@@ -427,7 +427,9 @@ This inspects the current root's local credential claims and recorded renewal st
 prove current broker authorization, daemon adoption, connected agents or task progress. The shared
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
 rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
-spaces, `--space` names one; it defaults to the sole space. Without `--space`, a root with several
+spaces, `--space` names one; it defaults to the sole space. An invalid `--space` value such as `.`
+refuses with `USAGE_INVALID` (exit 1) before reading local signing trust. Run `cotal space` to
+find the registered name. Without `--space`, a root with several
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. This includes multiple open spaces
 registered at the same root. With or without `--fix`, stay in that folder and pass `--space` with
 one of the listed names. In a folder whose root holds no space,
