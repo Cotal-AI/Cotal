@@ -219,6 +219,14 @@ for (const args of [["space", "create", "--help"], ["history", "general", "--hel
 const createHelp = run(["space", "create", "--help"]);
 check("space create help documents adopt in usage and options", createHelp.status === 0 && /Usage\n[^\n]*\[--adopt\]/.test(createHelp.stdout) && /--adopt\s+create: take over the stack journal a copied or moved project folder holds/.test(createHelp.stdout), shown(createHelp));
 
+const modelsHelp = run(["models", "--help"]);
+const modelsHelpText = modelsHelp.stdout.replace(/\s+/g, " ");
+check("models help explains the registration requirement without offering --creds",
+  modelsHelp.status === 0 && modelsHelpText.includes("Authenticated meshes must be registered.")
+  && modelsHelpText.includes("Raw credential files are not accepted.")
+  && /--space <s>/.test(modelsHelp.stdout) && /--server <url>/.test(modelsHelp.stdout)
+  && !/--creds/.test(modelsHelp.stdout), shown(modelsHelp));
+
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [
   [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
