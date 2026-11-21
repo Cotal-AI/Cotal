@@ -1,12 +1,13 @@
 import { Kvm } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
-  DEV_OWNER, dialerFor, epAuthBucket, mintCreds, mintLifecycleUid, newIdentity,
+  DEV_OWNER, dialerFor, epAuthBucket, isAuthRejection, mintCreds, mintLifecycleUid, newIdentity,
   recordsBucket, standaloneConnectOpts, type EpCaller,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, authDir, canonicalRoot, findCotalRoot, getSoleSpaceAuth, getSpaceAuth,
-  hasUserAuthState, isCommandFailure, workspaceSecretStore,
+  CommandFailure, authDir, brokerUrlKey, canonicalRoot, codeSpan, findCotalRoot, findMesh,
+  getSoleSpaceAuth, getSpaceAuth, hasUserAuthState, isCommandFailure, preflightTarget,
+  shellPath, targetFromEntry, workspaceErrorParts, workspaceSecretStore,
   type EndpointDeregisterAction, type EndpointDeregisterRequest, type EndpointDeregisterResult, type OutputWarning,
 } from "@cotal-ai/workspace";
 import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "@cotal-ai/core";
@@ -54,7 +55,24 @@ async function deregister(request: EndpointDeregisterRequest): Promise<EndpointD
     else if (error instanceof InstanceDeregisterRefused) {
       if (error.condition === "superseded") failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "the registration moved during guarded deletion; its spec was not removed, but an older status may already have been removed", { target: { ...target, condition: error.condition }, remedy: "re-observe the same registration and gate; no delete was retried" });
       else failure = new CommandFailure("refused", error.condition === "not-registered" ? "TARGET_NOT_FOUND" : error.condition === "liveness-unestablishable" ? "TARGET_UNAVAILABLE" : "LIFECYCLE_BLOCKED", `the native deregistration guard refused: ${error.condition}; no record was removed`, { target: { ...target, condition: error.condition }, remedy: "a quiet or unreachable instance is not a broker-affirmed empty instance rail; inspect the exact target before trying again" });
-    } else failure = new CommandFailure(enteredGuard ? "unknown" : "refused", enteredGuard ? "OPERATION_UNKNOWN" : "TARGET_UNAVAILABLE", enteredGuard ? "the native guarded deletion did not return a confirmed result; no delete was retried" : "the selected native probe/executor connections could not be prepared; no record deletion was attempted", { target, remedy: "inspect this full instance and its registration, never replace it with a prefix or another account" });
+    } else if (enteredGuard) failure = new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native guarded deletion did not return a confirmed result; no delete was retried", { target, remedy: "inspect this full instance and its registration, never replace it with a prefix or another account" });
+    else {
+      failure = new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected native probe/executor connections could not be prepared; no record deletion was attempted", { target, remedy: "inspect this full instance and its registration, never replace it with a prefix or another account" });
+      // Refusing a credential proves a broker answered. Only diagnose a stopped broker for the
+      // same local registration, never for a different address passed with --server.
+      if (!execNc && !isAuthRejection(error)) try {
+        const entry = findMesh(space);
+        if (entry?.origin === "up" && entry.mode === "auth" && canonicalRoot(entry.root) === canonicalRoot(root) && brokerUrlKey(entry.server) === brokerUrlKey(request.server)) {
+          const mesh = targetFromEntry(entry, request.server, "flag-space", true);
+          const preflight = await preflightTarget({ ...mesh, tlsRequired: request.tlsRequired });
+          if (!preflight.ok && (preflight.kind === "unreachable" || preflight.kind === "broker-stopped")) {
+            const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: preflight.kind, target: mesh, pruned: false, pid: preflight.pid });
+            const recovery = restartRoot === undefined ? remedy : `change to the project with ${codeSpan(`cd ${shellPath(restartRoot)}`)} and run \`cotal up\` to restart`;
+            if (recovery) failure = new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; no record deletion was attempted`, { target, remedy: `${recovery}, then recheck this exact registration` });
+          }
+        }
+      } catch { /* A failed diagnostic does not change the original refusal. */ }
+    }
   } finally {
     for (const nc of [execNc, probeNc]) {
       try { if (nc) await nc.close(); }

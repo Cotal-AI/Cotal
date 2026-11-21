@@ -409,9 +409,13 @@ issuing an operation credential or deleting anything. It does not prove apply wi
 
 Apply delegates to the existing native guard. An answering instance refuses. An unanswered
 instance also refuses unless the broker affirmatively reports that instance rail empty.
-An unavailable probe or an in-flight registration refuses. After that evidence, the native
-helper checks governance and deletes status before spec, pinning both revisions. The issuance
-gate is not changed and no process is stopped; the same instance may register on a later start.
+An unavailable probe or an in-flight registration refuses. Once the broker affirms the instance
+rail is empty, the native helper checks governance and deletes status before spec, pinning both
+revisions. The issuance gate is not changed and no process is stopped. The same instance may
+register on a later start.
+
+If the recorded local static-auth broker is down, no deletion is attempted. The refusal names
+the project folder where `cotal up` restarts the broker so you can recheck the same full instance ID.
 
 The JSON/plain receipt retains the full coordinate and acknowledged removed revisions.
 A registration that moves during deletion is not success: its spec was not removed, but an
