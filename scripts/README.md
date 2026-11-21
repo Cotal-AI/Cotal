@@ -101,6 +101,24 @@ limit, or no longer tracked, prints that its row can go. After a reviewed split 
 `pnpm check:file-size:update` and commit the new counts. Regeneration also records any new file
 over the limit, so review its diff. Stage new source files before checking.
 
+## Function length check
+
+`pnpm check:function-length` holds every function in shipped source to 150 lines. CI runs it as
+the `smoke:function-length` fragment, and `pnpm check` runs it too. It parses the files the file
+size check counts and measures each function, method, accessor and arrow function from its first
+token to its closing token, so a doc comment above a function does not count. A nested function is
+measured on its own as well as inside the function that holds it. It then runs fixture controls
+against an unchanged copy of the checker.
+
+`scripts/function-length-allowlist.json` records each file that holds a function over the limit,
+with the lengths of those functions, longest first, one file per line. A function over 150 lines
+in an unlisted file fails. A listed file fails when it has more long functions than its row lists,
+or when one of them, taken longest first, is longer than the row's entry at that position. A
+listed file whose functions shrink passes and prints its new lengths; one with no long function
+left, or no longer tracked, prints that its row can go. After a reviewed split, run
+`pnpm check:function-length:update` and commit the new lengths. Regeneration also records any new
+function over the limit, so review its diff. Stage new source files before checking.
+
 ## Upgrade-section gate
 
 `pnpm upgrade-section-gate --base <ref>` checks `<ref>..HEAD`, and `--range <a>..<b>` checks any
