@@ -969,14 +969,15 @@ cotal topology view -f cotal.yaml   # validate + view the access graph, change n
 up; the manager then launches the agents one at a time, and `up -f` does not wait for them to join.
 Its launch line says so and names `cotal ps --space <space>`, which lists the agents that run, and
 the manager's log, where a failed launch is recorded with its reason. When the manifest's space is already
-running from the same folder, it exits 1 and names `cotal team deploy <file>`, which adds all-new
-channels and agents, and `cotal down` before another `up -f`. On a root that holds a stack preserved by
+running from the same folder, it exits 1 and names `cotal down` before retrying the original command.
+On a root that holds a stack preserved by
 `down --preserve-state`, it refuses `LIFECYCLE_BLOCKED` (exit 2) and starts nothing; bare
 `cotal up` resumes that stack. On a root whose records hold a controller stack, running or stopped,
 `up -f` and its dry run refuse `CONFLICT` (exit 2) and start nothing. The refusal names
-`cotal team deploy <file>` for the running stack, and `cotal down --yes`, then
-`cotal team boot <file>`. The refusal quotes the manifest path in both team commands when needed,
-so a filename with spaces stays one argument when you paste either command. `team deploy` requires a registered,
+`cotal service --space <space>` to inspect the recorded stack and `cotal up` with its recorded root
+and space to start it. The `cotal team boot <file> --dry-run` command previews the manifest and
+quotes its path when needed. Use a separate prepared project and space to boot it independently.
+`team deploy` requires a registered,
 running mesh and applies additively: all-new live channel-only manifests, or bounded all-new agent
 and mixed manifests on static-auth or open meshes through one native manager. It does not launch
 user-auth agents. `team remove` retires a returned deployment by its full ID within the limits in
