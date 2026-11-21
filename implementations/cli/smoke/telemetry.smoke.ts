@@ -16,6 +16,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
+import { CommandFailure } from "@cotal-ai/workspace";
+import { telemetryErrorText } from "../src/telemetry.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -141,6 +143,16 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
+}
+
+// Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.
+{
+  const message = "sample seat exited on launch: ordinary terminal output";
+  const failure = new CommandFailure("failed", "OPERATION_FAILED", message, { native: { code: "failed" } });
+  const text = telemetryErrorText("spawn", failure);
+  check("native spawn messages and stacks stay local", text.message === null && text.stack === null && failure.message === message);
+  const usage = telemetryErrorText("spawn", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
+  check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
 }
 
 // ---- minimal ----
