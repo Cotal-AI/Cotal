@@ -50,6 +50,8 @@ import {
 } from "@cotal-ai/workspace";
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
+import { continueAfterGlobalUpdateChild } from "../lib/update-child-retry.js";
+import { reportVersion } from "../lib/update-report.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
@@ -330,7 +332,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   }
   if (continuation) {
     const result = rt.spawn(rt.nodePath, [continuation, "update", ...args.raw], rt.env, true);
-    if (result.error) throw new Error(`cannot continue the update through the restored installation: ${result.error}`);
+    if (result.error) throw new Error(`cannot continue the update through the verified installation: ${result.error}`);
     if (result.status !== 0) process.exitCode = result.status ?? 1;
     // The installed command owns any remaining activation and its exit result.
     rt.generationWaited = true;
@@ -383,6 +385,10 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
   if (restored) {
     if (args.values.self !== true) return;
     if (restored.version !== rt.version()) return restored.entry;
+  }
+  if (args.values.self === true && childBinding(rt).kind === "none") {
+    const entry = continueAfterGlobalUpdateChild(rt);
+    if (entry) return entry;
   }
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
@@ -1816,14 +1822,6 @@ function targetArgv(target: Record<string, unknown>): string[] {
     if (typeof value === "string") argv.push(`--${name}`, value);
   }
   return argv;
-}
-
-function reportVersion(current: string, latest: string, rt: UpdateRuntime, reconciled: boolean): void {
-  const available = compareSemver(latest, current) > 0;
-  rt.out(renderReport({ sections: [
-    { title: "CLI version", blocks: [{ kind: "fields", rows: [["This process", current], ["Registry latest", latest], ["Update", available ? { text: "available", tone: "waiting" } : "no newer latest tag"]] }, { kind: "lines", lines: [{ text: "Running processes keep the generation they loaded. This version report does not prove every live service was upgraded.", tone: "hint" }] }] },
-    ...(reconciled ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: available ? "cotal update --self" : "cotal status", description: !available ? "Inspect the machine and selected space" : rt.checkout() ? "Install the validated CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the validated CLI and reconcile its matching extensions" }] }] }] : []),
-  ] }, "rich", process.stdout));
 }
 
 function childBinding(rt: UpdateRuntime):
