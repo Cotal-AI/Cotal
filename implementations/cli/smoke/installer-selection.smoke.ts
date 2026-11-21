@@ -131,6 +131,13 @@ try {
   const pathNode = join(npmHome, "project-bin", "node");
   mkdirSync(dirname(pathNode));
   const projectEnv = { ...npmEnv, PATH: dirname(pathNode), FIXTURE_NODE: process.execPath, NODE_EXEC_MARKER: join(npmHome, "path-node-executed") };
+  symlinkSync(process.execPath, pathNode);
+  const sameNode = spawnSync("/bin/sh", ["-x", npmLauncher, "--version"], { env: projectEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(sameNode.status, 0, output(sameNode));
+  assert.equal(sameNode.stdout.trim(), "cotal-ai 0.0.0");
+  assert.match(sameNode.stderr, /^\++ exec node .* --version$/m, "the trace includes the CLI launch");
+  assert.doesNotMatch(sameNode.stderr, /^\++ (?:.*\/)?node --version$/m, "the recorded Node on PATH needs no version probe");
+  rmSync(pathNode);
   for (const version of ["22.9.0", "22.10.0"]) {
     writeFileSync(pathNode, `#!/bin/sh
 if [ "$1" = --version ]; then

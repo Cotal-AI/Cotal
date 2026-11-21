@@ -49,8 +49,8 @@ node_supported() {
     { [ "\${major#v}" -eq ${minMajor} ] && [ "$minor" -ge ${minMinor} ]; } 2>/dev/null
 }
 
-if command -v node >/dev/null 2>&1 && {
-  [ ! -x ${quote(node)} ] || node_supported node || ! node_supported ${quote(node)}
+if path_node=$(command -v node) && {
+  [ "$path_node" -ef ${quote(node)} ] || [ ! -x ${quote(node)} ] || node_supported node || ! node_supported ${quote(node)}
 }; then
   node=node
 elif [ -x ${quote(node)} ]; then
