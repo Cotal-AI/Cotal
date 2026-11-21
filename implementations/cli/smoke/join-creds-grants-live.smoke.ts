@@ -101,12 +101,14 @@ try {
   const other = await mint("other_channel", "--allow-subscribe", "review.>");
   await refused("other-channel", other.file, other.uid, /does not grant read access to #general[\s\S]*--allow-subscribe general/);
 
-  async function joins(name: string, file: string, uid: string, channel: string, ...flags: string[]) {
-    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel, ...flags);
+  async function checkJoin(name: string, run: ReturnType<typeof cli>) {
     await until(() => run.output().includes("holding presence") || run.proc.exitCode !== null);
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);
     await run.exited;
+  }
+  function joins(name: string, file: string, uid: string, channel: string) {
+    return checkJoin(name, cli("join", "--name", name, "--space", space, "--creds", file, "--lifecycle-uid", uid, "--channel", channel));
   }
 
   async function checkMalformedCredentialRecovery(uid: string) {
@@ -130,7 +132,15 @@ try {
     check("the printed replacement command provisions a credential for the linked channel", await minted.exited === 0, minted.output());
     const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(minted.output())?.[1];
     assert.ok(replacementUid && replacementUid !== uid, "replacement mint did not report a new lifecycle UID");
-    await joins("parse-repair", replacement, replacementUid, "review.>", "--server", broker.servers);
+    assert.ok(rejected.output().includes("Retry without `--link` or `--token`."), rejected.output());
+    const retry = /`cotal join ([^`]+)`/.exec(rejected.output())?.[1];
+    assert.equal(retry, `--space ${space} --server ${broker.servers} --channel 'review.>' --creds <file> --lifecycle-uid <uid>`, rejected.output());
+    const retryArgs = retry.split(" ").map((word) => {
+      if (word === "<file>") return replacement;
+      if (word === "<uid>") return replacementUid;
+      return word.replace(/^'(.*)'$/, "$1");
+    });
+    await checkJoin("printed retry", cli("join", ...retryArgs));
 
     const override = joinWithFile(truncated, "--channel=--channel-placeholder");
     check("an explicit channel overrides the link and a leading dash is not parsed as a flag", await override.exited === 1 &&
@@ -144,9 +154,11 @@ try {
     const override = joinWithFile(truncated, "--server", broker.servers, "--link", conflicting);
     check("an explicit broker wins over the link for replacement provisioning", await override.exited === 1 &&
       override.output().includes(`--server ${broker.servers}`) && !override.output().includes("127.0.0.1:1 "), override.output());
-    const tlsLink = joinWithFile(truncated, "--link", broker.servers.replace(/^nats:/, "cotals:") + `/${space}`);
-    check("replacement advice retains the TLS requirement from a secure join link", await tlsLink.exited === 1 &&
-      tlsLink.output().includes(`--server ${broker.servers.replace(/^nats:/, "tls:")}`), tlsLink.output());
+    const tlsLink = joinWithFile(truncated, "--link", broker.servers.replace(/^nats:\/\//, "cotals://private-token-marker@") + `/${space}`);
+    const tlsServer = broker.servers.replace(/^nats:/, "tls:");
+    check("a secure token link gives an auth-free retry with the original TLS requirement", await tlsLink.exited === 1 &&
+      tlsLink.output().includes(`cotal join --space ${space} --server ${tlsServer} --channel general --tls --creds <file> --lifecycle-uid <uid>`) &&
+      !tlsLink.output().includes("private-token-marker"), tlsLink.output());
     for (const [url, problem] of [
       ["nats://private-url-marker@localhost:4222", "must not embed credentials"],
       ["wss://localhost/?token=private-url-marker", "drop its query string"],
@@ -156,8 +168,12 @@ try {
         invalidUrl.output().includes(problem) && !invalidUrl.output().includes("private-url-marker"), invalidUrl.output());
     }
     const privateRoute = joinWithFile(truncated, "--server", "wss://localhost/private-url-marker");
-    check("a private broker route requires a verified address without repeating the route", await privateRoute.exited === 1 &&
-      privateRoute.output().includes("--server <broker-url>") && privateRoute.output().includes("verified broker URL without embedded credentials") && !privateRoute.output().includes("private-url-marker"), privateRoute.output());
+    check("a redacted WSS route keeps TLS and starts its address hint in a new sentence", await privateRoute.exited === 1 &&
+      privateRoute.output().includes("--server <broker-url>") && privateRoute.output().includes("`--lifecycle-uid`. Replace `<broker-url>` with the space owner's verified TLS-enabled broker URL without embedded credentials. Keep the `wss://` scheme.") &&
+      !privateRoute.output().includes("private-url-marker"), privateRoute.output());
+    const insecure = joinWithFile(truncated, "--server", "ws://localhost:1", "--tls");
+    check("explicit TLS never recommends the plaintext WebSocket address", await insecure.exited === 1 &&
+      insecure.output().includes("`--lifecycle-uid`. Replace `<broker-url>`") && insecure.output().includes("verified TLS-enabled broker URL") && !insecure.output().includes("ws://localhost:1"), insecure.output());
     const unnamed = cli("join", "--server", broker.servers, "--creds", truncated, "--lifecycle-uid", uid);
     check("without a link or named channel the advice uses general and does not guess the mint space", await unnamed.exited === 1 &&
       unnamed.output().includes("--allow-subscribe general --space <space>"), unnamed.output());

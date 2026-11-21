@@ -41,7 +41,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, checkServer, codeSpan, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, checkServer, codeSpan, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, tlsIntent, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -88,37 +88,42 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
   return undefined;
 }
 
+function joinSpaceFlag(space: string | undefined): string {
+  return space === undefined ? "--space <space>" : `--space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+}
+
 function credentialJoinRemedy(space: string | undefined, channel: string, options: { brokerFlag?: string; keepOriginalGrants?: boolean } = {}): string {
   const read = `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
-  const target = space === undefined ? " --space <space>" : ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
-  const mint = codeSpan(`cotal auth mint <name> --provision ${read}${target}${options.brokerFlag ?? ""} --no-persona --out <file>`);
+  const mint = codeSpan(`cotal auth mint <name> --provision ${read} ${joinSpaceFlag(space)}${options.brokerFlag ?? ""} --no-persona --out <file>`);
   const remedy = `ask the space's owner to mint the credential with ${mint}, then join with the lifecycle UID that mint reports using \`--lifecycle-uid\``;
   return options.keepOriginalGrants ? `${remedy}. To keep the original grants, replace ${codeSpan(read)} with \`--identity <original-file>\`` : remedy;
 }
 
 function mintBrokerAddress(server: string, tls: boolean): string | undefined {
-  const addresses: string[] = [];
-  for (const value of server.split(",")) {
-    const address = value.trim();
-    // Anything beyond host and port can contain private data, including WebSocket paths.
-    if (!/^[a-z]+:\/\/[a-z0-9.:[\]_-]+\/?$/i.test(address) || !checkServer(address, "broker URL").ok) return undefined;
-    if (tls && /^ws:/i.test(address)) return undefined;
-    addresses.push(tls ? address.replace(/^nats:/i, "tls:") : address);
-  }
-  return addresses.join(",");
+  const address = server.trim();
+  // Anything beyond host and port can contain private data, including WebSocket paths.
+  if (!/^[a-z]+:\/\/[a-z0-9.:[\]_-]+\/?$/i.test(address) || !checkServer(address, "broker URL").ok) return undefined;
+  if (tls && /^ws:/i.test(address)) return undefined;
+  return tls ? address.replace(/^nats:/i, "tls:") : address;
 }
 
-function malformedCredentialReplacement(space: string | undefined, channel: string, server: string | undefined, tls: boolean): string {
+function malformedCredentialReplacement(space: string | undefined, channel: string, server: string | undefined, tls: boolean, hasOtherAuth: boolean): string {
+  const authHint = hasOtherAuth ? " Retry without `--link` or `--token`." : "";
   try { assertValidChannel(channel); }
   catch {
-    return "if it is unavailable, choose a valid landing channel and ask the space's owner for a provisioned credential with read access to that channel, then pass its new UID with `--lifecycle-uid`";
+    return `if it is unavailable, choose a valid landing channel and ask the space's owner for a provisioned credential with read access to that channel, then pass its new UID with \`--lifecycle-uid\`.${authHint}`;
   }
-  const broker = server === undefined ? undefined : mintBrokerAddress(server, tls);
-  const needsBroker = server !== undefined || tls;
+  const tlsRequired = server === undefined ? tls : tlsIntent(server, tls);
+  const broker = server === undefined ? undefined : mintBrokerAddress(server, tlsRequired);
+  const needsBroker = server !== undefined || tlsRequired;
   const brokerFlag = needsBroker ? ` --server ${broker === undefined ? "<broker-url>" : shellWord(broker)}` : "";
   const brokerHint = needsBroker && broker === undefined
-    ? ` Replace \`<broker-url>\` with the space owner's verified ${tls ? "TLS-enabled " : ""}broker URL without embedded credentials.` : "";
-  return `if it is unavailable, use a new output path and ${credentialJoinRemedy(space, channel, { brokerFlag })}${brokerHint}`;
+    ? ` Replace \`<broker-url>\` with the space owner's verified ${tlsRequired ? "TLS-enabled " : ""}broker URL without embedded credentials.${server && /^wss:\/\//i.test(server.trim()) ? " Keep the `wss://` scheme." : ""}` : "";
+  const remedy = `if it is unavailable, use a new output path and ${credentialJoinRemedy(space, channel, { brokerFlag })}.`;
+  if (!hasOtherAuth) return remedy + brokerHint;
+  const channelFlag = `--channel${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+  const retry = codeSpan(`cotal join ${joinSpaceFlag(space)}${brokerFlag} ${channelFlag}${tlsRequired ? " --tls" : ""} --creds <file> --lifecycle-uid <uid>`);
+  return `${remedy}${brokerHint}${authHint} Use ${retry} with the complete file and its matching UID.`;
 }
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
@@ -182,11 +187,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
   const explicitServer = values.server ?? link?.servers;
   const tls = values.tls ?? link?.tls ?? false;
+  const token = values.token ?? link?.token;
   const auth = {
-    token: values.token ?? link?.token,
+    token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds, () => malformedCredentialReplacement(values.space ?? link?.space, channel, explicitServer, tls)) : undefined,
+    creds: values.creds ? readCredsFile(values.creds, () => malformedCredentialReplacement(
+      values.space ?? link?.space, channel, explicitServer, tls, Boolean(token || link?.user),
+    )) : undefined,
     tls,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
