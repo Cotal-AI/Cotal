@@ -797,16 +797,17 @@ async function boundForeignListenerScenario(): Promise<void> {
 async function missingPidfileListenerScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-pid-listener-home-")));
-  const artifact = join(root, "registry-backup");
+  const artifact = join(root, "registry 'backup' with `notes`");
+  const store = "-jetstream store";
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
   const space = "backup_missing_pid_listener";
-  const { run } = sandboxRun(root, home);
+  const { run, env } = sandboxRun(root, home);
   const pidPath = join(root, ".cotal", "nats.pid");
   const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
   let foreign: ChildProcess | undefined;
   try {
-    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space).status, 0);
+    assert.equal(run("up", "--detach", "--open", "--server", server, "--space", space, "--store-dir", `./${store}`).status, 0);
     assert.equal(run("channel", "set", "preserved", "--desc", "listener probe", "--space", space).status, 0);
     const brokerPid = Number(readFileSync(pidPath, "utf8"));
     rmSync(pidPath);
@@ -823,14 +824,26 @@ async function missingPidfileListenerScenario(): Promise<void> {
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "ready");
 
     foreign = await occupy(port);
-    const refusedBackup = run("backup", "create", artifact, "--only", "registry");
+    const refusedBackup = run("backup", "create", artifact, "--only", "registry", `--store-dir=${store}`);
     assert.equal(refusedBackup.status, 2, "backup refuses a pidless listener immediately before cloning, exit 2");
     assert.match(refusedBackup.stderr, /recorded NATS endpoint .* no listener; a process there may still be changing the preserved store, so nothing was copied/);
     assert.match(refusedBackup.stderr, /CONFLICT/, "it is a CONFLICT, as restore and resume refuse it");
-    assert.ok(refusedBackup.stderr.includes(`stop the process that listens on ${server}, then run \`cotal backup create ${artifact} --only registry\` again`), `its Next says to stop that process and names the same create\n${refusedBackup.stderr}`);
+    const retry = /then run (`+)(cotal backup create .+?)\1 again/.exec(refusedBackup.stderr)?.[2];
+    assert.ok(retry && refusedBackup.stderr.includes(`stop the process that listens on ${server}`), `its Next names the listener and the retry\n${refusedBackup.stderr}`);
+    assert.ok(retry.endsWith(` --only registry --store-dir='${store}'`), "the retry keeps the explicit store path and selection");
     assert.equal(existsSync(artifact), false, "listener refusal happens before artifact creation");
+    assert.equal(readMaintenanceJournal(root)?.state, "ready", "listener refusal leaves the cut ready");
     await closeServer(foreign);
     foreign = undefined;
+    if (process.platform !== "win32") {
+      const retried = spawnSync("sh", ["-c", `cli=$1; entry=$2\ncotal() { "$cli" "$entry" "$@"; }\n${retry}`, "backup-retry", tsx, cliPath], {
+        cwd: root, env, encoding: "utf8", timeout: 240_000,
+      });
+      assert.equal(retried.status, 0, `the printed retry works unedited\n${retried.stdout}${retried.stderr}`);
+      const verified = run("backup", "verify", artifact, "--json");
+      assert.equal(verified.status, 0, `the retried artifact verifies\n${verified.stdout}${verified.stderr}`);
+      assert.equal(JSON.parse(verified.stdout).result.selection, "registry", "the retry preserves --only registry");
+    }
   } finally {
     if (foreign) await closeServer(foreign).catch(() => {});
     run("down", "--yes");

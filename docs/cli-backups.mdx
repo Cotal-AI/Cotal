@@ -80,7 +80,9 @@ address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` ref
 says to stop the process that listens there and run the same `backup create` again. Any other
 refusal or failure shows the check's own sentence as its native detail.
 A failure that removed what it wrote leaves the preserved cut ready, and its Next names the same
-`backup create` to run again once that cause is fixed.
+`backup create` to run again once that cause is fixed. Retry commands quote the destination and any
+explicit `--store-dir` as needed, so you can paste them into a POSIX shell from the same folder even
+when the paths contain spaces.
 A create that runs out of disk space (`ENOSPC`) or quota (`EDQUOT`) after it claims the cut removes
 what it wrote and fails `OPERATION_FAILED` (exit 5). Its message names the error and where it was
 writing: the store copy under `.cotal/maintenance/attempts`, or the backup in its destination. It
