@@ -411,13 +411,16 @@ function localTarget(root: string, server: string, source: MeshTarget["source"],
       ? space
       : undefined
     : userAuthSpacesOnDisk(authDir(root))[0];
-  if (userSpace !== undefined)
-    throw new MeshTargetError(
-      "user-auth-unrecorded",
-      `space "${userSpace}" has user auth enabled on disk but no usable registry entry`,
-      { space: userSpace, root },
-    );
+  if (userSpace !== undefined) refuseUnrecordedUserAuth(root, userSpace);
   return { root, server, space, mode: auth ? "auth" : "open", tlsRequired: tlsIntent(server, false), auth, personaRoot: personaDir(root), source };
+}
+
+function refuseUnrecordedUserAuth(root: string, space: string): never {
+  throw new MeshTargetError(
+    "user-auth-unrecorded",
+    `space "${space}" has user auth enabled on disk but no usable registry entry`,
+    { space, root },
+  );
 }
 
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on
@@ -1077,6 +1080,28 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
   return !isGenuineSpace(root) || registrationAt(root, meshes) === undefined;
 }
 
+function retainedNamedTarget(cwd: string, space: string, flags: ResolveFlags): MeshTarget | undefined {
+  const root = findCotalRoot(cwd);
+  if (!isGenuineSpace(root) || stackRecord(root) || preparedSpaceAt(root)) return undefined;
+  const retained = retainedLegacyBroker(root);
+  if (!retained || retained.open || legacyStackOtherHome(root)) return undefined;
+  const server = flags.server === undefined ? undefined : brokerUrlKey(flags.server);
+  if (server !== undefined && server !== brokerUrlKey(retained.server)) return undefined;
+  const { spaces } = rootInventory(root);
+  if (spaces.length !== 1 || spaces[0] !== space) return undefined;
+  const meshes = loadMeshes();
+  if (meshes.some(m => m.space === space || canonicalRoot(m.root) === canonicalRoot(root))) return undefined;
+
+  if (server !== undefined) {
+    // An exact retained pair can identify user auth for a refusal, but grants no offline target.
+    if (!meshes.some(m => brokerUrlKey(m.server) === server) && hasUserAuthState(root, space, { readOnly: true }))
+      refuseUnrecordedUserAuth(root, space);
+    return undefined;
+  }
+  if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
+  throw new MeshTargetError("not-started", `the mesh "${space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: space });
+}
+
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup, or this project's matching retained static space for file-only signing.
@@ -1105,17 +1130,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     const m = findMesh(flags.space);
     if (!m) {
       notStarted(flags.space, cwd);
-      const root = findCotalRoot(cwd);
-      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
-        const retained = retainedLegacyBroker(root);
-        if (retained && !retained.open && !legacyStackOtherHome(root)) {
-          const { spaces } = rootInventory(root);
-          if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
-            if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
-            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space });
-          }
-        }
-      }
+      const retained = retainedNamedTarget(cwd, flags.space, flags);
+      if (retained) return retained;
       throw new MeshTargetError("unknown-space", `no mesh named "${boundedValue(flags.space, SHOWN_VALUE_MAX)}" is running`, {
         requested: flags.space,
       });

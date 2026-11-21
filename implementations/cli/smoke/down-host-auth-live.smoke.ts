@@ -58,6 +58,17 @@ async function checkUserMint(cli: Cli, root: string, space: string, stage: strin
   }
 }
 
+async function prepareInAnotherHome(root: string, space: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const alt = join(scratch, "alternate-home");
+  const secondEnv = { ...env, HOME: alt, COTAL_HOME: join(alt, "cotal"), XDG_CONFIG_HOME: join(alt, "xdg"), XDG_RUNTIME_DIR: join(alt, "run") };
+  mkdirSync(secondEnv.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root, cotalHome: secondEnv.COTAL_HOME, xdgConfigHome: secondEnv.XDG_CONFIG_HOME });
+  const cli = makeCli("alternate-home", root, secondEnv, sandbox, process.execPath, bin);
+  const prepared = await cli("space", "create", space, "--root", root);
+  check("controller: another home can prepare the stopped project", prepared.code === 0, prepared.out);
+  await checkUserMint(cli, root, space, "stopped controller in another prepared home", "--space", space);
+}
+
 function brokerClosed(port: number): Promise<boolean> {
   return new Promise((done) => {
     const socket = connect(port, "127.0.0.1");
@@ -74,11 +85,12 @@ async function controllerMint(): Promise<void> {
   mkdirSync(run, { mode: 0o700 });
   const cli = makeCli("controller", root, env, sandbox, process.execPath, bin);
   const space = "down-host-controller", port = await pickFreePort();
+  const server = `nats://127.0.0.1:${port}`;
   const prepared = await cli("space", "create", space, "--root", root);
   check("controller: the user-auth project is prepared", prepared.code === 0, prepared.out);
   let stopped = false;
   try {
-    const started = await cli("up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--space", space, "--user-auth", "--idp", idpUrl);
+    const started = await cli("up", "--detach", "--no-manager", "--server", server, "--space", space, "--user-auth", "--idp", idpUrl);
     check("controller: the shipped CLI starts the prepared project without a manager", started.code === 0, started.out);
     const down = await cli("down", "--yes");
     check("controller: down stopped the broker", down.code === 0 && await brokerClosed(port), down.out);
@@ -88,6 +100,12 @@ async function controllerMint(): Promise<void> {
       journal.mode === "user" && journal.operation?.kind === "down" && journal.operation.phase === "completed");
     await checkUserMint(cli, root, space, "stopped controller");
     await checkUserMint(cli, root, space, "stopped controller named", "--space", space);
+    await checkUserMint(cli, root, space, "stopped controller explicit pair", "--space", space, "--server", server);
+    const elsewhere = join(scratch, "unrelated");
+    mkdirSync(elsewhere, { mode: 0o700 });
+    const otherCli = makeCli("unrelated", elsewhere, env, undefined, process.execPath, bin);
+    await checkUserMint(otherCli, root, space, "stopped controller with broker override from elsewhere", "--space", space, "--server", `nats://127.0.0.1:${await pickFreePort()}`);
+    await prepareInAnotherHome(root, space, env);
     const wrong = await cli("auth", "mint", "alice", "--space", "not-the-controller-space", "--json");
     check("controller: an unknown explicit space is not replaced by the project", wrong.code === 2 && JSON.parse(wrong.out).error?.code === "TARGET_NOT_FOUND", wrong.out);
     check("controller: mint left the stopped broker closed", await brokerClosed(port));
@@ -97,7 +115,7 @@ async function controllerMint(): Promise<void> {
   }
 }
 
-function makeCli(label: string, root: string, env: NodeJS.ProcessEnv, sandbox: ReturnType<typeof recordSmokeSandbox>, executable: string, entry: string): Cli {
+function makeCli(label: string, root: string, env: NodeJS.ProcessEnv, sandbox: ReturnType<typeof recordSmokeSandbox> | undefined, executable: string, entry: string): Cli {
   return async (...args) => {
     assertSmokeSandboxDown(sandbox, args, { cwd: root, env });
     const child = spawn(executable, [entry, ...args], { cwd: root, env });
@@ -229,6 +247,16 @@ async function cell(user: boolean): Promise<void> {
   if (user) {
     await checkUserMint(cli, root, space, "stopped legacy");
     await checkUserMint(cli, root, space, "stopped legacy named", "--space", space);
+    await checkUserMint(cli, root, space, "stopped legacy explicit pair", "--space", space, "--server", server);
+    const out = join(root, "unknown-target.creds");
+    for (const [label, named, address] of [
+      ["different broker", space, `nats://127.0.0.1:${await pickFreePort()}`],
+      ["different name", "not-the-legacy-space", server],
+    ] as const) {
+      const unknown = await cli("auth", "mint", "alice", "--space", named, "--server", address, "--provision", "--out", out, "--json");
+      check(`stopped legacy: ${label} is not replaced by the retained pair`, unknown.code === 2 &&
+        JSON.parse(unknown.out).error?.code === "TARGET_NOT_FOUND" && !existsSync(out), unknown.out);
+    }
   }
   const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);

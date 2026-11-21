@@ -957,6 +957,9 @@ try {
       const wrongName = await runMint(["wrong_name", "--space", "not_offlinecheck", "--plain"]);
       check("#8302: a different name does not mint from the stopped local account",
         wrongName.code === 2 && wrongName.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_name").creds), wrongName.out);
+      const paired = await runMint(["explicit_pair", "--space", "offlinecheck", "--server", server, "--plain"]);
+      check("a stopped static pair with an explicit server does not gain offline signing authority",
+        paired.code === 2 && paired.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "explicit_pair").creds), paired.out);
       const signer = join(exports, "signer.json");
       const exported = await runCotal(["auth", "signer", "--space", "offlinecheck", "--out", signer, "--plain"]);
       check("stopped root exports its signer without a broker", exported.code === 0 && existsSync(signer) && (statSync(signer).mode & 0o777) === 0o600, exported.out);

@@ -1,6 +1,7 @@
 import {
-  CommandFailure, authDir, brokerUrlKey, canonicalRoot, codeSpan, findCotalRoot, findMesh, getSoleSpaceAuth, getSpaceAuth,
-  hasUserAuthState, homeCotalDir, isWorkspaceTargetError, preparedLifecycle, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, retainedLegacyBroker, targetErrorCode,
+  CommandFailure, authDir, canonicalRoot, codeSpan, findCotalRoot, findMesh, getSoleSpaceAuth, getSpaceAuth,
+  hasUserAuthState, isWorkspaceTargetError, preparedLifecycle, preparedNeverStarted, preparedSpaceAt,
+  resolveMeshTarget, retainedLegacyBroker, stackRunsUnderOtherHome, targetErrorCode,
   workspaceErrorParts, workspaceSecretStore, type MeshTarget, type MeshTargetErrorDetails,
 } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
@@ -23,7 +24,7 @@ function unsupportedStaticMint(target: object): CommandFailure {
 }
 
 /** Use the resolver's target, never the auth mode of an unrelated folder or broker. */
-function stoppedUserSpace(details: MeshTargetErrorDetails, server?: string): string | undefined {
+function stoppedUserSpace(details: MeshTargetErrorDetails): string | undefined {
   const { root, stackSpace, home, recordedRoot, rootMissing, unsettled } = details;
   if (root === undefined || home !== undefined || recordedRoot !== undefined || rootMissing || unsettled !== undefined) return undefined;
   if (details.lastRun) {
@@ -34,8 +35,8 @@ function stoppedUserSpace(details: MeshTargetErrorDetails, server?: string): str
   if (space === undefined || details.stopped === undefined) return undefined;
   const journal = readStackJournal(root)?.journal;
   if (journal?.space !== space || journal.mode !== "user" || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return undefined;
-  if (journal.recovery && canonicalRoot(journal.recovery.home) !== canonicalRoot(homeCotalDir())) return undefined;
-  return server === undefined || brokerUrlKey(server) === brokerUrlKey(journal.server) ? space : undefined;
+  // The named space pins the auth mode. A dial override and a historical recovery home do not.
+  return stackRunsUnderOtherHome(root, journal) ? undefined : space;
 }
 
 /**
@@ -52,7 +53,7 @@ export function resolveMintTarget(values: { space?: string; server?: string }, o
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "user-auth-unrecorded") throw unsupportedStaticMint({ ...reportTarget, space: error.details.space });
     if (error.code === "not-started") {
-      const space = stoppedUserSpace(error.details, values.server);
+      const space = stoppedUserSpace(error.details);
       if (space !== undefined) throw unsupportedStaticMint({ ...reportTarget, space });
     }
     if (error.code === "no-meshes")
