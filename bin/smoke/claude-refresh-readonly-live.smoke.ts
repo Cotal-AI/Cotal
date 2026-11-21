@@ -30,7 +30,7 @@ for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-i
     const result = spawnSync(process.execPath, [cli, ...args], options);
     writeFileSync(join(base, `${args[0]}-${calls++}.log`), `${result.stdout ?? ""}${result.stderr ?? ""}\nexit=${result.status} signal=${result.signal}\n`);
     assert.ifError(result.error);
-    assert.equal(result.status, args[0] === "update" && env.npm_config_offline === "true" ? 1 : 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
+    assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
     return `${result.stdout}${result.stderr}`;
   }
   let calls = 0, running = false;
@@ -53,7 +53,7 @@ for (const name of ["absent", "readonly-config", "readonly-plugins", "readonly-i
     const update = run("update");
     if (installedSkills) assert.ok(update.includes(`Claude skills refresh deferred because ${protectedDir} is read-only.`), update);
     else assert.match(update, /Refresh the Claude Code plugin: not installed/);
-    if (name === "readonly-installed-cache") assert.match(update, /cotal-ai version check failed: npm error code ENOTCACHED/);
+    if (name === "readonly-installed-cache") assert.match(update, /Registry latest:?\s+not established/);
     const recovery = join(state, "update-recovery.json");
     if (name !== "readonly-installed-cache" || existsSync(recovery))
       assert.equal(JSON.parse(readFileSync(recovery, "utf8")), null);
