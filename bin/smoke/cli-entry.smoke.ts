@@ -45,6 +45,8 @@ import "@cotal-ai/runtime";
 import "@cotal-ai/auth";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_AGENT } from "../../implementations/cli/src/lib/default-persona.js";
+import { hashManifestSource } from "../../implementations/cli/src/lib/manifest/ledger.js";
+import { writeAdditiveTeamAttempt } from "../../implementations/cli/src/lib/team-additive-attempt.js";
 import { readDocument } from "@cotal-ai/docs-content";
 
 const REPO = join(import.meta.dirname, "..", "..");
@@ -1117,16 +1119,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       json.status === 2 && envelope?.error?.code === "TARGET_NOT_FOUND" && envelope.target?.path === missing && envelope.error.remedy === missingRemedy, shown(json));
   }
 
-  // Let the routing read succeed, then change the real path before the apply handler reads it.
+  // Change the real path after routing reads the manifest or after apply reads the retained intent.
   const preload = join(dir, "replace-after-read.cjs");
   writeFileSync(preload, `
 const fs = require("node:fs");
 const { syncBuiltinESMExports } = require("node:module");
-const { TEAM_TEST_MANIFEST: manifest, TEAM_TEST_REPLACEMENT: replacement } = process.env;
+const { resolve } = require("node:path");
+const { TEAM_TEST_MANIFEST: manifest, TEAM_TEST_REPLACEMENT: replacement, TEAM_TEST_AFTER_READ } = process.env;
+const trigger = TEAM_TEST_AFTER_READ ? resolve(TEAM_TEST_AFTER_READ) : manifest;
 const read = fs.readFileSync;
 fs.readFileSync = function (file, ...args) {
   const source = read.call(this, file, ...args);
-  if (file === manifest) {
+  if (file === trigger) {
     fs.readFileSync = read;
     syncBuiltinESMExports();
     fs.renameSync(manifest, manifest + ".moved");
@@ -1136,9 +1140,10 @@ fs.readFileSync = function (file, ...args) {
 };
 syncBuiltinESMExports();
 `);
+  const agent = "channels: {}\nagents:\n  worker:\n    agent: claude\n    instructions: Worker\n";
   for (const [name, replacement, declaration, status, code, target, remedy] of [
     ["channel", "missing", "channels:\n  general:\n    deliveryClass: live\n", 2, "TARGET_NOT_FOUND", "path", missingRemedy],
-    ["agent", "directory", "channels: {}\nagents:\n  worker:\n    agent: claude\n    instructions: Worker\n", 1, "USAGE_INVALID", "file", directoryRemedy],
+    ["agent", "directory", agent, 1, "USAGE_INVALID", "file", directoryRemedy],
   ] as const) {
     const file = join(dir, `${name}.yaml`);
     writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: deploy-race\n${declaration}`);
@@ -1150,6 +1155,29 @@ syncBuiltinESMExports();
       existsSync(`${file}.moved`) && r.status === status && envelope?.error?.code === code && envelope.target?.[target] === file
         && envelope.error.remedy === remedy, shown(r));
   }
+
+  const retained = join(dir, "retained.yaml"), deploymentId = "0123456789abcdef", space = "deploy-race";
+  const source = `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\n${agent}`;
+  writeFileSync(retained, source);
+  const r = cotal(["team", "deploy", retained], (home) => {
+    const root = dirname(home);
+    mkdirSync(join(root, ".cotal"), { mode: 0o700 });
+    writeAdditiveTeamAttempt(root, {
+      schemaVersion: 1, kind: "additive-team-attempt", deploymentId, root, space,
+      server: "nats://127.0.0.1:1", manifestPath: retained, manifestHash: hashManifestSource(source),
+      authMode: "open", tlsRequired: false, declaredChannels: [], requestedAgents: ["worker"],
+      agentHashes: [{ name: "worker", hash: deploymentId }], managerInstanceId: "a".repeat(26),
+      createdAt: new Date().toISOString(),
+    });
+  }, {
+    ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}`, TEAM_TEST_MANIFEST: retained,
+    TEAM_TEST_REPLACEMENT: "directory", TEAM_TEST_AFTER_READ: join(".cotal", `team-deploy-attempt-${deploymentId}.json`),
+  });
+  check("team deploy preserves the classified directory refusal after reading a retained intent",
+    existsSync(`${retained}.moved`) && r.status === 1 && r.stdout === "" && r.stderr.includes(`Mesh: ${space}`)
+      && r.stderr.includes("Request refused") && r.stderr.includes("USAGE_INVALID")
+      && r.stderr.includes(`the manifest file ${JSON.stringify(retained)} is a directory`)
+      && r.stderr.includes(directoryRemedy) && !/^Usage\b/m.test(r.stderr), shown(r));
 }
 
 // A retained teardown ledger uses the manifest source hash, without reading launch-time personas.

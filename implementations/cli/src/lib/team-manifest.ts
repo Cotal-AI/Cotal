@@ -4,12 +4,15 @@ import { formatIssue, loadManifestWithSource, ManifestError } from "./manifest/i
 import { UnusableFile } from "./unusable-file.js";
 
 /** Read a team manifest before contacting a broker, with the same refusals on every route. */
-export function readTeamManifest(file: string): { path: string } & ReturnType<typeof loadManifestWithSource> {
+export function readTeamManifest(file: string, space?: string): { path: string } & ReturnType<typeof loadManifestWithSource> {
   const path = resolve(file);
   try { return { path, ...loadManifestWithSource(path) }; }
   catch (error) {
     if (error instanceof ManifestError) throw manifestRefusal(error, path);
-    if (error instanceof UnusableFile) throw error;
+    if (error instanceof UnusableFile) {
+      // Include an already selected space without losing the file refusal at dispatch.
+      throw space === undefined ? error : new UnusableFile(error.message, { file: path, space }, error.remedy);
+    }
     const errno = error as NodeJS.ErrnoException;
     if (errno.code === "ENOENT" && errno.path === path)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });

@@ -621,6 +621,7 @@ not uncover it later. A manifest file that does not exist is refused with `TARGE
 name a file inside it. In `--json`, a missing manifest is named in `target.path` and a directory in
 `target.file`. `team boot` and `team deploy` report these errors before contacting a broker.
 `team deploy` gives the same path and remedy with or without `--dry-run`. Apply also reports
-these errors if the path changes before the selected deployment route reads the manifest.
+these errors if the path changes before the selected deployment route reads the manifest,
+including when reapplying a recorded deployment. A directory refusal does not print command help.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.

@@ -182,7 +182,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
  *  updates, adopts or records anything. A changed agent hash is stale drift: refused unless
  *  `--allow-stale` names exactly that agent, in which case it keeps running its old policy. */
 export async function applyRetainedTeam(file: string, values: TeamValues, previous: AdditiveTeamAttempt): Promise<void> {
-  const { path, prepared, source } = readTeamManifest(file), root = canonicalRoot(cotalRoot());
+  const { path, prepared, source } = readTeamManifest(file, previous.space), root = canonicalRoot(cotalRoot());
   const { manifest } = prepared, space = manifest.space, target = { root, space, path, deploymentId: previous.deploymentId };
   recordOperationSpace(space);
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this manifest; no target was substituted", { target });
