@@ -379,7 +379,7 @@ exec npm "$@"
     const filterConfig = scenario === 'before' ? 'before=2020-01-01\n' : 'min-release-age=365\n';
     if (dateFiltered) writeFileSync(join(home, '.npmrc'), filterConfig);
     const started = Date.now();
-    let abandonedCache, unrecordedCache;
+    let abandonedCache, unrecordedCache, abandonedStagingCache, unrecordedStagingCache;
     if (staged) {
       const tools = join(root, 'tools'), busProbe = join(root, 'bus-called');
       mkdirSync(tools);
@@ -413,9 +413,32 @@ exec npm "$@"
       assert.match(failed.output, /npm terminated by SIGKILL/);
       assert.equal(readMarker()?.custody?.pid, child.pid);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
-      holdStaging = false;
       heldArchive.end();
       heldArchive = undefined;
+
+      const scratch = join(root, 'tmp');
+      const unrecorded = mkdtempSync(join(scratch, 'cotal-update-'));
+      unrecordedStagingCache = mkdtempSync(join(unrecorded, 'cotal-update-npm-'));
+      abandoned = run(process.execPath, [entry, 'update', '--self'], 120000);
+      const owner = interrupted;
+      let worker;
+      for (let deadline = Date.now() + 90000; !worker && Date.now() < deadline && owner.exitCode === null; await new Promise(done => setTimeout(done, 10))) {
+        const record = readMarker();
+        if (heldArchive && record?.phase === 'live' && record.owner === owner.pid && record.operation === 'global install') worker = record.pid;
+      }
+      assert(worker, 'the retry reached staging with a real npm worker');
+      const caches = readdirSync(scratch).filter(name => name.startsWith('cotal-update-') && join(scratch, name) !== unrecorded)
+        .flatMap(name => readdirSync(join(scratch, name)).filter(cache => cache.startsWith('cotal-update-npm-')).map(cache => join(scratch, name, cache)));
+      assert.equal(caches.length, 1, 'found the staging worker’s private npm cache');
+      abandonedStagingCache = caches[0];
+      const ownerExited = new Promise(done => owner.once('exit', (_code, signal) => done(signal)));
+      owner.kill('SIGKILL');
+      assert.equal(await ownerExited, 'SIGKILL');
+      holdStaging = false;
+      heldArchive.end(archives.get(target));
+      heldArchive = undefined;
+      assert.equal((await abandoned).signal, 'SIGKILL');
+      assert(existsSync(abandonedStagingCache), 'the interrupted updater left its staging cache');
     }
     if (scenario === 'archive-interrupted') {
       const scratch = join(root, 'tmp');
@@ -551,6 +574,8 @@ exec npm "$@"
       assert.match(update.output, /cotal-ai@99\.0\.0 in use and reconciled/);
       assert.equal(existsSync(marker), false);
       assert.equal(existsSync(join(root, 'bus-called')), false, 'exact child custody needs no native user manager query');
+      assert(!existsSync(abandonedStagingCache), 'the successful retry removes the abandoned staging cache');
+      assert(existsSync(unrecordedStagingCache), 'the successful retry leaves unrecorded staging caches alone');
       const current = await run(process.execPath, [entry, '--version'], 60000);
       assert.match(current.output, /cotal-ai 99\.0\.0/);
     } else if (closureKilled) {
