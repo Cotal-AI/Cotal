@@ -604,7 +604,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // retained service receipts cannot delay HTTP readiness or make close drain the whole history.
   // Corrupt evidence refuses this open if seen here, or fences the plane when a continuation
   // reaches it. Transient store failures keep the cursor and retry with capped jittered backoff.
-  const pruneMs = opts.nativeIssuancePruneMs ?? 60_000;
+  const pruneMs = opts.nativeIssuancePruneMs === undefined ? 60_000 : opts.nativeIssuancePruneMs;
   if (!Number.isSafeInteger(pruneMs) || pruneMs < 100 || pruneMs > 3_600_000)
     throw new Error(`nativeIssuancePruneMs must be an integer between 100 and 3600000 (got ${pruneMs})`);
   let pruneFailures = 0;

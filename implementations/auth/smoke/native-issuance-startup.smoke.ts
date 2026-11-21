@@ -165,6 +165,10 @@ try {
   await kv.purge(bad);
   console.log("corrupt evidence beyond the startup budget fences the hosted context");
   await assert.rejects(open(50), /nativeIssuancePruneMs/);
+  await assert.rejects(async () => {
+    // @ts-expect-error JavaScript hosts can pass null, which must not select the default.
+    await (await open(null)).close();
+  }, /nativeIssuancePruneMs.*got null/);
   // A live ordinary receipt before the retained history must not pin the discovery cursor.
   const anchor = `natkey.${createUser().getPublicKey()}`;
   await kv.create(anchor, encode(record(Math.floor(Date.now() / 1000) + 3600)));

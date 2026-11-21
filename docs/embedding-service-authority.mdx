@@ -82,11 +82,12 @@ key. Recording rechecks the evidence, receipt, native authority and fixed expiry
 receipts are retained, not pruned on elapsed JWT time. The opt-in authority plane now records this evidence for service connections. Qualified terminal retirement remains unsupported.
 
 Auth startup checks at most one historical native receipt before opening HTTP listeners. Cleanup
-continues in batches of at most 64 rows, including deletion markers, without waiting for the
-next full-walk interval. After a walk ends, `nativeIssuancePruneMs` controls the delay before
-starting again (60 seconds by default). Invalid evidence refuses startup if found in its check,
-or fences the running service when a background batch reaches it. Transient store failures retry
-with backoff. Closing cancels the walk between store operations and waits for any in-flight IO.
+continues in background batches of at most 64 entries, including deletion markers. Later sweeps
+resume discovery after the last processed revision and recheck known ordinary receipts when they
+are due to expire. `nativeIssuancePruneMs` sets the delay between sweeps (60 seconds by default).
+Invalid evidence refuses startup if found in its check, or fences the running service when a
+background batch reaches it. Transient store failures retry with backoff. Closing cancels cleanup
+between store operations and waits for any in-flight I/O.
 
 ### Service name bindings
 
