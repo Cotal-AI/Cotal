@@ -116,6 +116,18 @@ let specBody = "";
 }
 
 {
+  const docs = run(["docs", "cli-endpoints", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const authoring = typeof body === "string" ? body.split(/^## Endpoint authoring$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const fields = ["result.kind", "local-endpoint-contract", "result.closureDigest", "result.commands", "inputDigest", "outputDigest",
+    "handlerExecuted", "brokerContacted", "authorityChecked", "servingChecked"];
+  const missing = fields.filter((field) => !authoring.includes(`\`${field}\``));
+  check("the bundled endpoint authoring reference names the JSON digests and offline verification fields",
+    docs.status === 0 && docs.envelope?.result?.source === "bundled" && missing.length === 0,
+    { ...shown(docs), missing });
+}
+
+{
   const docs = run(["docs", "cli-agents", "--json"]);
   const body = docs.envelope?.result?.body;
   const remedy = typeof body === "string" ? /`cotal (persona create default --file <persona\.md>)`/.exec(body)?.[1] : undefined;
