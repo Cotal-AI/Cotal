@@ -28,6 +28,8 @@ A selected mesh stays selected when its broker is offline.
 Commands report that failure instead of connecting elsewhere.
 Registering another mesh with `space add` or `meshes add` also keeps a selected prepared or stopped space selected.
 If the selected entry no longer exists, the command refuses with `TARGET_NOT_FOUND`.
+An empty or unreadable saved selection also prevents fallback. Clear it with `cotal use --clear`
+or select a known space again.
 
 With no selection, Cotal first uses the current project's `.cotal/`.
 Outside a project, it uses the only running mesh or refuses an ambiguous choice when several are running.

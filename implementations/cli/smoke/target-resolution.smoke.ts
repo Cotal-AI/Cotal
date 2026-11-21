@@ -218,6 +218,60 @@ const QUESTION = "Which one?";
   }
 }
 
+// A damaged selection refuses even with exactly one live fallback.
+{
+  const beta = findMesh("beta")!;
+  const prepared = join(home, "prepared-selection");
+  const pointer = join(env.COTAL_HOME!, "current-mesh");
+  removeMesh("beta");
+  mkdirSync(prepared);
+  recordPreparedSpace({ space: "planned", root: prepared, ts: new Date(0).toISOString() });
+  try {
+    const selected = run(["use", "planned", "--plain"]);
+    const stopped = run(["who", "--json"]);
+    check("an intact selection names the prepared space and refuses instead of reading the running one",
+      selected.status === 0 && stopped.status === 2 && envelope(stopped)?.error?.code === "TARGET_UNAVAILABLE" && envelope(stopped)?.target?.space === "planned", shown(stopped));
+
+    writeFileSync(pointer, "");
+    const use = run(["use", "--plain"]), who = run(["who", "--plain"]);
+    check("bare who and use give the same refusal for an empty selection, without a roster",
+      use.status === 1 && who.status === 1 && who.stdout === "" && who.stderr === use.stderr &&
+      who.stderr.includes(`${pointer} is empty`) && who.stderr.includes("SCHEMA_INVALID") && who.stderr.includes("`cotal use --clear`"), shown(who));
+    const local = run(["who", "--json"], join(home, "alpha"));
+    check("an empty selection does not fall back to the running project either",
+      local.status === 1 && envelope(local)?.error?.code === "SCHEMA_INVALID" && envelope(local)?.target?.file === pointer && envelope(local)?.target?.space === undefined, shown(local));
+    for (const flags of [["--space", "alpha"], ["--server", A]]) {
+      const explicit = run(["who", ...flags, "--json"]);
+      check(`${flags[0]} still targets the named mesh with an empty saved selection`,
+        explicit.status === 0 && envelope(explicit)?.target?.space === "alpha", shown(explicit));
+    }
+
+    run(["use", "planned"]);
+    const marker = `${pointer}.adopted`;
+    mkdirSync(marker);
+    writeFileSync(join(marker, "keep"), "");
+    const unreadable = run(["who", "--json"]);
+    check("an unreadable selection marker is named and does not permit fallback",
+      unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
+    const reselected = run(["use", "planned", "--json"]);
+    check("selecting again repairs an unreadable marker without losing its directory contents",
+      reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&
+      readdirSync(env.COTAL_HOME!).some(name => name.startsWith("current-mesh.adopted.corrupt.") && existsSync(join(env.COTAL_HOME!, name, "keep"))), shown(reselected));
+    mkdirSync(marker);
+    const clearedMarker = run(["use", "--clear", "--plain"]);
+    check("clearing an unreadable marker clears the saved selection", clearedMarker.status === 0 && !existsSync(pointer) && !existsSync(marker), shown(clearedMarker));
+
+    writeFileSync(pointer, "");
+    const cleared = run(["use", "--clear", "--plain"]), fallback = run(["who", "--json"]);
+    check("deliberately clearing the damaged selection restores the single-space fallback",
+      cleared.status === 0 && fallback.status === 0 && envelope(fallback)?.target?.space === "alpha", shown(fallback));
+  } finally {
+    clearCurrent();
+    removePreparedSpace("planned");
+    recordMesh(beta);
+  }
+}
+
 // ── A terminal chooses, for this run only ───────────────────────────────────────────────────────────
 {
   const t = terminal(["who"]);

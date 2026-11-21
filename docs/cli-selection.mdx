@@ -460,6 +460,7 @@ A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 Bare `use` refuses with `SCHEMA_INVALID`, exit 1, if the saved selection is empty or unreadable.
 It names the file without changing it. Clear it with `cotal use --clear`, or select a known space again.
+If a directory occupies a saved selection file's path, either repair moves the directory aside and leaves its contents intact.
 `use --clear` removes the selection, so a command targets its folder's space again. Its receipt
 names the space that was selected, and `--json` gives `current: null` with that `previous`. With
 nothing selected it is a `no-op`, exit 0. It takes no space name.
@@ -479,6 +480,10 @@ when this `up` selected its own space because no space was selected.
 A command run without `--space` targets the selection. When the selected space's broker is down it
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+
+If the saved selection is empty or unreadable, commands that rely on it refuse with `SCHEMA_INVALID`
+before connecting. Clear it with `cotal use --clear`, select a known space again, or name the space
+for that command with `--space <name>`.
 
 A selection made with `cotal use` wins over every folder state, including a running, stopped,
 prepared or copied project. The note under `Mesh:` names that choice, including native `spawn`.
