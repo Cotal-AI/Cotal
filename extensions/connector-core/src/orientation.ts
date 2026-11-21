@@ -212,14 +212,14 @@ export function buildOrientation(
     generatedAt,
     identity: {
       state: agent.connected ? "bound" : "unbound",
-      display: { name: config.name, role: config.role ?? "unknown" },
+      display: { name: agent.displayName, role: config.role ?? "unknown" },
       principal: principal ?? { owner: "unknown", actor: "unknown" },
       lifecycleUid: config.lifecycleUid ?? "unknown",
       replacement: {
         state: "unknown",
         predecessorLifecycleUid: "unknown",
       },
-      name: config.name,
+      name: agent.displayName,
       role: config.role,
       space: config.space,
       id: agent.id,

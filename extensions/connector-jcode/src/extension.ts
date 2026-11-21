@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo, type OnceSeat } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
@@ -156,7 +156,7 @@ export const jcodeConnector: Connector = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
+      ...nameEnv(opts),
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
     if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;

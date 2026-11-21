@@ -9,11 +9,13 @@ const config: AgentConfig = {
   userAuth: { owner: "owner", actor: "actor", sentinelCreds: "fixture", bearerCmd: ["false"] },
 };
 const agent = new MeshAgent(config);
-(agent as unknown as { ep: unknown }).ep = {
+const ep = {
+  card: { name: config.name },
   principal: { owner: "owner", actor: "actor" },
   serviceRailCaller: () => ({ owner: "owner", actor: "actor", uid: config.lifecycleUid }),
   tap: () => {},
 };
+(agent as unknown as { ep: unknown }).ep = ep;
 const valid = (overrides: Partial<NativeTurnParticipationLease> = {}): NativeTurnParticipationLease => ({
   owner: "owner", actor: "actor", lifecycleUid: config.lifecycleUid!, name: config.name,
   managerInstanceId: "m".repeat(26), expiresAt: now + 60_000, ...overrides,
@@ -27,6 +29,11 @@ for (const mismatch of [
 assert.throws(() => agent.authorizeNativeTurnParticipation(valid({ expiresAt: now - 1 })), /expired/);
 agent.authorizeNativeTurnParticipation(valid());
 assert(agent.nativeTurnParticipationExpiresAt()! > now);
+// The lease binds the name presence shows, which `set-name` changes while the launch name stays.
+ep.card.name = "Renamed Personal";
+assert.throws(() => agent.authorizeNativeTurnParticipation(valid()), /does not bind/);
+agent.authorizeNativeTurnParticipation(valid({ name: "Renamed Personal" }));
+ep.card.name = config.name;
 assert.throws(() => agent.authorizeNativeTurnParticipation(valid({ managerInstanceId: "n".repeat(26) })), /cannot change/);
 
 const active = (agent as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
