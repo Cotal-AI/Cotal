@@ -132,13 +132,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(cotalHome, "prepared"), { recursive: true });
     writeFileSync(join(cotalHome, "prepared", `${spaceSegment(space)}.json`), JSON.stringify({ space, root, ts: "2026-10-23T00:00:00.000Z" }));
   };
-  const elsewhere = cotal([], (home) => {
-    prepare(home, "planned", join(dirname(home), "project"));
+  const prepareSelection = (home: string): void => {
+    const project = join(dirname(home), "project"), alternate = join(dirname(home), "alternate");
+    mkdirSync(project, { mode: 0o700 });
+    mkdirSync(alternate, { mode: 0o700 });
+    prepare(home, "planned", project);
+    prepare(home, "alternate", alternate);
     writeFileSync(join(home, "current-mesh"), "planned\n");
-  });
+  };
+  const elsewhere = cotal([], prepareSelection);
   local("bare cotal with a prepared space selected writes nothing", elsewhere);
   check("a selected prepared space is started from its folder",
     elsewhere.stdout.startsWith("planned · prepared · ") && /^Start here\n  (?:pnpm )?cotal up --root \S+\/project +Start this space$/m.test(elsewhere.stdout) && !elsewhere.stdout.includes("cotal spawn"), shown(elsewhere));
+  const elsewhereHelp = cotal(["--help"], prepareSelection);
+  const spaceActions = /^Start here\n(?: {2}[^\n]+\n)* {2}((?:pnpm )?cotal) space +List the spaces on this machine\n {2}\1 use <name> +Switch to another space\n\n/m;
+  check("bare cotal and --help show how to list spaces and switch when a prepared space is selected",
+    [elsewhere, elsewhereHelp].every((r) => r.status === 0 && spaceActions.test(r.stdout)), { entry: shown(elsewhere), help: shown(elsewhereHelp) });
   const here = cotal([], (home) => {
     mkdirSync(join(dirname(home), ".cotal"));
     prepare(home, "planned", dirname(home));
