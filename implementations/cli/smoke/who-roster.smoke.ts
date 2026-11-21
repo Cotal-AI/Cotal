@@ -118,7 +118,7 @@ mkdirSync(join(openRoot, ".cotal"), { recursive: true });
 const shell = join(home, "shell");
 mkdirSync(join(shell, ".cotal"), { recursive: true });
 
-const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env, DO_NOT_TRACK: "1" };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 

@@ -125,6 +125,25 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
 
+async function checkMembershipSetupRefusal(targetSpace: string, channel: string, code: string, ...targetFlags: string[]): Promise<void> {
+  const args = ["channel", "members", channel, "--space", targetSpace, "--json", ...targetFlags];
+  const finite = await run(args);
+  const stream = await run([...args, "--follow"]);
+  const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    schemaVersion?: number; stream?: string; type?: string; target?: { space?: string; channel?: string };
+    data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+  });
+  const error = finite.envelope?.error;
+  check(`membership follow frames ${code} as an error and end with the space and channel, exit 2`,
+    finite.status === 2 && finite.envelope?.command === "channel" && finite.envelope?.outcome === "refused"
+      && error?.code === code && Boolean(error.remedy) && stream.status === 2 && stream.stderr === ""
+      && records.map((r) => r.type).join() === "error,end" && records.every((r) =>
+        r.schemaVersion === 1 && r.stream === "membership" && r.target?.space === targetSpace && r.target?.channel === channel)
+      && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
+      && records[1]?.data?.reason === "setup-failed" && records[1]?.data?.lastAsOf === null,
+    { finite: shown(finite), stream: shown(stream) });
+}
+
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
   const child = spawn(process.execPath, [BIN, ...args], { cwd: shell, env: isolatedEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -148,6 +167,46 @@ function follow(args: string[]) {
     return false;
   };
   return { child, lines, exited, until, stderr: () => stderr };
+}
+
+async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
+  const args = ["history", "general", "--follow", "--json", "--grep", "resume boundary"];
+  const parse = (line: string) => JSON.parse(line) as { type: string; data: Item & { items?: Item[] } };
+  const original = follow(args);
+  let events: Item[] = [];
+  try {
+    const ready = await original.until((line) => parse(line).type === "snapshot");
+    const send = (sender: CotalEndpoint, text: string) => {
+      const now = Date.now;
+      Date.now = () => Date.parse(timestamp);
+      try { return sender.multicast(text, { channel: "general" }); }
+      finally { Date.now = now; }
+    };
+    await send(alice, "resume boundary one");
+    await send(bob, "resume boundary two");
+    const received = await original.until((line) => parse(line).data.text === "resume boundary two");
+    events = original.lines.map(parse).filter((record) => record.type === "event").map((record) => record.data);
+    check("the original follow emits both messages with the same timestamp and different IDs",
+      ready && received && events.length === 2 && events.every((item) => item.ts === timestamp)
+        && events.every((item) => Boolean(item.id)) && events[0]?.id !== events[1]?.id, events);
+  } finally {
+    await killAndAwaitExit(original.child, "SIGINT");
+  }
+  const [processed, unprocessed] = events;
+  if (!processed || !unprocessed) return;
+
+  const since = new Date(Date.parse(processed.ts) - 1).toISOString();
+  const resumed = follow([...args, "--since", since]);
+  try {
+    const ready = await resumed.until((line) => parse(line).type === "snapshot");
+    const items = resumed.lines.map(parse).find((record) => record.type === "snapshot")?.data.items ?? [];
+    const unseen = items.filter((item) => item.id !== processed.id);
+    check("a 1 ms overlap replays both boundary events and deduplication by ID keeps only the unread one",
+      ready && items.length === 2 && items.every((item) => item.ts === processed.ts)
+        && items.some((item) => item.id === processed.id) && unseen.length === 1 && unseen[0]?.id === unprocessed.id, items);
+  } finally {
+    await killAndAwaitExit(resumed.child, "SIGINT");
+  }
 }
 
 const endpoints: CotalEndpoint[] = [];
@@ -476,6 +535,7 @@ try {
   const timedEvents = timed.lines.map((l) => JSON.parse(l) as { type: string; data: { text?: string } }).filter((r) => r.type === "event");
   check("a live follow excludes an event at the time cutoff and emits a later event",
     timedSnap && timedEvent && timedEvents.map((r) => r.data.text).join() === "after the cutoff", timed.lines);
+  await checkFollowResume(alice, bob, midpoint);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
   await fp.until((l) => /replay to new members/.test(l));
@@ -740,6 +800,19 @@ try {
       const after = await run(["history", "--space", openSpace, "--json"]);
       check(`history clear refuses ${label} before purging either channel`, refused.status === 1 && after.status === 0 && texts(after).length === 2 && sentinels.every((text) => texts(after).includes(text)), { refused: shown(refused), after: shown(after) });
     }
+
+    const before = await run(["history", "--space", openSpace, "--json"]);
+    for (const [path, force] of [["./absent store", false], ["./absent store", true], ["", true], ["~/store", true]] as const) {
+      const refused = await run(["clean", "history", "--store-dir", path, "--space", openSpace, ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --store-dir ${JSON.stringify(path)} ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history targets a running mesh")
+        && refused.stderr.includes("Only clean store and clean all take --store-dir")
+        && !/cotal clean history.*--force|omit --store-dir/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
+    }
   }
 
   {
@@ -968,6 +1041,7 @@ try {
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
     const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
+    await checkMembershipSetupRefusal(openSpace, "general", "UNSUPPORTED");
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
@@ -1214,6 +1288,7 @@ try {
       && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
       && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
+  await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

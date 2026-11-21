@@ -237,18 +237,32 @@ const misspelledStatus = run(["help", "service", "sttaus", "manager"]);
 check("explicit help still refuses a misspelled service subcommand before its operand",
   usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
 
+for (const [command, word, title] of [
+  ["history", "general", "cotal history"],
+  ["h", "general", "cotal history"],
+  ["history", "clear", "cotal history clear"],
+  ["history", "limit", "cotal history limit"],
+] as const) {
+  const explicit = run(["help", command, word]);
+  const flag = run([command, word, "--help"]);
+  check(`both help forms for ${command} ${word} show ${title}`,
+    explicit.status === 0 && flag.status === 0 && explicit.stderr === "" && flag.stderr === ""
+    && explicit.stdout === flag.stdout && explicit.stdout.startsWith(`${title}\n`),
+    { explicit: shown(explicit), flag: shown(flag) });
+}
+
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
 // --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
-// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+// After a real subcommand or a leaf's argument it prints the help.
 for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
 }
 const nearHelp = run(["space", "creat", "--help"]);
 check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
-for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+for (const args of [["space", "create", "--help"], ["team", "show", "anything", "--help"]] as const) {
   const r = run([...args]);
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
@@ -369,8 +383,8 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    // Endpoint work and Manager unit installation are listed but have no runnable examples.
-    const unavailable = (cmd.name === "endpoint" && path[0] === "work") || (cmd.name === "manager" && path[0] === "install");
+    // Gated endpoint modes and Manager unit installation are listed but have no runnable examples.
+    const unavailable = (cmd.name === "endpoint" && ["watch", "session", "work"].some((mode) => mode === path[0])) || (cmd.name === "manager" && path[0] === "install");
     if (unavailable ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
@@ -531,7 +545,7 @@ for (const [args, usage, foreign] of [
     webStart.status === 0 && /^  --no-open\b/m.test(webStart.stdout),
     { manager: shown(managerStart), refused: shown(rejectedNoOpen), web: shown(webStart) });
 
-  for (const path of [["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
+  for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
       help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));

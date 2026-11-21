@@ -517,7 +517,11 @@ the duration. For example, `--window ' 24h '` saves `24h`.
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
 the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
 or null when the roster has none. With `--follow --json`, it emits membership NDJSON
-records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
+records. If setup fails before the snapshot, it writes an `error` with the code and any remedy,
+then an `end` with `reason: "setup-failed"` and `lastAsOf: null`. Both records name the requested
+channel and the space when known.
+
+A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
 case differs. A channel with a saved entry or retained messages and no member reads as empty. A
@@ -700,6 +704,9 @@ With no limit flag, `history limit` only reads. It prints the limit each of the 
 writes nothing, and asks for no `--yes`. `result.kind` is `history-limits`, and each
 `result.streams[]` entry names its stream and the `holds` limit, with `null` for no age or no count.
 
+`--force` is refused. Omit it from history reads, including reads of the current limits. When
+setting limits, use `--yes` to confirm without prompting and keep the target and limit flags.
+
 Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
 root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
 space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
@@ -767,14 +774,22 @@ rejects it the Next says to run the follow again, which mints one from the curre
 `--json` each line is one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
 When the follow starts, it writes a `snapshot` holding the window, then one `event` per message
 that matches the filters. A time-based `--since` applies to both the snapshot and live messages.
-A sequence cutoff applies only to the snapshot because live events have no `seq`. To read on from a follow, give
-`--since` the last event's `ts`. An `error` record names a failure on the live feed, and a lost
+A sequence cutoff applies only to the snapshot because live events have no `seq`.
+An `error` record names a failure on the live feed, and a lost
 connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
 shown. If the follow cannot open its target or read the snapshot, it writes an `error` with the code
 and any remedy, then an `end` with `reason: "setup-failed"`, without a snapshot. An `end` record closes
 the stream. The exit code is the snapshot's, the failure's when setup or the credential ends the
 follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+
+To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
+you processed at that timestamp. Restart with `--since` set to one millisecond before the saved
+time. For example, if the saved time is `2026-11-21T17:14:49.666Z`, pass
+`--since 2026-11-21T17:14:49.665Z`. A time cutoff is exclusive, so passing the saved time itself
+skips every message at that time. The overlap replays those messages. Skip only IDs you already
+processed, comparing `id` in the snapshot's `data.items` and `data.id` in live events.
+Raise `--limit` if the snapshot's window does not reach back to the cutoff.
 
 `history clear` purges retained history from every channel in the space it targets; `--dms` extends
 it to direct-message history. It refuses extra channel names, read filters and `--follow` before
@@ -827,7 +842,8 @@ candidate IDs and refusals in one receipt. Without `--json`, it keeps its earlie
 folder's space, else the selected one. It takes no channel argument. `--dms` also requests DM
 history under the existing purger authority. In a terminal, confirmation names the space, broker
 and space-wide scope and defaults to cancellation. Scripts
-and `--json` require `--yes`. The old `--force` spelling refuses with the replacement.
+and `--json` require `--yes`. If you passed `--force` to confirm a purge, replace it with `--yes` and
+keep the target and scope options. For a preview, omit `--force` and keep `--dry-run`.
 
 `history clear --dry-run` resolves the target and names the affected streams offline. It issues no
 caller credential, connects nowhere and does not check authorization or retained message counts.

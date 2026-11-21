@@ -55,12 +55,11 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("no verb at all is the list command, not a refusal", !(bare instanceof Error) && bare.verb === "ps", bare);
 }
 
-// --json and --plain on a form that prints text only name a form that takes the flag, or the same
-// command without it, and print no help. They used to say "use the hosted form" to revoke and check,
-// which have none.
+// Text-only forms give a retry without help: use a supported form or remove the output flag.
 {
   const cases: [string, string[], Record<string, string | boolean>, string, string][] = [
-    ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "run it without --json: cotal run revoke run-1 --local --by <who> --reason <text>"],
+    ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "remove --json from the original command and rerun it"],
+    ["revoke --local --plain", ["revoke", "run-1"], { local: true, by: "a", reason: "b", plain: true }, "run revoke prints no --plain output", "remove --plain from the original command and rerun it"],
     ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: `cotal run check run-1 --file p.cotal.js`"],
     ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: `cotal run start <file> --json`"],
     ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: `cotal run resume run-1 --json`"],
@@ -335,6 +334,34 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
     const invalid = await simulateText(text);
     c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
+  }
+  // The reported typo: `clock.checkpoints` silently fell back to the 60s default, so the
+  // simulation measured 60000ms instead of the 3000ms the author asked for. An unknown clock
+  // key is refused naming the field, the results file, and the key to use instead, and the
+  // singular key measures the delay the author asked for.
+  {
+    const typo = await simulate({ clock: { checkpoints: "3s" }, checkpoints: { go: { status: "resolved" } } });
+    c("an unknown clock field is refused naming the field, the results file, and the singular key",
+      scriptRefusal(typo, `unknown clock field 'checkpoints' in the simulation results script ${handler}`)
+      && isCommandFailure(typo) && (typo.target as { file?: string })?.file === handler
+      && typo.remedy === `use clock.checkpoint in ${handler} instead of clock.checkpoints, then rerun the simulation`, typo);
+    const unknown = await simulate({ clock: { cadence: "3s" }, checkpoints: { go: { status: "resolved" } } });
+    c("an unknown clock field with no singular key is refused naming the field and the file",
+      scriptRefusal(unknown, `unknown clock field 'cadence' in the simulation results script ${handler}`)
+      && isCommandFailure(unknown) && (unknown.target as { file?: string })?.file === handler
+      && unknown.remedy === `remove clock.cadence from ${handler}, then rerun the simulation`, unknown);
+    writeFileSync(program, 'const answer = await checkpoint("approve", "Approve the example?", { timeout: "10m", onExpiry: "proceed" });\nlog(answer.status);\n');
+    const timedOut: string[] = [];
+    const timedWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => { timedOut.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    let timed: unknown;
+    try { timed = await simulate({ clock: { checkpoint: "3s" }, checkpoints: { approve: { status: "resolved" } } }, { json: true }); }
+    finally { process.stdout.write = timedWrite; }
+    let timedEnvelope: { result?: { elapsedMs?: number } } | undefined;
+    try { timedEnvelope = JSON.parse(timedOut.join("")); } catch { timedEnvelope = undefined; }
+    c("clock.checkpoint measures the delay the author asked for (3s, not the 60s default)",
+      timed === undefined && timedEnvelope?.result?.elapsedMs === 3000, { timed, timedEnvelope });
+    writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   }
   for (const text of ['{"turns":{"build":{"status":"blocked"},"build":{"status":"done"}}}',
     String.raw`{"turns":{"build":{"status":"blocked"},"b\u0075ild":{"status":"done"}}}`]) {

@@ -252,6 +252,7 @@ export class SeatCustody {
     }
     const managed: ManagedAgent = {
       name: entry.name,
+      ...(entry.displayName !== undefined ? { displayName: entry.displayName } : {}),
       role: entry.role,
       agent: entry.launch.connector,
       id: entry.identity.id,

@@ -1,7 +1,9 @@
 import { CotalEndpoint, durableCovers, subjectMatches, type DeliveryClass, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
-import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, CommandFailure, exitCode, isCommandFailure, isConnectRefusal, isMeshRegistryError, streamRecord, writeStreamRecord, writeResult, renderReport, userViewAuthOrThrow, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { registryFailure } from "../lib/registry-errors.js";
+import { recordTelemetryFailure } from "../telemetry.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
 
 type Values = FlagValues<typeof channelFlags>;
@@ -14,11 +16,31 @@ interface Members {
 
 /** An invisible reader of the broker-derived feed, never an input to channel authorization. */
 export async function channelMembers(values: Values, channel: string, presentation: Presentation): Promise<void> {
+  if (!values.follow || presentation !== "json") return readMembers(values, channel, presentation);
+  const state: { space?: string; streaming?: boolean } = {};
+  try {
+    await readMembers(values, channel, presentation, state);
+  } catch (error) {
+    if (state.streaming) throw error;
+    const refusal = isConnectRefusal(error) ? error : undefined;
+    const failure = refusal?.failure() ?? (isCommandFailure(error) ? error : isMeshRegistryError(error) ? registryFailure(error)
+      : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error)));
+    recordTelemetryFailure(failure.outcome, failure.code, error);
+    const refusedSpace = refusal?.target?.space;
+    const target = { space: state.space ?? (typeof refusedSpace === "string" ? refusedSpace : values.space ?? null), channel };
+    writeStreamRecord(streamRecord("membership", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
+    writeStreamRecord(streamRecord("membership", "end", target, { reason: "setup-failed", lastAsOf: null }));
+    process.exitCode = exitCode(failure.outcome, failure.code);
+  }
+}
+
+async function readMembers(values: Values, channel: string, presentation: Presentation, state?: { space?: string; streaming?: boolean }): Promise<void> {
   const connection = await connectOrThrow(values, "admin");
+  if (state) state.space = connection.space;
   // The delivery service writes the feed, and an open mesh runs none, so no poll would ever arrive.
   if (connection.mode === "open")
     throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh runs no delivery service, so it has no membership feed", { target: { space: connection.space, channel }, remedy: "`cotal who` lists who is present; channel membership is observed on a static-auth or user-auth space" });
-  const user = connection.bearer ? await userViewAuthOrExit(connection, "admin") : undefined;
+  const user = connection.bearer ? await (state ? userViewAuthOrThrow : userViewAuthOrExit)(connection, "admin") : undefined;
   const ep = new CotalEndpoint({
     space: connection.space, servers: connection.server,
     ...(user ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "channel-members", kind: "endpoint" as const } }
@@ -148,6 +170,7 @@ export async function channelMembers(values: Values, channel: string, presentati
       process.once("SIGINT", interrupt);
       process.once("SIGTERM", terminate);
       emit("snapshot", last);
+      if (state) state.streaming = true;
       if (presentation !== "json") console.log(renderReport(membersView(last, true), presentation, process.stdout));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
       watch = await ep.watchMembership(onMembership, watchClosed);

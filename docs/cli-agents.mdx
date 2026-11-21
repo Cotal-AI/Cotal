@@ -500,8 +500,9 @@ create work on that manager's catalog instead, and edit and remove refuse there,
 [Personas on an exact manager](#personas-on-an-exact-manager) describes. `--announce <channel>`
 belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID` and changes no file.
 
-A persona name uses letters, digits, `_` and `-`, up to 128 characters, and a name refusal says
-which rule it broke.
+Persona names for create, edit and remove use letters, digits, `_` and `-`, up to 128 characters.
+A local `persona show` also accepts periods in a catalog name. For example, `cotal persona show review.md`
+reads `.cotal/agents/review.md.md` in the selected space, not `review.md` in the project root.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
 paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
