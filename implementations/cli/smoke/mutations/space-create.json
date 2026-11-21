@@ -147,7 +147,7 @@
     },
     {
       "name": "status calls a prepared selection not recorded",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "r.meshes.currentPrepared ? \"prepared, not started\" : \"not recorded\"",
       "replace": "\"not recorded\"",
       "expectRed": "status says the selected space is prepared, not started",
@@ -156,7 +156,7 @@
     },
     {
       "name": "status --verbose calls a prepared selection not recorded",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "m.currentPrepared ? \"prepared, not started\" : \"not recorded\"",
       "replace": "\"not recorded\"",
       "expectRed": "status --verbose notes the selected space is prepared, not started",

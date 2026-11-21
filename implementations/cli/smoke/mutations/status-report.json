@@ -75,7 +75,7 @@
     },
     {
       "name": "the NATS row prints the raw source value",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "cell(brokerExecutable(m), m.natsProblem ? \"failed\" : \"ok\")]",
       "replace": "cell(m.nats, m.natsProblem ? \"failed\" : \"ok\")]",
       "expectRed": "the NATS row says where nats-server comes from in words",
@@ -84,7 +84,7 @@
     },
     {
       "name": "the membership feed row prints its raw ISO time",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "entries · updated ${formatAge(Math.max(0, Date.now() - Date.parse(s.membershipFeed.asOf)))} ago`",
       "replace": "entries · ${s.membershipFeed.asOf}`",
       "expectRed": "the membership feed row says how long ago it was updated",
