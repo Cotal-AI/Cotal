@@ -36,12 +36,9 @@ import {
 } from "@cotal-ai/core";
 import { BROKER_AUTH_KEY, getSpaceAuth, putSpaceAuth, replaceSpaceAccountAuth, SPACE_AUTH_KEY, spaceAccountKey } from "../src/auth-paths.js";
 import { workspaceSecretStore } from "../src/secret-store-fs.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 interface FileFact { sha: string; ino: bigint; mtimeNs: bigint }
 function snapshot(dir: string): Map<string, FileFact> {
@@ -263,8 +260,8 @@ try {
   check("the function itself made no broker write", rec.writes().every((c) => c === `put ${targetKey}`), rec.writes());
   await store.put(BROKER_AUTH_KEY, brokerRaw);
 
-  console.log(`\nREPLACE-SPACE-ACCOUNT-AUTH SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-  if (fail) process.exitCode = 1;
+  console.log(`\nREPLACE-SPACE-ACCOUNT-AUTH SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+  finish();
 } catch (e) {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
