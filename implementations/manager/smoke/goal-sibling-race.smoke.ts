@@ -72,7 +72,7 @@ const stuckCon: Connector = {
 registry.register(stuckCon);
 
 const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
-type MgrPriv = { managerInstanceId: string; readinessTimeoutMs: number; serviceServe?: { grant: { epoch: number } }; agents: Map<string, unknown> };
+type MgrPriv = { config: { readinessTimeoutMs: number }; managerInstanceId: string; serviceServe?: { grant: { epoch: number } }; agents: Map<string, unknown> };
 
 let mgrA: InstanceType<typeof Manager> | undefined;
 let mgrB: InstanceType<typeof Manager> | undefined;
@@ -87,8 +87,8 @@ try {
   mgrB = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: rootB });
   // A LONG readiness window on both: the goal must still be in flight when B arrives, so the thing
   // under test is B's behaviour and not a race with the readiness deadline settling it `uncertain`.
-  (mgrA as unknown as MgrPriv).readinessTimeoutMs = 60_000;
-  (mgrB as unknown as MgrPriv).readinessTimeoutMs = 60_000;
+  (mgrA as unknown as MgrPriv).config.readinessTimeoutMs = 60_000;
+  (mgrB as unknown as MgrPriv).config.readinessTimeoutMs = 60_000;
   await mgrA.start();
   await mgrB.start();
   const A = mgrA as unknown as MgrPriv;

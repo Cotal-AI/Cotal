@@ -216,10 +216,10 @@ try {
   // not a constructed Manager result: the generic window is deliberately shorter than Jcode's
   // declared window, then the check observes the action terminal through the normal launch rail.
   {
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
     const GENERIC_WINDOW_MS = 1_000;
     const CLIENT_MS = 12_000;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = GENERIC_WINDOW_MS;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = GENERIC_WINDOW_MS;
     try {
       const jcodeRun = "readiness03";
       writeFileSync(
@@ -245,7 +245,7 @@ try {
         elapsed,
       );
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -265,11 +265,11 @@ try {
   // asserted "a non-ok reply arrives" passes on the broken code, which is precisely why this one
   // asserts the guidance text.
   {
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
     const SHORT_MS = 2_000;      // the window under test, shortened so the suite is not 30s long
     const CLIENT_MS = 12_000;    // the caller's own budget, deliberately well ABOVE the window, so
                                  // "returned near the window" cannot be satisfied by a client timeout
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = SHORT_MS;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = SHORT_MS;
     try {
       const ghostRun = "readiness02";
       writeFileSync(
@@ -297,7 +297,7 @@ try {
       ok("...and the instruction that prevents a duplicate re-issue", msg.includes("Inspect with"), msg);
       ok("...naming the agent it is about", msg.includes("ghost"), msg);
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -319,8 +319,8 @@ try {
   // F. A spawn whose process runs but never joins settles `uncertain` with the entity-running
   // detail, which is what lets a caller say it is still starting.
   {
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
     try {
       const reply = await driver.spawn("ghostspawn", undefined, { agent: "ghost-e2e", events: false });
       ok("a running spawn that never joins settles `uncertain`", reply.ok === false && reply.code === "uncertain", reply);
@@ -335,7 +335,7 @@ try {
       ok("the ps wire surface carries the same degraded join diagnostic", listed.reply.ok === true &&
         (listed.reply.data as Array<{ name: string; joinHealth?: { state: string } }>).some((r) => r.name === "ghostspawn" && r.joinHealth?.state === "degraded"), listed.reply);
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -343,8 +343,8 @@ try {
   // uncertain launch remains alive, and its exact-incarnation late join clears the diagnostic.
   {
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "latepending.md"), "---\nname: latepending\n---\nOwned late join.\n");
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
     try {
       const spawning = driver.spawn("latepending", undefined, { agent: "slow-e2e", events: false });
       await sleep(700);
@@ -364,7 +364,7 @@ try {
       ok("an exact-incarnation late join clears degraded health without stopping the process",
         late.status === "running" && late.presenceIdentityVerified === true && late.mesh !== "offline" && late.mesh !== "absent" && late.joinHealth === undefined, late);
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -387,8 +387,8 @@ try {
       // on the other Manager, so result identity and retry checks cannot pass on a local default.
       for (const host of [mgr, otherManager]) {
         const instance = (host as unknown as { managerInstanceId: string }).managerInstanceId;
-        const original = (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
-        (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+        const original = (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
+        (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
         try {
           const input = { name: "toolpending", agent: "slow-e2e", instance, events: false };
           const first = await tool.run(caller, config, input);
@@ -402,11 +402,11 @@ try {
           ok("the selected Manager owns one seat and no numbered duplicate", census.reply.ok && rows.filter(r => r.name.startsWith("toolpending")).length === 1, census.reply);
           ok("the tool names the Manager that accepted the goal", first.structured?.manager === instance, first);
         } finally {
-          (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = original;
+          (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = original;
         }
       }
       for (const host of [mgr, otherManager])
-        (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+        (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
       const unpinned = { name: "toolpending", agent: "slow-e2e", events: false };
       let splitObserved = false;
       for (let attempt = 0; attempt < 8 && !splitObserved; attempt++) {

@@ -560,7 +560,7 @@ try {
     optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
   // The remaining sections exercise explicit opt-outs and unrelated authorization paths. They predate
   // the required-policy scenario above, so return this in-process fixture to unrestricted behavior.
-  (manager as unknown as { eventsRequired: boolean }).eventsRequired = false;
+  (manager as unknown as { config: { eventsRequired: boolean } }).config.eventsRequired = false;
   const alphaToken = readFileSync(incFiles("alpha").actorToken, "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
   const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });
@@ -2024,7 +2024,7 @@ try {
   check("cell 4: admin explicit plane remains served with the own-channel grant",
     adminResult.reply.ok === true && adminRow?.allowPublish?.includes(eventChannel({ owner: OWNER, actor: "adminprobe" })) === true,
     { ok: adminResult.reply.ok, error: adminResult.reply.error?.message });
-  (participant as unknown as { eventsRequired: boolean }).eventsRequired = false;
+  (participant as unknown as { config: { eventsRequired: boolean } }).config.eventsRequired = false;
   // Observe the options entering the real provisioning method, not a stubbed success reply.
   // A u_-owner foreign caller is refused later by enrollment, so its notice never reaches the wire.
   const actualStart = participant.startAgent.bind(participant);
