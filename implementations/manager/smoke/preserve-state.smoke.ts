@@ -875,10 +875,10 @@ let openInventory: ManagerResumeAgent;
   const ep = (manager as unknown as { ep: Record<string, unknown> }).ep;
   ep.renewManagerLease = async () => { throw new Error("simulated lease loss"); };
   ep.readOwnManagerLease = async () => { throw new Error("simulated broker silence"); };
-  (manager as unknown as { leaseInfo: unknown; leaseRevision: number }).leaseInfo = {
+  (manager as unknown as { lease: { leaseInfo: unknown } }).lease.leaseInfo = {
     holder: "local.manager", runtime: "fake", root, pid: process.pid,
   };
-  (manager as unknown as { leaseRevision: number }).leaseRevision = 1;
+  (manager as unknown as { lease: { leaseRevision: number } }).lease.leaseRevision = 1;
   const originalExit = process.exit;
   let exitCode: number | undefined;
   (process as unknown as { exit: (code?: number) => never }).exit = ((code?: number) => {
@@ -886,7 +886,7 @@ let openInventory: ManagerResumeAgent;
     return undefined as never;
   });
   try {
-    await (manager as unknown as { renewLease: () => Promise<void> }).renewLease();
+    await (manager as unknown as { lease: { renewLease: () => Promise<void> } }).lease.renewLease();
   } finally {
     (process as unknown as { exit: typeof process.exit }).exit = originalExit;
   }

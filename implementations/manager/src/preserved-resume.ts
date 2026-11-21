@@ -26,7 +26,7 @@ const ORPHAN_PRESENCE_CLEAR_MS = 20_000;
 
 /** The owner a retained seat resumes under: its inventory identity's, which is the same value the
  *  adopted seat records as `userOwner`, so a resumed seat is counted against the owner that held
- *  it before the restart ({@link Manager.ownerSeats}) and not against the mesh's default one. */
+ *  it before the restart ({@link NamesCapacity.ownerSeats}) and not against the mesh's default one. */
 function resumeOwner(entry: ManagerResumeAgent): string {
   return entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
 }

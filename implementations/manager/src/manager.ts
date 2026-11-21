@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, ManagerLeaseInfo, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -737,16 +737,6 @@ export class Manager {
   }
   protected readonly retirement = new Retirement(retirementDeps(this));
   private readonly lease = new LeaseKeeper(leaseKeeperDeps(this));
-  protected get leaseInfo(): Omit<ManagerLeaseInfo, "since"> | undefined { return this.lease.leaseInfo; }
-  protected set leaseInfo(info: Omit<ManagerLeaseInfo, "since"> | undefined) { this.lease.leaseInfo = info; }
-  protected get leaseRevision(): number | undefined { return this.lease.leaseRevision; }
-  protected set leaseRevision(revision: number | undefined) { this.lease.leaseRevision = revision; }
-  protected get leaseTimer(): ReturnType<typeof setInterval> | undefined { return this.lease.leaseTimer; }
-  protected set leaseTimer(timer: ReturnType<typeof setInterval> | undefined) { this.lease.leaseTimer = timer; }
-  private get leaseRenewTask(): Promise<void> | undefined { return this.lease.leaseRenewTask; }
-  protected acquireInstanceLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> { return this.lease.acquireInstanceLease(info); }
-  protected renewLease(): Promise<void> { return this.lease.renewLease(); }
-  private releaseOwnManagerLease(): Promise<void> { return this.lease.releaseOwnManagerLease(); }
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
    *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
@@ -975,6 +965,7 @@ export class Manager {
     Object.assign(this.parts, {
       connectorInventory: this.connectorInventory,
       harnessResolution: this.harnessResolutionComponent,
+      lease: this.lease,
       seatLaunch: this.seatLaunch,
       servePlane: this.servePlane,
     } satisfies ManagerParts);
@@ -1337,7 +1328,7 @@ export class Manager {
     const starting = this.startTask;
     await this.awaitStaticReconcileDrain();
     await starting?.catch(() => {});
-    if (this.leaseTimer) clearInterval(this.leaseTimer);
+    if (this.lease.leaseTimer) clearInterval(this.lease.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
@@ -1345,7 +1336,7 @@ export class Manager {
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
-    await this.leaseRenewTask?.catch(() => {});
+    await this.lease.leaseRenewTask?.catch(() => {});
     // Join the bounded Manager renewal. Its stop/deadline fence refuses late adoption, but the
     // host still owns any submitted issuance and its outcome can remain unknown after timeout.
     await this.remoteBundleRenewal?.catch(() => {});
@@ -1390,7 +1381,7 @@ export class Manager {
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
     if (seatFailure === undefined) {
-      await step("release manager lease", () => this.releaseOwnManagerLease());
+      await step("release manager lease", () => this.lease.releaseOwnManagerLease());
       // #1634: hand the renewal lease back on a clean stop so a sibling picks it up on its next pass
       // rather than waiting out the bucket TTL. A non-owner holds no revision and this is a no-op.
       await step("release renewal lease", () => this.ep.releaseDaemonRenewalLease());
@@ -1966,9 +1957,6 @@ export class Manager {
 
   /** The owner a launch belongs to: {@link NamesCapacity.launchOwner}. */
   protected launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string { return this.namesCapacity.launchOwner(opts, spawner); }
-  /** Live seats this manager holds for one owner: {@link NamesCapacity.ownerSeats}. */
-  // @ts-expect-error TS6133: the seat-cap smoke reads this private count through a structural view.
-  private ownerSeats(owner: string): number { return this.namesCapacity.ownerSeats(owner); }
   /** The per-owner ceiling at accept: {@link NamesCapacity.seatCapRefusal}. */
   protected seatCapRefusal(owner: string): EpEnvelopeError | undefined { return this.namesCapacity.seatCapRefusal(owner); }
 
