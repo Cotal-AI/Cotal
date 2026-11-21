@@ -266,6 +266,10 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+When a newer release is available, self-update sets aside an unreadable connector selection and
+reports the saved path. It uses a connector set named by a readable record, or prepares a separate
+set if neither record is readable. A later rollback keeps the saved record and restores the
+repaired connector state.
 
 
 ```bash

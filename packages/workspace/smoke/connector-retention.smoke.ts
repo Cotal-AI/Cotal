@@ -47,7 +47,7 @@ import assert from 'node:assert/strict';
 import {chmodSync,readFileSync,readdirSync,statSync,writeFileSync} from 'node:fs';
 import {dirname,join} from 'node:path';
 Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});
-const {connectorConfigDir,retainConnectorConfig,repairConnectorSelection}=await import(${JSON.stringify(module)});
+const {connectorConfigDir,retainConnectorConfig,repairConnectorSelection,pruneRetainedConnectorConfig}=await import(${JSON.stringify(module)});
 const old = retainConnectorConfig();
 const keep = join(old, 'keep');
 writeFileSync(keep, 'preserved');
@@ -56,19 +56,29 @@ const corrupt = ['{"v":2}', '{bad json'];
 for (const [i, file] of selections.entries()) { writeFileSync(file, corrupt[i]); chmodSync(file, 0o400); }
 assert.throws(() => repairConnectorSelection(() => { throw new Error('source check refused'); }), /source check refused/);
 for (const [i, file] of selections.entries()) assert.equal(readFileSync(file, 'utf8'), corrupt[i]);
-repairConnectorSelection(() => {});
+const retained = repairConnectorSelection(() => {});
 const repaired = connectorConfigDir();
 assert.notEqual(repaired, old);
 assert.equal(readFileSync(keep, 'utf8'), 'preserved');
+assert.equal(retained.length, 2);
 for (const [i, file] of selections.entries()) {
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).root, repaired);
   const folder = dirname(file), name = file.slice(folder.length + 1);
   const backups = readdirSync(folder).filter(file => file.startsWith(name + '.corrupt.'));
   assert.equal(backups.length, 1);
   const backup = join(folder, backups[0]);
+  assert(retained.includes(backup));
   assert.equal(readFileSync(backup, 'utf8'), corrupt[i]);
   assert.equal(statSync(backup).mode & 0o777, 0o400);
 }
+const metadata = ${JSON.stringify(join(installed, "package.json"))};
+const previous = readFileSync(metadata);
+try {
+  writeFileSync(metadata, JSON.stringify({ ...JSON.parse(previous), version: '0.165.5' }));
+  retainConnectorConfig();
+  pruneRetainedConnectorConfig([]);
+  for (const [i, backup] of retained.entries()) assert.equal(readFileSync(backup, 'utf8'), corrupt[i]);
+} finally { writeFileSync(metadata, previous); }
 `], { env: { ...childEnv, XDG_CONFIG_HOME: join(root, "repair-config"), COTAL_HOME: join(root, "repair-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(repair.status, 0, `${repair.stdout}${repair.stderr}`);
   passed++;
