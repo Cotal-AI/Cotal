@@ -967,7 +967,7 @@ With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
-`config set` saves a preference without installing or refreshing connectors. Only `harness`
+Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
