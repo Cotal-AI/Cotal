@@ -20,8 +20,8 @@ import {
   homeCotalDir,
   inputDisabledByFlag,
   jsonFlag,
+  knownHarnesses,
   loadMeshes,
-  manifestExtensionNames,
   meshFile,
   paintFor,
   personaDir,
@@ -46,7 +46,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -211,10 +211,12 @@ interface SetupCancelled {
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
 const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name> [--runtime <name>]";
 const SELF_HOSTED_FORM = "cotal setup --destination self-hosted --harness <connector> --project <dir> --space <name> [--connection-file <bundle.json>] [--runtime <name>]";
-/** What to do about a harness setup cannot set up. */
-const HARNESS_REMEDY = "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`";
 
-/** Input-only validation before connector seeding or preparation writes. */
+function unknownHarness(name: string, known: readonly string[]): CommandFailure {
+  return usage(`no harness ${JSON.stringify(name)}; known harnesses: ${known.join(", ")}`, "pass one of them with --harness, or install another connector with `cotal ext add <npm-package>`");
+}
+
+/** Validate inputs before connector seeding or preparation writes. */
 export function validateSetupArguments(args: ParsedArgs): void {
   const values = args.values as SetupValues;
   if (args.positionals.length) throw usage("setup takes flags, not positional inputs");
@@ -236,6 +238,10 @@ export function validateSetupArguments(args: ParsedArgs): void {
   }
   if (values.start && !values.detach && !interactive) throw usage("setup --start requires --detach when it cannot open an interactive terminal");
   if (!interactive) scriptedInputs(values, runtimeChoices());
+  if (values.harness !== undefined) {
+    const known = knownHarnesses(extensionNames("connector"));
+    if (!known.includes(values.harness)) throw unknownHarness(values.harness, known);
+  }
 }
 
 /**
@@ -538,7 +544,7 @@ async function harnessCandidates(harness?: string): Promise<SetupConnectorCandid
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the "${harness}" connector is not installed`, { remedy: `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\`` });
     return candidates;
   }
-  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
+  if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw unknownHarness(harness, knownHarnesses([]));
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
     remedy: seeds ? (harness === undefined ? "run `cotal ext seed --reset` to restore all built-in extensions, including any you removed" : `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\``) : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
@@ -590,7 +596,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
-  if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
+  if (!candidate) throw unknownHarness(inputs.harness, candidates.map((c) => c.value));
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
@@ -1108,12 +1114,10 @@ export async function setupConnectorCandidates(
     }));
 }
 
-/** Materialize every connector advertised by the registry or installed manifest. Exported so the
- *  fail-loud smoke reaches the same discovery boundary as guided setup. */
+/** Materialize every connector advertised to the CLI. Exported so the fail-loud smoke reaches
+ *  the same discovery boundary as guided setup. */
 export async function setupConnectorSurface(): Promise<Connector[]> {
-  const names = new Set(registry.all<Connector>("connector").map((connector) => connector.name));
-  for (const name of manifestExtensionNames("connector")) names.add(name);
-  return Promise.all([...names].sort().map((name) =>
+  return Promise.all(extensionNames("connector").map((name) =>
     materializeExtension<Connector>({ kind: "connector", name })
   ));
 }

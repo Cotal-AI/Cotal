@@ -52,7 +52,9 @@ official runtime whose tool is not on PATH.
 ### Setup checks everything before it writes
 
 `validateSetupArguments` runs before connector seeding and before any preparation write. It rejects
-conflicting startup flags and a scripted startup that does not detach.
+conflicting startup flags, a scripted startup that does not detach, and a `--harness` name missing
+from the built-in catalog and the CLI's registered or installed connectors. This name check does
+not import connectors.
 
 `planSetup` checks the preparation before it writes: the space name, the application against the
 setup connector surface, and the space at its destination.
@@ -122,7 +124,7 @@ operator's own driving session, `me`. `me` is the persona that `cotal spawn me` 
 ### Connectors own their setup actions
 
 The application question offers the setup connector surface (`setupConnectorSurface`). The surface
-is every connector name that the live registry or the installed extension manifest advertises.
+includes connectors from the live registry and, for the packaged CLI, the installed manifest.
 `setupConnectorSurface` materializes each one through the same loader the rest of the CLI uses.
 `setup.ts` names no connector.
 

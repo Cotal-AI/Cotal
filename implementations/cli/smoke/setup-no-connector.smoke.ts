@@ -4,7 +4,7 @@
  * `--harness nosuch` got the same "no connector is installed" refusal as a real connector name.
  *
  * Driven through the built binary of this checkout in a sandboxed HOME, XDG_CONFIG_HOME and
- * COTAL_HOME with COTAL_SKIP_CONNECTOR_SEED=1 for the empty-inventory checks. Then seed and remove
+ * COTAL_HOME. Check that an unknown harness does not seed an empty inventory, then seed and remove
  * the built-ins through the CLI and follow the recommended targeted recovery.
  *
  * Run: pnpm smoke:setup-no-connector
@@ -21,7 +21,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: { items?: unknown[] } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-setup-noconn-"));
@@ -39,10 +39,18 @@ const setup = (harness: string, extra: Record<string, string> = {}) => {
 };
 const shown = (r: ReturnType<typeof setup>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
 
-const unknown = setup("nosuch");
+const seededEnv = { ...env, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1" };
+const command = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { cwd: project, env: seededEnv, encoding: "utf8", timeout: 180_000 });
+const inventory = () => {
+  const result = command("ext", "list", "--json");
+  return result.status === 0 ? (JSON.parse(result.stdout) as Envelope).result?.items : undefined;
+};
+check("rig: the extension inventory starts empty", inventory()?.length === 0);
+const unknown = setup("nosuch", seededEnv);
 check("an unknown harness is a usage refusal, exit 1", unknown.status === 1 && unknown.envelope?.error?.code === "USAGE_INVALID", shown(unknown));
 check("it names the harness and the official connectors", /no harness "nosuch"/.test(unknown.envelope?.error?.message ?? "") && /claude/.test(unknown.envelope?.error?.message ?? ""), unknown.envelope?.error);
 check("and its remedy says to pass one of them or add a connector", /^pass one of them with --harness/.test(unknown.envelope?.error?.remedy ?? ""), unknown.envelope?.error);
+check("the unknown harness leaves the extension inventory empty without reconciling", inventory()?.length === 0 && !/Reconciling built-in/.test(unknown.stderr), shown(unknown));
 
 const official = setup("claude");
 check("rig: no connector is installed in the sandbox", official.status === 2 && official.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && /no connector is installed/.test(official.envelope.error.message ?? ""), shown(official));
@@ -54,8 +62,6 @@ check("an official harness names its targeted install", optedIn.status === 2 && 
 check("nothing was written to the project", !existsSync(join(project, ".cotal")));
 
 // Exercise the supported removal path, not just an initially empty manifest.
-const seededEnv = { ...env, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1" };
-const command = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { cwd: project, env: seededEnv, encoding: "utf8", timeout: 180_000 });
 check("seed the built-ins", command("ext", "seed").status === 0);
 const removedClaude = command("ext", "remove", "@cotal-ai/connector-claude-code");
 check("remove connector-claude-code", removedClaude.status === 0, removedClaude.stderr);
