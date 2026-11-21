@@ -15,15 +15,20 @@ function preparedMintRemedy(root: string, server?: string): string {
   return `start it with ${codeSpan(command)} to create the local static signing trust`;
 }
 
+function unsupportedStaticMint(target: Record<string, unknown>): CommandFailure {
+  return new CommandFailure("refused", "UNSUPPORTED", "static credentials are not issued for open or per-user-auth spaces", { target, remedy: "use the space's supported login/enrollment path instead of a static identity" });
+}
+
 /**
  * Offline resolution retains stale registrations instead of repairing the selected target.
  * `offlineRemedy` is the caller's other step when a mint that writes only the private file would
  * resolve the same target, as one for a stopped local space does.
  */
-export function resolveMintTarget(values: { space?: string; server?: string }, allowStoppedLocal = false, offlineRemedy?: string): MeshTarget {
+export function resolveMintTarget(values: { space?: string; server?: string }, allowStoppedLocal = false, offlineRemedy?: string, reportTarget: Record<string, unknown> = {}): MeshTarget {
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true, allowStoppedLocal }); }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
+    if (error.code === "user-auth-unrecorded") throw unsupportedStaticMint({ ...reportTarget, space: error.details.space });
     if (error.code === "no-meshes")
       throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen", { remedy: "start a local static-auth space with `cotal up` in its project folder and retry there, or use `--space <name>` to select a static-auth space with signing trust on this machine" });
     const rendered = workspaceErrorParts({ kind: "target", error });
@@ -41,7 +46,7 @@ export function resolveMintTarget(values: { space?: string; server?: string }, a
 
 /** Fixed profiles and endpoint callers share the same explicit local signing authority. */
 export async function staticMintAuthority(values: { space?: string; server?: string }, reportTarget: Record<string, unknown>, allowStoppedLocal = false, offlineRemedy?: string) {
-  const target = resolveMintTarget(values, allowStoppedLocal, offlineRemedy), { root, space } = target;
+  const target = resolveMintTarget(values, allowStoppedLocal, offlineRemedy, reportTarget), { root, space } = target;
   const currentRoot = findCotalRoot(), store = workspaceSecretStore(root);
   const auth = await getSpaceAuth(store, space);
   const currentAuth = canonicalRoot(currentRoot) === canonicalRoot(root) ? auth : await getSoleSpaceAuth(workspaceSecretStore(currentRoot), authDir(currentRoot));
@@ -56,6 +61,6 @@ export async function staticMintAuthority(values: { space?: string; server?: str
       target: selected, ...(prepared ? { remedy: preparedMintRemedy(root, values.server) } : {}),
     });
   }
-  if (target.mode !== "auth" || hasUserAuthState(root, space, { readOnly: true })) throw new CommandFailure("refused", "UNSUPPORTED", "static credentials are not issued for open or per-user-auth spaces", { target: selected, remedy: "use the space's supported login/enrollment path instead of a static identity" });
+  if (target.mode !== "auth" || hasUserAuthState(root, space, { readOnly: true })) throw unsupportedStaticMint(selected);
   return { target, auth, currentRoot, store };
 }
