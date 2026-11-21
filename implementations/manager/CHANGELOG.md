@@ -1,5 +1,28 @@
 # @cotal-ai/manager
 
+## 0.172.1
+
+### Patch Changes
+
+- 6e98cc0: When an endpoint invocation times out before sending the command, the CLI tells you to change only `--timeout` on the original command without displaying its argument values.
+- Updated dependencies [46f5a7a]
+- Updated dependencies [e9d7585]
+- Updated dependencies [2ec9a4d]
+- Updated dependencies [a880a09]
+- Updated dependencies [6f05bd5]
+- Updated dependencies [ee3a15c]
+- Updated dependencies [c3d0a38]
+- Updated dependencies [f346cde]
+- Updated dependencies [6e98cc0]
+- Updated dependencies [cceb29a]
+- Updated dependencies [6a6a4e4]
+- Updated dependencies [9a06339]
+- Updated dependencies [fb6c87f]
+- Updated dependencies [2037c77]
+  - @cotal-ai/workspace@0.172.1
+  - @cotal-ai/core@0.172.1
+  - @cotal-ai/seat@0.172.1
+
 ## 0.172.0
 
 ### Minor Changes

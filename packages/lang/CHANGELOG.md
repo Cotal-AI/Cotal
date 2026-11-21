@@ -1,5 +1,12 @@
 # @cotal-ai/lang
 
+## 0.172.1
+
+### Patch Changes
+
+- e11a800: A checkpoint scripted as expired in a workflow simulation now expires at its timeout, so a race against it picks the same winner as a live run.
+- 728bde0: Workflow simulations now time out when a scripted event arrives after the wait deadline.
+
 ## 0.172.0
 
 No changes in this release.

@@ -1,5 +1,12 @@
 # @cotal-ai/connector-codex
 
+## 0.172.1
+
+### Patch Changes
+
+- d1d8aaa: Point the missing or stale Codex plugin status row to setup help for scripts instead of a command that requires a terminal.
+- 39810d0: Repair a missing Codex marketplace registration after you move the Cotal home, without changing whether the Cotal plugin is enabled.
+
 ## 0.172.0
 
 ### Patch Changes
