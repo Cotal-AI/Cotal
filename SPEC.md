@@ -320,6 +320,11 @@ before use.
 
 `EndpointRef` is `{ "id": string, "name": string, "role"?: string }`.
 
+`from.name` is the sender's display name when it sent the message (§6). A sender that is renamed
+(§13.22 `set-name`) sends its later messages under the new name, and a stored message keeps the name
+it was sent under. `from.id` is the same before and after a rename, so a reader that needs the
+sender's current name looks `from.id` up in presence.
+
 On receive, a client MUST verify `from.id` equals the subject sender (§3). On mismatch, a
 missing `from`, or an unparseable delivery subject, the message MUST be rejected and never
 redelivered.
@@ -384,7 +389,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | Field | Type | Req | Notes |
 | --- | --- | --- | --- |
 | `id` | string | MUST | instance id (§2) |
-| `name` | string | MUST | display name; at most 128 characters (`MAX_NAME_LENGTH`, refused at the shared validator; an unbounded name rides the CONNECT line until the broker drops it silently, §13.9) |
+| `name` | string | MUST | display name; at most 128 characters (`MAX_NAME_LENGTH`, refused at the shared validator; an unbounded name rides the CONNECT line until the broker drops it silently, §13.9). It can change within a lifecycle (§13.22 `set-name`) while `id` stays. Two live instances SHOULD NOT share a name compared lowercased, as `@mentions` resolve it (§4); `set-name` refuses such a name, but the check reads presence and is advisory, so a reader MUST NOT treat a name as unique |
 | `kind` | `agent` or `endpoint` | MUST | participation class |
 | `role` | string | MAY | service role |
 | `description` | string | MAY | one-line summary |
@@ -6512,7 +6517,7 @@ validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sen
 | Mint | Serve rows | Caller rows |
 | --- | --- | --- |
 | User-auth, ledger row of kind `managed-agent` | yes | none |
-| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state` and `interrupt`, and the reply read |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and `set-name`, and the reply read |
 | Static credential | no | no |
 | Open mesh | no rows exist | |
 | Every view, service credential and infrastructure profile | no | no |
@@ -6621,18 +6626,18 @@ invokes registered endpoints does not reach them.
 
 The endpoint `agent` on the principal route (§13.21) is the command set an agent serves about the
 questions its harness stops to ask (a tool permission, a question, a plan to approve, a form),
-about the harness commands and skills it runs, and about the turn it is running. Its contract is a
-core constant: cluster URN `ai.cotal.agent`, revision 3, every schema closed and frozen, nothing
-published to the contract store. A caller embeds the artifacts and pins their digests. Every command
-is ephemeral and untargeted. The prompt commands declare `authorities: ["owner", "grant"]`;
-`commands`, `command`, `command-cancel`, `command-state` and `interrupt` declare
-`authorities: ["owner"]`, so only the owner's interactive session runs an agent's commands or stops
-its turn.
+about the harness commands and skills it runs, about the turn it is running, and about its display
+name. Its contract is a core constant: cluster URN `ai.cotal.agent`, revision 4, every schema closed
+and frozen, nothing published to the contract store. A caller embeds the artifacts and pins their
+digests. Every command is ephemeral and untargeted. The prompt commands declare
+`authorities: ["owner", "grant"]`; `commands`, `command`, `command-cancel`, `command-state`,
+`interrupt` and `set-name` declare `authorities: ["owner"]`, so only the owner's interactive session
+runs an agent's commands, stops its turn or renames it.
 
-Revision 2 adds `commands`, `command`, `command-cancel` and `command-state`, and revision 3 adds
-`interrupt`. The earlier commands and their digests are unchanged, so a caller pinned to an earlier
-revision still calls them. An agent that serves an earlier revision answers a command it lacks with
-`unimplemented`, `not-executed`.
+Revision 2 adds `commands`, `command`, `command-cancel` and `command-state`, revision 3 adds
+`interrupt`, and revision 4 adds `set-name`. The earlier commands and their digests are unchanged, so
+a caller pinned to an earlier revision still calls them. An agent that serves an earlier revision
+answers a command it lacks with `unimplemented`, `not-executed`.
 
 | Command | Capability | Args | Output |
 | --- | --- | --- | --- |
@@ -6645,6 +6650,7 @@ revision still calls them. An agent that serves an earlier revision answers a co
 | `command-cancel` | `agent.commands.run` | `{ id }` | `{ state: CommandState }` |
 | `command-state` | `agent.commands.read` | `{ id }` | `{ state: CommandState }` |
 | `interrupt` | `agent.turn.interrupt` | `{}` | `{ state: "interrupted" \| "idle" }` |
+| `set-name` | `agent.profile.write` | `{ name }` | `{ name }` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
 `closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
@@ -6848,6 +6854,7 @@ harness, whatever arrives while the receipt is pending.
 | `ai.cotal.agent.prompt-digest` | `{ digest }` | `failed-precondition` on a digest that differs from the prompt's |
 | `ai.cotal.agent.prompt-size` | `{ bytes, limit }` | `resource-exhausted` |
 | `ai.cotal.agent.command-state` | `{ state }` | `conflict` on `command-cancel` |
+| `ai.cotal.agent.name-refused` | `{ reason }`: `name-invalid` or `name-taken` | `bad-request` and `already-exists` on `set-name` |
 
 **Commands.** `commands` lists the harness commands and skills the agent runs, and `command` queues
 one of them to run as the harness's own command, never as text for its model. `command-cancel`
@@ -6933,6 +6940,26 @@ stops, and its outcome leaves with the process.
 | `interrupt` | The harness failed | `internal`, `unknown`: the turn may have stopped |
 | `interrupt` | No turn was running | `ok`, with `{ state: "idle" }`. Nothing changes. |
 | `interrupt` | Otherwise | `ok`, with `{ state: "interrupted" }`: the turn stopped |
+| `set-name` | `name` fails the shared name rule | `bad-request`, `not-executed`, with `name-refused` `{ reason: "name-invalid" }` |
+| `set-name` | The agent is stopping | `unavailable`, `not-executed` |
+| `set-name` | `name` is the agent's current name | `ok`, with `{ name }`. Nothing changes. |
+| `set-name` | The agent cannot read presence | `unavailable`, `not-executed` |
+| `set-name` | Another live instance has the name, compared lowercased | `already-exists`, `not-executed`, with `name-refused` `{ reason: "name-taken" }` |
+| `set-name` | Otherwise | `ok`, with `{ name }`: the card carries the name |
+
+**Names.** `set-name` changes the agent's display name, `card.name` (§6), and nothing else: the
+principal, the lifecycle, and every subject, durable and grant keyed by them stay as they are. The
+agent checks the name against the shared name rule (1 to 128 UTF-16 code units, no leading or
+trailing whitespace, no line break, no `/` or `\`, no unpaired surrogate), then reads presence (§6)
+and refuses a name that another live instance carries, compared lowercased as an `@mention` resolves
+it. The input takes any string, so every name the rule refuses gets the same typed refusal. A name in
+another case than the agent's own current name is a change. The agent runs its `set-name` requests
+one at a time, so the check and the change are one step for that agent, and republishes presence once
+the card changed, without waiting for its next heartbeat. Two agents can still take one name at once,
+because presence is advisory. Messages the agent sends afterwards carry the new `from.name`, and stored messages keep
+the name they were sent under (§5). A launcher that starts the same lifecycle again, such as after a
+crash or a preserved resume, keeps it under the same principal and SHOULD start it with the name its
+presence last showed.
 
 **Interrupt.** `interrupt` stops the turn the agent is running, whatever started it, as the
 harness's own stop does at the agent's terminal. The reply comes once the harness answered. The
@@ -7684,7 +7711,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
   replies under its own principal-route head; from an `interactive` row also
   `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
-  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state` and `interrupt`. The kind is the ledger row's, never a scope token's. A
+  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and `set-name`. The kind is the ledger row's, never a scope token's. A
   static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
   every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
   principal-route row
@@ -8049,6 +8076,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-21 | **The owner renames an agent (§5, §6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 4 with `set-name`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ name }` of any string and output `{ name }`. It changes `card.name` and republishes presence at once; the principal, the lifecycle and every subject, durable and grant keyed by them stay. It refuses a name that fails the shared name rule as `bad-request` and the name of another live instance, compared lowercased, as `already-exists`, each `not-executed` with the new `ai.cotal.agent.name-refused` detail `{ reason }` of `name-invalid` or `name-taken`; the current name is `ok` and changes nothing; a stopping agent or a failed presence read is `unavailable`. `AgentCard.name` can now change within a lifecycle, and name uniqueness is advisory. `from.name` is the name at send time, so stored messages keep it. An interactive ledger row's mint adds the `owner` row for `set-name`; no `grant` row admits it. A launcher that starts the same lifecycle again SHOULD start it with the name its presence last showed. No subject changes. |
 | 2026-11-21 | **The owner interrupts an agent's turn (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 3 with `interrupt`, capability `agent.turn.interrupt`, `authorities: ["owner"]`, input `{}` and output `{ state: "interrupted" \| "idle" }`. It stops the turn the agent is running, as the harness's own stop does, and the agent then takes its next queued command; `idle` means no turn ran and nothing changed. It refuses the agent itself as `permission-denied`, a connector that cannot interrupt as `unimplemented`, a stopping agent as `unavailable`, and a failed harness as `internal` with the outcome `unknown`. An `interactive` ledger row gains the `owner` row for `interrupt`. Earlier commands and their digests are unchanged. |
 | 2026-11-21 | **`command` refuses the agent itself (§13.22), correction.** An agent never runs a command on itself: `command` from a caller principal equal to the agent is `permission-denied`, `not-executed`, whatever its row, before any other check. `prompt-answer` already refuses that caller. |
 | 2026-11-20 | **The Manager reports which connectors serve prompts (§9, §13.7), additive.** Every Manager `status.connectors` row requires `prompts: boolean`: true when the connector declares that its sessions serve their harness's prompts on the `agent` endpoint and the mesh is user-auth, and false on an open or static mesh. A row built from declared extension inventory carries it too, and a missing declaration reads as false. The Manager cluster advances to revision 52. No subject changes. |

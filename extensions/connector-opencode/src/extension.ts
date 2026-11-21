@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { OPENCODE_READINESS_TIMEOUT_MS } from "./startup.js";
@@ -246,7 +246,7 @@ export const opencodeConnector: Connector = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
+      ...nameEnv(opts),
     };
     // Preserve an operator's machine-wide COTAL_OPENCODE_BIN pin from launchEnv. The manager's
     // boot-resolved executable is a fallback, not permission to overwrite that explicit choice.

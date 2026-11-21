@@ -8,7 +8,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
  *  read it in its own constructor, because the endpoint's constructor fills it after the parts are
  *  constructed. */
 export interface EndpointIdentity {
-  /** The card the endpoint presents; its `meta` is updated in place. */
+  /** The card the endpoint presents; its `meta` and `name` are updated in place. */
   card: AgentCard;
   /** The space every subject is scoped to. */
   space: string;

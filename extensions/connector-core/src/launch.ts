@@ -184,6 +184,13 @@ export function launchEnv(
   return env;
 }
 
+/** The seat's names as `COTAL_*` env: the launch name, and the display name a relaunch restores
+ *  when `set-name` changed it. Every connector forwards both, so a seat keeps its actor and shows
+ *  its last name. */
+export function nameEnv(opts: { name: string; displayName?: string }): Record<string, string> {
+  return { COTAL_NAME: opts.name, ...(opts.displayName !== undefined ? { COTAL_DISPLAY_NAME: opts.displayName } : {}) };
+}
+
 /** The agent's resolved access policy as `COTAL_*` env, when present. Forwarded by each connector
  *  so the spawned session's runtime read/post set matches the creds the manager minted from the
  *  same policy. Without it a manifest-spawned agent — whose materialized persona carries no access
