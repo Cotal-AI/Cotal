@@ -289,7 +289,7 @@ async function main() {
 
     mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: WS_ROOT });
     const readinessBudgetMs = 10_000;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = readinessBudgetMs;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = readinessBudgetMs;
     await mgr.start();
     const mgrIid = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
     check("manager booted and registered instanceId", typeof mgrIid === "string" && mgrIid.length > 0);

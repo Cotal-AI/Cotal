@@ -14,6 +14,7 @@ import type { Runtime } from "./runtime/index.js";
 import { SeatStart } from "./seat-start.js";
 import type { SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { onceTurnNote, turnHoldToken } from "./turn-relay.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** The goal index's bound on a relay note (core `GOAL_INDEX_NOTE_MAX`). A once task's note must
  *  fit it, and is refused at admission when it cannot. */
@@ -156,9 +157,6 @@ export function foreignEventChannels(channels: readonly string[], owner: string,
  *  Manager assigns after construction is always current, and a Manager method a test replaces is
  *  the one that runs. */
 export interface SeatLaunchDeps {
-  space: () => string;
-  servers: () => string | undefined;
-  workspaceRoot: () => string;
   installedExtensions: () => boolean;
   ep: () => CotalEndpoint;
   auth: () => SpaceAuth | undefined;
@@ -166,7 +164,6 @@ export interface SeatLaunchDeps {
   managerInstanceId: () => string;
   serviceServe: () => { grant: EpServeGrant } | undefined;
   runHosting: () => RunHosting | undefined;
-  execution: () => "runtime" | "none";
   requiredRuntime: () => Runtime;
   meshMode: () => "open" | "static" | "user";
   executionRefusal: () => string;
@@ -180,9 +177,7 @@ export interface SeatLaunchDeps {
   delegatedLaunched: () => Manager["delegatedLaunched"];
   dropInlineSnapshot: (...args: Parameters<Manager["dropInlineSnapshot"]>) => ReturnType<Manager["dropInlineSnapshot"]>;
   endOnceBeforeServe: (...args: Parameters<Manager["endOnceBeforeServe"]>) => ReturnType<Manager["endOnceBeforeServe"]>;
-  eventPayloadsWithheld: () => Manager["eventPayloadsWithheld"];
   eventsRefusal: (...args: Parameters<Manager["eventsRefusal"]>) => ReturnType<Manager["eventsRefusal"]>;
-  eventsRequired: () => Manager["eventsRequired"];
   fileDigest: (...args: Parameters<Manager["fileDigest"]>) => ReturnType<Manager["fileDigest"]>;
   hostLaunchFields: (...args: Parameters<Manager["hostLaunchFields"]>) => ReturnType<Manager["hostLaunchFields"]>;
   issuanceSeam: (...args: Parameters<Manager["issuanceSeam"]>) => ReturnType<Manager["issuanceSeam"]>;
@@ -190,21 +185,18 @@ export interface SeatLaunchDeps {
   launchOwner: (...args: Parameters<Manager["launchOwner"]>) => ReturnType<Manager["launchOwner"]>;
   leaseStopping: () => Manager["leaseStopping"];
   loadSeatRuntime: (...args: Parameters<Manager["loadSeatRuntime"]>) => ReturnType<Manager["loadSeatRuntime"]>;
-  managerLifecycleUid: () => Manager["managerLifecycleUid"];
   namesCapacity: () => Manager["namesCapacity"];
   openOnceDelivery: (...args: Parameters<Manager["openOnceDelivery"]>) => ReturnType<Manager["openOnceDelivery"]>;
   personaOwner: (...args: Parameters<Manager["personaOwner"]>) => ReturnType<Manager["personaOwner"]>;
   place: (...args: Parameters<Manager["place"]>) => ReturnType<Manager["place"]>;
   provisionUserAgent: (...args: Parameters<Manager["provisionUserAgent"]>) => ReturnType<Manager["provisionUserAgent"]>;
   readerRemedy: (...args: Parameters<Manager["readerRemedy"]>) => ReturnType<Manager["readerRemedy"]>;
-  readinessTimeoutMs: () => Manager["readinessTimeoutMs"];
   remoteAuthority: () => Manager["remoteAuthority"];
   resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
   retirement: () => Manager["retirement"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
   seatCapRefusal: (...args: Parameters<Manager["seatCapRefusal"]>) => ReturnType<Manager["seatCapRefusal"]>;
   seatCustody: () => Manager["seatCustody"];
-  secrets: () => Manager["secrets"];
   sessionRecovery: () => Manager["sessionRecovery"];
   shredUserSecrets: (...args: Parameters<Manager["shredUserSecrets"]>) => ReturnType<Manager["shredUserSecrets"]>;
   staticLifecycle: () => Manager["staticLifecycle"];
@@ -223,9 +215,6 @@ export interface SeatLaunchDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
   return {
-    space: () => m["space"],
-    servers: () => m["servers"],
-    workspaceRoot: () => m["workspaceRoot"],
     installedExtensions: () => m["installedExtensions"],
     ep: () => m["ep"],
     auth: () => m["auth"],
@@ -233,7 +222,6 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     managerInstanceId: () => m["managerInstanceId"],
     serviceServe: () => m["serviceServe"],
     runHosting: () => m["runHosting"],
-    execution: () => m["execution"],
     requiredRuntime: () => m["requiredRuntime"],
     meshMode: () => m["meshMode"],
     executionRefusal: () => m["executionRefusal"](),
@@ -248,9 +236,7 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     delegatedLaunched: () => m["delegatedLaunched"],
     dropInlineSnapshot: (...args) => m["dropInlineSnapshot"](...args),
     endOnceBeforeServe: (...args) => m["endOnceBeforeServe"](...args),
-    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
     eventsRefusal: (...args) => m["eventsRefusal"](...args),
-    eventsRequired: () => m["eventsRequired"],
     fileDigest: (...args) => m["fileDigest"](...args),
     hostLaunchFields: (...args) => m["hostLaunchFields"](...args),
     issuanceSeam: (...args) => m["issuanceSeam"](...args),
@@ -258,21 +244,18 @@ export function seatLaunchDeps(m: Manager): SeatLaunchDeps {
     launchOwner: (...args) => m["launchOwner"](...args),
     leaseStopping: () => m["leaseStopping"],
     loadSeatRuntime: (...args) => m["loadSeatRuntime"](...args),
-    managerLifecycleUid: () => m["managerLifecycleUid"],
     namesCapacity: () => m["namesCapacity"],
     openOnceDelivery: (...args) => m["openOnceDelivery"](...args),
     personaOwner: (...args) => m["personaOwner"](...args),
     place: (...args) => m["place"](...args),
     provisionUserAgent: (...args) => m["provisionUserAgent"](...args),
     readerRemedy: (...args) => m["readerRemedy"](...args),
-    readinessTimeoutMs: () => m["readinessTimeoutMs"],
     remoteAuthority: () => m["remoteAuthority"],
     resolveConnector: (...args) => m["resolveConnector"](...args),
     retirement: () => m["retirement"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
     seatCapRefusal: (...args) => m["seatCapRefusal"](...args),
     seatCustody: () => m["seatCustody"],
-    secrets: () => m["secrets"],
     sessionRecovery: () => m["sessionRecovery"],
     shredUserSecrets: (...args) => m["shredUserSecrets"](...args),
     staticLifecycle: () => m["staticLifecycle"],
@@ -294,8 +277,8 @@ export class SeatLaunch {
   /** The agent-start path. Shares this component's deps, and calls back into it for its leaf steps. */
   private readonly seatStart: SeatStart;
 
-  constructor(private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {
-    this.seatStart = new SeatStart(deps, parts, {
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatLaunchDeps, private readonly parts: Pick<ManagerParts, "connectorInventory">) {
+    this.seatStart = new SeatStart(config, deps, parts, {
       checkSpawnCwd: (...args) => this.checkSpawnCwd(...args),
       harnessUnavailableError: (...args) => this.harnessUnavailableError(...args),
       onceRefusal: (...args) => this.onceRefusal(...args),
@@ -329,8 +312,8 @@ export class SeatLaunch {
 
   /** Refuse host directory reads before lookup when seats cannot use this host. */
   assertHostDirectoryExecution(): void {
-    if (this.deps.execution() === "none") throw new EpEnvelopeError("unimplemented", this.deps.executionRefusal());
-    if (this.deps.execution() === "runtime" && this.deps.requiredRuntime().spawnDelegated)
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.deps.executionRefusal());
+    if (this.config.execution === "runtime" && this.deps.requiredRuntime().spawnDelegated)
       throw new EpEnvelopeError("failed-precondition", `runtime "${this.deps.requiredRuntime().kind}" starts seats outside this host, so it cannot resolve a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`);
   }
 
@@ -368,7 +351,7 @@ export class SeatLaunch {
    *  inventory load) skips the class `one` subscribe for spawn/launch so this member cannot
    *  consume an unpinned request a sibling could serve. */
   classSpawnEnabled(): boolean {
-    if (this.deps.execution() === "none") return false;
+    if (this.config.execution === "none") return false;
     return this.parts.connectorInventory.connectorStatuses.some((row) => row.state === "available");
   }
 
@@ -440,7 +423,7 @@ export class SeatLaunch {
     // Both config-taking wire commands and direct/roster starts enter here before interpreting
     // a path. A resolved manifest is host-built authority over its own materialized resource,
     // never a wire-supplied config override (the public schemas accept no `resolved` field).
-    if (this.deps.execution() === "runtime" && this.deps.requiredRuntime().spawnDelegated && opts.config !== undefined && !opts.resolved)
+    if (this.config.execution === "runtime" && this.deps.requiredRuntime().spawnDelegated && opts.config !== undefined && !opts.resolved)
       return { error: "delegated execution cannot use a manager-host persona config path; select a named persona" };
     // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
     // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
@@ -465,7 +448,7 @@ export class SeatLaunch {
       // A save under a name the catalog already holds is refused here, before anything is allocated,
       // so the refusal starts nothing. The create-only write after the grant settles a race.
       if (inline.save) {
-        const target = agentFilePath(this.deps.workspaceRoot(), ref);
+        const target = agentFilePath(this.config.workspaceRoot, ref);
         let taken = true;
         try {
           lstatSync(target);
@@ -494,10 +477,10 @@ export class SeatLaunch {
     // the connector is materialized first.
     let configPath: string;
     if (opts.config) {
-      configPath = agentFilePath(this.deps.workspaceRoot(), opts.config);
+      configPath = agentFilePath(this.config.workspaceRoot, opts.config);
       if (!existsSync(configPath)) return { error: `agent file not found: ${configPath}` };
     } else {
-      configPath = agentFilePath(this.deps.workspaceRoot(), ref);
+      configPath = agentFilePath(this.config.workspaceRoot, ref);
       if (!existsSync(configPath))
         return { error: `no persona "${ref}" in the catalog of manager ${this.deps.managerInstanceId()} on host ${hostname()}: ${configPath} not found; create it there` };
     }
@@ -537,7 +520,7 @@ export class SeatLaunch {
   /** Whether a persona path resolves into the inline snapshot directory, the directory itself
    *  included. A directory that does not exist holds nothing. */
   insideInlineDir(path: string): boolean {
-    const dir = inlinePersonaDir(this.deps.workspaceRoot());
+    const dir = inlinePersonaDir(this.config.workspaceRoot);
     if (!existsSync(dir)) return false;
     const real = realpathSync(path);
     const realDir = realpathSync(dir);
@@ -619,9 +602,9 @@ export class SeatLaunch {
     }
     if (!isIssuedCaller(caller))
       return { kind: "none", reason: "its credential carries no issued generation (an unissued mint or a legacy rail)" };
-    const ref = { space: this.deps.space(), owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
+    const ref = { space: this.config.space, owner: caller.owner, actor: caller.actor, uid: caller.uid, generation: caller.generation };
     try {
-      const { evidence } = await withIssuerSession({ servers: this.deps.servers() ?? DEFAULT_SERVER, space: this.deps.space(), auth: this.deps.auth()!, tls: false }, (s) =>
+      const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, auth: this.deps.auth()!, tls: false }, (s) =>
         s.store.resolve(ref, s.sourceIsLive));
       return issuedSpawnerStanding(evidence) === "bounded" ? { kind: "bounded", caller, ceiling: evidence.permissions } : { kind: "exempt" };
     } catch (e) {
@@ -640,9 +623,9 @@ export class SeatLaunch {
     let over: GrantOverreach[];
     let eventsOver: boolean;
     try {
-      over = bound.kind === "none" ? grantParts(grant) : grantOverreach(this.deps.space(), bound.caller, bound.ceiling, grant);
+      over = bound.kind === "none" ? grantParts(grant) : grantOverreach(this.config.space, bound.caller, bound.ceiling, grant);
       eventsOver = armsEvents && (bound.kind === "none"
-        || grantOverreach(this.deps.space(), bound.caller, bound.ceiling, { allowPublish: [eventChannel({ owner: bound.caller.owner, actor: bound.caller.actor })] }).length > 0);
+        || grantOverreach(this.config.space, bound.caller, bound.ceiling, { allowPublish: [eventChannel({ owner: bound.caller.owner, actor: bound.caller.actor })] }).length > 0);
     } catch (e) {
       return `${door}: ${rejectionText(e)}`;
     }
@@ -705,5 +688,4 @@ export class SeatLaunch {
 
   // Read by the resolve-cwd mutation in checkSpawnCwd (resolve-cwd.json/1); not private, so it
   // compiles while nothing else here reads it.
-  get workspaceRoot() { return this.deps.workspaceRoot(); }
 }

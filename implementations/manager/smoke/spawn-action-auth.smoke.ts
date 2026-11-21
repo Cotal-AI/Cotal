@@ -74,7 +74,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 1_500; // short window for a fast corpse settle
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 1_500; // short window for a fast corpse settle
   await mgr.start();
   const M = mgr as unknown as {
     managerInstanceId: string;

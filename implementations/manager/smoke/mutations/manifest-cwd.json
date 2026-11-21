@@ -25,7 +25,7 @@
     {
       "name": "relative cwd resolves against the manager process cwd instead of its workspace",
       "file": "implementations/manager/src/seat-start.ts",
-      "find": "const target = resolve(this.workspaceRoot, asked);",
+      "find": "const target = resolve(this.config.workspaceRoot, asked);",
       "replace": "const target = resolve(asked);",
       "expectRed": "manifest cwdrelative runs in the declared manager-host directory",
       "cell": "manifest cwdrelative runs in the declared manager-host directory"

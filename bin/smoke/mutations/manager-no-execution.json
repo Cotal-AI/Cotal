@@ -67,7 +67,7 @@
     {
       "name": "immutable execution mismatch ignored",
       "file": "implementations/manager/src/boot.ts",
-      "find": "if (record.execution !== this.execution)",
+      "find": "if (record.execution !== this.config.execution)",
       "replace": "if (false)",
       "expectRed": "none instance cannot restart as runtime",
       "cell": "none instance cannot restart as runtime",
@@ -76,7 +76,7 @@
     {
       "name": "older unclassified instance is accepted",
       "file": "implementations/manager/src/boot.ts",
-      "find": "if (this.execution === \"none\" && !existsSync(path) && remote.serveGrant.epoch !== 0)",
+      "find": "if (this.config.execution === \"none\" && !existsSync(path) && remote.serveGrant.epoch !== 0)",
       "replace": "if (false)",
       "expectRed": "unclassified later epoch refuses none boot",
       "cell": "unclassified later epoch refuses none boot",

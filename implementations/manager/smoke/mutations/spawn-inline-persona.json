@@ -88,7 +88,7 @@
     {
       "name": "N8 keep the snapshot at the static retirement terminal",
       "file": "implementations/manager/src/managed-static-lifecycle.ts",
-      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.deps.workspaceRoot(), a.lifecycleUid));\n",
+      "find": "        await attemptCleanup(failed, `file ${snapshot}`, () => removeInlineSnapshot(this.config.workspaceRoot, a.lifecycleUid));\n",
       "replace": "",
       "expectRed": "the static retirement terminal removes a snapshot by its lifecycle uid",
       "cell": "the static retirement terminal removes a snapshot by its lifecycle uid"
@@ -104,7 +104,7 @@
     {
       "name": "N10 accept a resume entry whose snapshot is another path",
       "file": "implementations/manager/src/preservation.ts",
-      "find": "    if (entry.launch.source.kind === \"inline\" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.workspaceRoot, entry.identity.lifecycleUid)))\n",
+      "find": "    if (entry.launch.source.kind === \"inline\" && resolve(entry.launch.source.configPath) !== resolve(inlineSnapshotPath(this.config.workspaceRoot, entry.identity.lifecycleUid)))\n",
       "replace": "    if (false)\n",
       "expectRed": "a resume entry whose inline snapshot is not its lifecycle's path is refused",
       "cell": "a resume entry whose inline snapshot is not its lifecycle's path is refused"
@@ -112,8 +112,8 @@
     {
       "name": "N11 key the snapshot by the allocated uid instead of the granted one",
       "file": "implementations/manager/src/seat-start.ts",
-      "find": "        configPath = writeInlineSnapshot(this.workspaceRoot, lifecycleUid, {",
-      "replace": "        configPath = writeInlineSnapshot(this.workspaceRoot, agentTriple.uid, {",
+      "find": "        configPath = writeInlineSnapshot(this.config.workspaceRoot, lifecycleUid, {",
+      "replace": "        configPath = writeInlineSnapshot(this.config.workspaceRoot, agentTriple.uid, {",
       "expectRed": "a user-auth snapshot is keyed by the uid the grant settled on",
       "cell": "a user-auth snapshot is keyed by the uid the grant settled on"
     },
@@ -152,8 +152,8 @@
     {
       "name": "N15 write the record's role and model instead of the launched ones",
       "file": "implementations/manager/src/seat-start.ts",
-      "find": "writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role, model, variant,",
-      "replace": "writeInlineSnapshot(this.workspaceRoot, lifecycleUid, { name, role: def.role, model: def.model, variant: def.variant,",
+      "find": "writeInlineSnapshot(this.config.workspaceRoot, lifecycleUid, { name, role, model, variant,",
+      "replace": "writeInlineSnapshot(this.config.workspaceRoot, lifecycleUid, { name, role: def.role, model: def.model, variant: def.variant,",
       "expectRed": "the snapshot carries the role and model the seat launched with",
       "cell": "the snapshot carries the role and model the seat launched with"
     },

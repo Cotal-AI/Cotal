@@ -34,7 +34,7 @@ let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
 
 interface ManagerLike {
-  readinessTimeoutMs: number;
+  config: { readinessTimeoutMs: number };
   start(): Promise<void>;
   stop(options?: { withAgents?: boolean }): Promise<void>;
   startAgent(o: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
@@ -93,7 +93,7 @@ const broker = await bootBroker(auth, dir);
 recordMesh({ space, server: broker.servers, root: workspaceRoot, mode: "auth", ts: new Date().toISOString() });
 
 const mgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
-mgr.readinessTimeoutMs = 2500; // echo never joins; do not wait the full window
+mgr.config.readinessTimeoutMs = 2500; // echo never joins; do not wait the full window
 const consoleArgs = ["--space", space, "--server", broker.servers];
 
 let session: ConsoleSession | undefined;

@@ -8,6 +8,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** What {@link GoalWriter} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
@@ -21,10 +22,8 @@ export interface GoalWriterDeps {
   goalWriterIdentity: () => Manager["goalWriterIdentity"];
   leaseStopping: () => Manager["leaseStopping"];
   managerInstanceId: () => Manager["managerInstanceId"];
-  readinessTimeoutMs: () => Manager["readinessTimeoutMs"];
   remoteAuthority: () => Manager["remoteAuthority"];
   serviceServe: () => Manager["serviceServe"];
-  space: () => Manager["space"];
   turnRelay: () => Manager["turnRelay"];
   goalReconcileDone: () => Manager["goalReconcileDone"];
   setGoalReconcileDone: (value: Manager["goalReconcileDone"]) => void;
@@ -51,10 +50,8 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
     goalWriterIdentity: () => m["goalWriterIdentity"],
     leaseStopping: () => m["leaseStopping"],
     managerInstanceId: () => m["managerInstanceId"],
-    readinessTimeoutMs: () => m["readinessTimeoutMs"],
     remoteAuthority: () => m["remoteAuthority"],
     serviceServe: () => m["serviceServe"],
-    space: () => m["space"],
     turnRelay: () => m["turnRelay"],
     goalReconcileDone: () => m["goalReconcileDone"],
     setGoalReconcileDone: (value) => { m["goalReconcileDone"] = value; },
@@ -71,7 +68,7 @@ export function goalWriterDeps(m: Manager): GoalWriterDeps {
 
 /** The goal-writer's standing connection, its credential, and the goal index it reconciles at boot. */
 export class GoalWriter {
-  constructor(private readonly deps: GoalWriterDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: GoalWriterDeps) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
@@ -85,10 +82,8 @@ export class GoalWriter {
   private get goalWriterIdentity() { return this.deps.goalWriterIdentity(); }
   private get leaseStopping() { return this.deps.leaseStopping(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get readinessTimeoutMs() { return this.deps.readinessTimeoutMs(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get serviceServe() { return this.deps.serviceServe(); }
-  private get space() { return this.deps.space(); }
   private get turnRelay() { return this.deps.turnRelay(); }
   private get goalReconcileDone() { return this.deps.goalReconcileDone(); }
   private set goalReconcileDone(value: Manager["goalReconcileDone"]) { this.deps.setGoalReconcileDone(value); }
@@ -122,7 +117,7 @@ export class GoalWriter {
     const exp = inspectCredHealth(creds).exp;
     if (exp === undefined)
       throw new Error(`the goal-writer credential for ${MANAGER_ENDPOINT}/${iid} is unbounded; the §13.1 ledger row requires an expiry`);
-    const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    const fence = serveIssuanceGateKv(authKv, this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
     const observed = await fence.observe();
     if (observed === null)
       throw new Error(`the issuance gate for ${MANAGER_ENDPOINT}/${iid} vanished; the goal-writer cannot join its §13.1 revocation family`);
@@ -160,7 +155,7 @@ export class GoalWriter {
     // registration instanceId to this incarnation's serve-grant epoch; a foreign/retired instance
     // is `null` (no current terminal to surface). A successor incarnation carries an ADVANCED epoch
     // here, so its reads pick the current-epoch subject and the predecessor's terminal is fenced out.
-    gw.ctx = await actionContext(nc, this.space);
+    gw.ctx = await actionContext(nc, this.config.space);
     // The own-issuance-gate READER for the currency belt, on BOTH mesh modes. Reads
     // `epgate.<e>.<iid>` over this connection; observe-only (stage/commit/revoke are never called
     // through it — the goal-writer holds no gate/epcred WRITE grant, so a mis-call would
@@ -178,7 +173,7 @@ export class GoalWriter {
     // every other open-mesh property. It is also a read-then-CAS, so it NARROWS the commit window
     // rather than closing it. An AUTH mesh gets durable closure from the §13.1 barrier (revoke +
     // cluster-verified eviction BEFORE the epoch advance); an open mesh gets none.
-    gw.gate = serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.space)), this.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId });
+    gw.gate = serveIssuanceGateKv(await new Kvm(nc).open(epAuthBucket(this.config.space)), this.config.space, { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId });
   }
   /** #2073: the goal-writer rail's closed-connection fault, the same bounded shape the serve rail
    *  uses ({@link onServeConnectionClosed}) through the same {@link boundedReconnect} helper:
@@ -258,8 +253,8 @@ export class GoalWriter {
           : await this.dial({ maxReconnectAttempts: 0 });
         try {
           const kvm = new Kvm(nc);
-          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-          entries = await listGoalIndex(await kvm.open(recordsBucket(this.space)), MANAGER_ENDPOINT);
+          await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.config.space);
+          entries = await listGoalIndex(await kvm.open(recordsBucket(this.config.space)), MANAGER_ENDPOINT);
         } finally {
           await drainAndClose(nc);
         }
@@ -322,7 +317,7 @@ export class GoalWriter {
       await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 } }); // first-terminal-wins: a racing terminal returns the winner, no throw
       await clearGoalIndex(gw.ctx, ref);
     };
-    const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.readinessTimeoutMs) - Date.now();
+    const remaining = spec.value.acceptedAt + (spec.value.readinessDeadlineMs ?? this.config.readinessTimeoutMs) - Date.now();
     if (remaining <= 0) { await settle(); return; }
     console.error(`goal reconcile ${ref.goalId}: within the readiness window (${remaining}ms) - arming a bounded settle`);
     const t = setTimeout(() => { settle().catch((e) => console.error(`! goal reconcile settle ${ref.goalId}: ${rejectionText(e)}`)); }, remaining + 100);
@@ -338,7 +333,7 @@ export class GoalWriter {
     if (!nc) return;
     try {
       nc.publish(
-        epeSubject(this.space, MANAGER_ENDPOINT, this.managerInstanceId, epoch, goalProgressTopic(ref)),
+        epeSubject(this.config.space, MANAGER_ENDPOINT, this.managerInstanceId, epoch, goalProgressTopic(ref)),
         new TextEncoder().encode(JSON.stringify({ v: 1, goalId: ref.goalId, ...event })),
       );
     } catch (e) {
