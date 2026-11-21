@@ -1038,7 +1038,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
 }
 
 /** What an interrupted restore left, read from the journal at the moment of the signal. */
-function restoreInterruptNotice(root: string, attemptId: string): string {
+export function restoreInterruptNotice(root: string, attemptId: string): string {
   const journal = readMaintenanceJournal(root);
   const ours = journal !== undefined && "restore" in journal && journal.restore.attemptId === attemptId;
   if (ours && journal.state === "restore-ready")
