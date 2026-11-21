@@ -123,6 +123,7 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
  *  silently vanish from help). A verified extension stage must contain its manifest. */
 export function loadExtensionsManifest(options?: { prefix: string; staged?: boolean }): ExtensionsManifest {
+  if (!options && globalConfigDirProblem()) return { extensions: [] };
   const p = options ? join(options.prefix, "extensions.json") : extensionsManifestPath();
   const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
   let parsed: unknown;

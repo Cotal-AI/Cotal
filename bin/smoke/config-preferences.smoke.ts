@@ -657,7 +657,7 @@ if (process.platform !== "win32") {
   const seed = run(["ext", "seed"], env);
   check("`ext seed` is refused the same way before it reads the seed state",
     seed.status === 1 && seed.stderr.includes(`the Cotal config folder ${folder} is a file`) && !/ENOTDIR/.test(seed.stderr), shown(seed));
-  for (const args of [["help"], [], ["config", "--help"], ["version"], ["docs"]]) {
+  for (const args of [["help"], [], ["config", "--help"], ["setup", "--help"], ["version"], ["docs"]]) {
     const r = run(args, env);
     check(`\`cotal ${args.join(" ")}\` still runs`, r.status === 0 && r.stdout !== "" && !/ENOTDIR|corrupt extensions manifest/.test(r.stderr), shown(r));
   }

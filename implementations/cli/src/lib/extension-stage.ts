@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource, loadExtensionsManifest, type ExtensionsManifest } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, globalConfigDirProblem, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource, loadExtensionsManifest, type ExtensionsManifest } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -50,7 +50,8 @@ export function setupExtensionInventory(): ExtensionsManifest {
 }
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
 export function recoverExtensionPromotion(prepareForUpdate = false, validate?: () => void): boolean {
-  if (!canRecoverConnectorConfig() || !checkedRecord()) return false;
+  // Dispatch reports this unusable config folder. It cannot contain a promotion journal.
+  if (globalConfigDirProblem() || !canRecoverConnectorConfig() || !checkedRecord()) return false;
   const releaseClosure = claimUpdateClosureAccess(true);
   try {
     if (!canRecoverConnectorConfig()) return false;

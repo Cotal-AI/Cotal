@@ -13,8 +13,8 @@
     {
       "name": "the seed runs before flag parsing",
       "file": "implementations/cli/src/command.ts",
-      "find": "  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;\n",
-      "replace": "  if (opts.extensions && !skipsSeed(cmd?.name ?? word, rest[0], rest)) await reconcileSeededConnectors();\n  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;\n",
+      "find": "  let parsed = parsedSetup ?? (cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined);\n",
+      "replace": "  if (opts.extensions && !skipsSeed(cmd?.name ?? word, rest[0], rest)) await reconcileSeededConnectors();\n  let parsed = parsedSetup ?? (cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined);\n",
       "expectRed": "an unknown flag writes no seed store",
       "cell": "an unknown flag writes no seed store",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

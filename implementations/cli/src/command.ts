@@ -740,7 +740,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       if (builtin?.name === "setup") {
         const rest = ownWords(builtin);
-        if (!asksForHelp(rest)) parsedSetup = prepareSetupCommand(builtin, rest, () => arm(builtin, rest), configFolder);
+        if (asksForHelp(rest)) return printHelpFor(builtin, rest);
+        parsedSetup = prepareSetupCommand(builtin, rest, () => arm(builtin, rest), configFolder);
       } else {
         if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
         // Topology only renders a manifest, without finishing an install.

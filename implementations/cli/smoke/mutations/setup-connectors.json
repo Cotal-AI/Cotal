@@ -15,13 +15,13 @@
     {
       "name": "restore the literal claude and opencode membership list",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "  const names = new Set(registry.all<Connector>(\"connector\").map((connector) => connector.name));\n  for (const name of manifestExtensionNames(\"connector\")) names.add(name);",
-      "replace": "  const declared = new Set([...registry.all<Connector>(\"connector\").map((connector) => connector.name), ...manifestExtensionNames(\"connector\")]);\n  const names = new Set([\"claude\", \"opencode\"].filter((name) => declared.has(name)));",
+      "find": "  return Promise.all(extensionNames(\"connector\").map((name) =>",
+      "replace": "  const declared = new Set(extensionNames(\"connector\"));\n  return Promise.all([\"claude\", \"opencode\"].filter((name) => declared.has(name)).map((name) =>",
       "expectRed": "registry-registered connectors join the derived setup membership",
       "cell": "registry-registered connectors join the derived setup membership",
       "command": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build && pnpm exec tsx implementations/cli/smoke/setup-connectors.smoke.ts",
       "afterRestore": "rm -rf implementations/cli/dist && pnpm --filter @cotal-ai/cli... build",
-      "note": "The load-bearing revert for #1036: membership goes back to the hardcoded pair while every other seam stays generic. Compile-clean; both derivation reads stay live."
+      "note": "Limits the discovered membership to the hardcoded pair, without changing how those two names are discovered."
     },
     {
       "name": "restore the claude and opencode membership gate",

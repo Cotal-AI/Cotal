@@ -69,6 +69,9 @@ for (const phase of ["prepared", "old-renamed", "already-promoted"]) {
   if (phase === "already-promoted") renameSync(stage, root);
   const verified = phase === "already-promoted" ? root : stage;
   const before = readFileSync(join(verified, "extensions.json"), "utf8");
+  const help = spawnSync(process.execPath, [BIN, "setup", "--help"], { cwd: folder, env: { ...env, ...profile }, encoding: "utf8", timeout: 120_000 });
+  check(`${phase}: setup help does not recover an installation`, help.status === 0 && help.stdout.includes("--harness") &&
+    existsSync(journal) && readFileSync(journal, "utf8") === pending && existsSync(verified), help.stderr);
   const refusal = setup("nosuch", profile, folder);
   const previous = phase === "prepared" ? root : old;
   check(`${phase}: a typo leaves the journal and both inventories untouched`, refusal.status === 1 &&
