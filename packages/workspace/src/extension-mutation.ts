@@ -36,13 +36,14 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; 
   let held: HeldLock;
   let wait = waitMs;
   let announced = false;
+  const onWait = () => { if (!announced) { announced = true; opts.onWait?.(); } };
   const retry = new Error();
   for (;;) {
     try {
       held = acquireLock(lock, {
         label: "a global cotal-ai update",
         waitMs: wait,
-        onWait: () => { if (!announced) { announced = true; opts.onWait?.(); } },
+        onWait,
         onTimeout: owner => {
           if (opts.renew && waitMs > 0) {
             const current = inspectLock(lock);
@@ -87,7 +88,7 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; 
         renameSync(path, `${path}.retained-${Date.now()}-${randomBytes(6).toString("hex")}`);
       }
     }
-    assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child", deadline);
+    assertNoProcessMutation(path, "global cotal-ai update child", deadline, onWait);
     if (opts.renew) {
       const fd = openSync(lock, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       let timer: ReturnType<typeof setInterval> | undefined;
@@ -421,13 +422,14 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
   };
 }
 
-function assertNoProcessMutation(path: string, operation: string, deadline = 0): void {
+function assertNoProcessMutation(path: string, operation: string, deadline = 0, onWait?: () => void): void {
   let marker = readMarker(path);
   const childAlive = (live: Extract<ProcessMutationRecord, { phase: "live" }>): boolean =>
     live.seedGroup ? process.platform !== "linux" || seedProcessGroupAlive(live.pid) :
     sameProcessAlive(live.pid, live.start) || (process.platform === "linux" &&
       (live.operation === "global install" || live.operation === "global reconcile") && processGroupAlive(live.pid));
   while (marker?.phase === "live" && childAlive(marker) && Date.now() < deadline) {
+    onWait?.();
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(100, deadline - Date.now())));
     marker = readMarker(path);
   }

@@ -212,11 +212,12 @@ const composed: Command = { ...command, async run(args) {
   }
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
-    if (prefix && existsSync(join(prefix, "lib/node_modules/.cotal-update-child"))) {
-      const marker = JSON.parse(readFileSync(join(prefix, "lib/node_modules/.cotal-update-child"), "utf8"));
-      if (marker.phase === "ambiguous" || marker.phase === "pending") interruptedChildRoot = join(prefix, "lib/node_modules");
-      if ((marker.phase === "ambiguous" && marker.custody === undefined) ||
-        (marker.phase === "pending" && marker.gated === undefined && marker.intermediary === false && ["global install", "global reconcile"].includes(marker.operation))) {
+    const root = prefix && join(prefix, "lib/node_modules");
+    const marker = root ? readInstalledUpdateMarker(root) : undefined;
+    if (root && marker !== undefined) {
+      interruptedChildRoot = root;
+      if ((marker?.phase === "ambiguous" && marker.custody === undefined) ||
+        (marker?.phase === "pending" && marker.gated === undefined && marker.intermediary === false && ["global install", "global reconcile"].includes(marker.operation))) {
         legacyRepair = true;
         const paths = daemonPaths();
         if (existsSync(unitReceiptFile(paths))) {
@@ -595,7 +596,8 @@ const composed: Command = { ...command, async run(args) {
     return localVerdict;
   }) };
   if (interruptedChildRoot) {
-    const release = runtime.claimGlobalUpdate(interruptedChildRoot);
+    // A surviving child can still write even when the dead owner's journal cannot be restored.
+    const release = runtime.claimGlobalUpdate(interruptedChildRoot, () => console.log("Waiting for the previous update's child to finish"));
     release();
   }
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
@@ -678,3 +680,11 @@ const composed: Command = { ...command, async run(args) {
   }
 } };
 registry.register(composed);
+
+function readInstalledUpdateMarker(root: string): { phase: string; custody?: unknown; gated?: boolean; intermediary?: boolean; operation: string } | null | undefined {
+  try { return JSON.parse(readFileSync(join(root, ".cotal-update-child"), "utf8")); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return undefined;
+  }
+}

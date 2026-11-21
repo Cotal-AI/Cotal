@@ -503,9 +503,10 @@ checks for conflicting registrations.
 
 ## Recover an interrupted update
 
-If a recorded npm install child is still running, `cotal update --self` skips preliminary
-cleanup and can wait for the child to finish. Run the command again only if it stops and asks
-you to retry.
+On Linux, retrying `cotal update --self` from the affected npm installation waits for a recorded
+install or reconciliation child to finish before processing the recovery record. This wait also
+applies when the rollback snapshot is unusable or the CLI is already on the latest release.
+If the child does not finish within the wait, the command refuses and asks you to retry.
 
 `cotal update --self` restores an interrupted update when its snapshot is a valid directory of
 this installation. If the snapshot is absent, outside this configuration, or not a plain directory,
