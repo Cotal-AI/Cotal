@@ -34,6 +34,7 @@ if (!existsSync(BIN)) {
 const { check, finish } = createSuite();
 const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "..", "bin", "package.json"), "utf8")) as { version: string }).version;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
+HOST_ENV.DO_NOT_TRACK = "1";
 const roots: string[] = [];
 process.on("exit", () => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true });
