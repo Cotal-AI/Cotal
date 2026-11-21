@@ -339,11 +339,21 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
+interface Preview { requested?: { source?: string; name?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
   managed.status === 0 && managed.envelope?.outcome === "ok" && managedResult?.completeness === "not-checked" && managedResult.result?.requested?.source === "argument", shown(managed));
+const managedFile = ["spawn", "--file", "missing.md", "-d", "--dry-run", "--json"];
+const invalidManaged = cotal(...managedFile, "--name", "bad.dot");
+check("a managed file preview refuses an invalid explicit name without reading the persona",
+  invalidManaged.status === 1 && invalidManaged.stderr === "" && invalidManaged.envelope?.outcome === "refused"
+    && invalidManaged.envelope.error?.code === "USAGE_INVALID" && invalidManaged.envelope.target?.space === "opsp"
+    && invalidManaged.envelope.error.message === 'unsafe name "bad.dot" (allowed: letters, digits, _ -)', shown(invalidManaged));
+const validManaged = cotal(...managedFile, "--name", "sample-ok");
+check("a valid explicit name keeps managed execution-host checks deferred even if the file is absent here",
+  validManaged.status === 0 && validManaged.envelope?.outcome === "ok" && validManaged.envelope.completeness === "not-checked"
+    && (validManaged.envelope.result as Preview | undefined)?.requested?.name === "sample-ok", shown(validManaged));
 for (const mode of [[], ["--dry-run"]]) {
   for (const resume of ["--resume=", "--resume=   "]) {
     const invalid = cotal("spawn", "-d", resume, ...mode, "--json");
@@ -435,6 +445,11 @@ for (const [name, accepted] of [["good_user_name", true], ["a".repeat(64), true]
         && preview.envelope.error.message?.startsWith(`name "${name}" cannot be a mesh identity in user mode`) === true
         && preview.envelope.target?.space === "preview-user" && preview.stderr === "", shown(preview));
 }
+const pinnedManaged = cotal("spawn", "remote-only", "--space", "preview-user", "--on", "aaaaaaaaaaaaaaaaaaaaaaaaaa", "--name", "sample-ok", "--dry-run", "--json");
+check("a manager-pinned preview uses the selected user-auth space's rule for an explicit name",
+  pinnedManaged.status === 1 && pinnedManaged.stderr === "" && pinnedManaged.envelope?.outcome === "refused"
+    && pinnedManaged.envelope.error?.code === "USAGE_INVALID" && pinnedManaged.envelope.target?.space === "preview-user"
+    && pinnedManaged.envelope.error.message?.startsWith('name "sample-ok" cannot be a mesh identity in user mode') === true, shown(pinnedManaged));
 writeFileSync(join(root, "pin.md"), "---\nname: pinned\nagent: nosuch\n---\n");
 const pinned = cotal("spawn", "--file", "pin.md", "--dry-run", "--json");
 check("an unknown persona harness pin is refused by a direct preview",

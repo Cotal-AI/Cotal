@@ -5,7 +5,7 @@ import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSele
 import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, refuseUnmintableName, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import type { spawnFlags } from "./spawn.js";
@@ -66,6 +66,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
   const target = { space, broker, authMode: targetMode };
   if (spawnUsesManager(values)) {
+    if (values.name !== undefined) refuseUnmintableName(values.name, targetMode === "user");
     // The manager resolves the persona, harness and working directory on its own host at launch, so
     // the preview shows the request and says what it did not read.
     const warnings = unknownHarness(values.agent ?? callerHarness(space), values.agent !== undefined, space);

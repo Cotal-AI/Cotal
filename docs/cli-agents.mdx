@@ -253,6 +253,8 @@ Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (ex
 
 With `-d --json`, an invalid agent name or a local resume that needs `--on` produces a
 `USAGE_INVALID` refusal on stdout (exit 1). With `-d --plain`, the refusal is printed on stderr.
+Managed previews use the same `--name` check. Without `--name`, the manager checks its persona's
+name at launch.
 
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager

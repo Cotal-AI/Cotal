@@ -5,7 +5,6 @@ import {
   mintCreds,
   newIdentity,
   parseShareSelection,
-  spawnNameError,
   resolveAuthProvider,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
   EP_UNDECLARED_ARG,
@@ -57,7 +56,7 @@ import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from
 import { cliControl, failIfNotOk } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
-import { callerHarness, missingConnector, spawnPersona } from "../lib/spawn-defaults.js";
+import { callerHarness, missingConnector, refuseUnmintableName, spawnPersona } from "../lib/spawn-defaults.js";
 import { attachSeat, joinedAgentRows, psSeatLabel } from "./agents.js";
 import { AgentAlreadyRunning, heldAnswer, settleHeldName } from "../lib/held-name.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -79,17 +78,6 @@ import { spawnFlags, spawnRerun } from "./spawn-flags.js";
  *  true, so the import's own refusal reports it. */
 export function connectorListed(name: string): boolean {
   try { return manifestExtensionNames("connector").includes(name); } catch { return true; }
-}
-
-/** #867: the name a spawn sends must already be a mintable identity, and the check must not wait
- *  for the manager's round trip. `spawnNameError` is the SAME predicate the manager applies at its
- *  door (manager.ts `start`), so the operator sees core's own refusal — offending character,
- *  reservation reason, and the `_` remedy — before any request leaves. A courtesy only: the
- *  manager door stays the enforcement point; this is why the CLI passes the target mesh's auth
- *  mode rather than restating the grammar (static mode keys the actor on the nkey, not the name). */
-export function refuseUnmintableName(name: string, userMode: boolean): void {
-  const refusal = spawnNameError(name, { userMode });
-  if (refusal) throw new CommandFailure("refused", "USAGE_INVALID", refusal, { selfContained: true });
 }
 
 /** Whether a managed launch can reach only this root's own manager: the instance it names, or else
@@ -208,9 +196,7 @@ export async function launchManagedPersona(
   } catch {
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected registration policy could not be observed; no manager launch was submitted");
   }
-  // #867: refuse an unmintable identity BEFORE the round trip. On this path the persona is
-  //  resolved manager-side, so the effective identity is `--name` alone — when it is absent the
-  //  manager applies the same spawnNameError to the file's `name:` at its own door.
+  // Without an explicit name, the manager validates the name from its own persona file.
   if (values.name !== undefined) refuseUnmintableName(values.name, t.mode === "user");
   const eventsRequired = policy?.events === "required";
   if (eventsRequired && events === false) {

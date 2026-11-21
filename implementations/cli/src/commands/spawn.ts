@@ -82,7 +82,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, refuseUnmintableName, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -104,7 +104,7 @@ import {
   noExchangeEndpoint,
 } from "./spawn-enrollment.js";
 import { spawnFlags, spawnRerun } from "./spawn-flags.js";
-import { connectorListed, refuseUnmintableName, launchManagedPersona, reportAlreadyRunning } from "./spawn-managed-launch.js";
+import { connectorListed, launchManagedPersona, reportAlreadyRunning } from "./spawn-managed-launch.js";
 import { uniqueMeshName, provisionFreshForeground, provisionRemoteUserForeground, provisionUserForeground } from "./spawn-foreground.js";
 export { runBearerPreflight } from "./spawn-foreground.js";
 export { launchServedHere, managedLaunchView, launchManagedPersona } from "./spawn-managed-launch.js";
