@@ -62,6 +62,30 @@ const fits80 = (display: string) => display.split("\n").every((line) => [...line
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
 
+const server = "nats://127.0.0.1:43842";
+const beforeMint = readdirSync(join(root, ".cotal")).sort();
+const out = join(home, "alice.creds");
+const mint = run(["auth", "mint", "alice", "--server", server, "--out", out, "--json"]);
+check("mint with an explicit broker refuses and names the first start at that address",
+  mint.status === 2 && mint.envelope?.outcome === "refused" && mint.envelope.target?.space === "b4b" &&
+  mint.envelope.error?.code === "AUTH_REQUIRED" && mint.envelope.error.remedy === `start it with \`cotal up --server ${server}\` to create the local static signing trust`, shown(mint));
+const bareMint = run(["auth", "mint", "alice", "--out", out, "--json"]);
+check("mint without a broker still refuses and explains that startup creates signing trust",
+  bareMint.status === 2 && bareMint.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+  bareMint.envelope.error.remedy === "start it with `cotal up` to create the local static signing trust", shown(bareMint));
+const callerMint = run(["auth", "mint", "alice", "--server", server, "--endpoint", "com.example.caller", "--out", out, "--json"]);
+check("endpoint mint shares the prepared startup remedy and neither mint writes anything",
+  callerMint.status === 2 && callerMint.envelope?.error?.code === "AUTH_REQUIRED" &&
+  callerMint.envelope.error.remedy === mint.envelope?.error?.remedy && !existsSync(out) && !existsSync(`${out}.issuance.json`) &&
+  JSON.stringify(readdirSync(join(root, ".cotal")).sort()) === JSON.stringify(beforeMint), shown(callerMint));
+const unprepared = run(["auth", "mint", "alice", "--server", server, "--out", out, "--json"], home);
+check("a root that was not prepared gets no startup remedy",
+  unprepared.status === 2 && unprepared.envelope?.error?.code === "AUTH_REQUIRED" && unprepared.envelope.error.remedy === undefined, shown(unprepared));
+const remoteMint = run(["auth", "mint", "alice", "--server", "nats://nats.example.test:43842", "--json"]);
+check("mint does not pass a remote dial address to local startup",
+  remoteMint.status === 2 && remoteMint.envelope?.error?.code === "AUTH_REQUIRED" &&
+  remoteMint.envelope.error.remedy === bareMint.envelope?.error?.remedy, shown(remoteMint));
+
 // The listing shows the prepared space, so it does not also say that no space is registered, and its
 // headers are in the same case as the registered table's.
 const listing = run(["space"]);
@@ -117,6 +141,11 @@ const special = join(home, "it's $HOME d");
 mkdirSync(special);
 const createdSpecial = run(["space", "create", "b4d", "--root", special]);
 check("rig: a second space is prepared in a folder whose name a shell would expand", createdSpecial.status === 0, shown(createdSpecial));
+const mintElsewhere = run(["auth", "mint", "alice", "--space", "b4d", "--server", server, "--json"]);
+const mintRoot = /^start it with `cotal up --server nats:\/\/127\.0\.0\.1:43842 --root (.+)` to create the local static signing trust$/.exec(mintElsewhere.envelope?.error?.remedy ?? "");
+const mintPath = mintRoot ? spawnSync("/bin/sh", ["-c", `printf %s ${mintRoot[1]}`], { encoding: "utf8" }).stdout : undefined;
+check("mint for a named prepared space elsewhere gives a shell-quoted startup root",
+  mintElsewhere.status === 2 && mintElsewhere.envelope?.error?.code === "TARGET_UNAVAILABLE" && mintPath === special, shown(mintElsewhere));
 const doctorElsewhere = run(["doctor", "auth", "--space", "b4d", "--json"]);
 const elsewhereStep = /^"b4d" is prepared but not started; start it with `cotal up --root (.+)`, then run `cotal doctor auth --space b4d` in that folder$/.exec(doctorElsewhere.envelope?.error?.remedy ?? "");
 const shellRead = elsewhereStep ? spawnSync("/bin/sh", ["-c", `printf %s ${elsewhereStep[1]}`], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: "/nonexistent" } }).stdout : undefined;
