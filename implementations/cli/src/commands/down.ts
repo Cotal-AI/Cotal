@@ -213,7 +213,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (args.values.file === undefined || typeof args.values.file === "string" && recordedStackPreview())) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || readMaintenanceJournal(cotalRoot())?.state === "ready" || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) {
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && !(stoppedLegacyStack(args.values) || bareStop(args.values) && (readMaintenanceJournal(cotalRoot())?.state === "ready" || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) {
     // A missing stop target keeps its diagnosis in every presentation mode.
     if (bareStop(args.values)) {
       const absent = noOwnedStack(canonicalRoot(cotalRoot()));
@@ -374,7 +374,9 @@ const pidRecordsUnder = (root: string): boolean => readdirSync(join(root, ".cota
  *  is missing, so bare down refuses rather than guess. `started` says whether a start rendered that
  *  broker configuration. `nothingRunning` reads every other record a local-process descriptor names
  *  under the root, for any space, before it answers. */
-function stoppedLegacyStack(): { root: string; space?: string; started: boolean; retired: boolean } | undefined {
+function stoppedLegacyStack(values: ParsedArgs["values"]): { root: string; space?: string; started: boolean; retired: boolean } | undefined {
+  const { space: requested, ...flags } = values;
+  if (!bareStop(flags) || (requested !== undefined && values["with-agents"] !== undefined)) return undefined;
   const root = canonicalRoot(cotalRoot());
   if (root === canonicalRoot(homedir()) || !realDirNoSymlink(root, ".cotal") || pidRecordsUnder(root)) return undefined;
   const registered = meshesForRoot(root);
@@ -391,6 +393,11 @@ function stoppedLegacyStack(): { root: string; space?: string; started: boolean;
   const started = existsSync(join(root, ".cotal", "server-open.conf")) || existsSync(join(authDir(root), "server.conf"));
   if (!prepared && !started) return undefined;
   space ??= prepared?.space;
+  // An explicit name only qualifies a never-started prepared root; it cannot select a legacy stop.
+  if (requested !== undefined) {
+    if (typeof requested !== "string" || started || kept || prepared?.space !== requested || space !== requested) return undefined;
+    refuseSpaceElsewhere(root, requested, values["dry-run"] === true);
+  }
   if (space !== undefined && planBareDownServices(space).some((row) => row.action !== "already-stopped")) return undefined;
   const retired = kept?.space === space && kept?.stoppedByDown === true && kept.stoppedWithAgents === true;
   return { root, ...(space === undefined ? {} : { space }), started, retired };
@@ -603,11 +610,12 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if (ownerHome !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this folder's running stack belongs to another Cotal home; nothing was stopped", { target: { root: cotalRoot(), home: ownerHome }, remedy: stackHomeRemedy(ownerHome) });
   const values = args.values as { file?: string; run?: string; "dry-run"?: boolean; "preserve-state"?: boolean; "with-agents"?: boolean; "store-dir"?: string; "session-store"?: string[]; space?: string };
   // A legacy root whose stack is already stopped: a bare down and its preview stop nothing.
-  if (bareStop(args.values)) {
+  const bare = bareStop(args.values);
+  if (bare || stoppedLegacyStack(args.values)) {
     const root = canonicalRoot(cotalRoot());
-    await awaitForegroundStartup(root, values["dry-run"] === true);
+    await awaitForegroundStartup(root, !bare || values["dry-run"] === true);
     const maintenance = readMaintenanceJournal(root);
-    if (maintenance?.state === "ready") {
+    if (bare && maintenance?.state === "ready") {
       const space = maintenance.space, server = maintenance.cut.launch.server;
       const target = { root, space, server, state: maintenance.state };
       const blocked = (why: string) => new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this stack's preserved cut is ready, but ${why}; nothing was stopped`, { target, remedy: "run `cotal status` to inspect the stack and its maintenance state" });
@@ -631,7 +639,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
         { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See the next maintenance step" }] }] },
       ] }));
     }
-    const stopped = maintenance && maintenance.state !== "active" ? undefined : stoppedLegacyStack();
+    const stopped = maintenance && maintenance.state !== "active" ? undefined : stoppedLegacyStack(args.values);
     // A root that never started a stack never ran a manager, so it has no agents to stop.
     if (stopped) {
       const { started, retired, ...target } = stopped;
