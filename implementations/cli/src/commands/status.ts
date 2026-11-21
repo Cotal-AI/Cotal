@@ -2253,14 +2253,14 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   if (r.selected.resolved) {
     const s = r.selected;
     const reachable = s.connection === "ok" || s.connection === "reachable";
-    // Name what fixes the default persona alone; setup does far more than that.
+    const scope = { space: s.source === "flag-server" ? undefined : s.space, server: s.source === "flag-server" || s.source === "flag-space-override" ? s.server : undefined };
     if (!noApplication) {
-      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: `${cmd} persona show default --space ${shellWord(s.space)}`, description: "See what is wrong with the default persona" });
-      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: `${cmd} spawn`, description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
+      if (s.personas.default !== "missing" && s.personas.default !== "valid") items.push({ command: onRerun(`${cmd} persona show default`, scope), description: "See what is wrong with the default persona" });
+      else if (reachable && s.deliveryResponder !== "unbound" && s.deliveryResponder !== "stale") items.push({ command: onRerun(`${cmd} spawn`, scope), description: s.personas.default === "missing" ? "Open your default agent; creates the shipped default persona" : "Open your default agent" });
     }
-    if (reachable) items.push({ command: `${cmd} who`, description: "See the live roster" });
+    if (reachable) items.push({ command: onRerun(`${cmd} who`, scope), description: "See the live roster" });
     if (r.stackManager?.endpoint === "answered" || r.outsideStackManager?.endpoint === "answered")
-      items.push({ command: `${cmd} ps`, description: "List managed agents" });
+      items.push({ command: onRerun(`${cmd} ps`, scope), description: "List managed agents" });
   }
   if (r.selected.resolved || !noApplication) {
     items.push({ command: `${cmd} space`, description: "List the spaces on this machine" });
