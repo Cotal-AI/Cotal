@@ -1,6 +1,6 @@
 /** The shipped run CLI against a REAL Manager and REAL JWT broker, with no agent seats. */
-import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import strictAssert from "node:assert/strict";
+import { execFile, type PromiseWithChild } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import {
 } from "@cotal-ai/core";
 import { Manager } from "@cotal-ai/manager";
 import "@cotal-ai/runtime";
+import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootBroker } from "../../implementations/manager/smoke/_boot-broker.js";
 import { bootDeliveryDaemon } from "../../implementations/manager/smoke/_boot-delivery.js";
@@ -25,6 +26,10 @@ const space = "pause-poll-live";
 const auditSubject = "$JS.EVENT.ADVISORY.API";
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
 const exec = promisify(execFile);
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert;
+
+type RunCli = (...args: string[]) => PromiseWithChild<{ stdout: string; stderr: string }>;
 
 async function auditCreds(auth: SpaceAuth): Promise<string> {
   const require = createRequire(import.meta.resolve("@cotal-ai/core"));
@@ -90,18 +95,49 @@ async function verifyWaiting(start: (duration: string) => Promise<string>, show:
   assert.equal(pending.status?.state, "running");
   assert.ok(pending.journal.some(row => row.kind === "step" && row.step === "/sleep#0" && row.state === "pending"));
   console.log(`waiting hosted sleep: ${JSON.stringify(stats)}`);
-  return stats.journalReplays;
+  return { run, stats };
 }
 
-async function verifyPolling(root: string, runCli: (...args: string[]) => Promise<string>, calls: ApiCall[], jsm: JetStreamManager): Promise<void> {
+async function verifyTakeover(run: string, runCli: RunCli, show: (run: string) => Promise<RunStatusView>): Promise<void> {
+  const log = console.error;
+  const released: string[] = [];
+  console.error = (...args) => {
+    const line = String(args[0]);
+    if (line.startsWith(`run ${run}: released - `)) released.push(line);
+    log(...args);
+  };
+  const successor = runCli("resume", run, "--local");
+  const done = successor.then(() => undefined, () => undefined);
+  try {
+    const activationBy = Date.now() + 5_000;
+    let view = await show(run);
+    while ((view.status?.epoch ?? 0) < 2 && Date.now() < activationBy) {
+      await wait(100);
+      view = await show(run);
+    }
+    assert.equal(view.status?.epoch, 2, "the local successor activated");
+    const activatedAt = Date.now();
+    const releaseBy = activatedAt + 7_000;
+    while (released.length === 0 && Date.now() < releaseBy) await wait(100);
+    assert.ok(released.length > 0, "the superseded manager released its attempt before the pause deadline");
+    assert.equal((await show(run)).status?.state, "running", "the successor still owns a waiting run");
+    console.log(`takeover control: the old manager released within ${Date.now() - activatedAt} ms of observing the successor`);
+  } finally {
+    console.error = log;
+    successor.child.kill();
+    await done;
+  }
+}
+
+async function verifyPolling(root: string, runCli: RunCli, calls: ApiCall[], jsm: JetStreamManager): Promise<void> {
   const start = async (duration: string): Promise<string> => {
     const file = join(root, `${duration}.cotal.js`);
     writeFileSync(file, `await sleep(${JSON.stringify(duration)});\n`);
-    const { result } = JSON.parse(await runCli("start", "--file", file));
+    const { result } = JSON.parse((await runCli("start", "--file", file)).stdout);
     assert.match(result.result.runId, /^run-/);
     return result.result.runId;
   };
-  const show = async (run: string): Promise<RunStatusView> => JSON.parse(await runCli("show", run)).result.view;
+  const show = async (run: string): Promise<RunStatusView> => JSON.parse((await runCli("show", run)).stdout).result.view;
   const controlStart = calls.length;
   const control = await start("2s");
   const completeBy = Date.now() + 10_000;
@@ -122,7 +158,9 @@ async function verifyPolling(root: string, runCli: (...args: string[]) => Promis
   assert.equal(fact.json<{ settle: string }>().settle, "expired");
   assert.equal(first.seq, fact.seq, "the short sleep wrote just one settlement fact");
   console.log("positive control: the broker fired and the short hosted sleep settled once with outcome ok");
-  assert.equal(await verifyWaiting(start, show, calls), 0, "an empty fire or settle poll must not replay the workflow journal");
+  const { run, stats } = await verifyWaiting(start, show, calls);
+  assert.equal(stats.journalReplays, 0, "an empty fire or settle poll must not replay the workflow journal");
+  await verifyTakeover(run, runCli, show);
 }
 
 async function main(): Promise<void> {
@@ -155,8 +193,9 @@ async function main(): Promise<void> {
           const calls: ApiCall[] = [];
           audit.subscribe(auditSubject, { callback: (error, msg) => { if (error) throw error; calls.push(msg.json<ApiCall>()); } });
           await audit.flush();
-          const runCli = async (...args: string[]) => (await exec(process.execPath,
-            [cli, "run", ...args, "--space", space, "--server", servers, "--json"], { cwd: root, timeout: 20_000 })).stdout;
+          const runCli: RunCli = (...args) => exec(process.execPath,
+            [cli, "run", ...args, "--space", space, "--server", servers, ...(args.includes("--local") ? [] : ["--json"])],
+            { cwd: root, encoding: "utf8", timeout: 20_000 });
           await verifyPolling(root, runCli, calls, await jetstreamManager(audit, { checkAPI: false }));
         } finally { await audit.close(); }
       } finally {
@@ -167,3 +206,4 @@ async function main(): Promise<void> {
 }
 
 await main();
+emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -39,8 +39,8 @@ export class PauseOverdue extends Error {
   }
 }
 
-/** The trusted host derives subjects from the bound endpoint and attempt. Empty polls of an
- *  existing pause need no journal replay. Returning a fact or acting on a fire still does. */
+/** The trusted host derives subjects from the bound endpoint and attempt. An empty fire poll
+ *  checks the journal tail, not its full prefix. A fact or fire still needs token authorization. */
 export function createRunPauseHost(
   broker: RunHostPlanes,
   binding: {
@@ -106,7 +106,10 @@ export function createRunPauseHost(
         if ((error as { code?: unknown })?.code === 10037) return null;
         throw error;
       });
-      if (fired === null || fired === undefined) return false;
+      if (fired === null || fired === undefined) {
+        await authority.assertCurrent();
+        return false;
+      }
       await authority.pause(token, "fire");
       const result = await handleCheckpointFire(kv, js, jsm, space, {
         ref: ref(token), instanceId: pinned.instanceId, epoch: pinned.epoch,

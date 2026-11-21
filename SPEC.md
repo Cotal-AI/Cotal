@@ -5053,7 +5053,8 @@ last-by-subject sequence read: CAS-PINNING, the leader-served input to the arm's
 fence, the same §13.1 complementarity class as the FIRE handler's status CAS). The timer
 FIRE handler holds no records `STREAM.MSG.GET`: its settlement is a revision-pinned status
 CAS, so a stale read loses the CAS loudly (§13.1 complementarity), never mis-fires (the
-matrix rows below). The body-selected form is not
+matrix rows below). The trusted workflow mediator also reads `WFJ_<space>` to check a parked
+attempt's journal tail (§14.6). The body-selected form is not
 subject-confinable by the broker, so each of these grants trades broker confinement for
 profile trust; the trade is acceptable exactly because every holder IS a trusted
 single-purpose principal for whom read-your-writes is a correctness requirement, not a
@@ -5104,6 +5105,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, per `cotal spawn --resume --detach --on` call after the CLI hashes the transcript: minted by the operator holding the space signer, or on a user-auth space exchanged as the `transfer-writer` view, §10) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
 | Resume transfer read (§8) | the `transfer-reader` principal (one-shot, 5 min, minted per `transcript-receive` or sweep by the receiving manager from the space signer, or issued to a remote manager by the host's `transferReader` authority operation for that manager's own instance) | `STREAM.CREATE`, `STREAM.INFO`, `STREAM.MSG.GET`, `STREAM.PURGE` and `CONSUMER.CREATE` on its own `OBJ_cotal_xfer_<space>_<instanceId>` only, publish `$O.cotal_xfer_<space>_<instanceId>.M.>` (the stock delete marker), `$JS.API.INFO`, and that stream's `$JS.FC.OBJ_cotal_xfer_<space>_<instanceId>.>` flow control; every other credential, seats, the spawn capability, the supervisor, the provisioner and other instances' readers included, holds nothing that names `OBJ_cotal_xfer_` or `$O.cotal_xfer_` | mediated; instance-pinned |
 | Run admission read (§14.8) | the `run-mediator` and `run-operator` principals | `STREAM.MSG.GET` on `KV_cotal_admission_<space>` (leader-served; body-selected, stream-wide, the same residual as every records reader); the `run-driver` holds NO row on this store | mediated read; fail-closed |
+| Workflow pause currency (§14.6) | the trusted `run-mediator` principal only | `$JS.API.STREAM.MSG.GET.WFJ_<space>` (leader-served `last_by_subj` on the mediator's bound run subject; body-selected and therefore a stream-wide residual of the trusted connection). No Direct Get or journal publish is granted by this row | mediated read; does not authorize a pause effect |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct, explicitly untrusted input |
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only, and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
 | Canonical decisions + quarantine + goal-bind | the endpoint's canonicalizer principal | publish `epf.<endpoint>.dec.>`, `epf.<endpoint>.quar.>`, and `epf.<endpoint>.goal.*.*.*.*.bind` (the per-goal first-wins bind, §13.4, create-only CAS per subject; the `.bind` leaf is disjoint from the commit principal's `goal….result`/status writes, so no writer overlap) | mediated |
@@ -7336,6 +7338,13 @@ run's driver append to another run's journal, which is not a read leak but a cor
 run would replay a step it never took), and the barrier's premise is exactly one authoritative
 appender per subject. The provisioner holds `STREAM.CREATE`/`STREAM.INFO` on `WFJ_<space>` and
 creates it at space setup; agents never hold `STREAM.CREATE` (§13.12).
+
+The `run-mediator` holds the run's own replay rows and a leader-served tail read (§13.9). During
+an empty fire poll, it checks the bound run's last sequence. It may reuse an activation check
+only at the same sequence as a validated replay. A changed tail requires replay before treating
+the attempt as current. An absent or truncated tail refuses the attempt. Returning a settlement
+fact or acting on a fire still requires current activation and token authority from the journal.
+The trusted mediator never exposes the tail read grant to the driver.
 
 ### 14.7 Conformance (workflow runs)
 

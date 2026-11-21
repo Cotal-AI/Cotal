@@ -1,6 +1,8 @@
 ---
 "@cotal-ai/runtime": patch
+"@cotal-ai/core": patch
+"@cotal-ai/auth": patch
 "cotal-ai": patch
 ---
 
-Hosted workflows no longer replay their journals while polling for a timer fire or settlement that has not arrived. The host still checks the current journal before acting on a fire or returning a settlement.
+Hosted workflows stop replaying an unchanged journal while they wait for a timer or answer. The host checks the journal tail to detect takeovers and still authorizes each fire and settlement against the current journal.

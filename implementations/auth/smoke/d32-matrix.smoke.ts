@@ -951,7 +951,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
   const cO = DEV_OWNER, cA = `wf_${h.slice(0, 12)}`, cU = h.slice(12, 38);
   c("the run-driver caller triple is the run id's own digest (owner local, actor wf_<12 hex>, uid <26 hex>)",
     JSON.stringify(runDriverCaller(RUN)) === JSON.stringify({ owner: cO, actor: cA, uid: cU }), runDriverCaller(RUN));
-  c("the run-mediator mint is EXACTLY its journal replay + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + the admission read + its own manager rails + the store fetch, and nothing else",
+  c("the run-mediator mint is EXACTLY its journal reads + run-pinned records + checkpoint plane + channel/presence reads + conclave registries + the admission read + its own manager rails + the store fetch, and nothing else",
     JSON.stringify(g) === JSON.stringify({
       publish: [
         `$JS.API.CONSUMER.CREATE.WFJ_${S}.wfj_${RUN}_${TK}.cotal.${S}.wfj.${RUN}`,
@@ -959,6 +959,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `$JS.API.CONSUMER.MSG.NEXT.WFJ_${S}.wfj_${RUN}_${TK}`,
         `$JS.ACK.WFJ_${S}.wfj_${RUN}_${TK}.>`,
         `$JS.API.CONSUMER.DELETE.WFJ_${S}.wfj_${RUN}_${TK}`,
+        `$JS.API.STREAM.MSG.GET.WFJ_${S}`,
         `$KV.cotal_records_${S}.run.${EP}.${RUN}.>`,
         `$KV.cotal_records_${S}.program.${EP}.${RUN}`,
         `$KV.cotal_records_${S}.notice.${EP}.${RUN}.>`,
@@ -1005,8 +1006,8 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
     !rows.some((r) => /^\$JS\.API\.CONSUMER\.[A-Z.]+\.KV_cotal_(?:auth|records)_/.test(r) || /^\$JS\.ACK\.KV_cotal_(?:auth|records)_/.test(r)), rows);
   c("NO bare ephemeral-create form anywhere (the settle watcher polls the fact; it binds no EPF consumer)",
     !rows.some((r) => /^\$JS\.API\.CONSUMER\.CREATE\.[^.]+$/.test(r)), rows);
-  c("NO read of the journal stream except through its own filtered replay durable (no STREAM.MSG.GET / DIRECT.GET on WFJ)",
-    !rows.some((r) => /^\$JS\.API\.(?:STREAM\.MSG\.GET|DIRECT\.GET)\.WFJ_/.test(r)), rows);
+  c("NO journal Direct Get or publish grant",
+    !rows.some((r) => r.startsWith(`$JS.API.DIRECT.GET.WFJ_${S}`) || r.startsWith(`cotal.${S}.wfj.`)), rows);
   c("NO destructive stream verb, NO auth-store read, NO goal fact publish, NO epj submission, NO chat publish",
     !rows.some((r) => DESTRUCTIVE_JS.test(r) || r.includes("KV_cotal_auth_") || /\.epf\.[^.]+\.goal\./.test(r) || r.includes(".epj.") || /\.chat\./.test(r)), rows);
   const other = runMediatorGrants(S, { endpoint: EP, runId: "run-bb22", takeoverId: TK, instanceId: IID, epoch: EPOCH }, CONN);
