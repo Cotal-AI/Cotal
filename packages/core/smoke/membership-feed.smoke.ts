@@ -37,6 +37,7 @@ import {
   startMembershipFeed,
   openMembersRegistry,
   commitMember,
+  tombstoneMember,
   chatSubject,
   chatWildcard,
   spacePrefix,
@@ -49,9 +50,11 @@ import {
 } from "../src/index.js";
 import type { ChannelMembership, MembershipRecord } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { connzOutMessages } from "./_connz-out.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
+const MONITOR_PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -68,7 +71,8 @@ const pkey = (id: string) => principalKey(DEV_OWNER, id).key;
 const space = `membership-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space); // sys.signingSeed lives in-memory here — mint the observer below
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) +
+  `\nhttp: "127.0.0.1:${MONITOR_PORT}"\n`);
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
@@ -106,7 +110,7 @@ try {
   conns.push(seedNc);
   const members = await openMembersRegistry(seedNc, space);
   const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, lifecycleUid: mintLifecycleUid(), state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
-  await commitMember(members, rec("deploys", pkey(bob.id)));
+  const bobMember = await commitMember(members, rec("deploys", pkey(bob.id)));
   await commitMember(members, rec("general", pkey(alice.id))); // alice is ALSO a durable member of #general (live ∪ durable union)
 
   // --- a god-view tap (the web dashboard / a core tap) — must be EXCLUDED from membership ---
@@ -144,7 +148,8 @@ try {
   await dnc.flush();
 
   // --- run the feed and force a reconcile ---
-  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds, intervalMs: 60_000 });
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds,
+    intervalMs: 60_000, debounceMs: 100, settleMs: 50 });
   await feed.poll();
   await wait(400);
 
@@ -239,6 +244,50 @@ try {
   const aliceAfter = out.get(membershipKey(pkey(alice.id)));
   check("a disconnected live subscriber keeps its durable membership", !!aliceAfter && eq(aliceAfter.durable, ["general"]), aliceAfter);
   check("a disconnected live subscriber's live set is pruned to empty", !!aliceAfter && eq(aliceAfter.live, []), aliceAfter?.live);
+
+  // Let the safety poll sleep while a real connect/disconnect triggers a successful new heartbeat.
+  // No durable rows change in the measured window. Size the registry above the counter threshold.
+  const metricsKv = await new Kvm(readNc).open(membershipBucket(space));
+  const waitForHeartbeat = async (after: number, count: number, ready = async () => true): Promise<number> => {
+    for (let i = 0; i < 150; i++) {
+      const e = await metricsKv.get(MEMBERSHIP_FEED_KEY);
+      if (e && e.revision > after && e.json<{ count: number }>().count === count && await ready()) return e.revision;
+      await wait(20);
+    }
+    throw new Error(`membership heartbeat did not advance with ${count} members`);
+  };
+  for (let i = 0; i < 60; i++) await commitMember(members, rec(`unrelated.${i}`, `local.fixture_${i}`));
+  await feed.poll();
+  const warm = await waitForHeartbeat(0, 63);
+  const cid = feed.nativeDataConnections()[0].cid;
+  const probeId = newIdentity();
+  const probeCreds = await mintCreds(auth, probeId, "probe");
+  const beforeCost = await connzOutMessages(MONITOR_PORT, cid);
+  const churn = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(probeCreds)), inboxPrefix: `_INBOX_${probeId.id}` });
+  await churn.close();
+  const after = await waitForHeartbeat(warm, 63);
+  const churnCost = await connzOutMessages(MONITOR_PORT, cid) - beforeCost;
+  check("connection churn advances the heartbeat without transferring either registry", churnCost < 45, { churnCost });
+
+  await tombstoneMember(members, bobMember.channel, bobMember.owner, bobMember.lifecycleUid, 1, "smoke");
+  await feed.poll();
+  const repairBase = await waitForHeartbeat(after, 62);
+  check("a durable tombstone removes an offline member without a connection change",
+    (await metricsKv.get(membershipKey(bobMember.owner)))?.operation !== "PUT");
+
+  const feedWriterId = newIdentity();
+  const feedWriterNc = await connect({ servers: SERVERS,
+    authenticator: credsAuthenticator(enc(await mintCreds(auth, feedWriterId, "membership-rw"))),
+    inboxPrefix: `_INBOX_${feedWriterId.id}` });
+  conns.push(feedWriterNc);
+  const feedWriterKv = await new Kvm(feedWriterNc).open(membershipBucket(space));
+  const offlineKey = membershipKey("local.fixture_0");
+  await feedWriterKv.delete(offlineKey);
+  await feed.poll();
+  const offlineRestored = async () => (await metricsKv.get(offlineKey))?.operation === "PUT";
+  await waitForHeartbeat(repairBase, 62, offlineRestored);
+  check("the feed repairs a missing offline row even without a durable registry change",
+    (await metricsKv.get(offlineKey))?.json<ChannelMembership>().durable.includes("unrelated.0") === true);
 
   // --- incomplete-sweep guard (review-general): a poll that gets ZERO CONNZ replies must NOT prune the
   // live half or advance the freshness heartbeat. Simulate deterministically by running a feed with a

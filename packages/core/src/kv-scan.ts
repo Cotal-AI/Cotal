@@ -1,6 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import { JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { DeliverPolicy, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { isPublishPermissionDenied } from "./endpoint.js";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
@@ -104,6 +104,10 @@ export class IncompleteKvScan extends Error {
 
 export interface LiveKvEntriesOptions {
   signal?: AbortSignal;
+  /** Start at this inclusive stream sequence instead of the first retained message. */
+  startSequence?: number;
+  /** Keep the last operation for each key, including native DEL/PURGE markers. */
+  includeDeleted?: boolean;
   /** Runs each delete of the scan's own consumers in place of the plain delete. */
   deleteOwnConsumer?: (stream: string, name: string, del: () => Promise<boolean>) => Promise<boolean>;
   /** Runs with the scan's consumer before its first delivery. nats.js rebuilds that consumer after a
@@ -117,7 +121,7 @@ export interface LiveKvEntriesOptions {
  *
  * `filter` narrows the scan to matching keys (NATS subject wildcards), for callers that scan a
  * key prefix rather than the whole bucket. Returns entries whose final operation is a real value;
- * deleted and purged keys are absent.
+ * deleted and purged keys are absent unless `includeDeleted` is set.
  *
  * Throws {@link IncompleteKvScan} if the pass is cut short. Returns `[]` for a bucket that is
  * genuinely empty (proven at bind time, not inferred from silence).
@@ -175,6 +179,10 @@ export async function liveKvEntries(
     );
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  if (opts?.startSequence !== undefined) {
+    cc.deliver_policy = DeliverPolicy.StartSequence;
+    cc.opt_start_seq = opts.startSequence;
+  }
   // Only this temporary scan's cursor is volatile. The backing KV records keep their storage;
   // an interrupted pass still has to prove completeness or throw before returning any result.
   cc.mem_storage = true;
@@ -292,7 +300,7 @@ export async function liveKvEntries(
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
   const out: KvEntry[] = [];
-  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
+  for (const e of latest.values()) if (opts?.includeDeleted || (e.operation !== "DEL" && e.operation !== "PURGE")) out.push(e);
   return out;
 }
 

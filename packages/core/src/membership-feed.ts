@@ -34,8 +34,6 @@ import { dialerFor } from "./endpoint.js";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   membershipBucket,
-  membershipKey,
-  MEMBERSHIP_FEED_KEY,
   MEMBERSHIP_INBOX_PREFIX,
   connzRequestSubject,
   accountConnectSubject,
@@ -45,12 +43,12 @@ import {
   isChannelFamily,
   subjectMatches,
 } from "./subjects.js";
-import { openMembersRegistry, listMembers } from "./members.js";
-import { liveKvEntries } from "./kv-scan.js";
+import { MemberRegistryView } from "./member-registry-view.js";
+import { MembershipFeedWriter } from "./membership-feed-writer.js";
+import { openMembersRegistry } from "./members.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
-import type { ChannelMembership } from "./types.js";
 
 /** Whether a feed record's `durable` list covers `channel`: the channel's own row, or a family row
  *  above it (`team.>`, #5404). A family stores copies only for the durable-class channels under it, so
@@ -316,6 +314,8 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   let feedKv: KV = await kvm.open(membershipBucket(space));
   await requireFeedStore(feedKv, space); // Bind is lazy; refuse missing storage before arming timers.
   let membersKv: KV = await openMembersRegistry(connB, space);
+  const membersView = new MemberRegistryView();
+  const writer = new MembershipFeedWriter();
 
   // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
   // Mirrors the endpoint's delivery.creds renewal (adoptFreshCreds / renewCredsOnTimer / runCredsTxn).
@@ -612,67 +612,16 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     return { live, complete: gotReply && exhausted && seenSelf };
   }
 
-  /** The durable arm: open, activated (non-tombstoned) members from the privileged registry. Mirrors
-   *  endpoint `channelMembers()` so the daemon's union and the manager surface agree. */
-  async function durableFromMembers(): Promise<Map<string, Set<string>>> {
-    const durable = new Map<string, Set<string>>();
-    for (const r of await listMembers(membersKv)) {
-      if (r.leaveCursor !== undefined || r.activated !== true) continue;
-      (durable.get(r.owner) ?? durable.set(r.owner, new Set()).get(r.owner)!).add(r.channel);
-    }
-    return durable;
-  }
-
   async function reconcile(): Promise<void> {
     const { live, complete } = await liveFromConnz();
     // A partial CONNZ sweep (unreachable / truncated) would prune real members and lie about freshness —
     // keep the last good state untouched and don't stamp the heartbeat. Self-heals on the next full poll.
     if (!complete) return;
-    const durable = await durableFromMembers();
-    const observedAt = Date.now();
-
-    // Merge per agent: CONNZ live patterns ∪ durable concrete channels. An agent with neither is omitted.
-    const next = new Map<string, ChannelMembership>();
-    for (const id of new Set<string>([...live.keys(), ...durable.keys()])) {
-      const liveArr = [...(live.get(id) ?? [])].sort();
-      const durableArr = [...(durable.get(id) ?? [])].sort();
-      if (liveArr.length === 0 && durableArr.length === 0) continue;
-      next.set(id, { live: liveArr, durable: durableArr, observedAt });
-    }
-
-    // Diff-before-put on the normalized {live,durable} (NOT observedAt), then prune departed agents — so a
-    // quiet poll bumps no revision and wakes no watcher. Feed-wide freshness rides the heartbeat key below.
-    const existing = new Set<string>();
-    const current = new Map<string, ChannelMembership>();
-    const entries = await liveKvEntries(feedKv).catch(error => {
+    const durable = await membersView.durable(membersKv);
+    await writer.write(feedKv, live, durable).catch(error => {
       if (isStreamNotFound(error)) throw missingFeedStore(space, error);
       throw error;
     });
-    for (const e of entries) {
-      if (e.key === MEMBERSHIP_FEED_KEY) continue;
-      existing.add(e.key);
-      try {
-        current.set(e.key, e.json<ChannelMembership>());
-      } catch {
-        /* re-write on garble */
-      }
-    }
-    for (const [id, rec] of next) {
-      const key = membershipKey(id);
-      existing.delete(key);
-      const curRec = current.get(key);
-      let same = false;
-      if (curRec) {
-        try { same = sameMembership(curRec, rec); } catch { /* re-write on garble */ }
-      }
-      if (!same) await feedKv.put(key, enc(JSON.stringify(rec)));
-    }
-    for (const stale of existing) await feedKv.delete(stale);
-
-    // Heartbeat: re-stamp every successful poll (even with zero membership change) so the dashboard can
-    // distinguish "feed is live" from "feed is stale/dead" — the diff-before-put above would otherwise
-    // freeze every observedAt and make a healthy feed read stale.
-    await feedKv.put(MEMBERSHIP_FEED_KEY, enc(JSON.stringify({ observedAt, count: next.size })));
   }
 
   async function poll(): Promise<void> {
@@ -822,13 +771,4 @@ function addConn(space: string, live: Map<string, Set<string>>, c: ConnzConnecti
   if (patterns.length === 0) return; // connected but subscribed to no channel — member of nothing
   const set = live.get(id) ?? live.set(id, new Set()).get(id)!;
   for (const p of patterns) set.add(p);
-}
-
-/** Equal on the normalized membership (sorted live + durable), IGNORING `observedAt` — the diff that
- *  decides whether a poll re-writes an agent's key (so a quiet poll wakes no watcher). */
-function sameMembership(a: ChannelMembership, b: ChannelMembership): boolean {
-  return arrEq(a.live, b.live) && arrEq(a.durable, b.durable);
-}
-function arrEq(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((x, i) => x === b[i]);
 }

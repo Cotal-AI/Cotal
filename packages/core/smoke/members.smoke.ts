@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   membersBucket,
   memberKey,
@@ -39,6 +40,7 @@ import {
   StaleMembershipWrite,
   type MembershipRecord,
 } from "../src/index.js";
+import { MemberRegistryView } from "../src/member-registry-view.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -248,10 +250,38 @@ async function main() {
     JSON.stringify(covering) === JSON.stringify([`team.> ${FA}`, `team.backend ${D}`]), covering);
   check("listMembers(channel=team.>) reads the family row exactly", JSON.stringify((await listMembers(kv, { channel: "team.>" })).map((m) => m.owner)) === JSON.stringify([FA]));
 
+  const view = new MemberRegistryView();
+  const viewOwners = async (channel: string) => (await view.covering(kv, channel)).map(r => r.owner).sort();
+  check("indexed lookups cover only the exact and ancestor-family keys", JSON.stringify(await viewOwners("team.backend")) === JSON.stringify([D, FA].sort()));
+  const nested = await commitMember(kv, rec({ channel: "team.backend.child", owner: B, activated: false }));
+  check("a pending join becomes routable on the next broker read, before activation",
+    (await view.covering(kv, nested.channel)).some(r => r.owner === B && !r.activated));
+  await tombstoneMember(kv, nested.channel, B, nested.lifecycleUid, 20, W);
+  check("a refreshed leave retains the inclusive delivery boundary",
+    (await view.covering(kv, nested.channel)).some(r => r.owner === B && durableEligible(r, 20) && !durableEligible(r, 21)));
+  await deleteMember(kv, "team.>", FA, lid(FA));
+  check("a native KV purge removes the covering family from the index", !(await viewOwners(nested.channel)).includes(FA));
+
+  const jsm = await jetstreamManager(nc);
+  const streamName = `KV_${membersBucket(space)}`;
+  const nestedRow = await readMember(kv, nested.channel, B, nested.lifecycleUid);
+  assert.ok(nestedRow);
+  await jsm.streams.deleteMessage(streamName, nestedRow.revision);
+  await commitMember(kv, rec({ channel: "team.backend.child", owner: E }));
+  check("an out-of-band stream deletion is noticed even when a new key replaces its count",
+    JSON.stringify(await viewOwners(nested.channel)) === JSON.stringify([E, FB].sort()));
+
   // ---- delete (GC) removes the footprint ----
   await deleteMember(kv, "review", D, lid(D));
   check("deleteMember purges the record", (await readMember(kv, "review", D, lid(D))) === undefined);
   check("delete left the sibling record intact", (await readMember(kv, "review", A, lid(A))) !== undefined);
+
+  await jsm.streams.delete(streamName);
+  await assert.rejects(view.covering(kv, nested.channel), /stream not found/i);
+  const recreated = await openMembersRegistry(nc, space, { create: true });
+  await commitMember(recreated, rec({ channel: nested.channel, owner: CA }));
+  check("recreation resets the index and never serves records from the old store",
+    JSON.stringify(await viewOwners(nested.channel)) === JSON.stringify([CA]));
 
   console.log(`\nMEMBERS-REGISTRY SMOKE PASSED ✅  (${pass} checks)`);
   await nc.close();

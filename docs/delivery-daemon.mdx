@@ -35,6 +35,9 @@ The daemon separates the work of retaining messages, checking access, and record
   belong to the membership interval, including posts concurrent with a transition. A family row
   covers the durable-class channels under it, and a member covered by several rows gets one copy
   of each post within the two-hour duplicate window.
+  For each durable post the writer checks the registry's revision at the broker and looks up the
+  channel and its covering families. It reads changed rows when the revision advances instead of
+  fetching every member on every post.
   A privileged service writes the registry. An agent cannot assert its own durable membership.
 
 Acknowledgements keep delivery durable through the handoff. The reader releases its source entry

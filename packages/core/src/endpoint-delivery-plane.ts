@@ -10,6 +10,7 @@ import { deliveryLimitOf, fitHistoryPage, isFromSubjectSender, type CotalEndpoin
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { issuedPermitsSubject, type IssuedSubjectPermission } from "./issued-authority.js";
 import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
+import { MemberRegistryView } from "./member-registry-view.js";
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, readMember } from "./members.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
@@ -871,9 +872,10 @@ export class EndpointDeliveryPlane {
     const consumer = await this.js.consumers.get(chatStream(this.space), FANOUT_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
+    const members = new MemberRegistryView();
     void (async () => {
       for await (const m of msgs) {
-        try { await this.fanOutMessage(m); }
+        try { await this.fanOutMessage(m, members); }
         catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
@@ -882,9 +884,9 @@ export class EndpointDeliveryPlane {
   /** Route ONE chat message to eligible owners' mixed inboxes. `durable` channel → its `durable-active`
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  On either class, a mention of an agent whose read ACL excludes the channel is reported to the
-   *  sender with a mention notice. Members KV is scanned FRESH per message (no cache — red-team
-   *  BLOCKER-1 catch-up correctness). */
-  private async fanOutMessage(m: JsMsg): Promise<void> {
+   *  sender with a mention notice. The index is refreshed against the members stream leader for each
+   *  durable post, so a join committed during catch-up cannot be missed by an older view. */
+  private async fanOutMessage(m: JsMsg, members: MemberRegistryView): Promise<void> {
     // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
     // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
     // this daemon no longer serves. Returning WITHOUT acking is the whole point - a stopped consumer
@@ -923,7 +925,7 @@ export class EndpointDeliveryPlane {
     if (durable) {
       // The channel's own rows and every family row above it (`review.>`). A lifecycle holding two of
       // them gets two publishes and keeps one copy: the dedupe id is per message and lifecycle (#5404).
-      for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {
+      for (const rec of await members.covering(await this.membersRegistry(), channel)) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
         if (!durableEligible(rec, seq)) continue;     // routing fast-filter (reader re-checks)
         // Address the member row's RECORDED lifecycle: a retired row (tombstone pending) routes to the

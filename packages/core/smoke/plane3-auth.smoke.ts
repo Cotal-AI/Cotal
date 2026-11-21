@@ -38,14 +38,18 @@ import {
   dlvSubject,
   dlvDurable,
   dlvStream,
+  commitMember,
+  openMembersRegistry,
   type Delivery,
   type CotalMessage,
   type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { connzOutMessages } from "./_connz-out.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
+const MONITOR_PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (cond: () => boolean, timeoutMs = 8000, stepMs = 50): Promise<boolean> => {
@@ -83,7 +87,8 @@ const denied = async (fn: () => Promise<unknown>): Promise<boolean> => {
 const space = `plane3-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }) +
+  `\nhttp: "127.0.0.1:${MONITOR_PORT}"\n`);
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
@@ -141,8 +146,9 @@ try {
   // write, no `ctl.delivery`). The manager stays provisioner (provisionAgent above) + publisher (the
   // multicast calls below post chat AS the operator; the daemon's fan-out reads CHAT and delivers).
   const dlvId = newIdentity();
+  const dlvCreds = await mintCreds(auth, dlvId, "delivery");
   const dlv = new CotalEndpoint({
-    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    space, servers: SERVERS, creds: dlvCreds,
     card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
     channels: [], consume: false, registerPresence: false, watchPresence: true,
   });
@@ -183,6 +189,25 @@ try {
   check("delivered on the right channel (review)", h?.ch === "review");
   check("kind=channel (path-derived from the DELIVER durable, not a header — SPEC §4)", h?.kind === "channel");
   check("durable:true (real JetStream backstop ack, coalesces with any live copy)", h?.durable === true);
+
+  // Add enough unrelated rows to dwarf incidental broker traffic. Warm the index after the writes,
+  // then measure a settled post that still reaches the real DELIVER consumer.
+  const seedNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(dlvCreds)), inboxPrefix: `_INBOX_${dlvId.id}` });
+  try {
+    const members = await openMembersRegistry(seedNc, space);
+    for (let i = 0; i < 100; i++) {
+      await commitMember(members, { channel: `other.${i}`, owner: aPrincipal, lifecycleUid: uidA,
+        state: "durable-active", activated: true, joinCursor: 0, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
+    }
+  } finally { await seedNc.close(); }
+  await poster.multicast("warm-membership-index", { channel: "review" });
+  if (!(await until(() => got.some(g => g.text === "warm-membership-index")))) throw new Error("warm-up post did not reach DELIVER");
+  const cid = dlv.nativeConnections()[0].cid;
+  const beforeCost = await connzOutMessages(MONITOR_PORT, cid);
+  await poster.multicast("bounded-membership-read", { channel: "review" });
+  check("a post reaches DELIVER with unrelated memberships present", await until(() => got.some(g => g.text === "bounded-membership-read")));
+  const postCost = await connzOutMessages(MONITOR_PORT, cid) - beforeCost;
+  check("one durable post does not transfer the 100 unrelated member rows", postCost < 80, { postCost });
 
   // The payload channel is advisory. A raw publisher cannot relabel a #review post as #general to
   // bypass connector attention after fan-out: Plane-3 carries the subject-derived channel in its
