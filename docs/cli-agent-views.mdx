@@ -620,6 +620,7 @@ not uncover it later. A manifest file that does not exist is refused with `TARGE
 `team check .`, is refused with `USAGE_INVALID` (exit 1), naming the directory and asking you to
 name a file inside it. In `--json`, a missing manifest is named in `target.path` and a directory in
 `target.file`. `team boot` and `team deploy` report these errors before contacting a broker.
-`team deploy` gives the same path and remedy with or without `--dry-run`.
+`team deploy` gives the same path and remedy with or without `--dry-run`. Apply also reports
+these errors if the path changes before the selected deployment route reads the manifest.
 This file check does not prove live authorization, installed applications or launch readiness.
 These read views do not apply a boot, an additive deployment or a removal.

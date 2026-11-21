@@ -18,7 +18,8 @@
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  * A folder given to `topology view -f`, `up -f`, `down -f`, `team check`, `team boot --dry-run` or
  * `team deploy` (preview or apply) is refused by its path as a directory. Team deploy reports a
- * missing manifest with its resolved path and a remedy in both preview and apply.
+ * missing manifest with its resolved path and a remedy in both preview and apply, including when
+ * the manifest changes between routing and apply preflight.
  * A signal while the CLI loads prints that the command did not begin and exits with that signal's
  * code, and an internal entry keeps Node's default signal exit.
  *
@@ -1114,6 +1115,40 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const envelope = readRefusal(json);
     check(`${what} --json of an absent manifest gives TARGET_NOT_FOUND with the path and remedy`,
       json.status === 2 && envelope?.error?.code === "TARGET_NOT_FOUND" && envelope.target?.path === missing && envelope.error.remedy === missingRemedy, shown(json));
+  }
+
+  // Let the routing read succeed, then change the real path before the apply handler reads it.
+  const preload = join(dir, "replace-after-read.cjs");
+  writeFileSync(preload, `
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const { TEAM_TEST_MANIFEST: manifest, TEAM_TEST_REPLACEMENT: replacement } = process.env;
+const read = fs.readFileSync;
+fs.readFileSync = function (file, ...args) {
+  const source = read.call(this, file, ...args);
+  if (file === manifest) {
+    fs.readFileSync = read;
+    syncBuiltinESMExports();
+    fs.renameSync(manifest, manifest + ".moved");
+    if (replacement === "directory") fs.mkdirSync(manifest);
+  }
+  return source;
+};
+syncBuiltinESMExports();
+`);
+  for (const [name, replacement, declaration, status, code, target, remedy] of [
+    ["channel", "missing", "channels:\n  general:\n    deliveryClass: live\n", 2, "TARGET_NOT_FOUND", "path", missingRemedy],
+    ["agent", "directory", "channels: {}\nagents:\n  worker:\n    agent: claude\n    instructions: Worker\n", 1, "USAGE_INVALID", "file", directoryRemedy],
+  ] as const) {
+    const file = join(dir, `${name}.yaml`);
+    writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: deploy-race\n${declaration}`);
+    const r = cotal(["team", "deploy", file, "--json"], undefined, {
+      ...env, NODE_OPTIONS: `--require=${JSON.stringify(preload)}`, TEAM_TEST_MANIFEST: file, TEAM_TEST_REPLACEMENT: replacement,
+    });
+    const envelope = readRefusal(r);
+    check(`team deploy preserves its ${replacement} manifest refusal on the ${name} apply preflight read`,
+      existsSync(`${file}.moved`) && r.status === status && envelope?.error?.code === code && envelope.target?.[target] === file
+        && envelope.error.remedy === remedy, shown(r));
   }
 }
 

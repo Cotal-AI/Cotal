@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { mintCreds, newIdentity, validateChannelConfig } from "@cotal-ai/core";
 import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
+import { readTeamManifest } from "../lib/team-manifest.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
@@ -18,10 +18,7 @@ import type { TeamValues } from "./team.js";
 /** Channel-only effects remain create-only. An identical settled deployment can be verified as
  *  a no-op; existing foreign cards, agent launches and stale drift never enter the legacy writer. */
 export async function applyChannelOnlyTeam(file: string, values: TeamValues): Promise<void> {
-  const path = resolve(file);
-  let prepared: ReturnType<typeof loadManifest>;
-  try { prepared = loadManifest(path); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no broker was contacted", { target: { path } }); }
+  const { path, prepared, source } = readTeamManifest(file);
   const manifest = prepared.manifest, space = manifest.space;
   recordOperationSpace(space);
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "--space differs from this manifest's exact target; no broker was contacted", { target: { space, selected: values.space } });
@@ -47,9 +44,6 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
     throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: LIVE_DELIVERY_REMEDY });
   try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no intent or channel was written", { target: { root, space } }); }
-  let source: string;
-  try { source = readFileSync(path, "utf8"); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest source could not be read for an exact pre-effect comparison", { target: { path, space } }); }
   const manifestHash = hashManifestSource(source);
   let lock: ReturnType<typeof acquireMaintenanceLock>;
   try { lock = acquireMaintenanceLock(root); }
@@ -188,10 +182,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
  *  updates, adopts or records anything. A changed agent hash is stale drift: refused unless
  *  `--allow-stale` names exactly that agent, in which case it keeps running its old policy. */
 export async function applyRetainedTeam(file: string, values: TeamValues, previous: AdditiveTeamAttempt): Promise<void> {
-  const path = resolve(file), root = canonicalRoot(cotalRoot());
-  let prepared: ReturnType<typeof loadManifest>, source: string;
-  try { prepared = loadManifest(path); source = readFileSync(path, "utf8"); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest and referenced personas could not be resolved; no retained deployment was checked", { target: { root, path } }); }
+  const { path, prepared, source } = readTeamManifest(file), root = canonicalRoot(cotalRoot());
   const { manifest } = prepared, space = manifest.space, target = { root, space, path, deploymentId: previous.deploymentId };
   recordOperationSpace(space);
   if (values.space !== undefined && values.space !== space) throw new CommandFailure("refused", "CONFLICT", "the selected space differs from this manifest; no target was substituted", { target });

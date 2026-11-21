@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { DEV_OWNER, assertLifecycleToken, mintCreds, newIdentity, validateChannelConfig, type MeshLaunchSpec } from "@cotal-ai/core";
 import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
+import { readTeamManifest } from "../lib/team-manifest.js";
 import { cotalRoot } from "../lib/paths.js";
 import { additiveAgentRequestReceipt, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveAgentReceipt, writeAdditiveAgentStep, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveAgentReceipt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
@@ -23,10 +23,7 @@ type CreatedAgent = AdditiveAgentReceipt["createdAgents"][number];
 /** All-new agent deployment, optionally preceded by live channel creation. Channels and launches
  * retain separate native authority and steps under one intent; completed effects are not rolled back. */
 export async function applyAgentTeam(file: string, values: TeamValues): Promise<void> {
-  const path = resolve(file), root = canonicalRoot(cotalRoot());
-  let prepared: ReturnType<typeof loadManifest>, source: string;
-  try { prepared = loadManifest(path); source = readFileSync(path, "utf8"); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest and referenced personas could not be resolved; no agent launch was requested", { target: { root, path } }); }
+  const { path, prepared, source } = readTeamManifest(file), root = canonicalRoot(cotalRoot());
   const { manifest } = prepared, space = manifest.space, target = { root, space, path };
   recordOperationSpace(space);
   // A retained deployment of this exact manifest is verified, never re-created; a local read only.

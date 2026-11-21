@@ -34,11 +34,15 @@ export function readManifestSource(abs: string): string {
  *  with located problems, an {@link UnusableFile} for a directory, or a filesystem error if the
  *  manifest itself cannot be read. */
 export function loadManifest(path: string): PreparedManifest {
-  const abs = resolve(path);
-  const src = readManifestSource(abs);
-  try { return preparePersonas(resolveManifest(src, abs)); }
+  return loadManifestWithSource(resolve(path)).prepared;
+}
+
+/** The resolved manifest and the exact source text it was resolved from, at an absolute path. */
+export function loadManifestWithSource(path: string): { source: string; prepared: PreparedManifest } {
+  const source = readManifestSource(path);
+  try { return { source, prepared: preparePersonas(resolveManifest(source, path)) }; }
   catch (e) {
-    if (e instanceof ManifestError) throw new ManifestError(e.file, withMissingPersonas(e.issues, src, abs));
+    if (e instanceof ManifestError) throw new ManifestError(e.file, withMissingPersonas(e.issues, source, path));
     throw e;
   }
 }

@@ -1,9 +1,9 @@
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
-import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
-import { UnusableFile } from "../lib/unusable-file.js";
+import type { PreparedManifest } from "../lib/manifest/index.js";
+import { readTeamManifest } from "../lib/team-manifest.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
@@ -311,7 +311,7 @@ export async function team(args: ParsedArgs): Promise<void> {
 
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) {
-    const { prepared } = resolveTeamFile(file);
+    const { prepared } = readTeamManifest(file);
     if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
       return applyAgentTeam(file, values);
@@ -517,33 +517,10 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function resolveTeamFile(file: string): { path: string; prepared: PreparedManifest } {
-  const path = resolve(file);
-  try { return { path, prepared: loadManifest(path) }; }
-  catch (e) {
-    if (e instanceof ManifestError) throw manifestRefusal(e, path);
-    // A folder given as the manifest gets the refusal `up -f` and `topology view` give, naming it.
-    if (e instanceof UnusableFile) throw e;
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && (e as NodeJS.ErrnoException).path === path)
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
-  }
-}
-
 function readTeamFile(file: string, values: TeamValues): { path: string; prepared: PreparedManifest } {
-  const { path, prepared } = resolveTeamFile(file);
+  const { path, prepared } = readTeamManifest(file);
   if (values.space !== undefined && values.space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
-}
-
-/** Name each located problem: its file, line, key and reason. Only a reason's first line is kept,
- *  because a persona file's YAML diagnostic goes on to quote that file's own lines. */
-function manifestRefusal(e: ManifestError, path: string): CommandFailure {
-  const issues = e.issues.map((issue) => ({ ...issue, message: issue.message.split("\n")[0]!.replace(/(at line \d+, column \d+):$/, "$1") }));
-  const shown = issues.slice(0, 5).map((issue) => formatIssue(e.file, issue));
-  if (issues.length > 5) shown.push(`${issues.length - 5} more with --json`);
-  return new CommandFailure("refused", "SCHEMA_INVALID", `${issues.length === 1 ? "the team manifest has a problem" : `the team manifest has ${issues.length} problems`}, so no broker was contacted: ${shown.join("; ")}`,
-    { target: { path, issues }, remedy: "fix each named problem and run team check again" });
 }
 
 async function bootTeam(file: string, values: TeamValues): Promise<void> {
