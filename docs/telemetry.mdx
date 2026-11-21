@@ -19,7 +19,7 @@ a hashed account identifier can also link usage across machines. You can turn it
 | `regular` (default) | The `command` event with the registered subcommand, flag names, typed error code, the failure's error text with values and paths masked, whether stdout is a terminal, and the shell and terminal program names; plus one `install` event per UTC day with the installed connectors, extensions, runtimes and mesh count. |
 
 ```bash
-cotal telemetry            # the level in force, where it comes from, and the active intake if any
+cotal telemetry            # the level in force, where it comes from, and the intake URL if valid
 cotal telemetry off
 cotal telemetry minimal
 cotal telemetry regular    # the default; `on` is an alias
@@ -84,8 +84,9 @@ posts share one 1.5 second send deadline, with no retry. Send failures are ignor
 change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
 `COTAL_TELEMETRY_URL` points to a self-hosted intake. An invalid value refuses with `USAGE_INVALID`
 when a command would send events, when `cotal telemetry` reports an active level, or when you set
-a sending level without an environment opt-out. `cotal telemetry off` and reports of `off` do not
-validate or display the URL. The environment still takes precedence over the saved level.
+a sending level without an environment opt-out. `cotal telemetry off` and reports of `off` still
+show a valid URL, but omit an invalid one from the text report and return `null` for it in JSON.
+The environment still takes precedence over the saved level.
 
 When the settings file selects `regular`, the first run with a terminal on stderr prints
 one notice and records it. A non-terminal run can send events without printing the notice;

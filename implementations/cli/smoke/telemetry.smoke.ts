@@ -169,9 +169,10 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
     check(`${Object.entries(extra).map(([k, v]) => `${k}=${v}`).join(" ")} sends nothing and creates no settings file`, r.status === 0 && r.sent.length === 0 && !existsSync(s.settingsPath), shown(r));
   }
   const status = await s.run(["telemetry", "--json"], { DO_NOT_TRACK: "1" });
+  const plainStatus = await s.run(["telemetry", "--plain"], { DO_NOT_TRACK: "1" });
   await settled();
   const result = status.envelope?.result as Body | undefined;
-  check("cotal telemetry under DO_NOT_TRACK reports off by that variable with no install id or intake URL, and sends nothing", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === null, { ...shown(status), result });
+  check("cotal telemetry under DO_NOT_TRACK reports off and preserves the valid intake URL in JSON and plain text without sending", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === url && plainStatus.status === 0 && plainStatus.sent.length === 0 && /level:\s+off/.test(plainStatus.stdout) && plainStatus.stdout.includes(url), { json: shown(status), plain: shown(plainStatus), result });
 
   // Under an environment opt-out the file is neither read nor created, so a level saves nothing.
   for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY_DISABLED: "1" }, { COTAL_TELEMETRY: "off" }]) {

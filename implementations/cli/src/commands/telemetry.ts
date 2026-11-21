@@ -42,11 +42,17 @@ export function validateTelemetryArguments(args: ParsedArgs): void {
 export async function telemetry(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const wanted = args.positionals[0] as TelemetryLevel | undefined;
-  // Check the intake before the settings can be created or changed, unless this action does not
-  // need an intake. An explicit off can still be saved when the environment selects another level.
+  // Check the intake before the settings can be created or changed. Off does not require a valid
+  // intake, even when the environment selects another level over the saved level.
   const current = effectiveTelemetry(process.env, false);
   const optedOut = current.source !== "file" && current.level === "off";
-  const url = optedOut || (wanted ?? current.level) === "off" ? null : telemetryUrl();
+  const intakeOptional = optedOut || (wanted ?? current.level) === "off";
+  let url: string | null = null;
+  try {
+    url = telemetryUrl();
+  } catch (error) {
+    if (!intakeOptional || !(error instanceof CommandFailure) || error.code !== "USAGE_INVALID") throw error;
+  }
   const before = current.settings || optedOut ? current : effectiveTelemetry(process.env);
   const noOp = wanted !== undefined && (optedOut || (!before.created && before.settings?.level === wanted));
   if (wanted !== undefined && !noOp) setTelemetryLevel(wanted);
