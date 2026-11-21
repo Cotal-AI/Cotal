@@ -11,6 +11,7 @@ import {
   bindExtensionPeers,
   connectorConfigDir,
   connectorMetadataStale,
+  extensionEntry,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
@@ -22,6 +23,7 @@ import {
   quarantineExtensionsManifest,
   repairConnectorSelection,
   type InstalledExtension,
+  type InstalledExtensionPackage,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
@@ -339,7 +341,7 @@ function builtinsMetadataCurrent(generation: string = seedGeneration()): boolean
 }
 
 /** Why an operator-installed official extension needs to be brought to `generation`, or undefined when
- *  it is recorded and installed on disk at `generation` with its main entry present. */
+ *  it is recorded and installed on disk at `generation` with its entry present. */
 function operatorPackageDiffers(entry: InstalledExtension, generation: string): string | undefined {
   if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
   let installed: ReturnType<typeof installedExtensionPackage>;
@@ -350,7 +352,7 @@ function operatorPackageDiffers(entry: InstalledExtension, generation: string): 
   }
   if (!installed) return "not installed on disk";
   if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
-  if (!mainEntryPresent(entry.pkg, installed.main)) return "main entry file is missing";
+  if (!entryPresent(entry.pkg, installed)) return "entry file is missing";
   return undefined;
 }
 
@@ -496,7 +498,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       // Refresh policy: any --force; a strictly-newer generation; an entry whose version or seeded
       // provenance differs from the running generation; on an unknown-cursor --repair (repairAllSeeded)
       // every seeded built-in; and on an ordinary --repair a seeded entry that is not fully intact on
-      // disk (a partial tear — main may survive while a required file is gone).
+      // disk (a partial tear can leave package.json while a required file is gone).
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
       const metadataStale = !isSeeded || entry.version !== generation || connectorMetadataStale(entry);
@@ -858,7 +860,7 @@ function seedRepairRefusal(cursor: ReconcileCursor | undefined, generation: stri
 
 /** Confirm a connector the reconcile claims to have (re)installed is recorded AND on disk at the
  *  seed generation with its entry file resolvable — so `--repair` can never clear the cursor and stamp
- *  success over a half-installed prefix (a surviving package.json with a missing main is still broken)
+ *  success over a half-installed prefix (a surviving package.json with a missing entry is still broken)
  *  or a version-skewed payload (installed version != generation) that would silently mismatch core. */
 function verifyInstalled(name: string, generation: string): void {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
@@ -869,7 +871,7 @@ function verifyInstalled(name: string, generation: string): void {
     throw new Error(`connector "${name}" (${pkg}) is recorded but not installed on disk - rerun \`cotal ext seed --repair\``);
   if (installed.version !== generation)
     throw new Error(`connector "${name}" (${pkg}) installed at version ${installed.version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
-  if (!mainEntryPresent(pkg, installed.main))
+  if (!entryPresent(pkg, installed))
     throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
 }
 
@@ -880,14 +882,14 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
   if (differs) throw new Error(`extension ${pkg} after reconciliation is ${differs}`);
 }
 
-/** The package's declared main entry file exists on disk (`main`, else the CommonJS default). Used to
+/** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
-function mainEntryPresent(pkg: string, main: string | undefined): boolean {
-  return existsSync(join(extensionPackageDir(pkg), main ?? "index.js"));
+function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
+  return existsSync(join(extensionPackageDir(pkg), extensionEntry(installed)));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
- *  its main entry file present; a partial tear (main gone, package.json kept) or a corrupt package.json
+ *  its entry file present; a partial tear (entry gone, package.json kept) or a corrupt package.json
  *  is torn, which a maintenance run reinstalls rather than stopping on. */
 function installState(name: string): "absent" | "torn" | "intact" {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
@@ -899,7 +901,7 @@ function installState(name: string): "absent" | "torn" | "intact" {
     throw e;
   }
   if (!installed) return "absent";
-  return mainEntryPresent(pkg, installed.main) ? "intact" : "torn";
+  return entryPresent(pkg, installed) ? "intact" : "torn";
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {
