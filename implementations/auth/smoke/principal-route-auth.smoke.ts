@@ -157,6 +157,23 @@ async function bearer(w: Who): Promise<string> {
     .sign(privateKey as CryptoKey);
 }
 
+// ---- a person's manager view controls their own agents, from the row kind (SPEC 13.21) ----------
+{
+  const PERSON = mintLifecycleUid(), AGENT = mintLifecycleUid(), INSTANCE = mintLifecycleUid();
+  const kinds = new Map<string, "interactive" | "managed-agent">([[PERSON, "interactive"], [AGENT, "managed-agent"]]);
+  const mintView = calloutPermissions((t) => ({ allowSubscribe: [], allowPublish: [], lifecycleUid: t.act.lifecycleUid!, scope: ["spawn"], kind: kinds.get(t.act.lifecycleUid!) }), async () => {});
+  const view = async (actor: string, uid: string) => ((await mintView({
+    owner: A, space, scope: ["spawn"], ver: USER_TOKEN_VER, exp: Math.floor(Date.now() / 1000) + 600,
+    act: { owner: A, actor, scope: ["spawn"], lifecycleUid: uid, view: "manager-caller", managerInstanceId: INSTANCE },
+  } as ValidatedUserToken, `ibx${hex(16)}`, `rdr${hex(8)}`)) as Perm).pub?.allow ?? [];
+  const seat = (rows: string[], cmd: string) => rows.some((r) => r.includes(`.manager.${INSTANCE}.${cmd}.owner.${A}.`));
+  const person = await view("cli", PERSON), agent = await view("helper", AGENT);
+  check("the callout mints a person's manager view with owner-mode input, interrupt, despawn and attach on their own agents",
+    ["input", "interrupt", "despawn", "attach"].every((cmd) => seat(person, cmd)), person.filter((r) => r.includes(`.manager.${INSTANCE}.`)));
+  check("the callout mints an agent's manager view with no input or interrupt row, at the same scope",
+    !seat(agent, "input") && !seat(agent, "interrupt") && seat(agent, "despawn"));
+}
+
 // ---- raw connections, for the forged publishes and subscriptions ----------------------------
 interface Seat { label: string; nc: NatsConnection; refused: { operation: string; subject: string }[] }
 const raws: NatsConnection[] = [];

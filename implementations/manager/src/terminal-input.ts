@@ -36,6 +36,7 @@ export interface TerminalInputDeps {
   sessionPlane: () => Manager["sessionPlane"];
   wsPort: () => Manager["wsPort"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
+  resolveConnector: (...args: Parameters<Manager["resolveConnector"]>) => ReturnType<Manager["resolveConnector"]>;
 }
 
 /** Builds the {@link TerminalInputDeps} for a Manager. It reads Manager members by name at each use, so a
@@ -48,6 +49,7 @@ export function terminalInputDeps(m: Manager): TerminalInputDeps {
     sessionPlane: () => m["sessionPlane"],
     wsPort: () => m["wsPort"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
+    resolveConnector: (...args) => m["resolveConnector"](...args),
   };
 }
 
@@ -64,6 +66,7 @@ export class TerminalInput {
   private get sessionPlane() { return this.deps.sessionPlane(); }
   private get wsPort() { return this.deps.wsPort(); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
+  private resolveConnector(...args: Parameters<Manager["resolveConnector"]>): ReturnType<Manager["resolveConnector"]> { return this.deps.resolveConnector(...args); }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
    *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,
@@ -189,6 +192,34 @@ export class TerminalInput {
     if (bytes !== intendedBytes)
       throw new EpEnvelopeError("unavailable", `input for seat "${a.name}" failed: runtime accepted ${String(bytes)} of ${intendedBytes} bytes`);
     return { name: a.name, bytes };
+  }
+
+  /** The post-authorization `interrupt` effect: write the seat's connector-declared interrupt key
+   *  into its terminal, as one keypress. `input` cannot send it, because it delivers text as a
+   *  bracketed paste, and a harness reads a pasted Escape as text.
+   *
+   *  It refuses before writing when the name was refilled during authorization, the seat is not
+   *  running, its connector declares no interrupt key, or its runtime owns no input stream. Writing
+   *  the key states nothing about the turn: a seat with no live turn takes it as a stray keypress,
+   *  and the run's end, if any, rides the event plane. */
+  async interruptAuthorized(a: ManagedAgent): Promise<{ name: string }> {
+    if (this.agents.get(a.name) !== a)
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`, undefined, "not-executed");
+    if (a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to interrupt`, undefined, "not-executed");
+    const key = (await this.resolveConnector(a.agent)).interruptKey;
+    if (!key)
+      throw new EpEnvelopeError("unimplemented", `interrupt is not supported by connector ${a.agent}`, undefined, "not-executed");
+    const write = a.handle.write?.bind(a.handle);
+    if (!write)
+      throw new EpEnvelopeError("unimplemented", `interrupt is not supported by runtime ${a.handle.kind}`, undefined, "not-executed");
+    // Resolving the connector awaited. Write only into the incarnation the caller was authorized for.
+    if (this.agents.get(a.name) !== a || a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" changed during the interrupt; nothing was written`, undefined, "not-executed");
+    const accepted = await write(key);
+    if (accepted !== Buffer.byteLength(key, "utf8"))
+      throw new EpEnvelopeError("unavailable", `interrupt for seat "${a.name}" failed: runtime accepted ${String(accepted)} of ${Buffer.byteLength(key, "utf8")} bytes`);
+    return { name: a.name };
   }
 
   /** The post-authorization attach effect: mint the holder-bound §13.6 offer, redeem it

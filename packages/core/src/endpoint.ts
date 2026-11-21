@@ -1,4 +1,4 @@
-import { EndpointHistory } from "./endpoint-history.js";
+import { EndpointHistory, type ChannelHistoryPageOptions } from "./endpoint-history.js";
 export { MULTI_FILTER_BATCH, MULTI_FILTER_READ_CONCURRENCY } from "./endpoint-history.js";
 import { nativeBindingAfter, type NativeConnectionBinding } from "./native-connection.js";
 import { EventEmitter } from "node:events";
@@ -1960,7 +1960,7 @@ export class CotalEndpoint extends EventEmitter {
    *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader. */
   async channelHistoryPage(
     channel: string,
-    opts?: { limit?: number; signal?: AbortSignal },
+    opts?: ChannelHistoryPageOptions,
   ): Promise<HistoryPage> {
     return this.history.channelHistoryPage(channel, opts);
   }
