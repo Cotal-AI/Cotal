@@ -8,7 +8,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, personaDefinitionProblem, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -162,11 +162,9 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   for (const e of entries) {
     const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
-      // A parser diagnostic spans lines, the reason and then an excerpt with a caret under the
-      // fault, so each line is escaped and printed on its own.
-      const [reason = "", ...excerpt] = e.error.trimEnd().split(/\r?\n/).filter((line) => line.trim());
+      const prefix = `agent file ${e.path}: `;
+      const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
       console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
-      for (const line of excerpt) console.log(c.dim(`    ${oneLine(line)}`));
       continue;
     }
     const d = e.def!;

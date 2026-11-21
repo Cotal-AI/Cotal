@@ -768,13 +768,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
       r.status === 0 && !raw.test(r.stdout + r.stderr) && r.stdout.includes("d\\u001b]0;PWN\\u0007R\\u001b[2JD") &&
         (argv.length === 2 || r.stdout.includes("    body \\u001b]0;PWN\\u0007\\u001b[2JB")), shown(r));
   }
-  // A parser diagnostic spans lines, and each is printed on its own rather than as escaped breaks.
-  const unparseable = cotal(["personas", "list"], (home) => {
-    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+  const unparseable = cotal(["personas", "list", "--space", "entry"], (home) => {
+    seeded(home);
     writeFileSync(join(home, "..", ".cotal", "agents", "broken.md"), "---\nname: broken\nmodel: [unclosed\n---\nbody\n");
+    writeFileSync(join(home, "..", ".cotal", "agents", "duplicate.md"), "---\nname: duplicate\nrole: private-first\nrole: private-second\n---\nExample persona.\n");
   }, noSeed);
-  check("personas list exits 4 and prints a YAML diagnostic as lines, with no escaped line breaks",
-    unparseable.status === 4 && /⨯ unparseable .*at line 2, column 17:$/m.test(unparseable.stdout) && /^ {4}model: \[unclosed$/m.test(unparseable.stdout) && /^ {20}\^$/m.test(unparseable.stdout) && !unparseable.stdout.includes("\\u000a"), shown(unparseable));
+  check("personas list names the file and the duplicate key's file position without printing YAML values",
+    unparseable.status === 4 && /^default\s/m.test(unparseable.stdout) &&
+      /^duplicate +⨯ unparseable agent file .*duplicate\.md: the frontmatter has a duplicate YAML key at line 4, column 1$/m.test(unparseable.stdout) &&
+      !/private-first|private-second/.test(unparseable.stdout + unparseable.stderr), shown(unparseable));
+  check("personas list names other YAML syntax errors without printing a source excerpt",
+    /^broken +⨯ unparseable agent file .*broken\.md: the frontmatter is not valid YAML at line 3, column 17$/m.test(unparseable.stdout) &&
+      !/unclosed|^ +\^$/m.test(unparseable.stdout + unparseable.stderr), shown(unparseable));
   // Only a catalog folder that does not exist lists as empty. One that cannot be read is refused, as
   // `persona` refuses it, under the space it read. A folder this account owns whose mode denies it is
   // given the chmod that lets it read, and the run leaves the mode as it was. Any other read error
