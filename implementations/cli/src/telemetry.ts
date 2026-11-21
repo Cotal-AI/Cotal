@@ -72,12 +72,16 @@ export function scrubStack(stack: string): string {
     .slice(0, MAX_STACK);
 }
 
+/** A classified failure whose diagnostic contains private input and must stay local. */
+export class LocalDiagnosticFailure extends CommandFailure {}
+
 interface ErrorText {
-  readonly message: string;
+  readonly message: string | null;
   readonly stack: string | null;
 }
 
 function errorText(error: unknown): ErrorText {
+  if (error instanceof LocalDiagnosticFailure) return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }

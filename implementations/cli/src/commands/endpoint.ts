@@ -10,6 +10,7 @@ import { describeCmd, invokeCmd, invokeFlags, validateEndpointArguments } from "
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords } from "../lib/confirmation-required.js";
 import { commitEndpointReference, importEndpointReference, listEndpointReferences, readEndpointReference, referenceName, validateEndpointReference, type EndpointReference, type ReferenceSnapshot } from "../lib/endpoint-references.js";
+import { LocalDiagnosticFailure } from "../telemetry.js";
 
 export const endpointFlags = [...invokeFlags,
   { name: "since", type: "string", value: "<native-sequence>", description: "watch: native sequence coordinate; declaration adapter remains required" },
@@ -55,7 +56,7 @@ function selectedSpace(values: { space?: string }): string {
     if (error.code === "not-started" && error.details.space) return error.details.space;
     if (error.code === "unknown-space" && error.details.requested !== undefined) {
       const { message } = workspaceErrorParts({ kind: "target", error });
-      throw new CommandFailure("refused", targetErrorCode(error.code), oneLine(message), {
+      throw new LocalDiagnosticFailure("refused", targetErrorCode(error.code), oneLine(message), {
         target: { requested: error.details.requested },
         remedy: "list spaces with `cotal space`, then retry with `cotal endpoint --space <name> --json`",
       });
