@@ -46,7 +46,8 @@ try {
 
   const downHelp = logs.downHelp = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["help", "down"]);
   assert.equal(downHelp.code, 0, downHelp.err); passed++;
-  assert.match(downHelp.out.replace(/\s+/g, " "), /cotal down --dry-run inspect without stopping anything\. For a running legacy stack, this is partial \(exit 4\), not a stop plan/); passed++;
+  assert.match(downHelp.out.replace(/\s+/g, " "), /cotal down --dry-run inspect the stack without stopping anything/); passed++;
+  assert.match(downHelp.out.replace(/\s+/g, " "), /Options .*--dry-run bare: inspect local records only\. For a running legacy stack, this is partial \(exit 4\), not a stop plan/); passed++;
   assertSmokeSandboxDown(sandbox, ["down", "--dry-run"], { cwd: mesh, env });
   const dryRun = logs.dryRun = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--dry-run"]);
   assert.equal(dryRun.code, 4, dryRun.out + dryRun.err); passed++;
