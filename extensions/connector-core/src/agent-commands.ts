@@ -11,7 +11,7 @@ import {
   AGENT_COMMAND_DESCRIPTION_MAX, AGENT_COMMAND_INPUT_HINT_MAX, AGENT_COMMAND_LIST_MAX, AGENT_COMMAND_MESSAGE_MAX, AGENT_COMMAND_STATE_DETAIL,
   AGENT_CONTRACTS, EpEnvelopeError, isAgentCommandName,
   type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
-  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef,
+  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext,
 } from "@cotal-ai/core";
 
 /** A `commands` reply waits at most this long for the harness's list. */
@@ -134,7 +134,11 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     return { supported: true, commands };
   }
 
-  function run(input: CommandInput): CommandOutput {
+  function run(ctx: EpPrincipalServeContext): CommandOutput {
+    // An agent never runs a command on itself, whatever its row.
+    if (ctx.caller.owner === ctx.principal.owner && ctx.caller.actor === ctx.principal.actor)
+      throw refused("permission-denied", "an agent never runs a command on itself");
+    const input = ctx.request.args as unknown as CommandInput;
     if (!dispatcher) throw refused("unimplemented", "this agent's connector runs no commands or skills");
     if (!dispatcher.targets.has(input.target)) throw refused("unimplemented", `this agent's connector runs no ${input.target}s`);
     if (closed) throw refused("unavailable", "this agent is stopping");
@@ -158,7 +162,7 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
   return {
     handlers: [
       { command: "commands", contract: AGENT_CONTRACTS.commands, handler: () => list() },
-      { command: "command", contract: AGENT_CONTRACTS.command, handler: (ctx) => run(ctx.request.args as unknown as CommandInput) },
+      { command: "command", contract: AGENT_CONTRACTS.command, handler: (ctx) => run(ctx) },
       { command: "command-cancel", contract: AGENT_CONTRACTS["command-cancel"], handler: (ctx) => cancel(ctx.request.args as unknown as CommandIdInput) },
       { command: "command-state", contract: AGENT_CONTRACTS["command-state"], handler: (ctx) => ({ state: known((ctx.request.args as unknown as CommandIdInput).id).state }) },
     ],

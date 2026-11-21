@@ -256,6 +256,7 @@ Serving there is follow-up work.
 The agent owner's interactive session can list an agent's own harness commands and skills and queue one to run, with `commands` and `command` on the agent's endpoint.
 It cancels a queued command with `command-cancel` and reads how far a command got with `command-state`.
 No one else can call them: the broker refuses a sibling agent of the same owner, any other owner, and every grant.
+The agent cannot run a command on itself: `command` from the agent's own identity is `permission-denied`.
 
 A connector hands `MeshAgent` a dispatcher as the `commands` option:
 
