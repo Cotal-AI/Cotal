@@ -44,6 +44,7 @@ import {
   type OperationScope,
   type OutputWarning,
   type StreamRecord,
+  writeStreamRecord,
   staleStoreHint,
   UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
@@ -62,7 +63,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
-import { historyFollowUsageRecords } from "./commands/history.js";
+import { historyFollowUsageRecords } from "./commands/history-follow-output.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
@@ -158,17 +159,25 @@ function debugStacks(failure: Error): void {
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
 
-/** Write a classified failure and exit. Structured output is synchronous because a pipe may
- *  otherwise still be flushing when the process exits. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], records?: readonly StreamRecord[]): never {
+class HistoryUsageRefusal extends Error {
+  constructor(readonly records: readonly StreamRecord[], readonly status: number) { super("history follow refused"); }
+}
+
+/** A classified failure: its line and remedy on stderr, its envelope on stdout when requested,
+ *  and the exit code its outcome sets. A history follow is handed back to the dispatch boundary
+ *  so piped records can flush before the process exits. */
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], misspelledIndex?: number): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
-  const structuredOutput = json || records !== undefined;
   recordTelemetryFailure(failure.outcome, failure.code, failure);
+  if (cmd.name === "history" && failure.code === "USAGE_INVALID") {
+    const records = historyFollowUsageRecords(cmd, words, failure, misspelledIndex);
+    if (records) throw new HistoryUsageRefusal(records, exitCode(failure.outcome, failure.code));
+  }
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes, a missing scripted input or a removed working folder is not a grammar mistake,
   // and its remedy says the whole fix. A file the command cannot use is reported like one that does
   // not exist, and a refused flag value names its corrected value, so it gets the classified report.
-  if (failure.code === "USAGE_INVALID" && !structuredOutput && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
+  if (failure.code === "USAGE_INVALID" && !json && !(failure instanceof UnusableFile) && !(failure instanceof FlagValueRefusal)) {
     usageRefusal(failure, plain, failure.selfContained ? undefined : cmd, words);
     debugStacks(failure);
     process.exit(1);
@@ -178,14 +187,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // Under --json, report the failure on stderr only if writing to stdout fails.
-  if (!structuredOutput) writeReport();
+  if (!json) writeReport();
   else try {
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    const output = records ? records.map((record) => JSON.stringify(record)).join("\n") + "\n"
-      : envelopeLine(failureEnvelope(command, failure, warnings, scope));
-    writeSync(1, output);
+    writeSync(1, envelopeLine(failureEnvelope(command, failure, warnings, scope)));
   } catch (error) {
     reportLostOutput(error as NodeJS.ErrnoException);
     try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
@@ -379,10 +386,11 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
-  // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
-  // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words);
+function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = [], misspelledIndex?: number): never {
+  if (cmd && (json || cmd.name === "history")) {
+    const next = json ? remedy ?? `run \`cotal help ${cmd.name}\`` : remedy;
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: next }), json, !json && plain, undefined, words, misspelledIndex);
+  }
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
@@ -419,7 +427,7 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
+function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string; index: number } | undefined {
   const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
@@ -432,10 +440,10 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const quoted = shellWord(value);
       const long = `--${flag.name}=${quoted}`;
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
-      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}`, index };
     }
     const typed = typographicOption(word, names, cmd.flags);
-    if (typed) return typed;
+    if (typed) return { ...typed, index };
   }
   return undefined;
 }
@@ -476,7 +484,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const plain = !seed && rest.includes("--plain");
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
-  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
+  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest, misspelled.index);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
@@ -511,10 +519,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   try {
     cmd.validate?.(canonical);
   } catch (error) {
-    if (isCommandFailure(error)) {
-      const records = cmd.name === "history" && error.code === "USAGE_INVALID" ? historyFollowUsageRecords(canonical, error) : undefined;
-      failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest, records);
-    }
+    if (isCommandFailure(error)) failureExit(cmd, error, json, canonical.values.plain === true, undefined, rest);
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
@@ -632,6 +637,16 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
  * come from importing a package the seed keeps current.
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  try {
+    await dispatchCommand(registry, argv, opts);
+  } catch (error) {
+    if (!(error instanceof HistoryUsageRefusal)) throw error;
+    process.exitCode = error.status;
+    for (const record of error.records) writeStreamRecord(record);
+  }
+}
+
+async function dispatchCommand(registry: Registry, argv: string[], opts: RunCliOptions): Promise<void> {
   const startedAt = Date.now();
   // Global flags before the command word apply whatever the command is. The output flags are the
   // command's own, so one written before the command word moves after it, and a `--` there ends

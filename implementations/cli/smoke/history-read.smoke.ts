@@ -133,12 +133,17 @@ async function checkFollowUsage(): Promise<void> {
       { args: ["--limit", "0"], output: ["--json"], channel: null },
       { args: ["--limit", "0"], output: ["-j", "--server", server], channel: null },
       { args: ["#general", "--since", "yesterday-ish"], output: ["--json", "--server", server], channel: "general" },
+      { args: ["--server", server, "--space", ""], output: ["--json"], channel: null },
+      { args: ["#general", "--server", `${server}/path`], output: ["--json"], channel: "general" },
+      { args: ["#general", "--server", server, "--limit"], output: ["-j"], channel: "general" },
+      { args: ["--server", server, "--limt"], output: ["--json"], channel: null },
+      { args: ["--server", server, "\u2013\u2013limit=0"], output: ["--json"], channel: null },
     ];
     for (const { args, output, channel } of cases) {
-      const finite = await run(["history", ...args, "--json"]);
+      const finite = await run(["history", "--json", ...args]);
       const followed = await run(["history", "--follow", ...output, ...args]);
-      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as StreamRecord<{ code?: string; message?: string; reason?: string }>);
-      check(`history ${args.join(" ")} follow writes a usage error and setup-failed end ${output.length > 1 ? "without dialing the probe" : "in the running space"}`,
+      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as StreamRecord<{ code?: string; message?: string; remedy?: string; reason?: string }>);
+      check(`history ${args.map((arg) => arg.startsWith(server) ? arg.replace(server, "<probe>") : JSON.stringify(arg)).join(" ")} follow writes a usage error and setup-failed end`,
         finite.status === 1 && finite.envelope?.error?.code === "USAGE_INVALID"
           && followed.status === 1 && followed.stderr === "" && followed.stdout.endsWith("\n") && connections === 0
           && records.map((record) => record.type).join() === "error,end"
@@ -147,11 +152,55 @@ async function checkFollowUsage(): Promise<void> {
             return schemaVersion === 1 && stream === "history" && readTarget?.space === null && readTarget.channel === channel && readTarget.dms === false;
           })
           && records[0]?.data.code === finite.envelope.error.code && records[0].data.message === finite.envelope.error.message
+          && records[0].data.remedy === finite.envelope.error.remedy
           && records[1]?.data.reason === "setup-failed", { finite: shown(finite), follow: shown(followed), connections });
+    }
+    const reordered = await run(["history", "--server", server, "--limit", "--json", "--follow"]);
+    check("a missing --limit value does not consume the JSON or follow switch",
+      reordered.status === 1 && reordered.stderr === "" && reordered.stdout.includes('"message":"--limit needs a value"')
+        && reordered.stdout.includes('"reason":"setup-failed"') && connections === 0, shown(reordered));
+    const duplicate = await run(["--no-input", "-j", "h", "--follow", "--no-input", "--server", server]);
+    check("the alias and leading JSON flag select the follow stream for a repeated global flag",
+      duplicate.status === 1 && duplicate.stderr === "" && duplicate.stdout.includes("Option '--no-input' cannot be repeated")
+        && duplicate.stdout.includes('"reason":"setup-failed"') && connections === 0, shown(duplicate));
+    for (const args of [["clear", "--follow", "--limit"], ["limit", "--follow", "--space", ""],
+      ["--follow", "--plain", "--limit", "0"], ["--limit", "0", "--", "--follow"], ["--grep=--follow", "--limit", "0"]]) {
+      const finite = await run(["history", "--json", ...args]);
+      check(`history ${args.join(" ")} does not select a JSON follow read`,
+        finite.status === 1 && finite.envelope?.command === "history" && finite.envelope.error?.code === "USAGE_INVALID", shown(finite));
+    }
+    await checkFollowUsagePipe(server);
+    if (process.platform === "linux" && existsSync("/dev/full")) {
+      const full = await runHistoryOutput(["--limit", "0", "--server", server], '"$@" > /dev/full');
+      check("a history follow reports a stdout write failure without losing its refusal exit status",
+        full.status === 1 && full.stdout === "" && full.stderr.includes("could not write to stdout") && connections === 0, full);
     }
   } finally {
     await new Promise<void>((resolve) => probe.close(() => resolve()));
   }
+}
+
+async function checkFollowUsagePipe(server: string): Promise<void> {
+  if (process.platform === "win32") return; // Windows shells cannot pass an argument this long.
+  const limit = "0".repeat(96_000);
+  const result = await runHistoryOutput(["--limit", limit, "--server", server], '"$@" | cat');
+  const lines = result.stdout.split("\n");
+  const records = lines.length === 3 && lines[2] === "" ? lines.slice(0, 2).map((line) => JSON.parse(line) as StreamRecord<{ code?: string; message?: string; reason?: string }>) : [];
+  check("a large history follow refusal drains both complete JSON records through a pipe",
+    result.status === 1 && result.stderr === "" && records.map(({ type }) => type).join() === "error,end"
+      && records.every(({ stream, schemaVersion }) => stream === "history" && schemaVersion === 1)
+      && records[0]?.data.code === "USAGE_INVALID" && records[0].data.message?.endsWith(JSON.stringify(limit)) === true
+      && records[1]?.data.reason === "setup-failed", { status: result.status, stderr: result.stderr, bytes: Buffer.byteLength(result.stdout) });
+}
+
+function runHistoryOutput(args: string[], redirect: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const command = [process.execPath, BIN, "history", "--follow", "--json", ...args];
+  return new Promise((resolve) => {
+    execFile("bash", ["-o", "pipefail", "-c", redirect, "history-output", ...command],
+      { cwd: shell, env: isolatedEnv, timeout: 30_000 }, (error, stdout, stderr) => {
+        resolve({ status: error ? typeof error.code === "number" ? error.code : null : 0, stdout, stderr });
+      });
+  });
 }
 
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */

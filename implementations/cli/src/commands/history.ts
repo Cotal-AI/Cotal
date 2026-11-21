@@ -23,7 +23,6 @@ import {
   type ConnectRefusal,
   type OutputWarning,
   type Report,
-  type StreamRecord,
   recordOperationSpace,
   spaceStreamsExpected,
   shownTime,
@@ -32,6 +31,7 @@ import {
 import { credentialEnded } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { historySetupFailureRecords } from "./history-follow-output.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -283,23 +283,6 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");
 }
 
-/** The refusal records when parsed arguments select a JSON follow read. */
-export function historyFollowUsageRecords(args: ParsedArgs, failure: CommandFailure): StreamRecord[] | undefined {
-  const v = args.values as FlagValues<typeof historyFlags>;
-  const [first] = args.positionals;
-  if (!v.follow || !v.json || v.plain || first === "clear" || first === "limit") return;
-  return setupFailureRecords(v, first === undefined ? undefined : channelOf(first), failure);
-}
-
-function setupFailureRecords(v: FlagValues<typeof historyFlags>, channel: string | undefined, failure: CommandFailure): StreamRecord[] {
-  const target = failure.target ?? { space: v.space ?? null, channel: channel ?? null, dms: Boolean(v.dms) };
-  const { code, message, remedy } = failure;
-  return [
-    streamRecord("history", "error", target, { code, message, ...(remedy === undefined ? {} : { remedy }) }),
-    streamRecord("history", "end", target, { reason: "setup-failed" }),
-  ];
-}
-
 /** `cotal history [channel]`: the newest retained messages in the selected space within the caller's
  *  read grant, or `history clear` or `history limit`. */
 export async function history(args: ParsedArgs): Promise<void> {
@@ -327,7 +310,7 @@ export async function history(args: ParsedArgs): Promise<void> {
     const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);
-    for (const record of setupFailureRecords(v, channel, failure)) writeStreamRecord(record);
+    for (const record of historySetupFailureRecords({ space: v.space ?? null, channel: channel ?? null, dms: Boolean(v.dms) }, failure)) writeStreamRecord(record);
     process.exitCode = exitCode(failure.outcome, failure.code);
   }
 }
