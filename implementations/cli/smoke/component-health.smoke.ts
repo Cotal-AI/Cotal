@@ -42,6 +42,7 @@ import {
   contractDigest,
   contractStoreContext,
   createEndpointStreams,
+  createSpaceStreams,
   deliveryBucket,
   endpointRegistrationBarrier,
   epAuthBucket,
@@ -350,8 +351,14 @@ try {
   for (let i = 0; i < 100 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture broker started", await portOpen(port));
 
-  // Register an explicit OPEN target so the status command operates on this exact isolated root.
-  const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open", "--force");
+  // Make the broker serve the space before registering it. The lease holder below does not serve a manager endpoint.
+  const nc = await connect({ servers: server });
+  try {
+    await createSpaceStreams(await jetstreamManager(nc), SPACE);
+  } finally {
+    await nc.close();
+  }
+  const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open");
   check("fixture mesh registered", add.status === 0, `${add.stdout}${add.stderr}`);
 
   const ready = join(root, "holder.json");
