@@ -26,7 +26,7 @@
       "name": "M1 steer only while drive() owns the provider",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "    if (sessionBusy()) {\n      if (directed) void steerPending();",
-      "replace": "    if (driving) {\n      if (directed) void steerPending();",
+      "replace": "    if (hostState.driving) {\n      if (directed) void steerPending();",
       "expectRed": "a DM during a TUI-owned working session reaches the recipient session (#1075)",
       "cell": "a DM during a TUI-owned working session reaches the recipient session (#1075)"
     },
@@ -34,7 +34,7 @@
       "name": "M2 abort steer when session_status reports idle",
       "file": "extensions/connector-jcode/src/host.ts",
       "find": "        if (!items.length || !sessionBusy()) return;",
-      "replace": "        if (!items.length || !turnActive) return;",
+      "replace": "        if (!items.length || !hostState.turnActive) return;",
       "expectRed": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)",
       "cell": "a DM during advisory idle inside a live Cotal-owned run reaches the recipient session (#1075)"
     },

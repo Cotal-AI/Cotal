@@ -6,8 +6,8 @@
     {
       "name": "Jcode host applies the requested reasoning effort to its session",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        await client.setReasoningEffort(sessionId, config.variant);",
-      "replace": "        void sessionId;",
+      "find": "        await hostState.client.setReasoningEffort(hostState.sessionId, config.variant);",
+      "replace": "        void hostState.sessionId;",
       "expectRed": "requested variant reaches the session as its reasoning effort",
       "cell": "requested variant reaches the session as its reasoning effort",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
@@ -15,8 +15,8 @@
     {
       "name": "Jcode host delays the requested effort until after a session turn",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        await client.setReasoningEffort(sessionId, config.variant);",
-      "replace": "        const effortClient = client;\n        const effortSessionId = sessionId;\n        const effortVariant = config.variant;\n        setTimeout(() => void effortClient.setReasoningEffort(effortSessionId, effortVariant), 50);",
+      "find": "        await hostState.client.setReasoningEffort(hostState.sessionId, config.variant);",
+      "replace": "        const effortClient = hostState.client;\n        const effortSessionId = hostState.sessionId;\n        const effortVariant = config.variant;\n        setTimeout(() => void effortClient.setReasoningEffort(effortSessionId, effortVariant), 50);",
       "expectRed": "reasoning effort is set before the session's first turn",
       "cell": "reasoning effort is set before the session's first turn",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"
@@ -24,8 +24,8 @@
     {
       "name": "Jcode host verifies RuntimeInfo before applying effort",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    const runtime = config.model || config.variant ? await client.getRuntimeInfo(sessionId) : undefined;",
-      "replace": "    const runtime = config.model ? await client.getRuntimeInfo(sessionId) : undefined;",
+      "find": "    const runtime = config.model || config.variant ? await hostState.client.getRuntimeInfo(hostState.sessionId) : undefined;",
+      "replace": "    const runtime = config.model ? await hostState.client.getRuntimeInfo(hostState.sessionId) : undefined;",
       "expectRed": "variant without an explicit model verifies its runtime route before applying effort",
       "cell": "variant without an explicit model verifies its runtime route before applying effort",
       "afterRestore": "pnpm --filter @cotal-ai/connector-jcode build"

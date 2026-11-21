@@ -81,7 +81,7 @@
     {
       "name": "M8 a new turn takes over items another handover is still delivering",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !reservedIds.has(item.recvKey));",
+      "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !hostState.reservedIds.has(item.recvKey));",
       "replace": "      const inbox = agent.peekInbox(\"automatic\");",
       "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
@@ -101,7 +101,7 @@
     {
       "name": "M11 a lapsed unacknowledged send leaves acceptance trustworthy, so a late ack settles another batch",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        acceptanceSuspectUntilBridgeReplaced = true;\n        release();\n",
+      "find": "        hostState.acceptanceSuspectUntilBridgeReplaced = true;\n        release();\n",
       "replace": "        release();\n",
       "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
@@ -111,8 +111,8 @@
     {
       "name": "M12 a run holding acceptance unattributable does not defer the send",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {",
-      "replace": "      if (false && attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {",
+      "find": "      if (attributionBlockedByOpenRun(hostState.unsettledLapsedDispatches, blockedForMs)) {",
+      "replace": "      if (false && attributionBlockedByOpenRun(hostState.unsettledLapsedDispatches, blockedForMs)) {",
       "expectRed": "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
       "cell": "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
       "note": "Severs the CALL SITE, not the predicate. An earlier version of this mutation replaced the pure function's body and SURVIVED, because it sat inside a branch whose condition was the same expression and could not disagree with it. Measured by hand at this anchor: severed gives sendFrames=4 with the run still open, fixed gives 0."

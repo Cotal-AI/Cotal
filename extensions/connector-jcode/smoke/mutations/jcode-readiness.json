@@ -93,8 +93,8 @@
     {
       "name": "M12 keep a completed proof turn marked busy",
       "file": "extensions/connector-jcode/src/host.ts",
-      "find": "    watchClient(client);\n    turnActive = readinessTurnOpen;",
-      "replace": "    watchClient(client);\n    turnActive = true;\n    client.removeAllListeners(\"session_status\");\n    client.removeAllListeners(\"turn_done\");",
+      "find": "    watchClient(hostState.client);\n    hostState.turnActive = readinessTurnOpen;",
+      "replace": "    watchClient(hostState.client);\n    hostState.turnActive = true;\n    hostState.client.removeAllListeners(\"session_status\");\n    hostState.client.removeAllListeners(\"turn_done\");",
       "expectRed": "mesh DM becomes a Harness API turn"
     }
   ]
