@@ -154,6 +154,26 @@ try {
   suite.check("down reports a missing store without preventing shutdown", missingDown.status === 0 && Boolean(warning(missingDown, "STORE_MISSING")), missingDown.text);
   const missingUp = run("up", ...(managed ? [] : ["--no-manager"]), "--json");
   suite.check("missing-store restart keeps the existing empty-history warning", missingUp.status === 0 && /history starts empty/.test(warning(missingUp, "STORE_MISSING")?.message ?? ""), missingUp.text);
+
+  const stopped = run("down", "--yes", "--json");
+  if (stopped.status !== 0) throw new Error(`stop before store cleanup failed: ${stopped.text}`);
+  started = false;
+  const beforeClean = journal().broker.storeIdentity;
+  const clean = run("clean", "store", "--force");
+  const afterClean = run("status", "--plain");
+  suite.check("clean records an empty replacement without making stopped status report a missing store",
+    clean.status === 0 && /removed .*\(JetStream store:/.test(clean.text)
+    && existsSync(store) && readdirSync(store).length === 0
+    && JSON.stringify(journal().broker.storeIdentity) !== JSON.stringify(beforeClean)
+    && afterClean.status === 0 && !/recorded store.*(?:missing|replaced)/.test(afterClean.text), clean.text + afterClean.text);
+  const resetPreview = run("reset", "store", space, "--dry-run", "--plain");
+  suite.check("a named reset still recognizes the recorded store before the next up",
+    resetPreview.status === 0 && resetPreview.text.includes(`cotal reset store ${space} --yes`), resetPreview.text);
+  rmSync(store, { recursive: true, force: true });
+  const absentClean = run("clean", "store", "--force");
+  const afterManualRemoval = run("status", "--json");
+  suite.check("clean does not acknowledge a recorded store that was already removed by hand",
+    absentClean.status === 0 && !existsSync(store) && afterManualRemoval.status === 4 && Boolean(warning(afterManualRemoval, "STORE_MISSING")), absentClean.text + afterManualRemoval.text);
 } finally {
   if (started) {
     chmodSync(journalPath, 0o600);
