@@ -11,7 +11,7 @@ import { serviceInstances } from "../src/lib/service-instances.js";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const entry = join(repo, "bin/cotal.ts");
@@ -27,8 +27,9 @@ const listening = (port: number) => new Promise<boolean>((done) => {
   socket.setTimeout(200, () => { socket.destroy(); done(false); });
 });
 const failures: string[] = [];
+let passed = 0;
 const check = (name: string, action: () => void) => {
-  try { action(); console.log(`PASS ${name}`); }
+  try { action(); passed += 1; console.log(`PASS ${name}`); }
   catch (error) { failures.push(name); console.error(`FAIL ${name}: ${String(error)}`); }
 };
 
@@ -335,6 +336,7 @@ if (process.platform !== "win32") {
       if (phase === "connector seed") assert.equal(await start(["down", "--yes"]).exited, 0);
       await up.exited;
       assert.equal(await listening(port), false);
+      passed += 1;
       console.log(`PASS legacy down during ${phase}`);
     } finally {
       if (manager?.kind === "match" && assertRecordIdentity(manager.record).kind === "match") process.kill(manager.record.pid, "SIGCONT");
@@ -346,4 +348,5 @@ if (process.platform !== "win32") {
     }
   }
 }
+emitSentinel({ passed, failed: failures.length });
 assert.deepEqual(failures, [], "interrupted up regressions");

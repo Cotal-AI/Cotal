@@ -369,7 +369,14 @@ try {
     if (selfUp) {
       const downOpts = { cwd: selfRoot, env: cliEnv, encoding: "utf8" as const };
       assertSmokeSandboxDown(selfSandbox, ["down", "--yes"], downOpts);
-      const d = spawnSync("node", [CLI, "down", "--yes"], downOpts);
+      // An accepted self-stop frees the seat's slot at once, so `ps` is already empty while the
+      // Manager still waits (up to its 10 s exit bound) for the child to exit. Until then `down`
+      // refuses with LIFECYCLE_BLOCKED and submits nothing, so it is retried for a bounded time.
+      let d = spawnSync("node", [CLI, "down", "--yes"], downOpts);
+      for (const until = Date.now() + 20_000; d.status === 2 && `${d.stdout}${d.stderr}`.includes("LIFECYCLE_BLOCKED") && Date.now() < until;) {
+        await sleep(500);
+        d = spawnSync("node", [CLI, "down", "--yes"], downOpts);
+      }
       for (let i = 0; i < 40 && (await portOpen(selfPort)); i++) await sleep(250);
       check("selfstop stack tore down cleanly", d.status === 0 && !(await portOpen(selfPort)), `${d.stdout}\n${d.stderr}`);
     }

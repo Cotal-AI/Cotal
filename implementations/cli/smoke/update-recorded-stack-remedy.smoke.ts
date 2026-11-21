@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertSmokeSandboxDown, countedAssert, emitSentinel, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, countedAssert, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { shellWord } from "../src/lib/endpoint-errors.js";
 
@@ -97,7 +97,7 @@ try {
   await ok(["ext", "add", fixture]);
   await ok(["setup", "--destination", "local", "--harness", "stack-remedy-seat", "--project", project, "--space", "remedy-proof", "--no-input", "--configure-only"]);
   started = true;
-  await ok(["up", "--detach", "--space", "remedy-proof", "--open", "--max-sessions", "7"]);
+  await ok(["up", "--detach", "--space", "remedy-proof", "--server", `nats://127.0.0.1:${await freePort()}`, "--open", "--max-sessions", "7"]);
   const beforeOffline = records();
   const registryBefore = env.npm_config_registry;
   env.npm_config_registry = "http://localhost:1";
