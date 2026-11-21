@@ -124,7 +124,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         : d.unsettled !== undefined
           ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
           : d.stopped !== undefined
-            ? { message: `"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, remedy: `start it again with \`cotal up\` in ${d.root}`, restartRoot: d.root }
+            ? { message: `"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, remedy: `start it again with ${codeSpan(d.stopped.noManager ? "cotal up --no-manager" : "cotal up")} in ${d.root}`, restartRoot: d.root }
           : parts(`"${d.space}" is prepared but not started`, `start it with \`cotal up\` in ${d.root}`);
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       // A legacy root whose space is registered for another folder, as a copy, a folder the name was

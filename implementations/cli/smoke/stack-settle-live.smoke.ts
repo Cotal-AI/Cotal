@@ -36,7 +36,7 @@
  *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
  *     start, whose Next, like `status`'s, names only a larger cap; stopping that broker lets a
  *     replacement cap apply. After replacement, `status` reads the stack as stopped, with its last
- *     operation, and names bare up. Once a space holds
+ *     operation, and names the broker-only restart. Once a space holds
  *     more than its cap, `send` refuses `DEPENDENCY_UNAVAILABLE` naming the store and the cap,
  *     `status` shows the store full and names only the larger-cap route, and `down` and `service stop
  *     stack-manager` refuse the same way before any stop, because the manager's stop needs an
@@ -731,9 +731,9 @@ try {
     const stoppedSelected = stoppedStatus.env?.result?.selected as { message?: string } | undefined;
     const hints = (stoppedStatus.env?.result?.hints ?? []) as string[];
     const launcher = launcherAt(root);
-    check("status then says the stack is stopped after a completed down, not prepared but not started, and names a bare up",
+    check("status says the stack is stopped after a completed down and names a broker-only restart",
       stoppedStatus.status === 0 && Boolean(stoppedSelected?.message?.includes(`"${space}" is stopped; its last operation, \`cotal down\`, completed`))
-        && launcher !== undefined && hints.includes(`start it again with \`${launcher} up\` in ${root}`), { selected: stoppedSelected, hints, launcher });
+        && launcher !== undefined && hints.includes(`start it again with \`${launcher} up --no-manager\` in ${root}`), { selected: stoppedSelected, hints, launcher });
     const notedDown = cli(root, "status", "--json");
     check("with another space selected, the folder note names a bare up after a completed down",
       notedDown.status === 0 && notedDown.env?.target?.space !== space && folderNote(notedDown)?.message === `this folder holds the stopped space "${space}"; restart it with \`cotal up\``, { ...shown(notedDown), target: notedDown.env?.target, note: folderNote(notedDown) });

@@ -835,7 +835,7 @@ try {
   check("pending keeps the stopped-space diagnosis, the recipient, and the project's restart remedy",
     pending.status === 2 && receipt.target?.requested === "nobody" && receipt.target.space === controllerSpace && receipt.target.root === controllerRoot
       && receipt.error?.code === "TARGET_UNAVAILABLE" && receipt.error.message === `"${controllerSpace}" is stopped; its last operation, \`cotal down\`, completed`
-      && receipt.error.remedy === `start it again with \`cotal up\` in ${controllerRoot}`, receipt);
+      && receipt.error.remedy === `start it again with \`cotal up --no-manager\` in ${controllerRoot}`, receipt);
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
