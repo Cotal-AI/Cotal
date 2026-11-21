@@ -21,8 +21,10 @@
     "typecheck": "tsc -p tsconfig.check.json",
     "build": "node scripts/build-native.mjs && tsc -p tsconfig.json",
     "build:ts": "tsc -p tsconfig.json",
+    "probe:process-import": "python3 -I smoke/process-import-driver.py run",
+    "probe:service-storage": "python3 -I smoke/service-storage-driver.py",
     "build:native": "node scripts/build-native.mjs --host",
-    "test": "pnpm run build && tsx smoke/platform.smoke.ts && tsx smoke/protocol.smoke.ts && tsx smoke/lifecycle.smoke.ts && tsx smoke/isolation.smoke.ts && tsx smoke/reap-group-identity.smoke.ts && tsx smoke/peer-credentials-public.smoke.ts",
+    "test": "pnpm run build && tsx smoke/platform.smoke.ts && tsx smoke/protocol.smoke.ts && tsx smoke/lifecycle.smoke.ts && tsx smoke/isolation.smoke.ts && tsx smoke/reap-group-identity.smoke.ts && tsx smoke/peer-credentials-public.smoke.ts && tsx smoke/process-handle.smoke.ts",
     "prepack": "node scripts/assert-shipped-natives.mjs && pnpm run build:ts",
     "prepublishOnly": "node scripts/assert-shipped-natives.mjs && pnpm run build:ts"
   },

@@ -24,7 +24,11 @@
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\" && pnpm run build:console-bundle",
     "build:console-bundle": "esbuild src/console-session-entry.ts --bundle --format=iife --platform=browser --target=es2020 --alias:node:crypto=./src/console-crypto-shim.ts --outfile=dist/console/session-bundle.js && node scripts/console-bundle-loadtest.mjs",
     "prepublishOnly": "pnpm run build",
-    "smoke:shutdown-custody": "tsx smoke/shutdown-custody.smoke.ts"
+    "smoke:namespace-pty": "tsx smoke/namespace-pty.smoke.ts",
+    "smoke:namespace-manager": "tsx smoke/namespace-manager.smoke.ts",
+    "smoke:shutdown-custody": "tsx smoke/shutdown-custody.smoke.ts",
+    "probe:namespace-cold": "tsx smoke/namespace-cold.smoke.ts",
+    "probe:namespace-service": "tsx smoke/namespace-service.smoke.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.0",

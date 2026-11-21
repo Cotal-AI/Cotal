@@ -64,7 +64,7 @@ function buildPosix() {
   const out = join(outDir, "peercred.node");
   const args =
     platform === "linux"
-      ? ["-shared", "-fPIC", "-D_GNU_SOURCE", "-o", out, src, `-I${include}`]
+      ? ["-shared", "-fPIC", "-D_GNU_SOURCE", "-o", out, src, `-I${include}`, "-ldl"]
       : ["-bundle", "-undefined", "dynamic_lookup", "-mmacosx-version-min=11.0", "-o", out, src, `-I${include}`, "-framework", "CoreFoundation"];
   const result = spawnSync("cc", args, { cwd: root, encoding: "utf8" });
   if (result.status !== 0 || result.error) {
