@@ -311,20 +311,16 @@ export async function team(args: ParsedArgs): Promise<void> {
 }
 
 async function previewDeploy(file: string, values: TeamValues): Promise<void> {
-  if (values["dry-run"] !== true) {
-    let resolved: ReturnType<typeof loadManifest>;
-    try { resolved = loadManifest(resolve(file)); }
-    catch (e) {
-      if (e instanceof ManifestError) throw manifestRefusal(e, resolve(file));
-      throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest could not be resolved; no native effect was submitted");
-    }
-    if (resolved.agents.length) {
+  const dryRun = values["dry-run"] === true;
+  // Apply handlers perform their own exact target checks and report the selected space.
+  const { path, prepared } = readTeamFile(file, dryRun ? values.space : undefined);
+  if (!dryRun) {
+    if (prepared.agents.length) {
       const { applyAgentTeam } = await import("./team-agent-apply.js");
       return applyAgentTeam(file, values);
     }
     return applyChannelOnlyTeam(file, values);
   }
-  const { path, prepared } = readTeamFile(file, values);
   const space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
@@ -526,7 +522,7 @@ function accessGraph(prepared: PreparedManifest) {
   }));
 }
 
-function readTeamFile(file: string, values: TeamValues): { path: string; prepared: PreparedManifest } {
+function readTeamFile(file: string, space?: string): { path: string; prepared: PreparedManifest } {
   const path = resolve(file);
   let prepared: PreparedManifest;
   try { prepared = loadManifest(path); }
@@ -538,7 +534,7 @@ function readTeamFile(file: string, values: TeamValues): { path: string; prepare
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} was not found; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
   }
-  if (values.space !== undefined && values.space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
+  if (space !== undefined && space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
 }
 
@@ -553,7 +549,7 @@ function manifestRefusal(e: ManifestError, path: string): CommandFailure {
 }
 
 async function bootTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values), space = prepared.manifest.space;
+  const { path, prepared } = readTeamFile(file, values.space), space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected local registration or prepared-space record could not be read; no boot root was chosen", { target: { space } }); }
@@ -572,7 +568,7 @@ async function bootTeam(file: string, values: TeamValues): Promise<void> {
 
 async function previewBoot(file: string, values: TeamValues): Promise<void> {
   if (values["dry-run"] !== true) return bootTeam(file, values);
-  const { path, prepared } = readTeamFile(file, values);
+  const { path, prepared } = readTeamFile(file, values.space);
   const space = prepared.manifest.space;
   let local: ReturnType<typeof findMesh>, waiting: ReturnType<typeof findPreparedSpace>;
   try { local = findMesh(space); waiting = findPreparedSpace(space); }
@@ -656,7 +652,7 @@ async function previewBoot(file: string, values: TeamValues): Promise<void> {
 }
 
 async function checkTeam(file: string, values: TeamValues): Promise<void> {
-  const { path, prepared } = readTeamFile(file, values);
+  const { path, prepared } = readTeamFile(file, values.space);
   const openDurable = prepared.manifest.broker?.auth === false && (prepared.manifest.defaults?.deliveryClass === "durable" || prepared.manifest.channels.some((channel) => channel.deliveryClass === "durable"));
   const result = { kind: "team-check", file: path, space: prepared.manifest.space, runtime: prepared.manifest.runtime ?? "pty",
     agents: prepared.agents.map((agent) => ({ name: agent.name, harness: agent.agentType, role: agent.role ?? null, model: agent.model ?? null, policy: agent.policy, inherited: agent.inherited, capabilities: agent.capabilities, capabilitySource: agent.capabilitySource })),

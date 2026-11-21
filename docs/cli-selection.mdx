@@ -1148,6 +1148,9 @@ durable backstop wait until a new daemon binds while joins, DMs and live posts c
 With no delivery daemon serving, as after `cotal down stack-delivery`, `deliveryResponder` is
 `unbound`. The delivery responder line says spawn, retirement and the durable backstop wait until a
 daemon binds, while joins, DMs and live posts can still work, and that `cotal up` starts it.
+Next omits `cotal spawn` while the responder is unbound or its lease is stale. In a local static-auth
+project whose broker still answers and whose delivery process stopped, Next leads with `cotal up`
+when no other stack repair is needed.
 
 When a controller stack's delivery member runs but holds no delivery lease, `deliveryResponder` is
 `unbound`, and the delivery responder line names the member's pid and says it is starting or not
@@ -1266,7 +1269,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
   On an open mesh with no delivery process record or lease, delivery is `not-started` and does not
-  fail the check. A managed delivery credential exposed to other local readers makes this row
+  fail the check. If that local broker is absent and unreachable, the check skips the lease probe
+  for unused Delivery. A managed delivery credential exposed to other local readers makes this row
   `refused`, with its native permission repair. The ordinary report names that credential as an
   unreadable part and exits `4` instead of silently skipping lease-holder verification.
   An unreadable renewal record or a recorded adoption refusal makes delivery `refused`, even when

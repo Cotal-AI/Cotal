@@ -17,8 +17,8 @@
  * before the CLI loads, so a refused command starts almost no Maglev compile. A failing command prints
  * its stack under COTAL_DEBUG, and an empty value, `0`, `false` or `off`, in any case, leaves it off.
  * A folder given to `topology view -f`, `up -f`, `down -f`, `team check`, `team boot --dry-run` or
- * `team deploy --dry-run` is refused by its path as a directory, and `team check --json` names it as
- * `target.file`.
+ * `team deploy` is refused by its path as a directory. Deployment and its dry run both identify
+ * missing files and directories in text and JSON.
  * A signal while the CLI loads prints that the command did not begin and exits with that signal's
  * code, and an internal entry keeps Node's default signal exit.
  *
@@ -1098,30 +1098,50 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
 {
   const dir = mkdtempSync(join(tmpdir(), "cotal-entry-manifest-dir-"));
   cleanup.push(dir);
+  const env = { ...noSeed, LC_ALL: "C.UTF-8" };
   for (const [what, args] of [["topology view -f", ["topology", "view", "-f", dir]], ["up -f --dry-run", ["up", "-f", dir, "--dry-run"]], ["down -f --yes", ["down", "-f", dir, "--yes"]]] as const) {
-    const r = cotal([...args], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+    const r = cotal([...args], undefined, env);
     check(`${what} of a folder is refused with exit 1, naming the path and that it is a directory`,
       r.status === 1 && r.stdout === "" && r.stderr.includes(`✗ the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)
         && r.stderr.includes("↳ name the manifest file in it") && !r.stderr.includes("EISDIR"), shown(r));
   }
   // The team commands report it through their classified refusal, with the same reason and Next.
-  for (const [what, args] of [["team check", ["team", "check", dir]], ["team boot --dry-run", ["team", "boot", dir, "--dry-run"]], ["team deploy --dry-run", ["team", "deploy", dir, "--dry-run"]]] as const) {
-    const r = cotal([...args], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+  for (const [what, args] of [["team check", ["team", "check", dir]], ["team boot --dry-run", ["team", "boot", dir, "--dry-run"]], ["team deploy --dry-run", ["team", "deploy", dir, "--dry-run"]], ["team deploy", ["team", "deploy", dir]]] as const) {
+    const r = cotal([...args], undefined, env);
     check(`${what} of a folder is refused with exit 1, naming the path and that it is a directory`,
-      r.status === 1 && r.stdout === "" && r.stderr.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)
+      r.status === 1 && r.stdout === "" && r.stderr.includes("USAGE_INVALID") && r.stderr.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`)
         && r.stderr.includes("name the manifest file in it, such as its cotal.yaml") && !r.stderr.includes("could not be read and resolved") && !r.stderr.includes("EISDIR"), shown(r));
   }
-  const json = cotal(["team", "check", dir, "--json"], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
-  const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
-  check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
-    json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+  for (const [mode, ...flags] of [["check"], ["deploy"], ["deploy", "--dry-run"]] as const) {
+    const json = cotal(["team", mode, dir, ...flags, "--json"], undefined, env);
+    const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
+    check(`team ${[mode, ...flags, "--json"].join(" ")} of a folder gives USAGE_INVALID, target.file and the remedy`,
+      json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+  }
   // up -f's structured refusal keeps the same sentence and Next, rather than a generic read error.
   for (const format of ["--json", "--plain"]) {
-    const up = cotal(["up", "-f", dir, "--dry-run", format], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+    const up = cotal(["up", "-f", dir, "--dry-run", format], undefined, env);
     const said = format === "--json" ? (() => { try { return (JSON.parse(up.stdout) as { error?: { message?: string; remedy?: string } }).error; } catch { return undefined; } })() : { message: up.stdout + up.stderr, remedy: up.stdout + up.stderr };
     check(`up -f --dry-run ${format} of a folder names the directory and the Next, not a generic read error`,
       up.status === 1 && said?.message?.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`) === true
         && said.remedy?.includes("name the manifest file in it, such as its cotal.yaml") === true && !(up.stdout + up.stderr).includes("could not be read"), shown(up));
+  }
+}
+
+{
+  const dir = mkdtempSync(join(tmpdir(), "cotal-entry-missing-manifest-"));
+  cleanup.push(dir);
+  const path = join(dir, "missing.yaml"), remedy = "check the file path and run the command again";
+  for (const flags of [[], ["--dry-run"]]) {
+    const args = ["team", "deploy", path, ...flags], label = flags.length ? "team deploy --dry-run" : "team deploy";
+    const text = cotal(args, undefined, noSeed);
+    check(`${label} reports a missing manifest with its path and remedy`,
+      text.status === 2 && text.stdout === "" && text.stderr.includes("TARGET_NOT_FOUND")
+        && text.stderr.includes(`the team manifest ${path} was not found; no broker was contacted`) && text.stderr.includes(remedy), shown(text));
+    const json = cotal([...args, "--json"], undefined, noSeed);
+    const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { path?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
+    check(`${label} --json reports TARGET_NOT_FOUND with target.path and the remedy`,
+      json.status === 2 && envelope?.error?.code === "TARGET_NOT_FOUND" && envelope.target?.path === path && envelope.error.remedy === remedy, shown(json));
   }
 }
 

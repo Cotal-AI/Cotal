@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
+import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { OPENCODE_READINESS_TIMEOUT_MS } from "./startup.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
@@ -303,19 +304,8 @@ export const opencodeConnector: Connector = {
       $schema: "https://opencode.ai/config.json",
       permission: "allow",
       plugin: [PLUGIN_DIR],
-      // `/reconnect` — the manual recovery surface for a wedged mesh link. OpenCode has no
-      // host reconnect (unlike Claude Code's /mcp reconnect), and a plugin can't register a
-      // slash command via the Hooks API, so inject it through the config layer we already own.
-      // It's a TOOL-FORCING template: the human types /reconnect → one model turn whose only
-      // move is to call `cotal_reconnect` (in-process, local — it never rides the wedged link).
-      // The leading "Reconnecting…" reads as immediate TUI status; the rest is the imperative.
-      command: {
-        reconnect: {
-          description: "Rebuild this session's Cotal mesh connection (recovery from a wedged link)",
-          template:
-            "Reconnecting to the Cotal mesh… Call the cotal_reconnect tool now — do not explain, do not ask, just invoke it. Do not summarize — the tool reports its own status.",
-        },
-      },
+      // `/reconnect`: see reconnect-command.ts.
+      command: { [RECONNECT_COMMAND.name]: { description: RECONNECT_COMMAND.description, template: RECONNECT_COMMAND.template } },
     };
 
     // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona, which the

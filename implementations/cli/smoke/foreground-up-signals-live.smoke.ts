@@ -59,7 +59,7 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder" }): Promise<boolean> {
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), mesh = join(root, options.externalDown === "folder" ? name : "mesh");
   for (const p of [root, home, mesh, ...(options.nativeLog ? [] : [join(mesh, ".cotal")]), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = options.nativeLog ? undefined : recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
@@ -69,7 +69,17 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
   const space = options.externalDown === "folder" ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const logFile = join(mesh, "broker.log");
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : ["--open", "--no-manager"]), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
+  if (options.repairDelivery) {
+    // Make the spawn suggestion available without installing or launching a harness.
+    const extensions = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
+    mkdirSync(extensions, { recursive: true, mode: 0o700 });
+    writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
+      pkg: "@fixture/status", version: "1.0.0", spec: "@fixture/status@1.0.0", commands: [],
+      provides: [{ kind: "connector", name: "status-fixture" }],
+      connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
+    }] }), { mode: 0o600 });
+  }
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -179,6 +189,48 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.equal(ps.code, 0, "fully-ready manager answers actual public ps"); passed++;
       assert.ok(token(managerPath) && token(deliveryPath) && await portOpen(port), "fully-ready exact manager, delivery and listener still present"); passed++;
       console.log(`PASS foreground-up-signals ${name}: public status broker/manager/delivery serving and ps answered`);
+    }
+    if (options.repairDelivery) {
+      const status = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"], 60_000);
+      const next = (report: Awaited<ReturnType<typeof status>>) => report.out.split("\nNext\n")[1] ?? "";
+      const spawnLine = /^ {2}(?:pnpm )?cotal spawn +/m;
+      const broker = token(brokerPath), delivery = token(deliveryPath);
+      assert.ok(broker && live(broker) && delivery && live(delivery));
+      const before = await status();
+      assert.equal(before.code, 0, before.err);
+      assert.match(next(before), spawnLine, before.out); passed++;
+      process.kill(delivery.pid, "SIGTERM");
+      await until(() => !live(delivery), 30_000, () => "Delivery did not exit");
+      const stopped = await status();
+      assert.equal(stopped.code, 0, stopped.err);
+      assert.match(stopped.out, /Delivery responder:.*NOT BOUND/);
+      assert.match(next(stopped), /^ {2}(?:pnpm )?cotal up +Restore the delivery responder/);
+      assert.doesNotMatch(next(stopped), spawnLine); passed++;
+      const repair = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
+      const repaired = await status();
+      assert.equal(repair.code, 0, repair.out + repair.err);
+      assert.ok(live(broker), "repair keeps the original broker running");
+      assert.match(repaired.out, /Delivery responder:\s+● bound/);
+      assert.match(next(repaired), spawnLine); passed++;
+    }
+    if (options.openBrokerExit) {
+      let health: Awaited<ReturnType<typeof foregroundCliProbe>> | undefined;
+      const components = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components"], 60_000);
+      await until(async () => {
+        health = await components();
+        return health.code === 0 && /^ {2}manager +serving/m.test(health.out);
+      }, 90_000, () => (health?.out ?? "") + (health?.err ?? ""));
+      const broker = token(brokerPath);
+      assert.ok(broker && live(broker));
+      process.kill(broker.pid, "SIGTERM");
+      await until(() => state.exited, 60_000, () => err.slice(-3000));
+      assert.equal(await portOpen(port), false);
+      const stopped = await components();
+      assert.equal(stopped.code, 1, stopped.out + stopped.err);
+      assert.match(stopped.out, /^ {2}manager +absent/m);
+      assert.match(stopped.out, /^ {2}broker +absent/m);
+      assert.match(stopped.out, /^ {2}delivery +not-started · not used on an open mesh/m); passed++;
+      return true;
     }
     if (options.refusal || options.externalDown) {
       // Shipped bare down refuses --space/--server. Verify the one private registry record first.
@@ -549,6 +601,8 @@ await cell("auth-interrupted-failure", { auth: true, managerCrash: true, signal:
 await cell("auth-early", { auth: true, twice: true });
 await cell("auth-ready", { auth: true, ready: true });
 await cell("auth-ready-term", { auth: true, ready: true, signal: "SIGTERM" });
+await cell("delivery-repair", { auth: true, ready: true, repairDelivery: true });
+await cell("open-broker-exit", { openBrokerExit: true });
 let refusalObserved = false;
 for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
   refusalObserved = await cell(`auth-refused-${attempt}`, { auth: true, refusal: true });

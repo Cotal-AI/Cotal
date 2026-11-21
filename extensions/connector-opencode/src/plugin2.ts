@@ -43,6 +43,7 @@ import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record
 import { createOpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
+import { RECONNECT_COMMAND } from "./reconnect-command.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -124,6 +125,8 @@ const COMMAND_ROUTES: Record<CommandTarget, { list: string; loaded: string; key:
   skill: { list: "/api/skill", loaded: "skill.updated", key: "id", run: (name, args) => ["prompt", { text: args, skills: [{ id: name }] }] },
 };
 
+const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
+
 /** How long the first list waits for OpenCode to load the lists. OpenCode loads a location's commands
  *  and skills on the first request for them, answers that request with what it already holds, and
  *  emits each list's `loaded` event once the load ended (measured on 2.2.5). */
@@ -198,7 +201,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
       });
     }));
-    return lists.flat();
+    // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
+    return lists.flat().filter((e) => !isReconnect(e));
   }
   // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
   const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));
@@ -218,6 +222,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       return readLists();
     },
     async dispatch(command) {
+      if (isReconnect(command))
+        throw new CommandRefused("failed-precondition", `/${RECONNECT_COMMAND.name} recovers this agent's own mesh link and runs only at its terminal`);
       const id = await ensureSession();
       if (!id) throw new CommandRefused("failed-precondition", "this agent has no OpenCode session yet");
       const system = firstTurnSystem();
@@ -240,6 +246,15 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         throw new CommandRefused("failed-precondition", e.message);
       }
       if (system) primed = true;
+    },
+    // Measured on OpenCode 2.2.5: the route answers `{ interrupted }`, false when no execution ran, and
+    // a stopped execution ends as `session.execution.interrupted`, which completes the turn below. Without
+    // `resume`, OpenCode resumes nothing of its own, so the next queued command runs next.
+    async interrupt() {
+      if (!sessionID) return "idle"; // no session yet, so no turn of ours runs
+      const r = await opencodeApi<{ interrupted?: unknown } | undefined>(`/api/session/${encodeURIComponent(sessionID)}/interrupt`, { method: "POST" });
+      if (typeof r?.interrupted !== "boolean") throw new Error("OpenCode answered /interrupt with no interrupted flag");
+      return r.interrupted ? "interrupted" : "idle";
     },
   };
   const agent = new MeshAgent(config, undefined, { commands });
