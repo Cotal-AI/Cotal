@@ -151,11 +151,15 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
+  const mintSpace = values.space ?? link?.space;
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds) : undefined,
+    creds: values.creds ? readCredsFile(values.creds, {
+      malformedRemedy: "pass the complete credential file as it was issued. If you need a replacement, ask the space's owner to mint it with " +
+        `\`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)}${mintSpace === undefined ? "" : ` --space ${shellWord(mintSpace)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`,
+    }) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
