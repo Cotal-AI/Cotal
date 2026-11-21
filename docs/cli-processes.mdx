@@ -1210,8 +1210,11 @@ refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`). On macOS it is `cotal/daemon.soc
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment
 variable changes it, so the LaunchAgent and your terminal reach the same socket. A socket path longer
 than the kernel accepts (107 bytes on Linux, 103 on macOS) refuses `TARGET_UNAVAILABLE`
-(`NO_RUNTIME_DIR`). On both, the forms refuse `PERMISSION_DENIED` for a runtime directory
-that is a symlink, not a directory, not owned by you, or not mode `0700`. `status` also refuses
+(`NO_RUNTIME_DIR`). On Linux, set `XDG_RUNTIME_DIR` to a shorter directory you own with mode
+`0700` and use the same value for the daemon and its clients. Shortening the daemon home or
+Cotal home does not shorten the socket path. On both platforms, the daemon refuses
+`PERMISSION_DENIED` for a runtime directory that is a symlink, not a directory, not owned by you,
+or not mode `0700`. `status` also refuses
 `PERMISSION_DENIED` for an endpoint entry that is not a socket, not yours, or not mode `0600`. For
 a socket of another mode (`SOCKET_WRONG_MODE`), Next says to find the process listening there with
 `ss -xlp` and stop it, then start the daemon with `cotal daemon serve`.

@@ -20,6 +20,8 @@
  *     that serve's pid. This is green today and must stay green;
  *  H0b a different COTAL_HOME refuses the same default listener with advice for both daemon forms,
  *     identical in plain and JSON. The matching home still reaches the same ready daemon;
+ *  H0c an overlong Linux runtime path tells both daemon forms and clients to use a shorter
+ *     private XDG_RUNTIME_DIR, without creating a socket or lifetime lock;
  *  H1 a managed `serve --daemon-home D` beside a live legacy daemon: binds a different socket under
  *     `$XDG_RUNTIME_DIR/cotal/`. Both answer their own pid. The legacy socket keeps its inode and
  *     mtime. The no-flag client still reaches legacy. D holds a live lock owned by the managed pid;
@@ -284,6 +286,17 @@ try {
       check("G2 a valid provider retains its normalized target before a missing-daemon refusal", valid.status === 2 && valid.doc.outcome === "refused" && valid.doc.command === "daemon login" && valid.doc.target?.idp === idp, valid.doc);
     }
     check("G2 failure-context reads create no runtime entries or daemon lock", runtimeEntries().length === 0 && !existsSync(lockFile(managed)));
+  });
+
+  await cell("H0c overlong socket paths point to the runtime directory", async () => {
+    const longRuntime = join(root, "r".repeat(116 - Buffer.byteLength(root) - 1));
+    mkdirSync(longRuntime, { mode: 0o700 });
+    for (const args of [["serve"], ["serve", "--daemon-home", managed], ["status", "--daemon-home", managed]]) {
+      const { status, doc } = await cli([...args, "--json"], 30_000, { ...childEnv, XDG_RUNTIME_DIR: longRuntime });
+      check(`H0c ${args.join(" ")} keeps the socket-length refusal`, status === 2 && doc.error?.code === "TARGET_UNAVAILABLE" && doc.error.cause?.code === "NO_RUNTIME_DIR", doc);
+      check(`H0c ${args.join(" ")} points to the same shorter private runtime for daemon and clients`, doc.error?.remedy === "Set XDG_RUNTIME_DIR to a shorter private directory owned by your user with mode 0700. Use the same XDG_RUNTIME_DIR for the daemon and its clients.", doc.error);
+    }
+    check("H0c the refusals leave the runtime and lifetime locks untouched", readdirSync(longRuntime).length === 0 && !existsSync(lockFile(join(home, "daemon"))) && !existsSync(lockFile(managed)));
   });
 
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
