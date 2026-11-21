@@ -326,6 +326,54 @@ class BoundStartSource<T> implements DurableSource<T> {
   }
 }
 
+/** What a command's turn sets in the drive loop of {@link runCodexHost}. */
+interface CommandTurnFlags {
+  /** Before the dispatch is awaited, a start is in flight and its turn is armed with nothing
+   *  surfaced, because the turn's end can race the start's answer. */
+  starting(): void;
+  /** The dispatch answered. */
+  answered(): void;
+  /** The harness did not take the command, so no turn is open. */
+  notTaken(): void;
+}
+
+/** Start the agent endpoint's queued commands, each as a turn of its own, which carries no inbox
+ *  batch and no briefing. After a command's turn, waiting messages go before the next command.
+ *  `drive` is the host's drive loop. */
+function commandTurns(agent: MeshAgent, drive: () => Promise<void>, flags: CommandTurnFlags) {
+  let lastTurnWasCommand = false;
+  return {
+    /** Whether this drive starts a command instead of taking the inbox. Every drive past the loop's
+     *  guard asks once. */
+    due(override: string | undefined, paused: (item: InboxItem) => boolean): boolean {
+      const due = !override && agent.queuedCommands > 0 && !(lastTurnWasCommand && agent.pendingWake(paused) > 0);
+      lastTurnWasCommand = false;
+      return due;
+    },
+    /** The drive took nothing to send, so a command still queued drives next. */
+    nothingTaken(): void {
+      if (agent.queuedCommands > 0) setImmediate(() => void drive());
+    },
+    /** Start the oldest queued command. One the harness did not take leaves the thread free for
+     *  whatever waits. */
+    async start(): Promise<void> {
+      flags.starting();
+      let outcome;
+      try {
+        outcome = await agent.dispatchNextCommand();
+      } finally {
+        flags.answered();
+      }
+      if (outcome === "dispatched") {
+        lastTurnWasCommand = true;
+        return;
+      }
+      flags.notTaken();
+      void drive();
+    },
+  };
+}
+
 export async function runCodexHost(): Promise<void> {
   const config = configFromEnv(); // throws without an identity — a host launch is always managed
   config.connector = "codex";
@@ -570,7 +618,11 @@ export async function runCodexHost(): Promise<void> {
   let awaitingTurnEnd = false; // a driven turn is open — its surfaced ids ack at the boundary
   let surfaced: string[] = []; // EXACT ids fed into the open turn (start + steered)
   let briefed = false; // the boot channel briefing is prepended once
-  let lastTurnWasCommand = false; // after a command's turn, waiting messages go before the next command
+  const commands = commandTurns(agent, drive, {
+    starting: () => { driving = true; surfaced = []; awaitingTurnEnd = true; },
+    answered: () => { driving = false; },
+    notTaken: () => { awaitingTurnEnd = false; },
+  });
   let pendingPullHint: string | undefined; // focus @mention latch: its body was ack-dropped at
   // ingest, so a wake that can't run NOW must be remembered until a turn can carry it
   let steerSettled: Promise<unknown> = Promise.resolve(); // the last in-flight steer RPC — the
@@ -625,9 +677,7 @@ export async function runCodexHost(): Promise<void> {
     // "app-server not running" retry that outlives the shutdown. The batch stays un-acked in the
     // stream instead (see the shutdown note below on what that does and does not promise).
     if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
-    const commandFirst = !override && agent.queuedCommands > 0 && !(lastTurnWasCommand && agent.pendingWake(paused) > 0);
-    lastTurnWasCommand = false;
-    if (commandFirst) return driveCommand();
+    if (commands.due(override, paused)) return commands.start();
     driving = true;
     try {
       pruneFailedTurns();
@@ -645,11 +695,7 @@ export async function runCodexHost(): Promise<void> {
         // The take awaits, so the checks above are made again: when a turn began meanwhile, such as
         // one the attached TUI started, its boundary drives the batch.
         if (shuttingDown || driver.busy || awaitingTurnEnd) return;
-        if (items.length === 0 && !turnPeek) {
-          await reportPaused();
-          if (agent.queuedCommands > 0) setImmediate(() => void drive());
-          return;
-        }
+        if (items.length === 0 && !turnPeek) { await reportPaused(); commands.nothingTaken(); return; }
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);
           const inj = formatInjection(items);
@@ -684,27 +730,6 @@ export async function runCodexHost(): Promise<void> {
     } finally {
       driving = false;
     }
-  }
-
-  /** Start the oldest queued command as a turn of its own, which carries no inbox batch and no
-   *  briefing. A command the harness did not take leaves the thread free for whatever waits. */
-  async function driveCommand(): Promise<void> {
-    driving = true;
-    surfaced = [];
-    // Armed before the await for the reason drive() gives: the turn's end can race the start's answer.
-    awaitingTurnEnd = true;
-    let outcome;
-    try {
-      outcome = await agent.dispatchNextCommand();
-    } finally {
-      driving = false;
-    }
-    if (outcome === "dispatched") {
-      lastTurnWasCommand = true;
-      return;
-    }
-    awaitingTurnEnd = false;
-    void drive();
   }
 
   /** Steer DIRECTED (DM / anycast / @mention) automatic items into a connector-started turn.
