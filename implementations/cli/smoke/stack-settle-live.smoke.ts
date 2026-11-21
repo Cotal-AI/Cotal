@@ -570,6 +570,25 @@ try {
     track(other);
     check("its next up starts at another address", moved.status === 0, shown(moved));
     const launcher = launcherAt(second);
+    const confirmation = cli(second, "down", "--space", other, "--json");
+    const retry = `${launcher} down --space ${other} --json`;
+    const remedy = confirmation.env?.error?.remedy;
+    check("the whole-stack confirmation and preview keep the explicit space and JSON",
+      confirmation.status === 1 && confirmation.env?.outcome === "refused" && confirmation.env.error?.code === "USAGE_INVALID"
+      && launcher !== undefined && remedy === `run \`${retry} --yes\` to stop it. \`${retry} --dry-run\` shows what it stops`, shown(confirmation));
+    if (launcher !== undefined && remedy?.startsWith(`run \`${retry} --yes\``)) {
+      const follow = (command: string) => cli(second, ...command.slice(launcher.length + 1).split(" "));
+      const commands = [...remedy.matchAll(/`([^`]+)`/g)].map((match) => match[1]!);
+      const preview = follow(commands[1]!);
+      check("the printed preview produces JSON for the same space without signalling",
+        preview.status === 0 && preview.env?.target?.space === other && preview.env.result?.signalled === false && !gone(other, "stack-broker"), shown(preview));
+      const confirmed = follow(commands[0]!);
+      check("the printed confirmation produces a JSON stop receipt for the same space",
+        confirmed.status === 0 && confirmed.env?.target?.space === other && confirmed.env.result?.kind === "controller-stack-stop" && gone(other, "stack-broker"), shown(confirmed));
+      const restarted = cli(second, "up", "--no-manager", "--json");
+      track(other);
+      check("restart the broker-only stack for the text stop receipt", restarted.status === 0, shown(restarted));
+    }
     const down = cli(second, "down", "--yes", "--plain");
     const restart = /^  (.+?) {2}Start the stack again from its journal and saved definitions$/m.exec(down.stdout)?.[1];
     const expectedRestart = `${launcher} up --no-manager`;
@@ -586,6 +605,19 @@ try {
       check("the printed restart starts the same broker without a manager", resumed.status === 0 && pidOf(other, "stack-broker") !== null && pidOf(other, "stack-manager") === null, shown(resumed));
       check("down --yes stops the restarted stack", cli(second, "down", "--yes", "--json").status === 0);
     }
+
+    const brokerOnly = "broker-only";
+    const brokerRoot = prepare(brokerOnly);
+    const normalPayload = cli(brokerRoot, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-payload", "1048576", "--json");
+    track(brokerOnly);
+    const normalStop = cli(brokerRoot, "down", "--yes", "--json");
+    const repeated = cli(brokerRoot, "down", "--yes", "--plain");
+    const stoppedPreview = cli(brokerRoot, "down", "--space", brokerOnly, "--dry-run", "--plain");
+    const noOpRestart = (run: Run) => /^  (.+?) {2}Start the stack without a manager$/m.exec(run.stdout)?.[1];
+    check("repeated down and its stopped preview keep the broker-only restart even when the payload permits a manager",
+      normalPayload.status === 0 && normalStop.status === 0 && repeated.status === 0 && stoppedPreview.status === 0
+      && noOpRestart(repeated) === expectedRestart && noOpRestart(stoppedPreview) === expectedRestart,
+      { start: shown(normalPayload), stop: shown(normalStop), repeated: repeated.stdout, preview: stoppedPreview.stdout });
 
     const occupant = createServer();
     await listenOn(occupant, movedPort);

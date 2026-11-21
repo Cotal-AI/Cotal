@@ -90,7 +90,7 @@ try {
         const confirm = run(root, "down", "--with-agents");
         const next = confirm.receipt?.error?.remedy ?? "";
         check("the controller requires confirmation and keeps with-agents in both suggestions",
-          confirm.status === 1 && confirm.receipt?.error?.code === "USAGE_INVALID" && ["cotal", "pnpm cotal"].some((prefix) => next.includes(`\`${prefix} down --with-agents --yes\``) && next.includes(`\`${prefix} down --with-agents --dry-run\``)), shown(confirm));
+          confirm.status === 1 && confirm.receipt?.error?.code === "USAGE_INVALID" && ["cotal", "pnpm cotal"].some((prefix) => next.includes(`\`${prefix} down --with-agents --json --yes\``) && next.includes(`\`${prefix} down --with-agents --json --dry-run\``)), shown(confirm));
         const preview = run(root, "down", "--with-agents", "--dry-run");
         check("the suggested preview retains the agent policy without signalling the stack", preview.status === 0 && preview.receipt?.result?.withAgents === true && preview.receipt.result.signalled === false, shown(preview));
       }

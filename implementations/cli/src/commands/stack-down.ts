@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
   localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, stopReservationPath,
 } from "@cotal-ai/workspace";
@@ -260,6 +260,7 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
     catch { restart = false; }
   }
   const brokerOnly = payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR;
+  const restartWithoutManager = brokerOnly || (journal?.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted"));
   const agents = needsManager ? new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; agents from an earlier manager may still be running. Nothing was stopped", { target, remedy: journal
     ? `check for agents left by the earlier manager before restarting the stack${brokerOnly ? `. The recorded broker payload limit is ${payload} bytes. Starting the manager needs at least ${MANAGER_START_PAYLOAD_FLOOR} bytes` : ""}`
     : "start it with `cotal up`, then run `cotal down --with-agents`" }) : undefined;
@@ -269,7 +270,7 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
   const shown = agents ? [...warnings, { code: agents.code, target, message: `the real stop would refuse: ${agents.message}; ${agents.remedy}` }] : warnings;
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(shown.length ? { warnings: shown } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
-    ...(restart && !agents ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${brokerOnly ? " --no-manager" : ""}`, description: brokerOnly ? "Start the stack without a manager" : "Start it" }] }] }] : []),
+    ...(restart && !agents ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${restartWithoutManager ? " --no-manager" : ""}`, description: restartWithoutManager ? "Start the stack without a manager" : "Start it" }] }] }] : []),
   ] }));
 }
 
@@ -517,8 +518,10 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   const manager = members.find((member) => member.role === "manager" && member.live);
   if (withAgents && !manager) throw missingStopManager(journal0, target);
   if (!values.yes && !interactive) {
-    const command = `${displayCmd()} down${withAgents ? " --with-agents" : ""}`;
-    throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: `run \`${command} --yes\` to stop it. \`${command} --dry-run\` shows what it stops` });
+    const space = typeof values.space === "string" ? ` --space ${shellWord(values.space)}` : "";
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    const command = `${displayCmd()} down${space}${withAgents ? " --with-agents" : ""}${format}`;
+    throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: `run ${codeSpan(`${command} --yes`)} to stop it. ${codeSpan(`${command} --dry-run`)} shows what it stops` });
   }
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
   // members, and put back as it was when the stop ends before any member stops.
