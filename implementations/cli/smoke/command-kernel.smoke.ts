@@ -1394,11 +1394,12 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(observed < wrote, "the running-manager observation precedes the seed store rewrite");
 }
 
-// --- malformed npm fails after local reconcile; extension failures continue and aggregate --------
+// --- Registry metadata is advisory; extension failures continue and aggregate ------------------
 {
   const malformed = updateRuntime({ npm: () => ({ status: 0, stdout: "not-json" }) });
-  assert.equal(await executeUpdate(false, malformed.rt), 1);
+  assert.equal(await executeUpdate(false, malformed.rt), 0);
   assert.ok(malformed.events.includes("reconcile"));
+  assert.ok(malformed.events.some((event) => /Registry latest:\s+not established/.test(event)));
 
   const attempted: string[] = [];
   const continued = updateRuntime({
