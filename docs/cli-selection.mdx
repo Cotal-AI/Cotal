@@ -453,8 +453,10 @@ while a space is selected. Bare `use` reports
 the selection and whether Cotal adopted it automatically. When an explicit selection differs from
 the folder's space, bare `use` names the folder's space, even before its first start, and shows how
 to target it with `--space <name>` or `cotal use --clear`. In `use --json`, `result.folder` reports
-the folder's space, including a prepared space, independently of the selection. `cotal space` and
-`cotal status` mark the folder as the target only when no explicit selection overrides it.
+the folder's space, including a prepared space, independently of the selection. When the folder has
+no registration or unfinished stack and multiple prepared spaces resolve to it, `use` reports
+`result.folder: null` and omits the folder hint. `cotal space` and `cotal status` mark the folder as
+the target only when no explicit selection overrides it.
 A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 Bare `use` refuses with `SCHEMA_INVALID`, exit 1, if the saved selection is empty or unreadable.

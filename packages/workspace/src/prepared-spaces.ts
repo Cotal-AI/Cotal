@@ -138,10 +138,15 @@ export function findPreparedSpace(space: string): PreparedSpace | undefined {
   return spaces.find((p) => p.space === space);
 }
 
-/** The space prepared at `root`, matched by its canonical path. */
-export function preparedSpaceAt(root: string): PreparedSpace | undefined {
+/** The space prepared at `root`, matched by its canonical path. `requireUnique` leaves the identity
+ *  unset if distinct recorded roots now resolve to the same directory. */
+export function preparedSpaceAt(root: string, options?: { requireUnique?: boolean }): PreparedSpace | undefined {
   const key = canonicalRoot(root);
-  return loadPreparedSpaces().find((p) => canonicalRoot(p.root) === key);
+  const matches = (p: PreparedSpace) => canonicalRoot(p.root) === key;
+  const spaces = loadPreparedSpaces();
+  if (!options?.requireUnique) return spaces.find(matches);
+  const found = spaces.filter(matches);
+  return found.length === 1 ? found[0] : undefined;
 }
 
 /** Write a prepared space: atomic, 0600, in a directory only this user can list. Returns the file. */

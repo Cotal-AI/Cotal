@@ -17,7 +17,7 @@
  * Run: pnpm smoke:space-prepared-delete
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -245,6 +245,38 @@ for (const fix of [[], ["--fix"]]) {
       explicit.status === 0 && explicit.stdout.includes("Credential check skipped") && explicit.stdout.replace(/\s+/g, " ").includes(`Space: ${space}`) &&
       !explicit.stdout.includes("authenticates no one") && explicit.stderr.includes(`cotal space show ${space}`), shown(explicit));
   }
+}
+
+// Distinct prepared roots can converge when an old path is replaced by a link.
+{
+  const old = mkdtempSync(join(home, "old-root-")), local = mkdtempSync(join(home, "local-root-"));
+  for (const [space, folder] of [["a-old", old], ["z-local", local]] as const) {
+    const prepared = run(["space", "create", space], folder);
+    check(`rig: ${space} has its own prepared root`, prepared.status === 0, shown(prepared));
+  }
+  const selection = run(["use", "b4d", "--json"], local);
+  check("a unique prepared root is reported before a link is retargeted",
+    selection.status === 0 && selection.envelope?.result?.current === "b4d" && selection.envelope.result.folder === "z-local", shown(selection));
+  renameSync(old, `${old}.moved`);
+  symlinkSync(local, old, process.platform === "win32" ? "junction" : "dir");
+
+  const ambiguous = run(["use", "--json"], local), plain = run(["use", "--plain"], local);
+  check("bare use preserves the explicit selection and gives no folder hint for competing prepared roots",
+    ambiguous.status === 0 && ambiguous.envelope?.target?.space === "b4d" && ambiguous.envelope.result?.current === "b4d" &&
+    ambiguous.envelope.result.folder === null && plain.status === 0 && plain.stdout.includes("selected: b4d") && !plain.stdout.includes("--space"),
+    { json: shown(ambiguous), plain: shown(plain) });
+
+  const added = run(["space", "add", "local-registration", "--server", "nats://127.0.0.1:1", "--mode", "open", "--root", local, "--force", "--yes"], local);
+  const registered = run(["use", "--json"], local);
+  check("a single registration still takes precedence over competing preparations",
+    added.status === 0 && registered.status === 0 && registered.envelope?.result?.folder === "local-registration", shown(registered));
+
+  const forgetRegistration = run(["space", "forget", "local-registration"], local);
+  const forgetOld = run(["space", "forget", "a-old"], local);
+  const viaAlias = run(["use", "--json"], old);
+  check("bare use through an alias reports the remaining unique preparation",
+    forgetRegistration.status === 0 && forgetOld.status === 0 && viaAlias.status === 0 &&
+    viaAlias.envelope?.result?.current === "b4d" && viaAlias.envelope.result.folder === "z-local", shown(viaAlias));
 }
 
 finish();

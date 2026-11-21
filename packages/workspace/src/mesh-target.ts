@@ -808,11 +808,11 @@ export function recordsElsewhereText(details: MeshTargetErrorDetails): string | 
 /** What the project root `cwd` is in holds, none outside a project: the spaces it has REGISTERED (a
  *  `cotal up` wrote the registration and no `cotal down` has removed it, so each may still be
  *  running), and the space it has prepared and never started. */
-function folderSpaces(cwd: string, meshes: readonly MeshEntry[]): { root: string; registered: string[]; prepared?: string } | undefined {
+function folderSpaces(cwd: string, meshes: readonly MeshEntry[], requireUniquePreparation = false): { root: string; registered: string[]; prepared?: string } | undefined {
   const root = findCotalRoot(cwd);
   if (!isGenuineSpace(root)) return undefined;
   const registered = [...new Set(meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space))].sort();
-  const prepared = preparedSpaceAt(root)?.space;
+  const prepared = preparedSpaceAt(root, { requireUnique: requireUniquePreparation })?.space;
   return { root, registered, ...(prepared === undefined ? {} : { prepared }) };
 }
 
@@ -1000,10 +1000,10 @@ export function folderSpaceStopped(cwd: string, current: string): { space: strin
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
  *  `--space` targets there while it runs, or, with none registered, the space of the root's own half
  *  started or half stopped stack ({@link unfinishedStackSpace}). For inspection, `includePrepared`
- *  also reports the root's prepared space when neither of those applies. Undefined outside a project
- *  or where several spaces are registered at the root. */
+ *  also reports a unique prepared space at the root when neither of those applies. Undefined outside
+ *  a project or where several spaces are registered at the root. */
 export function folderSpace(cwd: string, options?: { includePrepared?: boolean }): string | undefined {
-  const folder = folderSpaces(cwd, loadMeshes());
+  const folder = folderSpaces(cwd, loadMeshes(), options?.includePrepared);
   if (!folder) return undefined;
   if (folder.registered.length) return folder.registered.length === 1 ? folder.registered[0] : undefined;
   return unfinishedStackSpace(folder.root) ?? (options?.includePrepared ? folder.prepared : undefined);
