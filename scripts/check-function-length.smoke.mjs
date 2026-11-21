@@ -29,7 +29,7 @@ const shapes = {
   method: (id, lines) => `export class Probe${id} {\n  run${id}() {\n${filler(lines - 2)}  }\n}\n`,
   arrow: (id, lines) => `export const probe${id} = () => {\n${filler(lines - 2)}};\n`,
   expression: (id, lines) => `export const probe${id} = function () {\n${filler(lines - 2)}};\n`,
-  nested: (id, lines) => `export function probe${id}() {\n  const inner${id} = () => {\n${filler(lines - 4)}  };\n  return inner${id};\n}\n`,
+  nested: (id, lines) => `export function probe${id}() {\n  const inner${id} = () => {\n${filler(lines - 5)}  };\n  return inner${id};\n}\n`,
 };
 // Writes one function per entry of `lengths`, each that many lines long, in the given shape.
 function put(name, lengths, { shape = "declaration", doc = "" } = {}) {
@@ -71,7 +71,7 @@ try {
   check("a doc comment above a function does not count", run().status === 0);
   put(big, [400], { shape: "nested" });
   result = run();
-  check("a nested function counts on its own", result.status === 1 && result.stderr.includes("probe0 is 400 lines") && result.stderr.includes("inner0 is 398 lines"));
+  check("a nested function counts on its own", result.status === 1 && result.stderr.includes("probe0 is 400 lines") && result.stderr.includes("inner0 is 397 lines"));
   put(big, [151, 30, 200]);
   result = run();
   check("every long function in an unlisted file is named", result.stderr.includes("probe0 is 151 lines") && result.stderr.includes("probe2 is 200 lines") && !result.stderr.includes("probe1"));
