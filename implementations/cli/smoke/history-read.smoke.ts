@@ -248,7 +248,9 @@ try {
   check("--grep matches text case-insensitively within the window", JSON.stringify(texts(grep)) === JSON.stringify(["deploy started", "deploy finished"]) && grep.envelope?.result?.window.read === 4, { texts: texts(grep), window: grep.envelope?.result?.window });
 
   const dms = await run(["history", "--dms", "--json"]);
-  check("--dms adds DMs, each naming its recipient", dms.status === 0 && (dms.envelope?.result?.items ?? []).some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
+  const dmItems = dms.envelope?.result?.items ?? [];
+  check("--dms reads both channels and adds DMs, each naming its recipient", dms.status === 0 && JSON.stringify(dmItems.filter((i) => i.channel !== null).map((i) => i.text).sort()) === JSON.stringify(texts(all).sort())
+    && dmItems.some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
   // A DM to a recipient that had sent nothing used to show its principal; the roster names it.
   const erin = await agent("erin");
   await alice.unicast(`${erin.principal.owner}.${erin.principal.actor}`, "for erin");
@@ -263,6 +265,10 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
+  const help = await run(["history", "--help"]);
+  check("history help lists a channel and --dms as alternatives and names the scope of --dms",
+    help.status === 0 && help.stdout.includes("cotal history [<channel> | --dms]")
+      && help.stdout.includes("read all accessible channels and DMs"), help.stdout);
   for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

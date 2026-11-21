@@ -575,7 +575,7 @@ const baseCommands: Command[] = [
     group: "Messaging",
     summary: "read the newest retained messages within this identity's read grant, clear history (`history clear`), or set how long it is kept (`history limit`)",
     usage:
-      "cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --yes [--dms] | cotal history limit [--max-age <age>] [--per-sender <n>] [--yes]",
+      "cotal history [<channel> | --dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --yes [--dms] | cotal history limit [--max-age <age>] [--per-sender <n>] [--yes]",
     positionals: "[<channel> | clear | limit]",
     flags: historyFlags,
     outputs: ["json", "ndjson", "plain"],
