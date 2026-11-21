@@ -33,11 +33,14 @@ interface Envelope { outcome?: string; target?: { root?: string; space?: string 
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-prepared-delete-"));
+// Stop the root walk before it reaches any project above the sandbox.
+const cotalHome = join(home, ".cotal");
+mkdirSync(cotalHome);
 const root = mkdtempSync(join(home, "project-"));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, "registry"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 const run = (args: string[], cwd = root) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -153,8 +156,6 @@ check("doctor auth --space from another folder refuses AUTH_REQUIRED and names c
   doctorElsewhere.status === 2 && doctorElsewhere.envelope?.error?.code === "AUTH_REQUIRED" && elsewhereStep !== null, shown(doctorElsewhere));
 check("a shell reads that --root back as the prepared folder", shellRead !== undefined && existsSync(shellRead) && realpathSync(shellRead) === realpathSync(special), { remedy: doctorElsewhere.envelope?.error?.remedy, shellRead });
 
-// Bare doctor auth names only the space its own root prepared: not another prepared space, not the
-// selection, and none from a folder that holds no space.
 const selected = run(["use", "b4d"]);
 check("rig: the other prepared space is selected", selected.status === 0, shown(selected));
 const child = mkdtempSync(join(root, "child-"));
@@ -165,6 +166,8 @@ const useJson = run(["use", "--json"], child);
 check("bare use reports the prepared folder separately from the explicit selection",
   useJson.status === 0 && useJson.envelope?.outcome === "ok" && useJson.envelope.target?.space === "b4d" &&
     useJson.envelope.result?.current === "b4d" && useJson.envelope.result.folder === "b4b", shown(useJson));
+
+// Bare doctor auth names only the space its own root prepared, regardless of selection.
 const bareOwn = run(["doctor", "auth", "--json"]);
 check("bare doctor auth in the first root still names its own space, not the selected one", bareOwn.status === 4 && bareOwn.envelope?.error?.remedy === BARE_HERE, shown(bareOwn));
 const bareSpecial = run(["doctor", "auth", "--json"], special);
@@ -217,6 +220,7 @@ check("forget says the prepared space is not running", forgot.status === 0 && /p
 
 // Two open registrations in one folder need a space name, not a change of directory.
 const workshop = mkdtempSync(join(home, "workshop-"));
+mkdirSync(join(workshop, ".cotal"));
 const workshops = ["workshop-a", "workshop-b"];
 for (const [i, space] of workshops.entries()) {
   const added = run(["space", "add", space, "--mode", "open", "--server", `nats://127.0.0.1:${43026 + i}`, "--root", ".", "--force", "--yes"], workshop);
@@ -226,6 +230,9 @@ const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], wor
 check("doctor keeps the local open-space no-op and warns that the mode was not checked",
   unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&
   unchecked.envelope.result.repair?.attempted === false && unchecked.envelope.warnings?.some(w => w.code === "MODE_NOT_CHECKED") === true, shown(unchecked));
+const ambiguousUse = run(["use", "--json"], workshop);
+check("bare use does not guess a folder space when the root has multiple registrations",
+  ambiguousUse.status === 0 && ambiguousUse.envelope?.result?.folder === null, shown(ambiguousUse));
 for (const fix of [[], ["--fix"]]) {
   const command = ["doctor", "auth", ...fix];
   const bare = run([...command, "--plain"], workshop);
