@@ -72,6 +72,7 @@ does not start a command.
 
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
+When staging an update, Cotal restores owner write permission on a read-only retained-generation directory owned by the current account.
 The verified target's declared read-only admission decides Manager, discovery, auth and continuity policy.
 The installed transaction checks archive integrity, entry confinement, its install binding and the native
 daemon's authenticated process lifetime. An unreadable identity or a target refusal leaves the installed
