@@ -250,7 +250,8 @@ On Linux, rerun `cotal update --self` after an interruption. The update resumes 
 the previous updater died before its child was allowed to start, or that the recorded child and
 its process group are gone. If the child is still running, the retry waits before checking whether
 the installed CLI and connectors are current. It reports a failure if it cannot confirm the child
-has finished.
+has finished or cannot safely read the child record. The current-installation check holds the
+update and connector writer locks so it cannot report success during a concurrent write.
 For an older record without child custody, manual repair still requires this account's other
 application processes to exit. It stops only this installation's service after confirming its
 hosted Managers have no seats, and starts the enabled service again after the attempt.

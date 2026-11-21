@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fstatSync, futimesSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
+import { closeSync, fstatSync, futimesSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
 import { claimUpdateClosureAccess } from "./update-closure.js";
+import { readLocalRecordSource } from "./local-record-source.js";
 
 function extensionUpdatePassLockPath(): string {
   return `${extensionMutationLockPath()}.update`;
@@ -27,6 +28,11 @@ function globalUpdateChildPath(root: string): string {
   return join(canonicalGlobalRoot(root), ".cotal-update-child");
 }
 
+/** Read existing custody without creating or claiming the npm root. */
+export function readGlobalUpdateChild(root: string): ProcessMutationRecord | undefined {
+  return readMarker(join(root, ".cotal-update-child"));
+}
+
 /** The owner record stays immutable. Renewing updaters touch its inode without changing custody. */
 export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; renew?: boolean; onWait?: () => void; repairAmbiguous?: () => void } = {}): () => void {
   const waitMs = opts.waitMs ?? 0;
@@ -35,14 +41,15 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; 
   const lock = join(canonicalRoot, ".cotal-update.lock");
   let held: HeldLock;
   let wait = waitMs;
-  let announced = false;
+  let onWait = opts.onWait;
+  const announce = () => { const notify = onWait; onWait = undefined; notify?.(); };
   const retry = new Error();
   for (;;) {
     try {
       held = acquireLock(lock, {
         label: "a global cotal-ai update",
         waitMs: wait,
-        onWait: () => { if (!announced) { announced = true; opts.onWait?.(); } },
+        onWait: announce,
         onTimeout: owner => {
           if (opts.renew && waitMs > 0) {
             const current = inspectLock(lock);
@@ -87,7 +94,7 @@ export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; 
         renameSync(path, `${path}.retained-${Date.now()}-${randomBytes(6).toString("hex")}`);
       }
     }
-    assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child", deadline);
+    assertNoProcessMutation(path, "global cotal-ai update child", deadline, announce);
     if (opts.renew) {
       const fd = openSync(lock, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       let timer: ReturnType<typeof setInterval> | undefined;
@@ -421,13 +428,15 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
   };
 }
 
-function assertNoProcessMutation(path: string, operation: string, deadline = 0): void {
+function assertNoProcessMutation(path: string, operation: string, deadline = 0, onWait?: () => void): void {
   let marker = readMarker(path);
   const childAlive = (live: Extract<ProcessMutationRecord, { phase: "live" }>): boolean =>
     live.seedGroup ? process.platform !== "linux" || seedProcessGroupAlive(live.pid) :
     sameProcessAlive(live.pid, live.start) || (process.platform === "linux" &&
       (live.operation === "global install" || live.operation === "global reconcile") && processGroupAlive(live.pid));
   while (marker?.phase === "live" && childAlive(marker) && Date.now() < deadline) {
+    onWait?.();
+    onWait = undefined;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(100, deadline - Date.now())));
     marker = readMarker(path);
   }
@@ -506,10 +515,14 @@ function seedProcessGroupAlive(pgid: number): boolean {
 }
 
 function readMarker(path: string): ProcessMutationRecord | undefined {
-  if (!existsSync(path)) return undefined;
+  const info = lstatSync(path, { throwIfNoEntry: false });
+  if (!info) return;
+  if (!info.isFile()) throw new Error(`process mutation marker is not a regular file (${path})`);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    const bytes = readLocalRecordSource(path, 64 * 1024);
+    if (!bytes) return;
+    parsed = JSON.parse(bytes.toString("utf8"));
   } catch (e) {
     throw new Error(`process mutation marker is unreadable (${path}): ${(e as Error).message}`);
   }

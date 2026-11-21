@@ -62,15 +62,16 @@ export function installationWriter(): { pid: number } | undefined {
   return { pid: current.owner.pid };
 }
 
-/** Reserve the outer closure barrier before taking seed or extension writer locks. */
-export function claimUpdateClosureAccess(recover = false): () => void {
+/** Reserve the outer closure barrier before taking seed or extension writer locks.
+ * An immediate probe skips the journal precheck and must inspect the journal under the claim. */
+export function claimUpdateClosureAccess(recover: boolean | "immediate" = false): () => void {
   const owner = process.env[OWNER];
   const nonce = process.env[NONCE];
   if (!held && (owner !== undefined || nonce !== undefined)) {
     const record = readUpdateRecovery();
     if (!record && process.env.COTAL_UPDATE_CLOSURE_TRANSACTION === "1") {
       delete process.env[OWNER]; delete process.env[NONCE]; delete process.env[START]; delete process.env.COTAL_UPDATE_CLOSURE_TRANSACTION;
-      return claimUpdateClosureAccess();
+      return claimUpdateClosureAccess(recover === "immediate" ? recover : false);
     }
     const current = inspectLock(lockPath());
     const matchesStart = process.platform === "win32" && process.env[START] === "" && record
@@ -84,7 +85,10 @@ export function claimUpdateClosureAccess(recover = false): () => void {
   if (!held) {
     if (!recover) waitForUpdateClosure();
     const start = ownerStart(process.pid) ?? "";
-    held = acquireLock(lockPath(), { label: "a closure writer", waitMs: 300_000 });
+    held = acquireLock(lockPath(), recover === "immediate" ? {
+      label: "a closure writer", waitMs: 0,
+      onTimeout: owner => new Error(`a closure writer (pid ${owner.pid}) is changing this installation; retry once it finishes`),
+    } : { label: "a closure writer", waitMs: 300_000 });
     process.env[OWNER] = String(process.pid);
     process.env[NONCE] = held.nonce;
     process.env[START] = start;

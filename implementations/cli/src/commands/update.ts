@@ -15,11 +15,8 @@ import {
   updateClosureOwner,
   homeCotalDir,
   isMeshRegistryError,
-  preparedRecordSkipped,
   preparedRecordSpace,
   preparedSpacesDir,
-  readPreparedSpaces,
-  recordOperationWarning,
   readUpdateRecovery,
   clearUpdateRecovery,
   writeUpdateRecovery,
@@ -50,8 +47,8 @@ import {
 } from "@cotal-ai/workspace";
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
-import { continueAfterGlobalUpdateChild } from "../lib/update-child-retry.js";
-import { reportVersion } from "../lib/update-report.js";
+import { announceGlobalUpdateWait, runInstalledSelfUpdate, targetArgv, withCurrentUpdateFence } from "../lib/update-child-retry.js";
+import { reportCurrentUpdate, reportUncheckedPreparedRecords, reportVersion } from "../lib/update-report.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
@@ -386,10 +383,6 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
     if (args.values.self !== true) return;
     if (restored.version !== rt.version()) return restored.entry;
   }
-  if (args.values.self === true && childBinding(rt).kind === "none") {
-    const entry = continueAfterGlobalUpdateChild(rt);
-    if (entry) return entry;
-  }
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
@@ -624,6 +617,18 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
+    const upgrading = latest.ok && compareSemver(latest.version, current) > 0;
+    // The live npm lookup can select a different version from the one the daemon held.
+    const next = latest.ok && rt.env.COTAL_AUTO_UPDATE === "1" ? await observeUpdateVersion(latest.version) + UPDATE_HOUR_MS : undefined;
+    if (!upgrading) {
+      const finished = withCurrentUpdateFence(rt, () => latest.ok && reportCurrentUpdate(current, latest.version, rt, target, unreadableSelection));
+      if (typeof finished !== "boolean") {
+        const code = runInstalledSelfUpdate(rt, finished.entry, target);
+        rt.generationWaited = true;
+        return code;
+      }
+      if (finished) return 0;
+    }
     if (!latest.ok) {
       if (latest.missingNpm) {
         if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
@@ -642,35 +647,16 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.out("The registry cannot be reached; nothing was changed.");
       return 0;
     }
-    const upgrading = compareSemver(latest.version, current) > 0;
-    if (rt.env.COTAL_AUTO_UPDATE === "1") {
-      // The live npm lookup can select a different version from the one the daemon held.
-      const next = await observeUpdateVersion(latest.version) + UPDATE_HOUR_MS;
-      if (upgrading && Date.now() < next) {
-        recordUpdateReleaseHold(latest.version, next);
-        return 0;
-      }
-      recordUpdateDeferral(current, "waiting for update preflight");
+    if (upgrading && next !== undefined && Date.now() < next) {
+      recordUpdateReleaseHold(latest.version, next);
+      return 0;
     }
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for update preflight");
     if (upgrading) {
       const code = await upgradeAndReconcile(latest.version, current, rt, target);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
     }
-    if (unreadableSelection) {
-      rt.err(unreadableSelection.message);
-      rt.out("No newer CLI version. No connector reconciliation was run.");
-      reportVersion(current, latest.version, rt, false);
-      return 0;
-    }
-    if (rt.isCurrent?.()) {
-      reportUncheckedPreparedRecords(rt, target);
-      rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
-      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
-      reportVersion(current, latest.version, rt, false);
-      return 0;
-    }
-
     return reconcileCurrent(current, rt, target, (reconciled, deferred) => {
       if (rt.env.COTAL_AUTO_UPDATE === "1") {
         if (reconciled) recordUpdateCompletion(current, `updated to ${current}`, true);
@@ -695,22 +681,6 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     reportVersion(current, latest.version, rt, reconciled);
     return reconciled ? 0 : 1;
   });
-}
-
-function reportUncheckedPreparedRecords(rt: UpdateRuntime, target: Record<string, unknown>): void {
-  if (["server", "creds", "on"].some(key => typeof target[key] === "string")) return;
-  // The installed child may carry a daemon admission receipt and never resolve the project.
-  // Report read failures separately from the Manager custody verdict and package reconciliation.
-  try {
-    for (const error of readPreparedSpaces().unusable) {
-      if (error.refusal !== "PERMISSION_DENIED") continue;
-      if (typeof target.space === "string" && target.space !== preparedRecordSpace(error.file)) continue;
-      recordOperationWarning(preparedRecordSkipped(error));
-      rt.out(c.dim(`  ${error.file}: leaving its records and processes untouched, continuity not checked`));
-    }
-  } catch (error) {
-    rt.err(`Could not check prepared space records: ${message(error)}; continuity not checked`);
-  }
 }
 
 async function reconcileCurrent(
@@ -1556,7 +1526,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   let releaseGlobal: () => void;
   try {
-    releaseGlobal = rt.claimGlobalUpdate(root, () => rt.out("Waiting for another updater to release npm's global root"));
+    releaseGlobal = rt.claimGlobalUpdate(root, announceGlobalUpdateWait(rt));
   } catch (e) {
     rt.err(c.red(`✗ could not reserve npm's global root for update: ${message(e)}`));
     return 1;
@@ -1570,10 +1540,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       const entry = (rt.verifyUpdatedEntry ?? rt.verifyGlobalEntry)(root, installed);
       releaseGlobal();
       rt.out(`Another update installed cotal-ai@${installed}; rechecking the installed CLI`);
-      const child = rt.spawn(rt.nodePath, [entry, "update", "--self", ...targetArgv(target), ...(target["stop-agents"] === true ? ["--stop-agents"] : [])], rt.env, true);
-      if (child.stderr) rt.stderr(child.stderr);
-      if (child.stdout) rt.stdout(child.stdout);
-      return child.status ?? 1;
+      return runInstalledSelfUpdate(rt, entry, target);
     }
   } catch (error) {
     releaseGlobal();
@@ -1813,15 +1780,6 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       process.off("SIGTERM", onTerm);
     }
   }
-}
-
-function targetArgv(target: Record<string, unknown>): string[] {
-  const argv: string[] = [];
-  for (const name of ["space", "server", "creds", "on"] as const) {
-    const value = target[name];
-    if (typeof value === "string") argv.push(`--${name}`, value);
-  }
-  return argv;
 }
 
 function childBinding(rt: UpdateRuntime):

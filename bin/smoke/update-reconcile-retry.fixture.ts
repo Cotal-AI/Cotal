@@ -8,7 +8,26 @@ const root = process.env.RETRY_TEST_ROOT!;
 const modules = join(root, "prefix/lib/node_modules");
 const version = process.env.RETRY_TEST_VERSION!;
 
-if (process.env.RETRY_TEST_WRITER === "1") {
+if (process.argv[2] === "closure-only") {
+  const release = claimUpdateClosureAccess();
+  try {
+    writeFileSync(join(root, "closure-only"), "");
+    await waitForOwnedChild(() => existsSync(join(root, "closure-release")), 60_000, "release closure-only writer");
+  } finally { release(); }
+} else if (process.argv[2] === "late-writer") {
+  const releaseGlobal = claimGlobalNpmUpdateLock(modules);
+  try {
+    const releaseClosure = claimUpdateClosureAccess();
+    try {
+      const mutation = beginGlobalUpdateChild(modules, "reconcile", true);
+      mutation.markLive(process.pid);
+      try {
+        writeFileSync(join(root, "late-writer"), String(process.pid));
+        await waitForOwnedChild(() => existsSync(join(root, "late-release")), 60_000, "release late writer");
+      } finally { mutation.clear(); }
+    } finally { releaseClosure(); }
+  } finally { releaseGlobal(); }
+} else if (process.env.RETRY_TEST_WRITER === "1") {
   // The orphan has passed seed verification; its final extension pass needs its own writer
   // once the old transaction is retired. Hold that pass open until the smoke releases it.
   await waitForOwnedChild(() => !readUpdateRecovery() || existsSync(join(root, "release")), 60_000, "previous transaction retired");

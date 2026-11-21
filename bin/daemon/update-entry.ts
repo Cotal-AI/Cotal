@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { execFileSync } from "node:child_process";
 import { registry, type Command } from "@cotal-ai/core";
-import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, readGlobalUpdateChild } from "@cotal-ai/workspace";
 import { submitSystemdUnitControl } from "@cotal-ai/cli";
 import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, readUpdateManagerContinuity, updateManagerPin, repairInstallModes, verifyGlobalEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
@@ -212,11 +212,12 @@ const composed: Command = { ...command, async run(args) {
   }
   if (process.platform === "linux" && args.values.self === true && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT) {
     const prefix = updateRuntime.installPrefix();
-    if (prefix && existsSync(join(prefix, "lib/node_modules/.cotal-update-child"))) {
-      const marker = JSON.parse(readFileSync(join(prefix, "lib/node_modules/.cotal-update-child"), "utf8"));
-      if (marker.phase === "ambiguous" || marker.phase === "pending") interruptedChildRoot = join(prefix, "lib/node_modules");
+    const root = prefix && join(prefix, "lib", "node_modules");
+    const marker = root ? readGlobalUpdateChild(root) : undefined;
+    if (marker) {
+      if (marker.phase === "ambiguous" || marker.phase === "pending") interruptedChildRoot = root;
       if ((marker.phase === "ambiguous" && marker.custody === undefined) ||
-        (marker.phase === "pending" && marker.gated === undefined && marker.intermediary === false && ["global install", "global reconcile"].includes(marker.operation))) {
+        (marker.phase === "pending" && marker.gated === undefined && !marker.intermediary && (marker.operation === "global install" || marker.operation === "global reconcile"))) {
         legacyRepair = true;
         const paths = daemonPaths();
         if (existsSync(unitReceiptFile(paths))) {
