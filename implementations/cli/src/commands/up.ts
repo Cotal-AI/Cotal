@@ -3629,7 +3629,7 @@ export async function recheckFreshTeamBoot(plan: FreshTeamBootPlan, own?: { depl
 export function controllerStackNative(): StackUpNative {
   return {
     prepareBroker: async (opts) => {
-      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
+      const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.wsPort !== undefined ? { wsPort: opts.wsPort } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
       return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { mintProvisioner: prepared.setup.mintProvisioner, wsPort: prepared.setup.wsPort, moveWebsocketPort: prepared.setup.moveWebsocketPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.maxPayload !== undefined ? { maxPayload: prepared.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
     },
     initializeStreams: async (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup && { creds: await setup.mintProvisioner() }, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
@@ -4320,6 +4320,8 @@ export interface DetachOpts {
   logFile?: string;
   logfileSizeLimit?: number;
   logfileMaxNum?: number;
+  /** WebSocket listener port required by a controller manager that stays running. */
+  wsPort?: number;
   /** The auth callout timeout in seconds (`--auth-timeout`). Absent: the root's recorded one. */
   authTimeout?: number;
   /** The broker's payload limit in bytes (`--max-payload`). Absent: the root's recorded one. */
@@ -4409,7 +4411,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     let fd: number | undefined;
     try { fd = openBrokerLog(logFile); } finally { if (fd !== undefined) closeSync(fd); }
   }
-  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload, accountResolver: opts.accountResolver, manager: opts.noManager !== true, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum }) : undefined;
+  const setup = useAuth ? await authSetup(storeDir, server, space, host, opts.userAuth, transport, opts.rotateSys, opts.maxFileStore, opts.quietBoot, { authTimeout: opts.authTimeout, maxPayload: opts.maxPayload, accountResolver: opts.accountResolver, manager: opts.noManager !== true, logFile, logfileSizeLimit: opts.logfileSizeLimit, logfileMaxNum: opts.logfileMaxNum, wsPort: opts.wsPort }) : undefined;
   const maxPayload = setup?.maxPayload ?? opts.maxPayload ?? readBrokerPolicy(root)?.maxPayload;
   const port = Number(new URL(server).port) || 4222;
   // Same rule as the foreground path: every route to a listener names its transport (see
@@ -5677,7 +5679,7 @@ async function authSetup(
   // policy records, so a bare `up` renders what an earlier `up` set. They arrive as one object
   // rather than two trailing optional numbers: a transposed pair of those renders a wrong
   // configuration in silence.
-  requested: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; manager?: boolean; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number } = {},
+  requested: { authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; manager?: boolean; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; wsPort?: number } = {},
 ): Promise<{ brokerBinary: NatsServer; confPath: string; mintProvisioner: () => Promise<string>; wsPort: number; moveWebsocketPort: () => Promise<number>; prepared?: AuthPrepared; stateDir?: string; authTimeout?: number; maxPayload?: number; accountResolver: "memory" | "full" }> {
   const dir = authDir(cotalRoot()); // the broker config (server.conf) still lands under the FS auth dir
   const store = workspaceSecretStore(cotalRoot());
@@ -5772,10 +5774,8 @@ async function authSetup(
     }
   }
   const port = Number(new URL(server).port) || 4222;
-  // P2 item 6: allocate the broker's loopback WebSocket listener port — the console page becomes a
-  // mesh §13.6 session client over it (a NEW same-host attack surface, localhost-bound, no TLS). The
-  // manager's establisher builds its wsUrl from this; threaded to `supervise --ws-port`.
-  const wsPort = await freePort(host);
+  // A reused controller manager advertises its launch-time WebSocket port.
+  const wsPort = requested.wsPort ?? await freePort(host);
   const confPath = resolve(dir, "server.conf");
   // EVERY tenant of this root, not just the one being booted: `resolver_preload` is a whole-broker
   // map, so a config rendered from one space evicts the rest silently. `auth` leads the list because
