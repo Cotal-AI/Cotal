@@ -1015,12 +1015,13 @@ export function recordedProcessesUnder(root: string, spaces: readonly string[]):
   return found;
 }
 
-/** No member of this stack ever launched: no member row names an instance or a replacement, and every
- *  instance record of a stack definition in its space failed before its child was spawned, as a
- *  broker start refused at an address another program holds does. No process of it runs and no
- *  broker of it wrote a store, so its journal pins nothing for the next up and a down has nothing to stop. */
+/** No member of this stack ever launched here. Forget clears retired instance IDs but keeps their
+ *  stopped states. The store pin from a local launch also survives a refused restart, while adoption
+ *  can carry a store pin without a local recovery record. A first start refused before spawning
+ *  pins nothing for the next up and a down has nothing to stop. */
 export function stackNeverStarted(journal: StackJournal): boolean {
-  return journal.members.every((row) => row.instanceId === null && row.replacement === undefined)
+  return !(journal.recovery && journal.broker?.storeIdentity)
+    && journal.members.every((row) => row.instanceId === null && row.replacement === undefined && row.state !== "stopped" && row.state !== "already-stopped")
     && STACK_ROLES.every((role) => serviceInstances(journal.space, STACK_DEFINITION[role]).every((row) => row.record.value.state === "failed" && row.record.value.process === undefined));
 }
 
