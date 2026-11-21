@@ -61,6 +61,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
 import { metadataPositionals } from "./lib/command-path.js";
@@ -229,7 +230,7 @@ async function extSeedGate(extCmd: Command | undefined, words: string[], configF
  * `COTAL_EXT_SEEDING` nonce + parent PID match the live reconcile lock (a forged marker no longer
  * skips, so it can't bypass the recursive-reconcile guard or the lock).
  */
-function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command): boolean {
+function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command, values?: ParsedArgs["values"]): boolean {
   if (name === "help" || name === "version" || name === "__complete" || name === "completion") return true;
   if (cmd && readsOnly(cmd, sub)) return true;
   if (name === "login") return true; // device approval does not launch or install a connector
@@ -269,6 +270,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // connector as a side effect of a credential exchange. The seat's env carries no
   // COTAL_SKIP_CONNECTOR_SEED (only an operator-set one is forwarded), so the skip is by name.
   if (name === "history" && sub === "clear") return true; // purge authority does not require installing connectors
+  if (name === "history" && sub === "limit" && values && HISTORY_LIMIT_FLAGS.every((flag) => values[flag] === undefined)) return true;
   if (name === "agent-bearer") return true;
   // `app-identity` is machine-facing too: the Claude connector's local server runs it on every
   // connection, so, like a credential exchange, it must not seed the store under a running connector.
@@ -795,7 +797,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
+  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
     // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
     // in its own body leaves the operator-global store as it found it.
     const deferred = cmd?.name === "up";
