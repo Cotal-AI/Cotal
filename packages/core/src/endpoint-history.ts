@@ -112,7 +112,6 @@ function abortReason(signal: AbortSignal | undefined): Error {
     : new DOMException("This operation was aborted", "AbortError");
 }
 
-/** Retained-history reads and private reader allocation for one endpoint. */
 /** The options of a `channelHistoryPage` read. */
 export interface ChannelHistoryPageOptions {
   limit?: number;
@@ -122,6 +121,7 @@ export interface ChannelHistoryPageOptions {
   publisher?: { owner: string; actor: string };
 }
 
+/** Retained-history reads and private reader allocation for one endpoint. */
 export class EndpointHistory {
 
   /** Serializes history reads ({@link collectHistory}): they share the fixed per-instance

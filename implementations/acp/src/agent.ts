@@ -8,7 +8,7 @@
  *
  * A later prompt is typed into the seat's terminal through its manager's `input` command, so it
  * arrives as the operator's own words, as the first prompt does. Cotal does not tie typed text to the
- * run it starts, so that prompt answers when the seat stops working: its presence is no longer
+ * run it starts, so that prompt answers when the seat stops working: its presence is not
  * `working` and no run that started after the text was typed is open. A seat that does not start
  * working soon after ends the prompt too. A manager that refuses the text fails the prompt with its
  * reason.
