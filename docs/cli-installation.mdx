@@ -1063,9 +1063,12 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
   invalid profile reply or missing profile directory refuses without guessing a path.
 
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
-ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
-owner or unsafe file access before it creates anything. A missing startup directory is named, with
-`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every
+ignored. Mutation refuses a relative `ZDOTDIR`, symlink, untrusted owner or unsafe file access
+before it creates anything, and `install` refuses a missing startup directory. That directory is
+named, with `ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. `uninstall`
+does not need it: it removes only the recorded stub and record it finds, creates no directory, and
+with nothing recorded it changes nothing. A record wired into another `ZDOTDIR` is still refused
+with that directory named. One refusal names every
 refused startup file, stub, record and directory on the way to them with its reason, and one another
 local account could write with its mode and one `chmod` that fixes them all. Bare `completion`
 offers that `chmod` before `install`. Group write on a file
@@ -1097,7 +1100,10 @@ end marker is gone is still refused, with the file named, because only you can t
 are cotal's; remove them there yourself. For an integration you modified, bare `completion` offers
 `install` and `uninstall` only with `--force`.
 A stub from an earlier release without an ownership record needs manual review; matching
-generated text alone is not treated as ownership. An unowned startup reference to a managed stub must be reviewed
+generated text alone is not treated as ownership. `install` refuses it, even with `--force`.
+`uninstall` refuses it, exit 2, names it, and says to delete the startup lines that source it and
+then delete or move the stub yourself. Bare `completion` offers neither command for it.
+An unowned startup reference to a managed stub must be reviewed
 before removing the stub. These commands cannot unload functions in a parent shell.
 
 Cotal writers use a per-shell lock and recheck file identity and bytes before changing them.

@@ -240,13 +240,17 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
   if (gaps.length) throw unsafe(gaps);
   if (paths.rc) {
     safeParents(dirname(paths.rc));
-    try { lstatSync(dirname(paths.rc)); }
-    catch {
-      const dir = dirname(paths.rc), fromZdotdir = shell === "zsh" && Boolean(process.env.ZDOTDIR);
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir}${fromZdotdir ? ", which ZDOTDIR names," : ""} does not exist; nothing was changed`, {
-        target: { shell, path: dir },
-        remedy: `create it with (umask 077 && mkdir -p ${shellPath(dir)})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
-      });
+    // A missing folder holds no startup file to unwire, so uninstall goes on to the stub and its
+    // record, which still decide whether anything is left to remove.
+    if (operation === "install") {
+      try { lstatSync(dirname(paths.rc)); }
+      catch {
+        const dir = dirname(paths.rc), fromZdotdir = shell === "zsh" && Boolean(process.env.ZDOTDIR);
+        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the shell startup folder ${dir}${fromZdotdir ? ", which ZDOTDIR names," : ""} does not exist; nothing was changed`, {
+          target: { shell, path: dir },
+          remedy: `create it with (umask 077 && mkdir -p ${shellPath(dir)})${fromZdotdir ? ", or unset ZDOTDIR to use ~/.zshrc" : ""}, then run the command again`,
+        });
+      }
     }
     // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
     // written through. The load line needs no stub, so it works from the file the link points to.
@@ -267,7 +271,10 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     const current = text(startup) ?? "";
     let record = owned.record;
     if (!record && operation === "uninstall") {
-      if (stub) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this completion file has no recorded ownership; it and custom startup wiring were left unchanged", { remedy: "review and explicitly install the recognized generated integration before uninstalling it" });
+      // Install refuses the same stub, so the way out is by hand.
+      if (stub) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.stub} has no recorded ownership; it and custom startup wiring were left unchanged`, { target: { shell, path: paths.stub }, remedy: paths.rc
+        ? `to remove it, delete the lines that source it from ${paths.rc} and any other startup file, then delete or move ${shellPath(paths.stub)} yourself`
+        : `to remove it, delete or move ${shellPath(paths.stub)} yourself` });
       return { operation, shell, changed, noOp: true, forced: false, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
     }
     if (!record && stub) throw new CommandFailure("refused", "CONFLICT", "the existing completion stub has no recorded ownership; it was not adopted or overwritten", { target: { shell, path: paths.stub }, remedy: "review the existing integration manually; completion script prints the supported replacement without editing it" });
