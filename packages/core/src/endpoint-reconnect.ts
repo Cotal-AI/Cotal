@@ -1,7 +1,7 @@
 // The rebuild and retry pacing of CotalEndpoint, as an internal component: the single serialized rebuild,
 // its transition onto a fresh connection, the capped retry delay, and the backoff and membership pauses.
-// Moved verbatim from endpoint.ts; the endpoint keeps the supervisor and the retry loop and forwards to
-// these. Not re-exported by the index.
+// Moved verbatim from endpoint.ts. It owns the retry attempt count and the backoff; the endpoint keeps the
+// supervisor and the retry loop and forwards to these. Not re-exported by the index.
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
@@ -40,12 +40,6 @@ export interface EndpointReconnectDeps {
   daemonRenewalLeaseRevision: () => number | undefined;
   setDaemonRenewalLeaseRevision: (value: number | undefined) => void;
   stopped: () => boolean;
-  retryMs: () => number;
-  retryAttempt: () => number;
-  setRetryAttempt: (value: number) => void;
-  backoffResolve: () => (() => void) | undefined;
-  backoffTimer: () => ReturnType<typeof setTimeout> | undefined;
-  setBackoffTimer: (value: ReturnType<typeof setTimeout> | undefined) => void;
   membershipPauses: () => Set<() => void>;
   disableLibraryReconnect: (nc: NatsConnection) => void;
   clearConnectionScoped: () => void;
@@ -58,9 +52,17 @@ export interface EndpointReconnectDeps {
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
-/** One endpoint's rebuild and retry pacing. Internal: `CotalEndpoint` keeps the fields, the supervisor
- *  and the retry loop, and forwards to it. */
+/** One endpoint's rebuild and retry pacing. Internal: it owns the retry count and the backoff, and
+ *  `CotalEndpoint` keeps the shared fields, the supervisor and the retry loop, and forwards to it. */
 export class EndpointReconnect {
+  private readonly retryMs = 3000;
+  /** Consecutive failed rebuilds, driving {@link nextRetryDelayMs}. Reset on every success. */
+  private retryAttempt = 0;
+  /** Interruptible backoff for reestablishLoop — reconnect()/stop() resolves this to retry
+   *  now instead of awaiting the full retryMs. */
+  private backoffResolve?: () => void;
+  private backoffTimer?: ReturnType<typeof setTimeout>;
+
   constructor(private readonly deps: EndpointReconnectDeps) {}
 
   private get rebuildPromise() { return this.deps.rebuildPromise(); }
@@ -90,12 +92,6 @@ export class EndpointReconnect {
   private get daemonRenewalLeaseRevision() { return this.deps.daemonRenewalLeaseRevision(); }
   private set daemonRenewalLeaseRevision(value: number | undefined) { this.deps.setDaemonRenewalLeaseRevision(value); }
   private get stopped() { return this.deps.stopped(); }
-  private get retryMs() { return this.deps.retryMs(); }
-  private get retryAttempt() { return this.deps.retryAttempt(); }
-  private set retryAttempt(value: number) { this.deps.setRetryAttempt(value); }
-  private get backoffResolve() { return this.deps.backoffResolve(); }
-  private get backoffTimer() { return this.deps.backoffTimer(); }
-  private set backoffTimer(value: ReturnType<typeof setTimeout> | undefined) { this.deps.setBackoffTimer(value); }
   private get membershipPauses() { return this.deps.membershipPauses(); }
   private disableLibraryReconnect(nc: NatsConnection) { void this.deps.disableLibraryReconnect(nc); }
   private clearConnectionScoped() { void this.deps.clearConnectionScoped(); }
@@ -191,6 +187,19 @@ export class EndpointReconnect {
     const delay = Math.min(this.retryMs * 2 ** this.retryAttempt, EndpointReconnect.RETRY_BACKOFF_CAP_MS);
     this.retryAttempt++;
     return Math.round(delay / 2 + Math.random() * (delay / 2));
+  }
+
+  /** Wait out one rebuild backoff of `delay` ms; {@link kickBackoff} ends it early. */
+  backoff(delay: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.backoffResolve = resolve;
+      this.backoffTimer = setTimeout(resolve, delay);
+    });
+  }
+
+  /** A rebuild succeeded: the next drop starts from {@link retryMs} again. */
+  resetRetryDelay(): void {
+    this.retryAttempt = 0;
   }
 
   /** Cut an in-flight reestablish backoff short so the next attempt runs immediately, and
