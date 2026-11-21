@@ -67,7 +67,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   const catalog = personaCatalog(values);
   recordOperationSpace(catalog.space);
   if (sub === undefined) return list(catalog, presentation);
-  const path = personaPath(catalog.root, name!);
+  const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
     const source = requirePersonaSource(path);
     const definition = validatePersona(source.bytes, path);
@@ -82,7 +82,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
       ] }] },
       { title: "Instructions", blocks: [{ kind: "lines", lines: result.definition.persona?.trim() ? result.definition.persona.split(/\r?\n/) : [{ text: "No instructions in this definition.", tone: "hint" }] }] },
       { title: "Next", blocks: [{ kind: "commands", items: [
-        { command: `cotal p edit ${result.name}`, description: "Edit this local definition" },
+        ...(personaNameProblem(result.name!) ? [] : [{ command: `cotal p edit ${result.name}`, description: "Edit this local definition" }]),
         { command: `cotal spawn ${result.name}`, description: "Launch an agent from it" },
         { command: `cotal p show ${result.name} --json`, description: "Read all fields and the complete source" },
       ] }] },
