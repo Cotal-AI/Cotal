@@ -1123,14 +1123,17 @@ repairs custom wiring. Install and uninstall support one finite JSON document or
 ## feedback [#feedback]
 
 ```bash
-cotal feedback "<summary>" [--type <type>] [--email <contact>] [--details <text>] [--json|--plain]
-cotal feedback "<summary>" --key-file <private-file> [--json|--plain]
+cotal feedback "<summary>" [--type <type>] [--email <contact>] [--details <text>]
+               [--severity <severity>] [--area <area>] [--name <name>] [--json|--plain]
+cotal feedback "<summary>" --key-file <private-file>
+               [--severity <severity>] [--area <area>] [--name <name>] [--json|--plain]
 ```
 
-The type is bug, idea, friction, praise or other; severity is low, medium or high. Optional area
-and contact name are included only when supplied. The public intake requires a traceable email,
-from `--email`, the existing configured contact or local git email. No environment setup is
-required. Do not put credentials, private transcripts or unrelated customer data in feedback.
+The type is bug, idea, friction, praise or other. Use `--severity` with `low`, `medium` or `high`.
+Use `--area` to name the part of Cotal the report concerns and `--name` to supply a contact name.
+The public intake requires a traceable email from `--email`, the existing configured contact or
+local git email. No environment setup is required. Do not put credentials, private transcripts or
+unrelated customer data in feedback.
 
 A protected `--key-file` selects keyed intake without placing a credential on argv. The file holds
 one key: an opaque bearer token with no whitespace, optionally followed by one newline. An existing
