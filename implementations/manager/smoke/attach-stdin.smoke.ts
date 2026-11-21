@@ -423,13 +423,13 @@ function attachPiped(root: string, extra: readonly string[] = []): Piped {
  *  `net.Socket`, both sockets with an `unref`, while a file gives `fs.ReadStream`, which has none. A
  *  parent that spawns with stdio "ignore" lands on the same `fs.ReadStream`, so this helper covers
  *  that route too; the file is the one an operator writes by hand. */
-function attachFromFile(root: string, contents: string, extra: readonly string[] = []): Piped {
+function attachFromFile(root: string, contents: string, extra: readonly string[] = [], detachKey?: string): Piped {
   const path = join(dir, `stdin-${randomUUID().slice(0, 8)}.txt`);
   writeFileSync(path, contents);
   const fd = openSync(path, "r");
-  const child = spawn(TSX, [BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
+  const child = spawn(process.execPath, [join(repoRoot, "bin", "dist", "cotal.js"), "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1" },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_DETACH_KEY: detachKey },
     stdio: [fd, "pipe", "pipe"],
   });
   let buf = "";
@@ -1175,6 +1175,19 @@ try {
       !sink().subarray(mark).includes(Buffer.from(n)),
       { got: sink().subarray(mark).toString("utf8").slice(-300), sessionsSinceTheCut: saidReconnected(a) - rec0 - 1 });
     await detachAndSettle(a, base, "O");
+  }
+  console.log("\nP. redirected stdin keeps streaming without a keyboard hint");
+  {
+    const base = live();
+    const p = attachFromFile(root, "", ["--no-reconnect"], "ctrl-b");
+    check("P: the attach opens and keeps its session when redirected stdin ends",
+      await p.waitFor(new RegExp(`attached to ${SEAT}`), 30_000) &&
+      !await p.waitExit(1_000) && live() === base + 1,
+      { code: p.exit(), base, now: live(), tail: p.seen().slice(-400) });
+    check("P: redirected stdin prints no detach shortcut or override notice",
+      !/to detach|detach key:/.test(p.seen()), p.seen().slice(-400));
+    p.kill();
+    check("P: ending the caller leaves the seat running", await p.waitExit(5_000) && seatAlive());
   }
 } catch (e) {
   fail++;

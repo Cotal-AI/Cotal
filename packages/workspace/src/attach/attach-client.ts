@@ -453,9 +453,7 @@ export function attachClient(
         transport.close();
         return;
       }
-      // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
-      // default label). Only on override, so the default case stays free of duplicate noise.
-      if (detach.overridden) notice({ tone: "status", text: `detach key: ${detach.label} (from ${detach.from})` });
+      if (stdin.isTTY && detach.overridden) notice({ tone: "status", text: `detach key: ${detach.label} (from ${detach.from})` });
       term.enterRaw();
       stdin.resume();
       tookStdin = true;
