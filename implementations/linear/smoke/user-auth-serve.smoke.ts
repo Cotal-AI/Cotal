@@ -24,7 +24,7 @@ import { isCommandFailure } from "@cotal-ai/workspace";
 import { SERVICE_CALLER_PAYLOAD_FLOOR } from "../../auth/src/service-caller-payload.js";
 import { LINEAR_CAPABILITY, LINEAR_COMMANDS } from "../src/contract.js";
 import { linearUserAuthRequest, serveLinearUserAuth } from "../src/user-auth-serve.js";
-import type { LinearUpstream } from "../src/upstream.js";
+import { LinearUpstream } from "../src/upstream.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -67,10 +67,12 @@ let running: Promise<void> | undefined;
 let ctl = new AbortController();
 let closedUpstreams = 0, toolCalls = 0;
 const heldTools = new Map<string, { started(): void; released: Promise<void> }>();
+const policyUpstream = new LinearUpstream({ name: "hosted-policy", auth: "oauth", mode: "readonly", allowedTools: [] });
 const upstream = () => ({
   inventory: async () => ({ endpoint: "ai.cotal.linear", digest: "fixture-inventory", fetchedAt: new Date().toISOString(),
     mode: "readonly", server: {}, capabilities: {}, unsupported: [], pages: 1, bytes: 0, tools: [] }),
   callTool: async (input: { name: string }) => {
+    if (input.name === "unlisted-hosted-tool") return policyUpstream.callTool(input);
     toolCalls++;
     const held = heldTools.get(input.name);
     if (held) { held.started(); await held.released; }
@@ -188,6 +190,19 @@ try {
   ]);
   assert.ok(recovered.every(r => r.reply.ok), "concurrent late-granted mutations recover without a manual reconnect");
   assert.equal(toolCalls, 2, "each recovered mutation executes once");
+  const deniedTool = await connected.invokeService(endpoint, "call-tool", toolArgs("unlisted-hosted-tool"), { deadlineMs: 3000 });
+  const policyChecks: Array<[string, unknown, unknown]> = [
+    ["preexisting control: hosted request can refuse without dispatch", deniedTool.reply.ok, false],
+    ["hosted policy refusal retains permission-denied", deniedTool.reply.error?.code, "permission-denied"],
+    ["preexisting control: hosted credential refusal is not-executed", deniedTool.reply.error?.outcome, "not-executed"],
+    ["preexisting control: hosted credential refusal does not dispatch upstream", toolCalls, 2],
+  ];
+  const policyFailures: unknown[] = [];
+  for (const [name, actual, expected] of policyChecks) {
+    try { assert.equal(actual, expected, name); console.log(`PASS: ${name}`); }
+    catch (error) { console.error(`FAIL: ${name}`); policyFailures.push(error); }
+  }
+  if (policyFailures.length) throw new AggregateError(policyFailures, "hosted tool policy checks failed");
   assert.equal(reconnects, 1, "concurrent refusals share one connection rebuild");
   assert.equal((await pinnedCaller.invokeService(endpoint, "inventory", {}, { instanceId: request.instanceId, deadlineMs: 3000 })).reply.ok,
     true, "a pinned pre-grant describe recovers on a fresh connection too");
