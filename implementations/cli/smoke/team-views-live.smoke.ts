@@ -67,7 +67,7 @@ const cotal = (cwd: string, ...args: string[]) => {
   const run = spawnSync(TSX, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: `${run.stdout}${run.stderr}` };
 };
-type Envelope = { outcome?: string; completeness?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
+type Envelope = { outcome?: string; completeness?: string; target?: Record<string, unknown>; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
 const envelope = (stdout: string): Envelope | undefined => { try { return JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Envelope; } catch { return undefined; } };
 /** A read that completed: exit 0, outcome ok, completeness partial and no error. */
 const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.stdout); return run.status === 0 && e?.outcome === "ok" && e.completeness === "partial" && e.error === undefined; };
@@ -346,6 +346,22 @@ try {
   const openPreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json");
   const openWarning = envelope(openPreview.stdout)?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
   check("open preview offers the same guidance", openPreview.status === 0 && openWarning?.message.endsWith(`${openRemedy}.`) === true, openPreview.out);
+
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: durable\n" }, openOptions);
+  const durablePreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json");
+  const durableWarning = envelope(durablePreview.stdout)?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
+  const durableApply = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const durableRefusal = envelope(durableApply.stdout);
+  check("open apply names the explicit durable card and gives the same remedy as preview",
+    durablePreview.status === 0 && durableWarning?.message.startsWith("Apply refuses: #audit-team does not set deliveryClass: live.") === true &&
+      durableWarning.message.endsWith(`${openRemedy}.`) && JSON.stringify(durableWarning.target.cards) === JSON.stringify(["audit-team"]) &&
+      durableApply.status === 2 && durableRefusal?.outcome === "refused" && durableRefusal.error?.code === "UNSUPPORTED" &&
+      durableRefusal.error.message?.includes("#audit-team does not set deliveryClass: live") === true && durableRefusal.error.remedy === openRemedy &&
+      JSON.stringify(durableRefusal.target?.cards) === JSON.stringify(durableWarning.target.cards), { preview: durablePreview.out, apply: durableApply.out });
+  const shownCard = cotal(c, "channel", "show", "audit-team", "--json");
+  const shownRegistry = envelope(shownCard.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined;
+  check("the refused apply did not create the durable card",
+    shownCard.status === 0 && shownRegistry?.channels !== undefined && !Object.hasOwn(shownRegistry.channels, "audit-team"), shownCard.out);
 
   manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, openOptions);
   const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");
