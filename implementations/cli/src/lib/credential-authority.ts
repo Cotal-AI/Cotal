@@ -1,9 +1,10 @@
 import {
-  CommandFailure, authDir, canonicalRoot, codeSpan, findCotalRoot, findMesh, getSoleSpaceAuth, getSpaceAuth,
-  hasUserAuthState, isWorkspaceTargetError, preparedLifecycle, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, targetErrorCode,
-  workspaceErrorParts, workspaceSecretStore, type MeshTarget,
+  CommandFailure, authDir, brokerUrlKey, canonicalRoot, codeSpan, findCotalRoot, findMesh, getSoleSpaceAuth, getSpaceAuth,
+  hasUserAuthState, homeCotalDir, isWorkspaceTargetError, preparedLifecycle, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, retainedLegacyBroker, targetErrorCode,
+  workspaceErrorParts, workspaceSecretStore, type MeshTarget, type MeshTargetErrorDetails,
 } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
+import { readStackJournal } from "./stack-journal.js";
 
 function preparedMintRemedy(root: string, server?: string): string {
   const elsewhere = canonicalRoot(findCotalRoot()) !== canonicalRoot(root);
@@ -21,6 +22,22 @@ function unsupportedStaticMint(target: object): CommandFailure {
   });
 }
 
+/** Use the resolver's target, never the auth mode of an unrelated folder or broker. */
+function stoppedUserSpace(details: MeshTargetErrorDetails, server?: string): string | undefined {
+  const { root, stackSpace, home, recordedRoot, rootMissing, unsettled } = details;
+  if (root === undefined || home !== undefined || recordedRoot !== undefined || rootMissing || unsettled !== undefined) return undefined;
+  if (details.lastRun) {
+    return stackSpace !== undefined && retainedLegacyBroker(root)?.open === false && hasUserAuthState(root, stackSpace, { readOnly: true }) ? stackSpace : undefined;
+  }
+
+  const { space } = details;
+  if (space === undefined || details.stopped === undefined) return undefined;
+  const journal = readStackJournal(root)?.journal;
+  if (journal?.space !== space || journal.mode !== "user" || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return undefined;
+  if (journal.recovery && canonicalRoot(journal.recovery.home) !== canonicalRoot(homeCotalDir())) return undefined;
+  return server === undefined || brokerUrlKey(server) === brokerUrlKey(journal.server) ? space : undefined;
+}
+
 /**
  * Offline resolution retains stale registrations instead of repairing the selected target.
  * `offlineRemedy` is the caller's other step when a mint that writes only the private file would
@@ -34,6 +51,10 @@ export function resolveMintTarget(values: { space?: string; server?: string }, o
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "user-auth-unrecorded") throw unsupportedStaticMint({ ...reportTarget, space: error.details.space });
+    if (error.code === "not-started") {
+      const space = stoppedUserSpace(error.details, values.server);
+      if (space !== undefined) throw unsupportedStaticMint({ ...reportTarget, space });
+    }
     if (error.code === "no-meshes")
       throw new CommandFailure("refused", targetErrorCode(error.code), "the selected credential root could not be resolved; no other root was chosen", { remedy: "start a local static-auth space with `cotal up` in its project folder and retry there, or use `--space <name>` to select a static-auth space with signing trust on this machine" });
     const rendered = workspaceErrorParts({ kind: "target", error });

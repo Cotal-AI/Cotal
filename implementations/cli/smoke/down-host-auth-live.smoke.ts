@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { agentSecretFilePaths, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE, parsePid } from "@cotal-ai/workspace";
@@ -16,6 +17,7 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, cotalPty } from "./_console-pty.js";
 
 const tree = resolve(import.meta.dirname, "../../..");
+const bin = join(tree, "bin/dist/cotal.js");
 const scratch = mkdtempSync(join(tmpdir(), "cotal-down-host-auth-"));
 console.log(`Sandbox retained at ${scratch}`);
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
@@ -36,19 +38,79 @@ let idpClosed = false;
 
 type Cli = (...args: string[]) => Promise<{ code: number | null; out: string }>;
 
-async function checkUserMint(cli: Cli, root: string, space: string, stage: "running" | "stopped"): Promise<void> {
+async function checkUserMint(cli: Cli, root: string, space: string, stage: string, ...selectors: string[]): Promise<void> {
   const exported = join(root, "alice.creds");
   const standing = agentSecretFilePaths(root, space, "alice").creds;
-  for (const format of ["--json", "--plain"] as const) {
-    const mint = await cli("auth", "mint", "alice", format, ...(format === "--plain" ? ["--out", exported] : []));
+  for (const [label, format, ...args] of [
+    ["standing", "--json"],
+    ["export", "--plain", "--out", exported],
+    ["provision", "--json", "--provision", "--out", exported],
+    ["endpoint", "--json", "--endpoint", "com.example.orders", "--out", exported],
+  ] as const) {
+    const mint = await cli("auth", "mint", "alice", format, ...args, ...selectors);
     const receipt: { outcome: string; error?: { code: string }; target?: { space: string } } | undefined =
       format === "--json" ? JSON.parse(mint.out) : undefined;
     const unsupported = receipt === undefined ? /^\s*Code:\s+UNSUPPORTED$/m.test(mint.out)
       : receipt.outcome === "refused" && receipt.error?.code === "UNSUPPORTED" && receipt.target?.space === space;
-    check(`${stage} user-auth: mint ${format} refuses with login guidance and writes no credential`,
+    check(`${stage} user-auth: ${label} mint refuses with login guidance and writes no output`,
       mint.code === 2 && unsupported && mint.out.includes("login/enrollment") && !mint.out.includes("cotal up") &&
-      !existsSync(exported) && !existsSync(standing), mint.out);
+      !existsSync(exported) && !existsSync(standing) && !existsSync(`${exported}.issuance.json`), mint.out);
   }
+}
+
+function brokerClosed(port: number): Promise<boolean> {
+  return new Promise((done) => {
+    const socket = connect(port, "127.0.0.1");
+    socket.once("error", (error: NodeJS.ErrnoException) => done(error.code === "ECONNREFUSED"));
+    socket.once("connect", () => { socket.destroy(); done(false); });
+  });
+}
+
+async function controllerMint(): Promise<void> {
+  const root = join(scratch, "controller");
+  const home = join(root, "home"), xdg = join(root, "xdg"), run = join(root, "run");
+  const env = { ...inherited, HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: run, COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
+  mkdirSync(run, { mode: 0o700 });
+  const cli = makeCli("controller", root, env, sandbox, process.execPath, bin);
+  const space = "down-host-controller", port = await pickFreePort();
+  const prepared = await cli("space", "create", space, "--root", root);
+  check("controller: the user-auth project is prepared", prepared.code === 0, prepared.out);
+  let stopped = false;
+  try {
+    const started = await cli("up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--space", space, "--user-auth", "--idp", idpUrl);
+    check("controller: the shipped CLI starts the prepared project without a manager", started.code === 0, started.out);
+    const down = await cli("down", "--yes");
+    check("controller: down stopped the broker", down.code === 0 && await brokerClosed(port), down.out);
+    stopped = true;
+    const journal = JSON.parse(readFileSync(join(root, ".cotal", "stack-controller.json"), "utf8"));
+    check("controller: the retained journal pins user mode and a completed down",
+      journal.mode === "user" && journal.operation?.kind === "down" && journal.operation.phase === "completed");
+    await checkUserMint(cli, root, space, "stopped controller");
+    await checkUserMint(cli, root, space, "stopped controller named", "--space", space);
+    const wrong = await cli("auth", "mint", "alice", "--space", "not-the-controller-space", "--json");
+    check("controller: an unknown explicit space is not replaced by the project", wrong.code === 2 && JSON.parse(wrong.out).error?.code === "TARGET_NOT_FOUND", wrong.out);
+    check("controller: mint left the stopped broker closed", await brokerClosed(port));
+  } finally {
+    if (!stopped) await cli("down", "--yes");
+    assert.ok(await brokerClosed(port), "owned controller broker exited");
+  }
+}
+
+function makeCli(label: string, root: string, env: NodeJS.ProcessEnv, sandbox: ReturnType<typeof recordSmokeSandbox>, executable: string, entry: string): Cli {
+  return async (...args) => {
+    assertSmokeSandboxDown(sandbox, args, { cwd: root, env });
+    const child = spawn(executable, [entry, ...args], { cwd: root, env });
+    let out = "";
+    child.stdout.on("data", (data) => { out += data; });
+    child.stderr.on("data", (data) => { out += data; });
+    const timer = setTimeout(() => child.kill("SIGTERM"), 120_000);
+    try {
+      const code = await new Promise<number | null>((done, reject) => { child.once("error", reject); child.once("close", done); });
+      console.log(`${label}: cotal ${args[0]} exit=${code}\n${out}`);
+      return { code, out };
+    } finally { clearTimeout(timer); }
+  };
 }
 
 async function cell(user: boolean): Promise<void> {
@@ -64,19 +126,7 @@ async function cell(user: boolean): Promise<void> {
   stacks.push(stack);
   const env = { ...inherited, HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
   const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
-  const cli = async (...args: string[]) => {
-    assertSmokeSandboxDown(sandbox, args, { cwd: root, env });
-    const child = spawn(join(tree, "node_modules/.bin/tsx"), [join(tree, "bin/cotal.ts"), ...args], { cwd: root, env });
-    let out = "";
-    child.stdout.on("data", (data) => { out += data; });
-    child.stderr.on("data", (data) => { out += data; });
-    const timer = setTimeout(() => child.kill("SIGTERM"), 120_000);
-    try {
-      const code = await new Promise<number | null>((done, reject) => { child.once("error", reject); child.once("close", done); });
-      console.log(`${label}: cotal ${args[0]} exit=${code}\n${out}`);
-      return { code, out };
-    } finally { clearTimeout(timer); }
-  };
+  const cli = makeCli(label, root, env, sandbox, join(tree, "node_modules/.bin/tsx"), join(tree, "bin/cotal.ts"));
   const server = `nats://127.0.0.1:${await pickFreePort()}`;
   const up = await cli("up", "--server", server, "--space", space, "--no-manager", ...(user ? ["--user-auth", "--idp", idpUrl] : []));
   for (const file of [DELIVERY_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE]) {
@@ -176,12 +226,16 @@ async function cell(user: boolean): Promise<void> {
   if (leaseRefusal) check("user: live delivery without a pidfile refuses for its renewed lease", leaseRefusal.code === 2 && leaseRefusal.out.includes("LIFECYCLE_BLOCKED") && leaseRefusal.out.includes("still renewing a lease"));
   for (let end = Date.now() + 10_000; stack.pids.some(alive) && Date.now() < end; await wait(100));
   check(`${label}: every recorded process exited`, stack.pids.every((pid) => !alive(pid)));
-  if (user) await checkUserMint(cli, root, space, "stopped");
+  if (user) {
+    await checkUserMint(cli, root, space, "stopped legacy");
+    await checkUserMint(cli, root, space, "stopped legacy named", "--space", space);
+  }
   const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);
 }
 
 try {
+  await controllerMint();
   await cell(false);
   await cell(true);
 } finally {
