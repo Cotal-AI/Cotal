@@ -866,8 +866,9 @@ then `cotal down --yes`. A legacy root has no stack journal, and its `down` drop
 a reset selects, so no reset reaches it once stopped. A space named after its folder keeps that
 registration, so a reset reaches it stopped. For any other legacy root, the step after `cotal down` is
 `cotal clean store --force` from its root for `reset store`, or `cotal clean all --force` for
-`reset space`, with `--store-dir <dir>` when the registration records a custom store. Once stopped,
-such a space has no record here, like a mistyped name, so a reset of either refuses
+`reset space`, with `--store-dir <dir>` when the registration records a custom store. The printed
+command quotes the path when the shell would otherwise split it or read part of it as syntax.
+Once stopped, such a space has no record here, like a mistyped name, so a reset of either refuses
 `TARGET_NOT_FOUND`, says no registered or prepared space has that exact name, and names `cotal space`
 and then that step.
 

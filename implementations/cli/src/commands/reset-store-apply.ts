@@ -6,7 +6,7 @@ import { isReachable, realDirNoSymlink, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
   acquireMaintenanceLock, assertSingleSpaceBroker, authDir, brokerAddressForDisplay,
-  canonicalRoot, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
+  canonicalRoot, codeSpan, CommandFailure, findMesh, findPreparedSpace, isCommandFailure, loadMeshes, localMeshesForRoot, oneLine,
   presentationOf, readBrokerPolicy, readMaintenanceJournal, releaseMaintenanceLock, STORE_CONTENTS, storeContentsText, writeResult, type Block, type Report, type Section,
 } from "@cotal-ai/workspace";
 import { liveMeshProcesses, removeLocalState, safeStoreCleanupPath } from "./clean.js";
@@ -21,6 +21,7 @@ import type { StackRuns } from "../lib/stack-runs.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { reportOnInterrupt } from "../lib/interrupt-report.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 /** What a named reset acts on. A running or crashed space is selected by its locally started
  *  registration. A controller stack that a completed `down` stopped has none: its prepared record
@@ -204,10 +205,10 @@ export async function assertResetEligible(target: ResetTarget, command: ResetCom
   catch { throw new CommandFailure("refused", "CONFLICT", "the root's maintenance journal or process records could not be read; nothing was removed", { target: where }); }
   // A legacy root's `down` drops its registration, so no reset can select it afterwards. The step
   // after that stop is the clean the reset runs, from the root, naming only a custom store.
-  const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${target.storeDir}` : "";
+  const storeFlag = target.storeDir !== undefined && resolve(target.storeDir) !== join(root, ".cotal", "nats") ? ` --store-dir ${shellWord(target.storeDir)}` : "";
   const afterStop = !legacy ? `run \`${review}\``
-    : command === "reset store" ? `remove its stored streams with \`cotal clean store${storeFlag} --force\` there`
-    : `remove its store and identity with \`cotal clean all${storeFlag} --force\` there`;
+    : command === "reset store" ? `remove its stored streams with ${codeSpan(`cotal clean store${storeFlag} --force`)} there`
+    : `remove its store and identity with ${codeSpan(`cotal clean all${storeFlag} --force`)} there`;
   if (maintenance)
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `this root retains a maintenance attempt in state ${maintenance.state}; a reset does not override it`, { target: where, remedy: "finish it, or recover it with its recorded restore recovery or fallback cleanup, before a reset" });
   // A `down` records a member that exited without a stop as already stopped, which settles it for a

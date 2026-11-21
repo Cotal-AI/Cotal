@@ -21,7 +21,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -94,6 +94,26 @@ try {
     check("its account records are unchanged", JSON.stringify(accountFiles(root).map((name) => `${name}:${digest(join(root, ".cotal", "auth", name))}`)) === JSON.stringify(accounts));
     const last = cli(root, "down", "--yes");
     check("down stops it again", last.status === 0, shown(last));
+  }
+  // A legacy space drops its registration on down, so its running reset names clean as the next step.
+  {
+    const space = "legacycustom";
+    const root = folder("custom-store");
+    const store = join(realpathSync(root), "private store's data");
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--server", server, "--space", space, "--store-dir", store, "--no-manager");
+    anchor(root);
+    check("the legacy space starts with a custom store", started.status === 0 && existsSync(join(store, "jetstream")), shown(started));
+    const preview = cli(root, "reset", "store", space, "--dry-run", "--plain");
+    check("the running legacy reset preview reports LIFECYCLE_BLOCKED", preview.status === 0 && preview.stdout.includes("would refuse (LIFECYCLE_BLOCKED)"), shown(preview));
+    const remedy = preview.stdout.match(/`(cotal clean store --store-dir .* --force)`/)?.[1];
+    const stopped = cli(root, "down", "--yes");
+    check("down stops the legacy space and leaves its custom store", stopped.status === 0 && existsSync(join(store, "jetstream")), shown(stopped));
+    // Use the shell to check what pasting the command passes without removing the store.
+    const pasted = remedy && spawnSync("sh", ["-c", `cotal() { printf '%s\\n' "$@"; }; ${remedy}`], { cwd: root, env, encoding: "utf8" });
+    check("the legacy reset cleanup command passes the custom store as one shell argument",
+      Boolean(pasted && pasted.status === 0 && pasted.stdout === `clean\nstore\n--store-dir\n${store}\n--force\n`),
+      { remedy, pasted });
   }
 
   // 2. A controller root whose registration is gone, then hand-added.
