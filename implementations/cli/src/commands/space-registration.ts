@@ -183,12 +183,13 @@ export function handAddedRegistration(name: string, force: boolean, target: unkn
   return existing;
 }
 
-/** Only a registration added by hand can be replaced; one this machine started or a catalog lists
- *  is forgotten or stopped first. */
-function replaceable(name: string, force: boolean, target: unknown): boolean {
+/** Only a registration added by hand can be replaced. An unchecked one can also be checked in
+ *  place without `--force` when its broker, root, mode and transport policy match. */
+function replaceable(name: string, force: boolean, target: unknown, checksInPlace?: (existing: MeshEntry) => boolean): boolean {
   const existing = handAddedRegistration(name, force, target);
   if (!existing) return false;
-  if (!force) throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
+  if (!force && !(existing.unchecked === true && checksInPlace?.(existing)))
+    throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
   return true;
 }
 
@@ -246,14 +247,15 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const accounts = take(spacesAtRoot(root), target);
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
-  const replaced = replaceable(name, v.force === true, target);
+  const replaced = replaceable(name, v.force === true, target, (existing) =>
+    existing.server === server && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+    (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
     take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
     const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
-    // A broker that does not answer may be down right now, which is what --force is for. The
-    // diagnosis's own next step comes first.
-    if (!reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
+    // Only a new registration needs the option to save it unchecked when a broker is down.
+    if (!replaced && !reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
     take(reached, target);
     if (mode === "open") take(await checkOpenSpace(server, name, tlsRequired), target);
   }
