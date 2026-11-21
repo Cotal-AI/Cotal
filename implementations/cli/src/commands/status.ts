@@ -550,11 +550,15 @@ export async function status(args: ParsedArgs): Promise<void> {
   // Do not offer the conditional store reset when this folder needs a channel seed repair first,
   // while a maintenance journal holds the store, or if the store is unwritable.
   if (folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
-    const cmd = displayCmd();
-    const resetSpace = storeResetSpace(root, folder.processSpace);
-    hints.push(resetSpace !== undefined
-      ? `if the stored JetStream state is stale: ${codeSpan(`${cmd} reset store ${shellWord(resetSpace)}`)}, then \`up\` with your usual flags`
-      : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+    const reset = storeResetTarget(root, folder.processSpace);
+    // An explicit address is not evidence about a different broker's store.
+    if (values.server === undefined || (reset && selected.ok && selected.target.space === reset.space
+      && brokerUrlKey(selected.target.server) === brokerUrlKey(reset.server))) {
+      const cmd = displayCmd();
+      hints.push(reset !== undefined
+        ? `if the stored JetStream state is stale: ${codeSpan(`${cmd} reset store ${shellWord(reset.space)}`)}, then \`up\` with your usual flags`
+        : `if the stored JetStream state is stale: \`${cmd} clean store --force\`, then \`up\` with your usual flags (\`clean all\` also resets identity)`);
+    }
   }
   // A held backup or missing preserved store blocks startup. Keep the selection's diagnostics,
   // but replace its ordinary restart advice with the journal's recovery step.
@@ -1158,10 +1162,15 @@ function personaCatalog(root: string, gaps: Gaps): PersonaCatalog {
 /** The one space whose `reset store <space>` selects this root's store: the folder's own, or one this
  *  machine registered here, which a stopped folder no longer resolves to. A legacy root whose down
  *  removed that registration has none, and the reset's refusal names clean instead. */
-function storeResetSpace(root: string, space: string): string | undefined {
+function storeResetTarget(root: string, space: string): ReturnType<typeof selectResetTarget> | undefined {
   let names: string[];
   try { names = [...new Set([space, ...meshesForRoot(root).map((mesh) => mesh.space)])]; } catch { return undefined; }
-  const reached = names.filter((name) => { try { return sameDir(selectResetTarget(name, "reset store").root, root); } catch { return false; } });
+  const reached = names.flatMap((name) => {
+    try {
+      const target = selectResetTarget(name, "reset store");
+      return sameDir(target.root, root) ? [target] : [];
+    } catch { return []; }
+  });
   return reached.length === 1 ? reached[0] : undefined;
 }
 
