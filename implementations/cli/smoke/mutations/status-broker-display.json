@@ -27,7 +27,7 @@
     },
     {
       "name": "legacy component facts expose the raw broker URL",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "const address = brokerAddressForDisplay(target.server);",
       "replace": "const address = target.server;",
       "expectRed": "status component facts omit broker secrets for password",
