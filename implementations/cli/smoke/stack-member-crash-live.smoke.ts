@@ -1,7 +1,6 @@
 /**
- * LIVE: a controller stack whose manager or delivery process died. The stack is a real `space create` and
- * `cotal up` on an isolated port, and the suite kills the manager it started, by PID, as a crash
- * would.
+ * LIVE: a real `space create` and `cotal up` on an isolated port. The suite kills controller
+ * members it started and checks how the stack recovers.
  *
  *  1. `status` leads its Next with `cotal up --root <root>`, which restarts the stopped member. The
  *     project folder's name needs shell quoting. This hint, the `chmod u+w` a persona catalog that
@@ -13,7 +12,8 @@
  *     that address and the recorded broker.
  *  2. `ps` refuses: no manager is running for this space, and its Next names bare `cotal up`.
  *     `chat` refuses TARGET_UNAVAILABLE once its describe goes unanswered, pointing to `status`.
- *  3. `up` starts the manager again, and `ps` is answered.
+ *  3. `up` starts the manager again with the running broker's WebSocket port, and `ps` is answered.
+ *     A broker-only repair serves the port the running manager advertises.
  *  4. A SIGINT with no stop request leaves that manager running. A plain SIGTERM, as `kill`, a
  *     systemd stop or a system shutdown sends, stops it and it exits. `chat` then refuses at once
  *     that no manager is running, rather than wait out a request no manager can answer; `up` starts
@@ -47,10 +47,11 @@
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, identityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, identityRecord, readProcessCommand } from "@cotal-ai/workspace";
 
 const PORT = await freePort();
 const WT = resolve(import.meta.dirname, "..", "..", "..");
@@ -76,16 +77,27 @@ const cliIn = (cwd: string, ...args: string[]) => {
 /** The words a shell reads from `text` pasted after a command: one per line. */
 const shellWords = (text: string | undefined) => text === undefined ? undefined : spawnSync("sh", ["-c", `printf '%s\\n' ${text}`], { encoding: "utf8" }).stdout;
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-/** The running stack manager's owned instance, as `status --json` reports it. */
-const runningManager = (): { pid: number; instanceId: string } | undefined => {
-  const r = cli("status", "--json");
+/** The running member's owned instance, as `service --json` reports it. */
+const runningMember = (definition: string): { pid: number; instanceId: string } | undefined => {
+  const r = cli("service", "--json");
   try {
-    const rows = (JSON.parse(r.stdout) as { result?: { services?: { instances?: { definition: string; instanceId: string; observedProcess: string; pid: number | null }[] } } }).result?.services?.instances ?? [];
-    const row = rows.find((item) => item.definition === "stack-manager" && item.observedProcess === "running");
+    const rows = (JSON.parse(r.stdout) as { result?: { instances?: { definition: string; instanceId: string; observedProcess: string; pid: number | null }[] } }).result?.instances ?? [];
+    const row = rows.find((item) => item.definition === definition && item.observedProcess === "running");
     return row?.pid ? { pid: row.pid, instanceId: row.instanceId } : undefined;
   } catch { return undefined; }
 };
+const runningManager = () => runningMember("stack-manager");
 const managerPid = (): number | undefined => runningManager()?.pid;
+const managerWsPort = (pid: number | undefined) => {
+  const argv = pid === undefined ? undefined : readProcessCommand(pid);
+  return argv?.kind === "command" ? / --ws-port (\d+)(?: |$)/.exec(argv.command)?.[1] : undefined;
+};
+const receiptWsPort = (out: string) => /^  Broker websocket: +127\.0\.0\.1:(\d+)\b/m.exec(out)?.[1];
+const listenerOpen = (port: number) => new Promise<boolean>((done) => {
+  const socket = createConnection({ host: "127.0.0.1", port });
+  const close = (open: boolean) => { socket.destroy(); done(open); };
+  socket.once("connect", () => close(true)).once("error", () => close(false)).setTimeout(2_000, () => close(false));
+});
 /** The `stackManager.endpoint` probe result `status --json` reports. */
 const managerEndpoint = (): unknown => {
   try { return (JSON.parse(cli("status", "--json").stdout) as { result?: { stackManager?: { endpoint?: unknown } } }).result?.stackManager?.endpoint; }
@@ -157,6 +169,9 @@ try {
 
   const pid = managerPid();
   check("status names the running manager's PID", pid !== undefined && alive(pid), pid);
+  const wsPort = receiptWsPort(up.out);
+  const broker = runningMember("stack-broker");
+  check("the initial manager advertises the broker's WebSocket listener", !!wsPort && managerWsPort(pid) === wsPort && await listenerOpen(Number(wsPort)), up.out);
   if (pid !== undefined) process.kill(pid, "SIGKILL");
   for (let i = 0; i < 50 && pid !== undefined && alive(pid); i++) await sleep(100);
 
@@ -177,6 +192,27 @@ try {
   const again = cli("up");
   check("up starts the manager again", again.status === 0, again.out);
   check("...and ps is answered", cli("ps").status === 0);
+  const repairedManager = managerPid();
+  check("manager-only repair keeps the broker and passes its WebSocket port to the new manager",
+    !!broker && runningMember("stack-broker")?.pid === broker.pid && repairedManager !== pid && managerWsPort(repairedManager) === wsPort && receiptWsPort(again.out) === wsPort, again.out);
+
+  if (!broker || !wsPort || !repairedManager || runningMember("stack-broker")?.pid !== broker.pid) throw new Error("could not identify the private broker and manager for broker repair");
+  process.kill(broker.pid, "SIGKILL");
+  for (let i = 0; i < 50 && alive(broker.pid); i++) await sleep(100);
+  const holder = createServer();
+  await new Promise<void>((done, fail) => holder.once("error", fail).listen(Number(wsPort), "127.0.0.1", done));
+  try {
+    const blocked = cli("up");
+    check("broker-only repair fails rather than moving the WebSocket port when another process holds it",
+      blocked.status !== 0 && blocked.out.includes(`could not bind websocket port ${wsPort}, which the running manager still advertises`) && alive(repairedManager), blocked.out);
+  } finally {
+    await new Promise<void>((done) => holder.close(() => done()));
+  }
+  const brokerRepair = cli("up");
+  const repairedBroker = runningMember("stack-broker");
+  check("broker-only repair reuses the manager and serves its original WebSocket port",
+    brokerRepair.status === 0 && !!repairedBroker && repairedBroker.pid !== broker.pid && managerPid() === repairedManager && managerWsPort(repairedManager) === wsPort &&
+    receiptWsPort(brokerRepair.out) === wsPort && await listenerOpen(Number(wsPort)), brokerRepair.out);
 
   // Ctrl-C reaches the manager together with the CLI that publishes the stop request, so a SIGINT
   // without one is ignored. A plain SIGTERM carries no request either, and the manager stops on it.
