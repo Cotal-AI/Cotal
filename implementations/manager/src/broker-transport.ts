@@ -65,7 +65,7 @@ export class BrokerTransport {
 
   /** Every broker dial this manager makes, through ONE transport decision.
    *
-   *  `this.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
+   *  `this.config.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
    *  can be a `ws://`/`wss://` broker published through an HTTPS edge. The raw node transport
    *  refuses such a URL instead of dialing it, so the scheme picks the dialer here rather than at
    *  thirteen call sites. `dialerFor` also owns the websocket transport's options, which is why

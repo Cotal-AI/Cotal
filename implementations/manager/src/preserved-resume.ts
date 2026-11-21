@@ -769,7 +769,7 @@ export class PreservedResume {
       // so a transiently-absent health file still validates), and the store reads below key off the
       // RECORDED path, so a foreign path can neither pass the pin nor address a different row.
       // Both triples are derived under THIS manager's space, and the key builder is given
-      // `this.space` rather than reading the segment out of the recorded path: an inventory row is
+      // `this.config.space` rather than reading the segment out of the recorded path: an inventory row is
       // caller data, and a recorded path may not choose which tenant's material is addressed.
       const lifecycleFiles = agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name, entry.identity.lifecycleUid);
       const legacyFiles = agentSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name);

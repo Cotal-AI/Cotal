@@ -57,7 +57,7 @@
       "name": "N4 save the catalog copy before the grant",
       "file": "implementations/manager/src/seat-start.ts",
       "find": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n",
-      "replace": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n    if (inline?.save) saveAgentFile(agentFilePath(this.workspaceRoot, ref), { name: ref, subscribe: [] }, { createOnly: true });\n",
+      "replace": "    if (boundRefusal) return { ok: false, error: boundRefusal };\n    if (inline?.save) saveAgentFile(agentFilePath(this.config.workspaceRoot, ref), { name: ref, subscribe: [] }, { createOnly: true });\n",
       "expectRed": "a refused user-auth grant leaves no catalog file",
       "cell": "a refused user-auth grant leaves no catalog file"
     },

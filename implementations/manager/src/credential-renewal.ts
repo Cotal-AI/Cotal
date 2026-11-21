@@ -530,7 +530,7 @@ export class CredentialRenewal {
       // Re-sign through the manager's ONE store — the SAME store the delivery daemon reads
       // (`runDelivery(args, store)`), so a hosted remint writes the store the daemon renews from,
       // never a divergent one. Locally this is the workstation FS store (`.cotal/*.creds`).
-      // `this.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
+      // `this.config.space` gates cross-space signer swaps; the `preflight` proves broker acceptance before
       // overwriting from ANY signer form (full or stripped). A same-label alternate full bundle is
       // self-bound, not broker-bound, so the manager-hosted path proves every re-sign before it could
       // clobber the last-good with a broker-dead cred; a wrong-account signer's cred is refused here.

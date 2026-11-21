@@ -258,9 +258,9 @@ export class ManagerBoot {
     await this.attach.start();
     // In auth mode the manager is just another user in the space's account — it mints
     // itself creds from the same signing key it uses for the agents it spawns. The signer comes
-    // through the SecretStore seam (`this.secrets` — the injected `ManagerOptions.secretStore`, or
+    // through the SecretStore seam (`this.config.secrets` — the injected `ManagerOptions.secretStore`, or
     // the local `.cotal/auth/auth.json` FS default), so a HOSTED composition mints from its KMS/Vault
-    // and no signing seed is ever read from the hosted disk. `this.space` cross-checks the bundle.
+    // and no signing seed is ever read from the hosted disk. `this.config.space` cross-checks the bundle.
     //
     // REMOTE AUTHORITY (#1944): a manager holding host-issued remote authority mints nothing from a
     // local signer, so it never composes or validates local trust. It asks ONE question of the

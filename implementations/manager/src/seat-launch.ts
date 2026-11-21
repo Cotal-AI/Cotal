@@ -685,7 +685,4 @@ export class SeatLaunch {
 
   /** {@link SeatStart.startActive}. */
   startActive(...args: Parameters<SeatStart["startActive"]>): ReturnType<SeatStart["startActive"]> { return this.seatStart.startActive(...args); }
-
-  // Read by the resolve-cwd mutation in checkSpawnCwd (resolve-cwd.json/1); not private, so it
-  // compiles while nothing else here reads it.
 }

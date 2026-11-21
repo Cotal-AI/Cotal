@@ -3,10 +3,11 @@ import type { SeatCap } from "@cotal-ai/workspace";
 import type { ManagerOptions } from "./manager.js";
 
 /** What the Manager knows about itself from construction: its identity, its operator settings and its
- *  timing. The Manager builds one and hands every part the same object, read-only. Every member is
- *  fixed once the constructor returns, except the three timings a test may shorten after construction
- *  (readinessTimeoutMs, staticReconcileRetryDelaysMs, goalAcceptanceRetentionMs)
- *  through the Manager's own reference; a part reads them at use, so a shortened value is current. */
+ *  timing. The Manager builds one and hands every part the same object, read-only. No shipped code
+ *  writes a member after the constructor returns. The three timings (readinessTimeoutMs,
+ *  staticReconcileRetryDelaysMs, goalAcceptanceRetentionMs) are writable so a test can shorten them
+ *  through the Manager's own reference, and a test may overwrite another member through a cast; a
+ *  part reads every member at use, so an overwritten value is current. */
 export interface ManagerConfig {
   readonly space: string;
   readonly servers: string | undefined;
