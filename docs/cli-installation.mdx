@@ -211,7 +211,9 @@ archives and fetches the installed first-party extensions with their dependency 
 disposable prefix. The dependency check, package installation and reconciliation use private temporary
 npm caches that are removed afterwards. After a successful self-update on Linux or macOS, Cotal also
 removes earlier archive caches in its temporary location when it can verify that their owner and
-npm workers have exited. It leaves unrecorded caches and active archive checks alone.
+npm workers have exited. On Linux, the same cleanup removes earlier staged npm install caches
+after their recorded owner and npm process group have exited. Unrecorded caches and active work
+are left alone.
 An unwritable cache configured in `.npmrc` does not block the update. Cotal leaves that cache and
 its permissions unchanged and still applies your registry,
 authentication, proxy and TLS settings. An unavailable dependency stops the update before replacement.
@@ -656,6 +658,8 @@ reading; `--allow-publish` is optional when the session will not post. A credent
 permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
 post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
+The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
 `--provision` alone grants no channel access. A missing read grant is refused with
 `PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
@@ -963,7 +967,7 @@ With no space running here it is the selected space, or the only running one.
 With none of those it reads your defaults. `--user` reads your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
-`config set` saves a preference without installing or refreshing connectors. Only `harness`
+Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
 machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for

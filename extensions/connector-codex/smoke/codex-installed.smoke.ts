@@ -375,6 +375,7 @@ try {
       let d = spawnSync("node", [CLI, "down", "--yes"], downOpts);
       for (const until = Date.now() + 20_000; d.status === 2 && `${d.stdout}${d.stderr}`.includes("LIFECYCLE_BLOCKED") && Date.now() < until;) {
         await sleep(500);
+        assertSmokeSandboxDown(selfSandbox, ["down", "--yes"], downOpts);
         d = spawnSync("node", [CLI, "down", "--yes"], downOpts);
       }
       for (let i = 0; i < 40 && (await portOpen(selfPort)); i++) await sleep(250);

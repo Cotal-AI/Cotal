@@ -377,7 +377,10 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   const publishClaims = auth.creds === undefined ? undefined : credsClaims(auth.creds).nats?.pub;
   const publishPermission = auth.creds === undefined ? undefined
     : importNativeSubjectPermissions(publishClaims === undefined ? {} : { pub: publishClaims }).publish;
-  const canBroadcast = publishPermission === undefined || issuedPermitsSubject(publishPermission, chatSubject(space, ep.card.owner!, ep.card.actor!, channel));
+  const concreteChannel = isConcreteChannel(channel);
+  const canBroadcast = concreteChannel && (publishPermission === undefined ||
+    issuedPermitsSubject(publishPermission, chatSubject(space, ep.card.owner!, ep.card.actor!, channel)));
+  const patternBroadcastNotice = "Broadcasts need a concrete channel, not a subscription pattern.";
   const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
     (userConnection
       ? `ask the space's owner to grant this identity permission to post to #${channel}`
@@ -569,7 +572,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   );
   console.log(
     c.dim(
-      `${canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n`,
+      `${!concreteChannel ? patternBroadcastNotice : canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n`,
     ),
   );
   setTimeout(() => {
@@ -652,7 +655,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           print(`${c.yellow("(@" + service + ")")} ${c.dim("you →")} ${text}`);
         }
       } else {
-        if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
+        if (!concreteChannel) print(c.red(`! ${patternBroadcastNotice} Nothing was sent.`));
+        else if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
         else {
           try {
             await ep.multicast(line, { channel });

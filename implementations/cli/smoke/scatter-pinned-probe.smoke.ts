@@ -53,7 +53,7 @@ const { Manager } = await import("../../manager/src/manager.js");
 const { managerRailGone, pinnedLivenessProbe, scatterResolveCommands } = await import("../../../packages/workspace/dist/control/index.js");
 const { pickFreePort } = await import("../../../packages/core/smoke/_free-port.js");
 
-const EXPECTED_CELLS = 29; // +1: multi-manager ps resolves only ps + status closures; predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review), +4 for section 7's spawn census, +2 for section 8's removal, +1 for section 9's unanswered describe
+const EXPECTED_CELLS = 32; // Includes three stopped-broker deregistration checks.
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -90,7 +90,7 @@ try {
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
   await setupSpaceStreams({ servers: SERVERS, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
-  const rootLive = mkRoot("live"), rootCorpse = mkRoot("corpse");
+  const rootLive = mkRoot("live"), rootCorpse = mkRoot("corpse project");
   for (const r of [rootLive, rootCorpse]) recordMesh({ space: SPACE, server: SERVERS, root: r, mode: "auth", ts: new Date().toISOString() });
   live = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: rootLive });
   corpse = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: rootCorpse });
@@ -306,6 +306,27 @@ try {
   check("the spawn refuses TARGET_UNAVAILABLE, exit 2, saying the launch was not sent, with no request id",
     unanswered.status === 2 && silent?.error?.code === "TARGET_UNAVAILABLE" && silent.error.message === "no manager answered, so the launch was not sent and nothing was launched" && silent.target?.requestId === undefined,
     { status: unanswered.status, out: unanswered.stdout.slice(0, 900), err: unanswered.stderr.slice(-600) });
+
+  console.log("10. stopped local broker: deregistration refuses and tells the operator where to restart");
+  recordMesh({ space: SPACE, server: SERVERS, root: rootCorpse, mode: "auth", origin: "up", ts: new Date().toISOString() });
+  const deregister = ["endpoint", "deregister", "manager", IID_CORPSE, "--space", SPACE];
+  const override = await cli([...deregister, "--server", `nats://127.0.0.1:${await pickFreePort()}`, "--yes", "--plain"]);
+  check("a failed --server override does not tell the operator to restart the running recorded broker",
+    override.status === 2 && override.stderr.includes("TARGET_UNAVAILABLE") && !override.stderr.includes("cotal up"), override);
+  await live.stop();
+  live = undefined;
+  await corpse.stop();
+  corpse = undefined;
+  await new Promise<void>((resolve) => { srv.once("exit", () => resolve()); srv.kill("SIGTERM"); });
+  const stopped = await cli([...deregister, "--yes", "--json"]);
+  const stoppedReceipt = JSON.parse(stopped.stdout) as { outcome?: string; target?: { instanceId?: string }; error?: { code?: string; message?: string; remedy?: string } };
+  check("a stopped recorded broker refuses before deletion and names the quoted project restart and exact registration",
+    stopped.status === 2 && stoppedReceipt.outcome === "refused" && stoppedReceipt.target?.instanceId === IID_CORPSE && stoppedReceipt.error?.code === "TARGET_UNAVAILABLE" &&
+    stoppedReceipt.error.message?.includes(`no mesh running at ${SERVERS}`) === true && stoppedReceipt.error.message.includes(rootCorpse) && stoppedReceipt.error.message.includes("no record deletion was attempted") &&
+    stoppedReceipt.error.remedy?.includes(`\`cd '${rootCorpse}'\` and run \`cotal up\``) === true && stoppedReceipt.error.remedy.includes("recheck this exact registration"), stopped);
+  const preview = await cli([...deregister, "--dry-run", "--plain"]);
+  check("deregistration preview still works offline without suggesting a restart",
+    preview.status === 0 && preview.stdout.includes("No connection or deletion was attempted by this preview") && !preview.stdout.includes("cotal up"), preview);
 } finally {
   for (const nc of conns) { try { await nc.drain(); } catch { /* ignore */ } }
   await live?.stop().catch(() => {});

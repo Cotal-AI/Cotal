@@ -188,8 +188,10 @@ prepared the same way, before it starts anything, and names `cotal space forget`
 record, because a space added from elsewhere is carried by the same files.
 If saving a prepared-space record fails, Cotal attempts to remove its temporary sibling and
 reports the original error without publishing a partial record.
-It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. It refuses a
+Running `space create` again for the same prepared space in the same root keeps its record and
+finishes writing a missing default persona. It refuses with `CONFLICT` a registered name, a name
+prepared in another root, a folder already used by another space, and the home folder, whose
+`.cotal` holds this machine's own records. It refuses a
 folder that is, or is in, a control directory, which is a project's `.cotal` or the Cotal home,
 judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. A
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
@@ -235,6 +237,8 @@ An explicit empty or whitespace-only `--root` on `space create` or `space add` r
 When a broker registered by hand does not answer, commands such as `send` and the delivery daemon
 name `cotal space forget <name>` as the way to unregister it. The refusal keeps the registration
 and does not start a local replacement. Start the broker where it runs to keep using that space.
+When `status` reports a manually registered open or static-auth broker as unreachable, its Next
+section gives the same recovery steps instead of offering the live roster.
 For a discovered space, the next step names removal from the provider's catalog followed by
 `cotal sync`, because `space forget` cannot remove a catalog-owned registration.
 
@@ -250,7 +254,11 @@ writes nothing: the registration, the selection and the root's files stay. A spa
 deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
 whose instance records show a member still running names `cotal down --space <space> --yes`. Any
 other such space refuses while something still listens at its recorded broker address that no other
-registration names, and names the process listening there to stop. A member whose process
+registration names, and names the process listening there to stop. If only the registration is
+missing, forget still refuses while a stack member runs. When the journal and running broker let
+`down` rebuild the registration, the refusal names `cotal down --yes` in the stack's root. If the
+folder is gone, it names `cotal down --space <space> --yes` instead. If no stop can be determined
+without the registration, it tells you to restore it first. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
 that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting
@@ -273,7 +281,8 @@ Forget also removes the stack definitions `cotal up` saved for the space at its 
 stopped instance records, so another folder can start a stack under the same name. The result lists
 them. The root's stack journal stays, keeping the stack's mode, address and store, and no longer
 names the instances forget removed. After `space create` in that folder, the space reads as prepared
-but not started, and `up --no-manager` and `down` there start and stop only the new members. A
+but not started. `up --no-manager` uses the recorded mode, address and store, so retained history is
+still available. It and `down` start and stop only the new members. A
 journal an earlier release left naming removed instances is not changed, and `down` there still
 refuses `TARGET_NOT_FOUND`. While a member was not stopped cleanly, or the root holds preserved
 state, they stay and the result warns with `STACK_DEFINITIONS_KEPT`. For a member that was not stopped cleanly, the warning
@@ -343,6 +352,10 @@ names how to move the project back before resetting the store. When it offers ad
 stop the adopted stack in its new root before resetting its store. If the project cannot be
 located, the refusal says that stored streams could not be checked.
 
+If a damaged registry record prevents the lookup, `space delete` refuses with `TARGET_UNAVAILABLE`,
+exit 2, before contacting a broker. It names the file and advises restoring it from backup or, if
+the file is named for a space, removing the local registration with `cotal space forget <space>`.
+
 The dry run also reads the space's workflow runs from its records bucket and lists each run that
 has not finished, with its recorded state. Deleting the streams removes those runs, and a run still
 waiting for an answer cannot be answered or resumed afterwards. To read a run's open request first,
@@ -364,6 +377,10 @@ Next. `--json` carries the refusal as `applyBlockedBy` and as a `LIFECYCLE_BLOCK
 
 
 ### Live deletion
+
+`space delete <name>` checks the local registration before requiring confirmation. If the exact
+name is neither registered nor prepared, it refuses with `TARGET_NOT_FOUND`, exit 2, without
+contacting a broker.
 
 Bare `space delete <name>` displays that impact on an interactive terminal and requires
 typing the exact space name. Its question, and the message under a wrong answer, wrap to the
@@ -544,10 +561,11 @@ A copied or moved project folder keeps a stack journal that names the folder it 
 journal can be adopted, the refusal prints the exact `space create --adopt` command to run.
 `cotal status` lists the applicable recovery options. `--adopt` takes the journal over: it rewrites it
 to name this folder, moves a broker store that lay under the recorded folder to the same place under
-this one, and records a stack that never ran here, so the next `cotal up` starts it from this folder
-with the copied store. When that store directory is present under this folder, it refreshes the recorded store identity from
-it, so a moved or copied store gives no replacement warning before startup, while a missing store or a
-replacement made after adoption still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
+this one, and records a stack that never ran here. Bare `cotal up` starts it from this folder with
+its recorded authentication mode and the copied store. When that store directory is present under
+this folder, adoption refreshes the recorded store identity from it, so a moved or copied store gives
+no replacement warning before startup, while a missing store or a replacement made after adoption
+still warns. It refuses with `CONFLICT`, writing nothing, when the folder's `.cotal` is a
 link, when the recorded folder still holds the journal, when this machine records an instance of
 that stack, or when the space is prepared or registered on this machine. For a confirmed stopped
 stack at a missing path, follow the forget and adopt commands shown by `cotal status`. A copy brought from another machine and a

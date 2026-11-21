@@ -70,6 +70,8 @@
  *     removes the three stack definitions, and the journal names none of their instances. `space
  *     create` there and `up --no-manager` start a new broker and delivery with no manager instance,
  *     and `down --yes` stops them. Each down leaves no member process.
+ *  16. A forgotten open stack starts in its original mode at the recorded address and store,
+ *      without delivery, and can read its retained history.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -97,6 +99,7 @@ process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
+const { shellWord } = await import("../src/lib/endpoint-errors.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -424,7 +427,7 @@ try {
   // 8. A registration an older `meshes rm --force` dropped, or `meshes add --force` replaced.
   {
     const space = "tear6";
-    const root = folder(space);
+    const root = folder(`${space} project`);
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     anchor(root);
     const server = `nats://127.0.0.1:${await freePort()}`;
@@ -445,6 +448,9 @@ try {
     check("with no registration and a broker receipt for another address, down refuses CONFLICT, exit 2",
       mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")), shown(mismatched));
     check("...stopping nothing and writing no registration", live() === running && running > 0 && findMesh(space) === undefined, { running, now: live() });
+    const noStop = cli(home, "space", "forget", space, "--json");
+    check("forget tells the user to restore the registration when the broker receipt does not match",
+      noStop.status === 2 && noStop.env?.error?.code === "LIFECYCLE_BLOCKED" && noStop.env.error.remedy?.startsWith("restore the stack's registration") === true && live() === running, shown(noStop));
     writeFileSync(receipt, original, { mode: 0o600 });
 
     recordMesh({ ...registered!, origin: "manual", server: "nats://127.0.0.1:2" });
@@ -462,9 +468,18 @@ try {
 
     const again = cli(root, "up", "--json");
     removeMesh(space);
+    const journal = readFileSync(journalOf(root), "utf8");
+    const runningAgain = live();
+    const forgot = cli(home, "space", "forget", space, "--json");
+    check("forget of a running stack with no registration keeps its journal and names a quoted stop in its root",
+      forgot.status === 2 && forgot.env?.error?.code === "LIFECYCLE_BLOCKED" &&
+      forgot.env.error.remedy?.includes(`\`cd ${shellWord(root)} && `) === true && forgot.env.error.remedy.includes(" down --yes`") &&
+      !forgot.env.error.remedy.includes("down --space") && findMesh(space) === undefined && runningAgain > 0 && live() === runningAgain && readFileSync(journalOf(root), "utf8") === journal, shown(forgot));
     const dropped = cli(root, "down", "--yes", "--json");
     check("a stack restarted and then left with no registration stops through its journal",
       again.status === 0 && dropped.status === 0 && Boolean(dropped.env?.warnings?.some((row) => row.code === "REGISTRATION_REBUILT" && row.message.includes("had no registration"))) && live() === 0, { up: shown(again), down: shown(dropped) });
+    const after = cli(home, "space", "forget", space, "--json");
+    check("forget succeeds after the stop it named", after.status === 0 && findPreparedSpace(space) === undefined, shown(after));
   }
 
   // 9. A controller stack whose --store-dir also holds the user's files: the reset keeps them.
@@ -741,17 +756,22 @@ try {
     check("down --yes stops it", last.status === 0, shown(last));
   }
 
-  // 14. A stack whose folder is renamed while it runs stops from another folder, and adopting the
-  // folder where it is now keeps its history.
+  // 14. An open stack whose folder is renamed while it runs stops from another folder. Adopting it
+  // keeps its mode, saved channel metadata and history.
   {
     const space = "tear14";
     const root = folder(space);
     const created = cli(home, "space", "create", space, "--root", root, "--json");
     check("space create prepares a root that is then renamed", created.status === 0, shown(created));
     anchor(root);
-    const started = cli(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, "--no-manager", "--json");
-    const sent = cli(root, "send", "-c", "general", "kept across the move", "--json");
-    check("up starts the stack and a message is stored", started.status === 0 && sent.status === 0, { up: shown(started), send: shown(sent) });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(root, "up", "--open", "--server", server, "--no-manager", "--json");
+    const channel = "moved.notes", description = "Notes kept across the move";
+    const saved = cli(root, "channel", "set", channel, "--desc", description);
+    const messages = ["first post across the move", "second post across the move"];
+    const sent = messages.map((message) => cli(root, "send", "-c", channel, message, "--json"));
+    check("open up starts the stack and stores channel metadata and two messages",
+      started.status === 0 && started.env?.result?.mode === "open" && saved.status === 0 && sent.every((post) => post.status === 0), { up: shown(started), channel: shown(saved), send: sent.map(shown) });
     anchors.delete(root);
     const moved = `${root}-moved`;
     renameSync(root, moved);
@@ -767,9 +787,15 @@ try {
     const adopted = cli(other, "space", "create", space, "--adopt", "--root", moved, "--json");
     anchor(moved);
     const restarted = cli(moved, "up", "--json");
-    const kept = cli(moved, "history", "general", "--json");
-    check("adopting the renamed folder keeps its history, and up starts it there",
-      adopted.status === 0 && restarted.status === 0 && ((kept.env?.result?.items ?? []) as { text?: string }[]).some((m) => m.text === "kept across the move"), { adopt: shown(adopted), up: shown(restarted), history: shown(kept) });
+    check("bare up starts the adopted stack in open mode on its original address",
+      adopted.status === 0 && restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env.result.server === server, { adopt: shown(adopted), up: shown(restarted) });
+    const channels = cli(moved, "channel", "--plain");
+    check("the adopted open stack lists the saved channel metadata",
+      channels.status === 0 && channels.stdout.includes(channel) && channels.stdout.includes(description), shown(channels));
+    const kept = cli(moved, "history", channel, "--limit", "20", "--json");
+    const retained = ((kept.env?.result?.items ?? []) as { text?: string }[]).map((item) => item.text);
+    check("the adopted open stack retains both posts",
+      kept.status === 0 && retained.length === messages.length && messages.every((message) => retained.includes(message)), shown(kept));
     const last = cli(moved, "down", "--yes", "--json");
     check("down --yes stops it", last.status === 0, shown(last));
   }
@@ -818,6 +844,34 @@ try {
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes then stops them, and no member process is left",
       last.status === 0 && JSON.stringify(ids(rows(last))) === JSON.stringify(ids(second)) && rows(last).every((row) => row.instanceId === null || row.state === "stopped") && gone(secondPids), shown(last));
+  }
+  // 16. Forgetting an open space does not make its stopped broker a first start.
+  {
+    const space = "tear16";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const store = join(root, "retained-store");
+    const text = "retained-before-forget";
+    const created = cli(root, "space", "create", space, "--json");
+    anchor(root);
+    const started = cli(root, "up", "--open", "--no-manager", "--server", server, "--store-dir", store, "--json");
+    const sent = cli(root, "send", "-c", "audit", text, "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    const forgot = cli(root, "space", "forget", space, "--json");
+    const recreated = cli(root, "space", "create", space, "--json");
+    check("the open stack stored a message and was stopped, forgotten and prepared again",
+      created.status === 0 && started.env?.result?.mode === "open" && sent.status === 0 && stopped.status === 0
+        && forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === '["stack-broker"]' && recreated.status === 0,
+      { created: shown(created), started: shown(started), sent: shown(sent), stopped: shown(stopped), forgot: shown(forgot), recreated: shown(recreated) });
+    const restarted = cli(root, "up", "--no-manager", "--json");
+    const delivery = (restarted.env?.result?.members as { role: string; instanceId: string | null }[] | undefined)?.find((row) => row.role === "delivery");
+    const history = cli(root, "history", "audit", "--limit", "10", "--json");
+    check("up without a mode or address keeps the open broker and its retained history without starting delivery",
+      restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env?.result?.server === server && delivery?.instanceId === null
+        && findMesh(space)?.storeDir === store && history.status === 0 && (history.env?.result?.items as { text?: string }[] | undefined)?.some((row) => row.text === text) === true,
+      { restarted: shown(restarted), history: shown(history) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("the reopened open stack stops cleanly", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");
