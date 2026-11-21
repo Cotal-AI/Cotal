@@ -61,6 +61,8 @@ const GATE = /refusing to reconcile the operator-global seed store/;
     { args: ["docs", "--json"], exit: 0 },
     { args: ["config", "--json"], exit: 0 },
     { args: ["space", "--json"], exit: 0 },
+    { args: ["use", "--json"], exit: 0 },
+    { args: ["use", "nosuch", "--json"], exit: 2 },
     { args: ["meshes"], exit: 0 },
     { args: ["meshes", "list"], exit: 0 },
     { args: ["ps", "--json"], exit: 2 },
