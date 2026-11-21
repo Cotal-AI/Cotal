@@ -208,7 +208,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   team: { flags: ["allow-stale:string", "dry-run:boolean", "foreground:boolean", "graph:boolean", "json:boolean:j", "plain:boolean", "runtime:string", "space:string:s", "yes:boolean:y"], positionals: true },
   // One message to one explicit destination: -t/-c/-r, a body positionally or from -f/--stdin,
-  // repeatable `--mention` and `--reply-to` with `--to`.
+  // repeatable `--mention`, and `--reply-to` with `--to` or `--channel`.
   send: {
     flags: [
       ...TARGET, "channel:string:c", "file:string:f", "json:boolean:j", "mention:string", "plain:boolean",
