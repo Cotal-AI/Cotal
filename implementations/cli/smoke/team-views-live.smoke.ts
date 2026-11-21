@@ -300,6 +300,23 @@ try {
 
   console.log("\nJ. the stack that took a team deploy, after a clean down");
   const stoppedS = cotal(s, "down", "--yes");
+  const legacyPreview = ["up", "-f", "live.yaml", "--dry-run"];
+  const previewRemedy = `cotal team boot ${join(realpathSync(s), "live.yaml")} --dry-run`;
+  const blockedPreview = cotal(s, ...legacyPreview, "--json");
+  const previewError = envelope(blockedPreview.stdout)?.error;
+  check("up -f --dry-run --json on the stopped controller stack refuses CONFLICT and names the team boot preview",
+    stoppedS.status === 0 && blockedPreview.status === 2 && previewError?.code === "CONFLICT"
+      && previewError.message?.includes(`holds the controller stack of space ${SPACE}`) === true
+      && previewError.remedy?.includes(previewRemedy) === true && !previewError.remedy.includes("omit --json"), blockedPreview.out);
+  for (const flags of [[], ["--plain"]]) {
+    const refusedPreview = cotal(s, ...legacyPreview, ...flags);
+    check(`up -f --dry-run ${flags[0] ?? "in rich output"} names the same conflict and preview`,
+      refusedPreview.status === 2 && /Code:\s+CONFLICT/.test(refusedPreview.stderr)
+        && refusedPreview.stderr.includes(previewRemedy), refusedPreview.out);
+  }
+  const supportedPreview = cotal(s, "team", "boot", "live.yaml", "--dry-run", "--json");
+  check("the suggested team boot preview still works on the stopped controller root",
+    answered(supportedPreview) && envelope(supportedPreview.stdout)?.result?.effectAttempted === false, supportedPreview.out);
   const removeStopped = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
   check("team remove on the stopped stack refuses CONFLICT, naming cotal up in its root and then the remove again",
     stoppedS.status === 0 && removeStopped?.code === "CONFLICT" && removeStopped.remedy === `no registration names ${SPACE}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${realpathSync(s)}, which registers it, then run \`cotal team remove ${deployment}\` again`, { down: stoppedS.out.slice(-400), removeStopped });

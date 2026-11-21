@@ -1596,28 +1596,25 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // A bare one in a folder holding the records of a space registered for another folder does not take
   // that name over, as `down` there does not stop it.
   if (!values.file && values.space === undefined) await refuseRecordsElsewhere(meshRoot);
-  if (values.json || values.plain) {
-    // `up -f` always takes the retained launcher, so the controller route is no remedy there. Its
-    // manifest is checked first, so a manifest that does not validate gets its own refusal.
-    if (values.file) {
-      const path = resolve(values.file);
-      try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
-      throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
-    }
-    throw retainedStartupPresentationRefusal(meshRoot);
-  }
+  if (!values.file && (values.json || values.plain)) throw retainedStartupPresentationRefusal(meshRoot);
   // `up -f cotal.yaml` is a distinct path: bring up a FRESH mesh described by a manifest (broker +
   // channels + booted agents). It owns the whole space; the additive team deploy route is separate.
   // CLI flags override the manifest (flag > manifest > default) so the same file runs at a different
   // port / runtime / auth without editing it. Its space is its target: `--space` may only repeat it.
   if (values.file) {
+    const path = resolve(values.file);
+    // Structured and plain manifest refusals report file errors before checking startup support.
+    if (values.json || values.plain) {
+      try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
+    }
     // A manifest start takes the legacy launcher, which never runs beside a controller stack, running
     // or stopped, so a dry run refuses as the start would.
     const controller = freshTeamBoot ? undefined : readStackJournal(meshRoot);
     if (controller) throw new CommandFailure("refused", "CONFLICT", `this root holds the controller stack of space ${controller.journal.space}, and up -f does not start a manifest beside it; nothing was started`, {
       target: { root: meshRoot, space: controller.journal.space },
-      remedy: controllerManifestRemedy(meshRoot, controller.journal.space, resolve(values.file)),
+      remedy: controllerManifestRemedy(meshRoot, controller.journal.space, path),
     });
+    if (values.json || values.plain) throw new CommandFailure("refused", "UNSUPPORTED", "up -f starts its manifest on the retained native launcher, which has no structured or plain receipt; nothing was started", { target: { root: meshRoot, path }, remedy: `omit ${values.json ? "--json" : "--plain"}` });
     if (values["dry-run"]) {
       await upManifest(values.file, {
         transport,
