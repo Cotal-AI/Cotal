@@ -925,17 +925,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
   });
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
-  // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
-  // until the next whole-stack operation settles it from its members' evidence.
-  let snapshot: StackJournalSnapshot = writeStackJournal(root, current ?? recorded, journal);
+  // The whole scoped plan is durable before the first effect. It is written only once the broker
+  // address checks below pass, so a restart refused there keeps the proof that the stack stopped
+  // cleanly. Until that first write, settle and mark adjust only the in-memory plan.
+  let snapshot: StackJournalSnapshot | undefined;
   const changed: unknown[] = [];
   const settle = (phase: StackJournal["operation"]["phase"]) => {
     journal = { ...journal, operation: { ...journal.operation, phase }, updatedAt: new Date().toISOString() };
-    snapshot = writeStackJournal(root, snapshot, journal);
+    if (snapshot !== undefined) snapshot = writeStackJournal(root, snapshot, journal);
   };
   const mark = (role: StackRole, change: Partial<StackMember>) => {
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };
-    snapshot = writeStackJournal(root, snapshot, journal);
+    if (snapshot !== undefined) snapshot = writeStackJournal(root, snapshot, journal);
   };
   // A redefinition retires the member's recorded instance with its old definition. The replacement's
   // IDs are journaled before that retirement and the new definition's revision before its launch.
@@ -961,7 +962,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;
   };
-  settle("applying");
   // Set only when a user stack's manager is withheld for want of an existing login and grant. That
   // is a known pre-effect refusal of one member, never a launch and never an unknown outcome.
   let loginBlock: CommandFailure | undefined;
@@ -1013,6 +1013,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
+    snapshot = writeStackJournal(root, current ?? recorded, journal);
+    settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
     let pinnedWsPort: number | undefined;
     if (!brokerRunning && mode !== "open" && savedManager?.type === "adapter" && savedManager.adapter === STACK_ADAPTER.manager && savedManager.options.root === root) {
@@ -1180,6 +1182,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {
+    // A refused first start still records that the stack never started, so a later stop reports a no-op.
+    if (snapshot === undefined && current === undefined) snapshot = writeStackJournal(root, current ?? recorded, journal);
     // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
     // leaves it, gets none back here; a broker start creates the missing ones.
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)

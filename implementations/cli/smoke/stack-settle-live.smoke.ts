@@ -680,7 +680,7 @@ try {
       await new Promise<void>((done) => occupant.close(() => done()));
     }
     const free = cli(second, "history", "--space", other, "general", "--json");
-    check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up` in ") === true, shown(free));
+    check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up --no-manager` in ") === true, shown(free));
     // Once it ran, it keeps that address, so a broker another space started there must stop first.
     const third = "takenport";
     const taker = prepare(third);
