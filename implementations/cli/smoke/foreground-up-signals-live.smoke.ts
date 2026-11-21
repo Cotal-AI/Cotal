@@ -16,7 +16,7 @@
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -59,14 +59,15 @@ function token(path: string): ProcessIdentityRecord | undefined {
   return pin.kind === "match" ? pin.record : undefined;
 }
 
-async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean }): Promise<boolean> {
-  const root = join(base, name), home = join(root, "home"), mesh = join(root, options.externalDown === "folder" ? name : "mesh");
+async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
+  const root = join(base, name), home = join(root, "home"), folderNamed = options.externalDown === "folder" || options.openManagerExit;
+  const mesh = join(root, folderNamed ? name : "mesh"), store = join(mesh, "store");
   for (const p of [root, home, mesh, ...(options.nativeLog ? [] : [join(mesh, ".cotal")]), join(home, "xdg"), join(home, "machine")]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = options.nativeLog ? undefined : recordSmokeSandbox({ root: mesh, cotalHome: join(home, "machine"), xdgConfigHome: join(home, "xdg") });
   const rootIdentity = statSync(mesh, { bigint: true });
   const markerIdentity = statSync(join(mesh, ".cotal"), { bigint: true, throwIfNoEntry: false });
   const port = await freePort(); assert.notEqual(port, 4222);
-  const space = options.externalDown === "folder" ? name : `foreground-${name}`;
+  const space = folderNamed ? name : `foreground-${name}`;
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const logFile = join(mesh, "broker.log");
   if (options.repairDelivery) {
@@ -79,7 +80,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(options.externalDown === "folder" ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -214,13 +215,48 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       assert.match(repaired.out, /Delivery responder:\s+● bound/);
       assert.match(next(repaired), spawnLine); passed++;
     }
-    if (options.openBrokerExit) {
+    if (options.openBrokerExit || options.openManagerExit) {
       let health: Awaited<ReturnType<typeof foregroundCliProbe>> | undefined;
       const components = () => foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components"], 60_000);
       await until(async () => {
         health = await components();
         return health.code === 0 && /^ {2}manager +serving/m.test(health.out);
       }, 90_000, () => (health?.out ?? "") + (health?.err ?? ""));
+      if (options.openManagerExit) {
+        const manager = token(managerPath), broker = token(brokerPath);
+        assert.ok(manager && live(manager) && broker && live(broker));
+        process.kill(manager.pid, "SIGTERM");
+        await until(() => !existsSync(managerPath) && !live(manager), 30_000, () => err);
+        const inspect = (command: string) => foregroundCliProbe(cliEntry, tsx, mesh, env, [command, "--space", space, "--plain"], 60_000);
+        const status = await inspect("status");
+        assert.equal(status.code, 0, status.out + status.err);
+        assert.match(status.out, new RegExp(`^  Broker +running.*pid ${broker.pid}`, "m"));
+        assert.match(status.out, /^  Manager +stopped$/m);
+        assert.match(status.out, /cotal down --yes[^\n]*exited manager[^]*cotal up --foreground/);
+        assert.ok(live(broker) && await portOpen(port));
+        passed++;
+
+        const downArgs = ["down", "--yes"];
+        assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+        const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs, 60_000);
+        assert.equal(down.code, 0, down.out + down.err);
+        assert.equal(await portOpen(port), false);
+        if (process.getuid?.() !== 0) {
+          const jetstream = join(store, "jetstream");
+          chmodSync(jetstream, 0o500);
+          try {
+            for (const command of ["status", "ps"]) {
+              const report = await inspect(command), text = report.out + report.err;
+              assert.equal(report.code, command === "status" ? 0 : 2, text);
+              assert.ok(text.includes(`the broker store ${jetstream} is not writable by this account`), text);
+              assert.ok(text.includes(`chmod -R u+w ${jetstream}`), text);
+              assert.doesNotMatch(text, /there to restart/);
+            }
+            passed++;
+          } finally { chmodSync(jetstream, 0o700); }
+        }
+        return true;
+      }
       const broker = token(brokerPath);
       assert.ok(broker && live(broker));
       process.kill(broker.pid, "SIGTERM");
@@ -604,6 +640,7 @@ await cell("auth-ready", { auth: true, ready: true });
 await cell("auth-ready-term", { auth: true, ready: true, signal: "SIGTERM" });
 await cell("delivery-repair", { auth: true, ready: true, repairDelivery: true });
 await cell("open-broker-exit", { openBrokerExit: true });
+await cell("custom-open", { openManagerExit: true });
 let refusalObserved = false;
 for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
   refusalObserved = await cell(`auth-refused-${attempt}`, { auth: true, refusal: true });

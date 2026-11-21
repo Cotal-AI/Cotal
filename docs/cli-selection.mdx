@@ -1305,6 +1305,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 When a stopped local broker's address accepts a connection without a NATS greeting, `status`
 and read commands name the occupied address and recommend stopping that listener or starting
 on another port. They keep the space's registration.
+When a controller stack keeps its recorded address, a refused restart does not clear the diagnosis.
+`status` checks the address again and names the listener to stop if it still holds the port.
 
 When `--server` matches several registered spaces, add `--space <name>` to choose one.
 Selecting a default with `cotal use <name>` applies only after removing `--server`.

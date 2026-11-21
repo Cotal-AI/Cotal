@@ -278,7 +278,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, lastServedStore, lastServedStores, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir, lastServedStore, lastServedStores, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, startupStoreProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -598,18 +598,7 @@ function assertUpRootWritable(root: string): void {
  *  a start here opens, as `--store-dir` names it, as the stack or legacy records name it, or `.cotal/nats`,
  *  is refused here, by name, when this account cannot write it. */
 function assertUpStoreWritable(root: string, storeDir: string | undefined): void {
-  let recorded: string | undefined;
-  try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
-  const defaultStore = join(root, ".cotal", "nats");
-  if (storeDir === undefined && recorded === undefined) {
-    const local = localMeshesForRoot(root);
-    recorded = local.length === 1 ? local[0]!.storeDir : undefined;
-    if (recorded === undefined && !existsSync(join(defaultStore, "jetstream"))) {
-      const served = lastServedStores(root, defaultStore);
-      if (served.length === 1) recorded = served[0];
-    }
-  }
-  const problem = storeWriteProblem(storeDir !== undefined ? resolve(storeDir) : recorded ?? defaultStore);
+  const problem = startupStoreProblem(root, storeDir);
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
 }
 
