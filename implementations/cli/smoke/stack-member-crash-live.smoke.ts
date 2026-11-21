@@ -132,6 +132,29 @@ try {
   const elsewhereText = cli("status", "--server", closed);
   check("...and its Next offers no restart of stopped members", elsewhereText.status === 0 && elsewhereText.out.includes("\nNext\n") && !elsewhereText.out.includes("stopped members"), elsewhereText.out);
 
+  const referenceFile = join(base, "manager-reference.json");
+  writeFileSync(referenceFile, JSON.stringify({ schemaVersion: 1, space: "crash", endpoint: "manager" }));
+  const saved = cli("endpoint", "add", "saved-manager", "--file", referenceFile);
+  check("the local manager reference is saved", saved.status === 0, saved.out);
+  const inventory = cli("endpoint", "list", "--live", "--server", closed, "--plain");
+  const [unavailable, inventoryNext] = inventory.stdout.split("\nNext\n");
+  const diagnostic = `nothing answered at ${closed}, the broker address --server named`;
+  const remedy = `check that address, or drop --server to reach "crash" at nats://127.0.0.1:${PORT}, where it is recorded`;
+  check("live endpoint inventory keeps saved references and names the failed override and its remedy",
+    inventory.status === 4 && unavailable?.includes("Native registration reads: partial") && unavailable.includes("saved-manager")
+    && unavailable.includes(diagnostic) && inventoryNext?.trim() === remedy, inventory.out);
+  const partialInventory = cli("endpoint", "list", "--live", "--server", closed, "--json");
+  const inventoryDoc = JSON.parse(partialInventory.stdout);
+  check("structured inventory keeps its partial outcome and the connection diagnostic and remedy",
+    partialInventory.status === 4 && inventoryDoc.outcome === "partial" && inventoryDoc.completeness === "partial"
+    && inventoryDoc.result.items.some((item: { name: string }) => item.name === "saved-manager")
+    && inventoryDoc.result.live === null && inventoryDoc.result.liveUnavailable?.code === "TARGET_UNAVAILABLE"
+    && inventoryDoc.result.liveUnavailable?.message === diagnostic && inventoryDoc.error?.remedy === remedy, partialInventory.out);
+  const retried = cli("endpoint", "list", "--live", "--plain");
+  check("dropping --server gives a complete live inventory with the native manager registration",
+    retried.status === 0 && retried.stdout.includes("Native registration reads: complete")
+    && /^  manager\s+/m.test(retried.stdout.split("\nNative registrations\n")[1] ?? ""), retried.out);
+
   const pid = managerPid();
   check("status names the running manager's PID", pid !== undefined && alive(pid), pid);
   if (pid !== undefined) process.kill(pid, "SIGKILL");
