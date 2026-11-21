@@ -1,5 +1,17 @@
 # @cotal-ai/workspace
 
+## 0.174.0
+
+### Patch Changes
+
+- 9cc5f7a: When a manager cannot find the seat named by `stop`, the suggested `ps` command keeps the stop's space, broker and explicit manager selection.
+- c7e1cfc: Commands that rely on a saved space selection refuse if it cannot be read instead of connecting to a different space.
+- a38657c: Keep status and self-update working when you switch from a symlinked home to its physical path, and stop reinstalling healthy built-in connectors on repeated updates.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+  - @cotal-ai/core@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes

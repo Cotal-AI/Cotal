@@ -1,5 +1,48 @@
 # @cotal-ai/cli
 
+## 0.174.0
+
+### Patch Changes
+
+- 0d8c97e: Fix `cotal update --self` so it repairs an unreadable connector selection and verifies the connector inventory even when the CLI is already up to date.
+- 576047e: Clean store prints runnable retry commands for paths beginning with a hyphen and names an unwritable store parent before previewing or removing the store.
+- c0dac1c: Move the restore path's per-stream restore and validation out of `lib/restore.ts` into an internal `lib/restore-streams.ts`. `lib/restore.ts` keeps every name it exported before, so the module surface is unchanged.
+- e7ef63d: Move the up command's pending restore and resume registries out of `up.ts` into an internal `up-pending.ts`. The module surface of `up.ts` is unchanged.
+- 37b69ed: Move the update command's running-manager continuity checks out of `update.ts` into an internal `update-continuity.ts`. `update.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 766ff72: Move the update command's npm and process runners and version parsing out of `update.ts` into an internal `update-process.ts`. `update.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 9d08e2d: Move the update command's release and dependency availability checks out of `update.ts` into an internal `update-release.ts`. `update.ts` keeps every name it exported before, so the module surface is unchanged.
+- 6e9a832: The console shows usage without posting when a palette message names a channel but omits the message text.
+- 721d295: `doctor auth` warns when an open registration was added without checking the broker. It still skips credential inspection and repair, but no longer tells the operator that the broker authenticates nobody.
+- 46f00ce: `cotal doctor auth --space` identifies unknown spaces and explains how to check the name or prepare and start a new local space.
+- 9dd33f2: Help for `endpoint watch` and `endpoint session` states that these commands are unavailable and omits examples that cannot run.
+- 7efc878: Foreground `cotal up` reports a broker crash and exits with an error, leaving the stack records in place so the next start can repair it.
+- f6760fa: Keep endpoints without an error listener alive when their broker credential expires, and give each provisioning operation in the send smoke test a fresh credential.
+- 4e0ab2a: Document how to resume `cotal history --follow --json` without skipping unread messages that share the last processed timestamp.
+- b17198a: History reads and previews that pass `--force` now tell you to remove it and keep the other arguments instead of suggesting a purge.
+- 2329c23: `cotal help history <channel>` prints the history help, just like `cotal history <channel> --help`.
+- 6cd0057: When `send` cannot find a direct recipient or mention, its suggested `who --all` command keeps the broker and credential file used for the lookup. The command works even if the space is not registered on this machine.
+- 9cc5f7a: When a manager cannot find the seat named by `stop`, the suggested `ps` command keeps the stop's space, broker and explicit manager selection.
+- d67f0f7: Report the controller stack conflict in JSON and plain manifest previews and point to `cotal team boot <file> --dry-run` instead of asking users to drop the output flag.
+- 26473b2: When `cotal team deploy` refuses a durable channel on an open mesh, it names the channel and tells you to set `deliveryClass: live`.
+- 3b11ab7: When an option is missing its value before `--`, Cotal tells you where to put the value instead of suggesting `--` as the value.
+- 19894a7: `cotal ps` reports a stopped local broker's read-only store and how to fix it even when `--server` names the saved broker.
+- 0f676c9: Make `cotal channel members --follow --json` report setup failures as membership stream records, with the channel and any known space.
+- 59e50cd: Avoid the Linux npm launcher warning from a deleted directory where the shell supports it, and make plain `cotal update` exit 0 after successful reconciliation with the registry version reported as not established instead of exiting 1 with “version check failed”.
+- c7e1cfc: Commands that rely on a saved space selection refuse if it cannot be read instead of connecting to a different space.
+- 8864401: `cotal clean history` refuses `--store-dir` instead of purging the running mesh's retained history.
+- 2f52b64: The `spawn`, `who` and `ps` commands suggested by `cotal status` target the space or broker shown in the report, even when another space is selected.
+- debeaaa: `cotal persona show` reads existing local catalog entries with dotted names such as `review.md` without changing which names `persona create` accepts.
+- c194012: On Linux, `cotal update --self` skips Managers that exit during the launch-coordinate check and still refuses when a running Manager's coordinates cannot be read.
+- a38657c: Keep status and self-update working when you switch from a symlinked home to its physical path, and stop reinstalling healthy built-in connectors on repeated updates.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+- Updated dependencies [9cc5f7a]
+- Updated dependencies [c7e1cfc]
+- Updated dependencies [a38657c]
+  - @cotal-ai/core@0.174.0
+  - @cotal-ai/workspace@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes
