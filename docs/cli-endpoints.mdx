@@ -241,8 +241,9 @@ cotal endpoint check <contract-file> [--json|--plain]
 ```
 
 `init` creates `contract.json` and an executable `handler.mjs` template. The default directory is
-the supplied name; `--dir` chooses another one. Its parent must exist. Files are created
-exclusively, without following a pre-planted symlink or replacing an existing file. A partial
+the supplied name. Use `--dir` to choose another one. If its parent is missing, `init` creates
+nothing and prints a command to create the parent and retry. Files are created exclusively,
+without following a pre-planted symlink or replacing an existing file. A partial
 write retains the named created material for review rather than deleting it automatically.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
@@ -264,7 +265,8 @@ wrapper or command fields are refused. This file is local authoring input, not a
 with the installed schema profile and reports the derived cluster closure. All schema references
 must resolve inside their bundle; no URL or adjacent file is fetched. Attribute and event
 semantics remain opaque to the native parser, so a file declaring them produces a partial result,
-exit 4, rather than a claim that those semantics were checked.
+exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
+names the path and asks you to retry with an existing contract file.
 
 Neither command contacts a broker, loads the handler, starts a service or proves serving
 permission. Authoring takes no space, broker, caller or invocation flags.
