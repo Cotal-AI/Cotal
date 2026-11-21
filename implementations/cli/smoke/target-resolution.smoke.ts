@@ -33,13 +33,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { findMesh, getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
@@ -57,16 +58,16 @@ process.on("exit", () => {
   for (const p of ptys) p.kill();
   rmSync(home, { recursive: true, force: true });
 });
-async function broker(): Promise<string> {
+async function broker(jetstream = true): Promise<string> {
   const port = await freePort();
-  const b = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+  const b = spawn("nats-server", [...(jetstream ? ["-js", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))] : []), "-a", "127.0.0.1", "-p", String(port)], { stdio: "ignore" });
   teardownOnSignal(b);
   brokers.push(b);
   return `nats://127.0.0.1:${port}`;
 }
 const A = await broker();
 const B = await broker();
-const { isReachable } = await import("@cotal-ai/core");
+const { chatStream, dialerFor, isReachable } = await import("@cotal-ai/core");
 for (let i = 0; i < 50 && !((await isReachable(A)) && (await isReachable(B))); i++) await wait(100);
 
 // A working folder that is no project, so neither the folder nor a selection names the target.
@@ -137,6 +138,52 @@ const QUESTION = "Which one?";
   const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
   check("equivalent URL does not turn unchecked mode into checked", unchecked.status === 4 && envelope(unchecked)?.result?.modeChecked === false, shown(unchecked));
   removeMesh("shared");
+}
+
+// A reachable open broker can answer for names that have no streams there.
+{
+  const root = join(home, "upcoming");
+  mkdirSync(root);
+  const nc = await dialerFor(A)({ servers: A });
+  try {
+    const streams = (await jetstreamManager(nc)).streams;
+    await streams.add({ name: chatStream("alpha"), subjects: ["inventory.alpha"] });
+    removeMesh("beta");
+    const add = ["space", "add", "upcoming", "--server", A, "--root", root];
+    const checked = run([...add, "--yes", "--json"]);
+    check("checked registration refuses a space absent from the broker inventory", checked.status === 2 && envelope(checked)?.error?.code === "TARGET_NOT_FOUND", shown(checked));
+    const forced = run([...add, "--force", "--json"]);
+    check("force records the upcoming space unchecked", forced.status === 0 && findMesh("upcoming")?.unchecked === true, shown(forced));
+
+    const automatic = run(["who", "--json"]);
+    check("automatic selection targets the only served candidate", automatic.status === 0 && envelope(automatic)?.target?.space === "alpha", shown(automatic));
+    const tty = terminal(["who"]);
+    check("the terminal reads the sole served candidate without asking", await until(() => tty.s.code !== undefined, 15_000) && tty.s.code === 0 && /\bin alpha\b/.test(tty.s.text()) && !tty.s.text().includes(QUESTION), tty.s.text().slice(-600));
+    check("automatic selection keeps the unchecked record and leaves the default clear", findMesh("upcoming")?.unchecked === true && getCurrent() === undefined);
+    const explicit = run(["who", "--server", A, "--json"]);
+    check("explicit server still needs a name when several spaces are recorded there", explicit.status === 2 && /multiple spaces recorded/.test(envelope(explicit)?.error?.message ?? ""), shown(explicit));
+    setCurrent("upcoming");
+    const selected = run(["who", "--json"]);
+    check("an explicit selection still targets the unchecked record", selected.status === 0 && envelope(selected)?.target?.space === "upcoming", shown(selected));
+    clearCurrent();
+
+    await streams.add({ name: chatStream("upcoming"), subjects: ["inventory.upcoming"] });
+    const two = run(["who", "--json"]);
+    check("an unchecked registration with a live stream stays a candidate", two.status === 2 && /multiple meshes running/.test(envelope(two)?.error?.message ?? "") && /upcoming/.test(envelope(two)?.error?.message ?? ""), shown(two));
+
+    const unavailable = await broker(false);
+    for (let i = 0; i < 30 && !(await isReachable(unavailable)); i++) await wait(50);
+    check("the broker without inventory still answers", await isReachable(unavailable), unavailable);
+    recordMesh({ ...findMesh("upcoming")!, server: unavailable });
+    const unknown = run(["who", "--json"]);
+    const error = envelope(unknown)?.error;
+    check("unreadable inventory is not called running or mistaken for absence", unknown.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /upcoming.*not verified running/.test(error.message) && /--space alpha/.test(error.remedy) && /--space upcoming/.test(error.remedy), shown(unknown));
+  } finally {
+    clearCurrent();
+    removeMesh("upcoming");
+    recordMesh({ space: "beta", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+    await nc.close();
+  }
 }
 
 // ── A terminal chooses, for this run only ───────────────────────────────────────────────────────────

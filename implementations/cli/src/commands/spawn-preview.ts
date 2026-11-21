@@ -44,8 +44,8 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     // A space this folder registered is the target only while it runs, which the launch reads from
     // the recorded brokers before it resolves. The preview reads the same, without signing in.
     const flags = { space: values.space, server: values.server };
-    const offline = resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(values.server)).offline : [];
-    selected = resolveMeshTarget(process.cwd(), { ...flags, offline, readOnly: true });
+    const sweep = resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(values.server, "targets") : {};
+    selected = resolveMeshTarget(process.cwd(), { ...flags, ...sweep, readOnly: true });
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;

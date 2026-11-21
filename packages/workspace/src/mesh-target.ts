@@ -108,6 +108,8 @@ export interface ResolveFlags {
    * preflight can name its root. Callers that do not sweep omit this; TAB completion must.
    */
   offline?: readonly string[];
+  /** Broker inventory evidence used only by the unflagged registry fallback. */
+  openInventory?: { served: readonly string[]; unserved: readonly string[] };
 }
 
 /** The distinct, command-agnostic reasons {@link resolveMeshTarget} can't pick a single mesh. Each
@@ -141,6 +143,8 @@ export interface MeshTargetErrorDetails {
    *  them) reads each by name and decides for it. Absent for every other ambiguity: several tenants
    *  on one root's disk name no registration to act on, and there the refusal stands. */
   spaces?: string[];
+  /** At least one fallback candidate is unchecked and its broker inventory did not confirm it. */
+  uncheckedCandidates?: boolean;
   /** For `unreadable-auth` with no space: the first folder on the way to the root's trust folder that
    *  this account cannot enter, when a permission error kept that folder from being read. */
   folder?: string;
@@ -1297,23 +1301,19 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     return localTarget(root, DEFAULT_SERVER, "local-space", flags.readOnly);
   }
 
-  // The fallback names *running* meshes. A liveness miss used to delete the record and
-  // shrink this set; the record now stays, so a known-dead entry must not count here
-  // or the error ("no mesh running" / "multiple meshes running") would name a mesh
-  // that is not running. Named `--space` above is unfiltered: preflight still has to
-  // resolve a dead record to name its root. Zero running includes "recorded but all
-  // offline": that is still `no-meshes`. The named-space / preflight path is what
-  // reports "recorded at <root> but not running".
-  const running = meshes.filter((m) => !offline.has(m.space));
-  if (running.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
-  if (running.length === 1) return targetFromEntry(running[0], running[0].server, "registry", flags.readOnly);
+  // Broker liveness and inventory narrow the fallback without changing the registry. Named targets
+  // stay available to preflight, which can diagnose the requested record on its own.
+  const candidates = meshes.filter((m) => !offline.has(m.space) && !flags.openInventory?.unserved.includes(m.space));
+  if (candidates.length === 0) throw new MeshTargetError("no-meshes", "no mesh running");
+  if (candidates.length === 1) return targetFromEntry(candidates[0], candidates[0].server, "registry", flags.readOnly);
 
-  const names = running.map((m) => `${m.space} (${m.root})`);
-  // `spaces` rides alongside the display strings: this is the one ambiguity whose members are each a
-  // running mesh a caller can select by name, so a caller that must visit every one of them (`update`,
-  // which replaces the single binary they all share) gets the names without parsing `available`.
-  throw new MeshTargetError("ambiguous-target", `multiple meshes running: ${names.join(", ")}`, {
+  const unchecked = (m: MeshEntry) => m.unchecked && !flags.openInventory?.served.includes(m.space);
+  const names = candidates.map((m) => `${m.space} (${m.root})${unchecked(m) ? " (not verified running)" : ""}`);
+  const uncheckedCandidates = candidates.some(unchecked);
+  const message = uncheckedCandidates ? "multiple spaces recorded; some are not verified running" : "multiple meshes running";
+  throw new MeshTargetError("ambiguous-target", `${message}: ${names.join(", ")}`, {
     available: names,
-    spaces: running.map((m) => m.space),
+    spaces: candidates.map((m) => m.space),
+    ...(uncheckedCandidates ? { uncheckedCandidates } : {}),
   });
 }

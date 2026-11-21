@@ -1,5 +1,5 @@
 import type { ParsedArgs } from "@cotal-ai/core";
-import { isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget } from "@cotal-ai/workspace";
+import { isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget, type ResolveFlags } from "@cotal-ai/workspace";
 import { canPrompt } from "../commands/meshes-wizard.js";
 
 /**
@@ -15,11 +15,12 @@ export async function chooseMeshTarget(args: ParsedArgs): Promise<void> {
   if (!canPrompt()) return;
   // The registry alone first, so a target that resolves costs no broker probe; only an ambiguous one
   // is checked against the brokers that answer, as the command itself would check it.
-  if (!runningChoices([])) return;
-  const spaces = runningChoices((await pruneStaleMeshes()).offline);
+  if (!targetChoices({})?.spaces) return;
+  const { target, spaces, uncheckedCandidates } = targetChoices(await pruneStaleMeshes(undefined, "targets")) ?? {};
+  if (target !== undefined) { values.space = target; return; }
   if (!spaces) return;
   const p = await import("./prompts.js");
-  const chosen = await p.select({ message: "Several spaces are running. Which one?", options: spaces.map((space) => ({ value: space, label: space })) });
+  const chosen = await p.select({ message: uncheckedCandidates ? "Several spaces are recorded. Which one?" : "Several spaces are running. Which one?", options: spaces.map((space) => ({ value: space, label: space })) });
   if (p.isCancel(chosen)) {
     p.cancel("nothing was done - no space was chosen");
     process.exit(0);
@@ -27,13 +28,12 @@ export async function chooseMeshTarget(args: ParsedArgs): Promise<void> {
   values.space = chosen;
 }
 
-/** The running spaces a resolution could not choose between, or undefined when it resolves or fails
- *  for another reason, which the command's own resolution reports. */
-function runningChoices(offline: string[]): string[] | undefined {
+/** Choices from the registry, including a sole candidate resolved by inventory. */
+function targetChoices(flags: ResolveFlags): { target?: string; spaces?: string[]; uncheckedCandidates?: boolean } | undefined {
   try {
-    resolveMeshTarget(process.cwd(), { offline });
-    return undefined;
+    const target = resolveMeshTarget(process.cwd(), { ...flags, readOnly: true });
+    return target.source === "registry" && flags.openInventory?.unserved.length ? { target: target.space } : undefined;
   } catch (e) {
-    return isWorkspaceTargetError(e) && e.code === "ambiguous-target" ? e.details.spaces : undefined;
+    return isWorkspaceTargetError(e) && e.code === "ambiguous-target" ? e.details : undefined;
   }
 }
