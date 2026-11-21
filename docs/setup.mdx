@@ -141,6 +141,9 @@ The terminal console is available through `cotal console`.
 ## Recover from a setup failure [#recover-from-a-setup-failure]
 
 Read the reported failure before trying setup again.
+If a file blocks the project's `.cotal/agents` directory, setup reports any saved preparation.
+Move the file aside and run the same setup again to create the default persona.
+
 The setup log is `<project>/.cotal/setup.log`.
 The local broker log is `<project>/.cotal/nats.log`.
 

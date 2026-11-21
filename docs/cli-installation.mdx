@@ -90,6 +90,9 @@ Otherwise, the result names the next command: `cotal up` in the project for a lo
 writes Cotal records. For Codex, this includes new or content-changed marketplace files, Codex
 configuration, and cached plugin files. The receipt does not inventory every write made by
 programs that setup calls.
+If the default persona cannot be written after setup saves the space, setup exits 4 with
+`OPERATION_PARTIAL`. The JSON envelope names the space in `target.space` and lists the confirmed
+writes in `changed`. If a file blocks `.cotal/agents`, move it aside and run the same setup again.
 
 Setup needs an installed connector. When `--harness` names a built-in connector that is not
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
