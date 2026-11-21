@@ -1082,7 +1082,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         managerInstance: `auth-service:${space}`,
       });
     },
-    ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection }),
+    ...managerIssuanceAuthority({ server, space, dataAccount, log, standingTtl, remoteIssuer, scanner, authKv, managerIssuanceGate, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, onConnection, composedSourceIsLive }),
     ...managedAgentAuthority({ server, space, dataAccount, observeLegacyManagerGate, refuseIfFenced, issuerAuth, takeObservedSpawnRequest, readRunStarterAdmission, deprovisionManagedFootprint, managedRetirement, serializedForAlias, opts, onConnection }),
     ...managerRunAuthority({ server, space, dataAccount, cancelObservations, standingTtl, remoteIssuer, recordsScanner, barrierReg, recordsJsm, observeManagerGate, observeLegacyManagerGate, registeredManagerCluster, refuseIfFenced, issuerAuth, composedSourceIsLive, ledgerDelegation, takeObservedRunRequest, opts, onConnection }),
     observeManagerInstance: async (instanceId) => {
