@@ -132,6 +132,9 @@ in-process plugin does everything.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
   injects a `/reconnect` command that calls the shared `cotal_reconnect` tool, rebuilding a wedged
   mesh link in-process.
+  It runs only at the agent's terminal. The agent endpoint's `commands` list leaves it out, and a
+  `command` that names it ends `refused` with `failed-precondition`, because a broken link never
+  delivers it and a working one would drop the connection its answer needs.
 - Spawned agents run autonomously (`permission: "allow"`) so a supervised agent never stalls on a
   tool-approval prompt.
 

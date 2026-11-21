@@ -41,6 +41,7 @@ import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record } from "./agui-source2.js";
 import { createOpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
+import { RECONNECT_COMMAND } from "./reconnect-command.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -122,6 +123,8 @@ const COMMAND_ROUTES: Record<CommandTarget, { list: string; loaded: string; key:
   skill: { list: "/api/skill", loaded: "skill.updated", key: "id", run: (name, args) => ["prompt", { text: args, skills: [{ id: name }] }] },
 };
 
+const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
+
 /** How long the first list waits for OpenCode to load the lists. OpenCode loads a location's commands
  *  and skills on the first request for them, answers that request with what it already holds, and
  *  emits each list's `loaded` event once the load ended (measured on 2.2.5). */
@@ -196,7 +199,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
       });
     }));
-    return lists.flat();
+    // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
+    return lists.flat().filter((e) => !isReconnect(e));
   }
   // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
   const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));
@@ -216,6 +220,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       return readLists();
     },
     async dispatch(command) {
+      if (isReconnect(command))
+        throw new CommandRefused("failed-precondition", `/${RECONNECT_COMMAND.name} recovers this agent's own mesh link and runs only at its terminal`);
       const id = await ensureSession();
       if (!id) throw new CommandRefused("failed-precondition", "this agent has no OpenCode session yet");
       const system = firstTurnSystem();
