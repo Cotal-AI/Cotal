@@ -806,8 +806,8 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
   };
 
   /** A connector line that ends the seat, naming the last turn error while no turn has succeeded
-   *  since it. The manager's `seat reaped:` line keeps only the first 240 characters of this line, so
-   *  that error goes ahead of the recovery error, whose length the Harness decides. */
+   *  since it. Put that error before the recovery error so it remains visible if the manager cuts
+   *  the end of the line. */
   const endingLine = (reason: string, recoveryError?: string): string =>
     hostState.lastTurnError === undefined
       ? `[cotal-jcode] ${reason}${recoveryError === undefined ? "" : `: ${recoveryError}`}\n`
