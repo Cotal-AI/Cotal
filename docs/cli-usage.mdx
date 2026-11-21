@@ -179,8 +179,9 @@ A word that starts with `-` reads as an option. A message or name that starts wi
 `--`, which the refusal names when the command takes an operand rather than a subcommand name.
 An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
-`--search='-help usage'`. An option given with no value, last or just before another option, is
-refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
+`--search='-help usage'`. An option given with no value at the end of the command or just before
+another option or `--` is refused with the option and its placeholder. Put the value before `--`
+and leave the operands after it. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
 typeset text, is refused rather than read as a positional. The correction keeps any attached value
 the option accepts, as in `--limit=10`. Before the

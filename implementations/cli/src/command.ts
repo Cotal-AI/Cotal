@@ -441,7 +441,7 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
 /** A parse error as a refusal. Node's own usage guidance is replaced with this CLI's remedies:
  *  a word that starts with `-` goes after `--` only where the command takes operands,
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
- *  last or before another of the command's options, is named with its placeholder. */
+ *  last, before `--`, or before another of the command's options, is named with its placeholder. */
 function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
@@ -451,7 +451,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
   }
   const message = error.message.split(".")[0]!;
-  const missingValue = (flag: FlagSpec) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}` });
+  const missingValue = (flag: FlagSpec, beforeSeparator = false) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
@@ -460,6 +460,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
     const at = rest.findIndex((word) => word === `--${flag.name}` || (flag.short !== undefined && word === `-${flag.short}`));
     const value = at < 0 ? undefined : rest[at + 1];
+    if (value === "--") return missingValue(flag, true);
     if (value !== undefined && cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
       return missingValue(flag);
     if (value?.startsWith("-")) return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
