@@ -77,7 +77,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, connect as tcpConnect, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -134,10 +134,10 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 /** How the child ENDED rides in the result: a launch failure, a signal death, or this suite's own
  *  timeout each produce output that would otherwise be graded as if the command had spoken. */
 type Run = { status: number | null; out: string; stdout: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
-function cotal(args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> {
+function cotal(args: string[], cwd: string, timeoutMs = 90_000, stdin: number | "ignore" = "ignore"): Promise<Run> {
   return new Promise((res) => {
     const child = spawn(TSX, [BIN, ...args], {
-      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: [stdin, "pipe", "pipe"],
     });
     let out = "", stdout = "", timedOut = false, settled = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null;
@@ -528,6 +528,21 @@ try {
     createdText.status === 0 && /Local files:\s+\S*remote-rev2\.md, written by the manager in this root's catalog/.test(receipt) &&
       /cotal p show remote-rev2\s/.test(receipt) && !receipt.includes("cotal p show remote-rev2 --on") && receipt.includes(`cotal spawn remote-rev2 --on ${IID2}`),
     { status: createdText.status, out: receipt.slice(-900) });
+  const card = join(dir, "reviewer-card.md");
+  writeFileSync(card, "---\nname: stdin-reviewer\nrole: reviewer\nsubscribe: []\n---\nReview changes carefully.\n");
+  const stdin = openSync(card, "r");
+  let createdStdin: Run;
+  try {
+    createdStdin = await cotal(["persona", "create", "stdin-reviewer", "--file", "-", "--on", IID2, "--space", space, "--plain"], root2, undefined, stdin);
+  } finally { closeSync(stdin); }
+  mustHaveRun(createdStdin, "`persona create --file - --on` with redirected stdin");
+  const stdinPersona = join(root2, ".cotal", "agents", "stdin-reviewer.md");
+  const stdinReceipt = strip(createdStdin.out);
+  const savedFromStdin = existsSync(stdinPersona) ? readFileSync(stdinPersona, "utf8") : "";
+  check("persona create --file - sends the card from stdin to the exact manager with its role and body",
+    createdStdin.status === 0 && stdinReceipt.includes("Persona saved on manager") && new RegExp(`Answering manager:\\s+${IID2}`).test(stdinReceipt) &&
+      /^role: reviewer$/m.test(savedFromStdin) && /^Review changes carefully\.$/m.test(savedFromStdin),
+    { status: createdStdin.status, out: stdinReceipt.slice(-900) });
   const shownRemote = await cotal(["persona", "show", "remote-rev", "--on", IID2, "--space", space], root2);
   mustHaveRun(shownRemote, "`persona show --on` by a later caller");
   check("a later show --on is refused not-found and names the local show for the file in this root",

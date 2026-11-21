@@ -623,8 +623,9 @@ It heads the list with the mesh it read and marks each persona `running` or `not
 A name-only row does not grant access to its instructions or permission to redefine it.
 These operations never substitute the local catalog or another manager.
 
-`persona create <name> --on <id>` accepts one of `--file`, `--prompt` or `--from`, with
-`--from -` as explicit piped input. Leading frontmatter follows the native persona merge:
+`persona create <name> --on <id>` accepts one of `--file`, `--prompt` or `--from`.
+Use `--file -` to read a complete persona card from standard input, or `--from -` to read
+body input. Leading frontmatter follows the native persona merge:
 the supplied name wins, explicit model/role/application and channel fields override the file,
 and the manager preserves existing ownership and redefinition policy. Inputs are bounded to
 1 MiB and must be valid UTF-8. A malformed leading block refuses before the remote request.
