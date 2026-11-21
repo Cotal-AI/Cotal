@@ -70,6 +70,8 @@
  *     removes the three stack definitions, and the journal names none of their instances. `space
  *     create` there and `up --no-manager` start a new broker and delivery with no manager instance,
  *     and `down --yes` stops them. Each down leaves no member process.
+ *  16. A forgotten open stack starts in its original mode at the recorded address and store,
+ *      without delivery, and can read its retained history.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
  */
@@ -818,6 +820,34 @@ try {
     const last = cli(root, "down", "--yes", "--json");
     check("down --yes then stops them, and no member process is left",
       last.status === 0 && JSON.stringify(ids(rows(last))) === JSON.stringify(ids(second)) && rows(last).every((row) => row.instanceId === null || row.state === "stopped") && gone(secondPids), shown(last));
+  }
+  // 16. Forgetting an open space does not make its stopped broker a first start.
+  {
+    const space = "tear16";
+    const root = folder(space);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const store = join(root, "retained-store");
+    const text = "retained-before-forget";
+    const created = cli(root, "space", "create", space, "--json");
+    anchor(root);
+    const started = cli(root, "up", "--open", "--no-manager", "--server", server, "--store-dir", store, "--json");
+    const sent = cli(root, "send", "-c", "audit", text, "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    const forgot = cli(root, "space", "forget", space, "--json");
+    const recreated = cli(root, "space", "create", space, "--json");
+    check("the open stack stored a message and was stopped, forgotten and prepared again",
+      created.status === 0 && started.env?.result?.mode === "open" && sent.status === 0 && stopped.status === 0
+        && forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === '["stack-broker"]' && recreated.status === 0,
+      { created: shown(created), started: shown(started), sent: shown(sent), stopped: shown(stopped), forgot: shown(forgot), recreated: shown(recreated) });
+    const restarted = cli(root, "up", "--no-manager", "--json");
+    const delivery = (restarted.env?.result?.members as { role: string; instanceId: string | null }[] | undefined)?.find((row) => row.role === "delivery");
+    const history = cli(root, "history", "audit", "--limit", "10", "--json");
+    check("up without a mode or address keeps the open broker and its retained history without starting delivery",
+      restarted.status === 0 && restarted.env?.result?.mode === "open" && restarted.env?.result?.server === server && delivery?.instanceId === null
+        && findMesh(space)?.storeDir === store && history.status === 0 && (history.env?.result?.items as { text?: string }[] | undefined)?.some((row) => row.text === text) === true,
+      { restarted: shown(restarted), history: shown(history) });
+    const last = cli(root, "down", "--yes", "--json");
+    check("the reopened open stack stops cleanly", last.status === 0, shown(last));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");
