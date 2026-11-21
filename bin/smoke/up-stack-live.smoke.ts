@@ -474,6 +474,12 @@ try {
   ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
   const openManager = openManagerPid();
   pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
+  const openDefaults = cliIn(openRoot, "channel", "defaults", "--json");
+  const openDelivery = openDefaults.status === 0 ? JSON.parse(openDefaults.stdout).result?.registry?.defaults?.deliveryClass : undefined;
+  ok("a fresh local open space writes a live channel default", openDelivery === "live", openDefaults.stdout + openDefaults.stderr);
+  const channelSpec = readFileSync(join(WT, "SPEC.md"), "utf8").split("\n## 7. Channels\n")[1]?.split("\n## 8. ")[0];
+  const specifiedOpenDelivery = channelSpec?.match(/^\| Local open \| `(live|durable)` \|/m)?.[1];
+  ok("SPEC §7 lists the local open profile and agrees with its on-wire default", specifiedOpenDelivery === openDelivery);
   for (const extra of [[], ["--runtime", "pty"]]) {
     const healthy = openRefresh(...extra);
     ok(`a healthy open refresh${extra.length ? " with --runtime" : ""} exits 0, keeps the manager pid and says nothing about starting a stopped stack`,

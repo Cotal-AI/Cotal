@@ -181,8 +181,8 @@ export interface PresencePrompts {
  *   (also retained per member and redelivered on the member's next connection/turn until acked).
  *
  * Effective class is {@link effectiveDeliveryClass}: `channel ?? space default ?? "durable"`. The
- * space default is set at space creation from the deployment profile (local/self-hosted ⇒ `durable`,
- * public/web-scale ⇒ `live`) so it is always discoverable on the wire, never inferred per-component.
+ * space default is set at space creation from the deployment profile (authenticated local/self-hosted
+ * uses `durable`, while local open and public/web-scale use `live`). It is discoverable on the wire.
  */
 export type DeliveryClass = "live" | "durable";
 
@@ -213,7 +213,7 @@ export interface ChannelDefaults {
   replay?: boolean;
   replayWindow?: string;
   /** Default delivery class for channels without an explicit one. Written at space creation from
-   *  the deployment profile (local ⇒ `durable`, web ⇒ `live`); see {@link DeliveryClass}. */
+   *  the deployment profile. See {@link DeliveryClass}. */
   deliveryClass?: DeliveryClass;
 }
 
