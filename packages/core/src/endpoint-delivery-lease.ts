@@ -1,7 +1,7 @@
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
 import type { KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
-import type { AgentCard } from "./types.js";
 import { openDeliveryRegistry, type DeliveryLeaseInfo } from "./lease.js";
 import { leaseKey } from "./subjects.js";
 
@@ -9,8 +9,6 @@ type LeaseWatch = Awaited<ReturnType<KV["watch"]>>;
 
 /** Connection and consumer custody shared with the endpoint's other broker readers. */
 export interface EndpointDeliveryLeaseDeps {
-  card: () => AgentCard;
-  space: () => string;
   connection: () => NatsConnection | undefined;
   epoch: () => number;
   notLiveMsg: () => string;
@@ -52,10 +50,8 @@ export class EndpointDeliveryLease {
    *  these first. Each is bounded by the JetStream request timeout. */
   private readonly leaseWatchBinds = new Set<Promise<void>>();
 
-  constructor(private readonly deps: EndpointDeliveryLeaseDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointDeliveryLeaseDeps) {}
 
-  private get card() { return this.deps.card(); }
-  private get space() { return this.deps.space(); }
   private get nc() { return this.deps.connection(); }
   private get presenceEpoch() { return this.deps.epoch(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
@@ -70,13 +66,13 @@ export class EndpointDeliveryLease {
   /** Lazily open the delivery lease/readiness KV (pre-created at `cotal up`; bind, never create). */
   private async deliveryRegistry(): Promise<KV> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    this.deliveryKv ??= await openDeliveryRegistry(this.nc, this.space);
+    this.deliveryKv ??= await openDeliveryRegistry(this.nc, this.identity.space);
     return this.deliveryKv;
   }
 
 
   private encodeLease(shardIndex: number, ready: boolean, acquiredAt = this.leaseAcquiredAt.get(shardIndex)): Uint8Array {
-    return new TextEncoder().encode(JSON.stringify({ holder: this.card.id, incarnation: this.leaseIncarnation, acquiredAt, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
+    return new TextEncoder().encode(JSON.stringify({ holder: this.identity.card.id, incarnation: this.leaseIncarnation, acquiredAt, since: Date.now(), ready } satisfies DeliveryLeaseInfo));
   }
 
 
@@ -90,7 +86,7 @@ export class EndpointDeliveryLease {
    *  incarnation predates the field and cannot be proven ours, which is the safe reading: it leads
    *  to the takeover path rather than to serving on someone else's claim. */
   ownsDeliveryLease(info: DeliveryLeaseInfo): boolean {
-    return info.holder === this.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
+    return info.holder === this.identity.card.id && info.incarnation !== undefined && info.incarnation === this.leaseIncarnation;
   }
 
 

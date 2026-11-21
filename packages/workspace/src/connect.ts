@@ -576,7 +576,7 @@ export function connectSpace(flags: ConnectFlags): string | undefined {
     } catch { return undefined; }
   }
   if (flags.server && flags.space && !findMesh(flags.space)) return flags.space;
-  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }).space; }
+  try { return resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, openInventory: flags.openInventory, readOnly: true }).space; }
   catch { return undefined; }
 }
 
@@ -674,7 +674,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     }
     return { server: flags.server, space: flags.space, tls };
   }
-  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });
+  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, openInventory: flags.openInventory, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);
 }
 
@@ -1080,10 +1080,10 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  dead-recorded mesh the operator is recovering with a live `--server` override. A `readOnly`
  *  resolve takes no sweep and keeps a stale entry. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const offline = flags.offline ?? (!flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
+  const sweep = flags.offline === undefined && !flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : {};
   let target: MeshTarget;
   try {
-    target = resolveMeshTarget(process.cwd(), { ...flags, offline });
+    target = resolveMeshTarget(process.cwd(), { ...flags, ...sweep });
   } catch (e) {
     // The target error rides as `cause`, so a caller that must tell "no mesh recorded at all" from
     // every other refusal can read its `code` instead of matching the rendered sentence. No mesh

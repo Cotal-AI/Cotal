@@ -1,16 +1,18 @@
-import { spawn, spawnSync } from "node:child_process";
-import { lookup } from "node:dns/promises";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isIP, SocketAddress } from "node:net";
-import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, type OutputWarning,
-  cmdSpawnSpec, oneLine,
-  beginGlobalUpdateChild,
-  processGroupMembers,
-  processStartToken,
+  CommandFailure,
+  isCommandFailure,
+  jsonFlag,
+  plainFlag,
+  presentationOf,
+  renderReport,
+  writeResult,
+  type OutputWarning,
+  cmdSpawnSpec,
+  oneLine,
   claimUpdateClosureAccess,
   updateClosureOwner,
   homeCotalDir,
@@ -56,7 +58,7 @@ import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
-import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
+import { repairInstallModes } from "../lib/install-umask.js";
 import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
@@ -87,6 +89,34 @@ import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+import {
+  type CommandResult,
+  RegistryUnavailable,
+  STRICT_SEMVER,
+  installedUpdatePrefix,
+  verifyGlobalEntry,
+  runNpmAsync,
+  runNpm,
+  runProcess,
+  runGlobalProcess,
+  latestNotAvailable,
+  failure,
+  message,
+} from "./update-process.js";
+import {
+  latestVersion,
+  npmProxyRefused,
+  checkInstalledClosure,
+  checkReleaseArchives,
+  ReleaseNotAvailable,
+  ReleaseDateExcluded,
+  DependencyCheckInterrupted,
+  DependencyCheckNoSpace,
+  registryNetworkFailure,
+  releaseReadError,
+  waitForReleaseArchives,
+} from "./update-release.js";
+export { parseNpmVersion, installedUpdatePrefix, verifyGlobalEntry } from "./update-process.js";
 export { localUpdateManagers } from "../lib/update-managers.js";
 export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
 import { assertRecordIdentity, brokerAddressKey, brokerUrlKey } from "@cotal-ai/workspace";
@@ -108,15 +138,6 @@ export const updateFlags: readonly FlagSpec[] = [
   ...targetFlags,
   onFlag,
 ];
-
-interface CommandResult {
-  readonly status: number | null;
-  readonly signal?: NodeJS.Signals | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly error?: string;
-  readonly errorCode?: string;
-}
 
 const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
 
@@ -1065,7 +1086,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   // way the control resolver's own peek does (offline-swept when no space is named, `--space`
   // unfiltered) and skip the mint entirely for a remote entry, before it ever reaches the exchange.
   // The control resolve below reads the same sweep, so the whole chain sees one liveness verdict.
-  let offline: readonly string[] | undefined;
+  let sweep: Awaited<ReturnType<typeof pruneStaleMeshes>> | undefined;
   let remoteSpace: string | undefined;
   if (typeof flags.creds !== "string") {
     const space = typeof flags.space === "string" ? flags.space : undefined;
@@ -1073,8 +1094,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     let peek: MeshTarget | undefined;
     try {
       // This sweep only probes. Read-only staged checks need the same liveness verdict.
-      offline = (await pruneStaleMeshes(server)).offline;
-      peek = resolveMeshTarget(process.cwd(), { server, space, offline });
+      sweep = await pruneStaleMeshes(server, space === undefined ? "targets" : "brokers");
+      peek = resolveMeshTarget(process.cwd(), { server, space, ...sweep });
     } catch (e) {
       // An unreadable prepared record is not evidence about Manager custody. The updater can
       // leave it alone only if it was not asked for a broker or instance and has no potentially
@@ -1082,7 +1103,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       if (isMeshRegistryError(e) && e.refusal === "PERMISSION_DENIED" && dirname(e.file) === preparedSpacesDir()) {
         const name = preparedRecordSpace(e.file);
         if (name !== undefined && server === undefined && on === undefined &&
-            !registry.entries.some(entry => space === undefined ? !offline?.includes(entry.space) : entry.space === space) &&
+            !registry.entries.some(entry => space === undefined ? !sweep?.offline.includes(entry.space) : entry.space === space) &&
             !supervisorMayServe(name, options.installedEntry)) return "none";
       }
       if (!isWorkspaceTargetError(e)) throw e;
@@ -1153,7 +1174,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
     // Explicit and in-folder targets are not filtered by the resolver's offline set.
-    if (peek && offline?.includes(peek.space) && on === undefined &&
+    if (peek && sweep?.offline.includes(peek.space) && on === undefined &&
         !supervisorMayServe(peek.space, options.installedEntry)) return "none";
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
     // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
@@ -1169,7 +1190,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       ...(typeof flags.space === "string" ? { space: flags.space } : {}),
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
-      offline,
+      ...sweep,
     }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
   } catch (e) {
     const failure = e instanceof ConnectRefusal ? e.failure() : isCommandFailure(e) ? e : undefined;
@@ -1246,194 +1267,6 @@ export function printLegacyReport(
   out("  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.");
   out("  Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.");
 }
-
-/** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
- *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; missingNpm?: true; npmResult?: CommandResult } {
-  const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
-  try {
-    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
-    if (result.errorCode === "ENOENT") return { ok: false, error: "npm is not on PATH", missingNpm: true };
-    if (result.status !== 0) return { ok: false, error: failure(result), npmResult: result };
-    try {
-      return { ok: true, version: parseNpmVersion(result.stdout) };
-    } catch (e) {
-      return { ok: false, error: message(e) };
-    }
-  } finally {
-    rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
-  }
-}
-
-/** npm gives a generic proxy hint even for direct failures. Match the refused socket instead. */
-async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
-  const httpsProxy = env.https_proxy || env.HTTPS_PROXY;
-  const httpProxy = env.http_proxy || env.HTTP_PROXY;
-  if ((!httpsProxy && !httpProxy) || result.status === null || result.error) return false;
-  let error: { code?: unknown; summary?: unknown } | undefined;
-  try { error = JSON.parse(result.stdout)?.error; }
-  catch { return false; }
-  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return false;
-  const refused = /^(?:FetchError: )?request to (\S+) failed, reason: connect ECONNREFUSED (\S+):(\d+)$/.exec(error.summary);
-  if (!refused) return false;
-  const [, request, address, port] = refused;
-  const registry = URL.parse(request);
-  if (!registry || (registry.protocol !== "https:" && registry.protocol !== "http:") || !isIP(address)) return false;
-  const setting = httpsProxy || (registry.protocol === "http:" ? httpProxy : undefined);
-  const proxy = setting ? URL.parse(setting) : null;
-  if (!proxy || (proxy.protocol !== "http:" && proxy.protocol !== "https:")) return false;
-
-  const portOf = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
-  if (portOf(proxy) !== port) return false;
-  const normalize = (ip: string) => isIP(ip) === 6 ? new SocketAddress({ address: ip, family: "ipv6" }).address : ip;
-  const matches = async (url: URL) => {
-    const host = url.hostname.replace(/^\[|\]$/g, "");
-    const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map(item => item.address);
-    return addresses.some(ip => normalize(ip) === normalize(address));
-  };
-  try {
-    // If the registry could have refused the same socket directly, do not blame the proxy.
-    return await matches(proxy) && (portOf(registry) !== port || !await matches(registry));
-  } catch { return false; }
-}
-
-/** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */
-function checkInstalledClosure(version: string, releasePackages: ReadonlySet<string>, rt: UpdateRuntime): void {
-  const names = [...new Set(rt.extensions().filter(entry => entry.pkg.startsWith("@cotal-ai/")).map(entry => entry.pkg))];
-  if (!names.length) return;
-  const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
-  try {
-    // Reconciliation supplies first-party peers from the target CLI, not the registry's latest tag.
-    // Constrain npm to that verified release graph without skipping third-party peers.
-    writeFileSync(join(staging, "package.json"), JSON.stringify({
-      overrides: Object.fromEntries([...releasePackages, ...names].map(name => [name, version])),
-    }));
-    const result = rt.npm(["install", "--prefix", staging, "--cache", join(staging, ".npm-cache"), "--logs-max=0", "--update-notifier=false", "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
-    if (result.signal) throw new DependencyCheckInterrupted(`npm dependency check was terminated by ${result.signal}`);
-    if (result.status !== 0) {
-      const detail = `installed extension dependency closure is unavailable: ${failure(result)}`;
-      if (/^npm (?:error|ERR!) code ENOSPC\s*$/m.test(result.stderr)) throw new DependencyCheckNoSpace(detail);
-      throw releaseReadError(result, detail);
-    }
-  } finally {
-    rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
-  }
-}
-
-/** Fetch the target's first-party install closure through npm, including integrity verification.
- *  A private cache forces a registry read without changing the installed packages or running scripts. */
-async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise<ReadonlySet<string>> {
-  const cache = mkdtempSync(join(tmpdir(), "cotal-release-check-"));
-  const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online"];
-  const pending = new Set(["cotal-ai"]);
-  const names = ["cotal-ai"];
-  try {
-    if (process.platform === "linux" || process.platform === "darwin") {
-      const start = processStartToken(process.pid);
-      if (!start) throw new Error("cannot identify the archive cache owner");
-      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
-    }
-    for (let offset = 0; offset < names.length;) {
-      const batch = names.slice(offset, offset + 3);
-      // Settle every read before validating or removing its shared private cache. Validation below
-      // stays in discovery order, including when independent registry requests finish out of order.
-      const manifests = await Promise.allSettled(batch.map(name => rt.npmAsync(["view", `${name}@${version}`, "--json", ...options], cache)));
-      offset += batch.length;
-      for (const [index, name] of batch.entries()) {
-        const spec = `${name}@${version}`;
-        const result = manifests[index]!;
-        if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
-        const manifest = result.value;
-        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`);
-        let meta: Record<string, unknown>;
-        try {
-          const payload: unknown = JSON.parse(manifest.stdout);
-          const parsed = Array.isArray(payload) && payload.length === 1 ? payload[0] : payload;
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-          meta = parsed as Record<string, unknown>;
-          if (meta.name !== name || meta.version !== version) throw new Error();
-          const dist = meta.dist as { tarball?: unknown; integrity?: unknown } | undefined;
-          if (typeof dist?.tarball !== "string" || !dist.tarball || typeof dist.integrity !== "string" || !dist.integrity) throw new Error();
-        } catch {
-          throw new Error(`metadata for ${spec} is incomplete or invalid`);
-        }
-        for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
-          const deps = meta[field];
-          if (deps === undefined) continue;
-          if (!deps || typeof deps !== "object" || Array.isArray(deps)) throw new Error(`invalid ${field} for ${spec}`);
-          for (const [dependency, range] of Object.entries(deps)) {
-            if (!dependency.startsWith("@cotal-ai/")) continue;
-            if (!/^@cotal-ai\/[a-z0-9][a-z0-9._-]*$/.test(dependency) || typeof range !== "string" ||
-                (field !== "peerDependencies" && range !== version)) throw new Error(`invalid first-party dependency in ${spec}`);
-            if (!pending.has(dependency)) { pending.add(dependency); names.push(dependency); }
-          }
-        }
-      }
-    }
-    // npm verifies each archive's integrity and applies registry, scoped auth and proxy/TLS policy.
-    // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.
-    for (let offset = 0; offset < names.length; offset += 6) {
-      const specs = names.slice(offset, offset + 6).map(name => `${name}@${version}`);
-      const archive = await rt.npmAsync(["cache", "add", ...specs, "--json", "--ignore-scripts", ...options], cache);
-      if (archive.status !== 0) throw releaseReadError(archive, `archives for ${specs.join(", ")} could not be downloaded and verified`);
-    }
-    return pending;
-  } finally {
-    rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
-  }
-}
-
-class ReleaseNotAvailable extends Error {}
-class ReleaseDateExcluded extends Error {}
-class DependencyCheckInterrupted extends Error {}
-class DependencyCheckNoSpace extends Error {}
-class RegistryUnavailable extends Error {}
-
-const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
-
-function registryNetworkFailure(error: unknown): boolean {
-  if (error instanceof RegistryUnavailable) return true;
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
-  return code !== undefined && NETWORK_ERROR_CODE.test(code);
-}
-
-function releaseReadError(result: CommandResult, detail: string): Error {
-  if (result.status !== null && !result.error) {
-    try {
-      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
-      if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
-        return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
-      // A first-party scoped read can fail while the public registry still answers.
-      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
-      if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
-      if (typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,39}$/.test(error.code)) {
-        const registry = detail.includes("@cotal-ai/") ? "the @cotal-ai:registry setting in .npmrc" : "your npm registry settings";
-        return new Error(`${detail} (npm ${error.code}${error.code === "ECONNREFUSED" ? ": registry connection refused" : ""}); check ${registry}, authentication, proxy and TLS configuration`);
-      }
-    } catch { /* An unstructured failure is not evidence of registry propagation. */ }
-  }
-  return registryNetworkFailure(new Error(failure(result))) ? new RegistryUnavailable(detail) : new Error(detail);
-}
-
-async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<ReadonlySet<string> | undefined> {
-  const now = rt.now ?? Date.now;
-  const deadline = now() + 10 * 60_000;
-  for (;;) {
-    try { return await checkReleaseArchives(version, rt); }
-    catch (error) {
-      if (!(error instanceof ReleaseNotAvailable)) throw error;
-      const remaining = deadline - now();
-      if (remaining <= 0) {
-        recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
-        rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
-        return undefined;
-      }
-      rt.out(`Waiting for cotal-ai@${version} release archives to reach the registry (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
-      await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
-    }
-  }
-}
-
 
 function preflightDetail(error: unknown): string {
   return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
@@ -1837,276 +1670,4 @@ function childBinding(rt: UpdateRuntime):
   if (!parent || !/^\d+$/.test(parent)) return { kind: "invalid", reason: "parent pid is missing or invalid" };
   if (Number(parent) !== rt.parentPid) return { kind: "invalid", reason: "parent pid does not match the launching process" };
   return { kind: "bound", target };
-}
-
-export function parseNpmVersion(output: string): string {
-  const parsed: unknown = JSON.parse(output.trim());
-  // `npm view cotal-ai@latest version --json` returns a bare string ("0.13.2") only while the
-  // registry holds a single published version; once more than one exists npm wraps the field query
-  // in a JSON array (["0.13.2"]) even for the @latest tag. Accept both, and take the highest valid
-  // semver — the @latest query resolves the array to a single element, and the max is the right
-  // answer whether npm hands back one element or the whole version list.
-  const candidates = typeof parsed === "string" ? [parsed] : Array.isArray(parsed) ? parsed : [];
-  const versions = candidates.filter((v): v is string => typeof v === "string" && STRICT_SEMVER.test(v));
-  if (versions.length === 0)
-    throw new Error(`npm returned an invalid cotal-ai version: ${JSON.stringify(parsed)}`);
-  return versions.reduce((max, v) => (compareSemver(v, max) > 0 ? v : max));
-}
-
-const PRE = "(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)";
-const BUILD = "[0-9A-Za-z-]+";
-const STRICT_SEMVER = new RegExp(
-  `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-${PRE}(?:\\.${PRE})*)?(?:\\+${BUILD}(?:\\.${BUILD})*)?$`,
-);
-
-/** Bind a POSIX npm global installation to its package and bin link before replacing it.
- * Local/npx copies and source checkouts retain npm's separate global destination. A global-shaped
- * installation with a missing, redirected or escaping entry refuses instead of guessing a prefix. */
-export function installedUpdatePrefix(packageRoot: string, entry: string): string | undefined {
-  const root = realpathSync(packageRoot);
-  const modules = dirname(root);
-  if (process.platform === "win32" || basename(modules) !== "node_modules" || basename(dirname(modules)) !== "lib")
-    return undefined;
-  const prefix = dirname(dirname(modules));
-  const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string };
-  const linked = realpathSync(join(prefix, "bin", "cotal"));
-  if (basename(root) !== "cotal-ai" || !meta.version ||
-      verifyGlobalEntry(modules, meta.version) !== realpathSync(entry) ||
-      (linked !== realpathSync(entry) && linked !== join(root, "dist", "cotal-npm")))
-    throw new Error("the invoked cotal package and its global bin link do not identify the same install");
-  return prefix;
-}
-
-export function verifyGlobalEntry(root: string, expectedVersion: string): string {
-  const packageDir = realpathSync(join(resolve(root), "cotal-ai"));
-  const meta = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")) as {
-    name?: string;
-    version?: string;
-    bin?: string | Record<string, string>;
-  };
-  if (meta.name !== "cotal-ai" || meta.version !== expectedVersion)
-    throw new Error(`expected cotal-ai@${expectedVersion}, found ${meta.name ?? "unnamed"}@${meta.version ?? "unknown"}`);
-  const declared = typeof meta.bin === "string" ? meta.bin : meta.bin?.cotal;
-  if (!declared) throw new Error("the installed package declares no cotal executable");
-  const entry = realpathSync(resolve(packageDir, declared));
-  const rel = relative(packageDir, entry);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
-    throw new Error(`the installed cotal executable escapes its package: ${entry}`);
-  return entry;
-}
-
-async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
-  try {
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
-    const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
-    const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
-    const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
-      cwd: parse(homedir()).root, windowsVerbatimArguments, windowsHide: true,
-      ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
-    });
-    let stdout = "", stderr = "", error: string | undefined;
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
-    child.once("error", cause => { error = cause.message; });
-    if (gated) {
-      const permit = child.stdio[3] as import("node:stream").Writable;
-      permit.on("error", cause => { error = message(cause); });
-      try {
-        if (child.pid === undefined) permit.end();
-        else {
-          writeFileSync(join(archiveCache!, `.worker-${child.pid}`), "", { mode: 0o600 });
-          permit.end("run\n");
-        }
-      } catch (cause) { error = message(cause); permit.end(); }
-    }
-    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
-    return { status, stdout, stderr, ...(error ? { error } : {}) };
-  } catch (error) {
-    return { status: null, stdout: "", stderr: "", error: message(error) };
-  }
-}
-
-function runNpm(args: string[], inherit = false): CommandResult {
-  try {
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
-    const result = spawnSync(file, spawnArgs, {
-      cwd: parse(homedir()).root, windowsVerbatimArguments,
-      ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
-    });
-    return {
-      status: result.status,
-      signal: result.signal,
-      stdout: `${result.stdout ?? ""}`,
-      stderr: `${result.stderr ?? ""}`,
-      error: result.error?.message,
-      errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
-    };
-  } catch (e) {
-    return { status: null, stdout: "", stderr: "", error: message(e), errorCode: (e as NodeJS.ErrnoException)?.code };
-  }
-}
-
-function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
-  const result = withInstallUmask(() => spawnSync(file, args, inherit ? { stdio: "inherit", env } : { encoding: "utf8", env }));
-  return {
-    status: result.status,
-    stdout: `${result.stdout ?? ""}`,
-    stderr: `${result.stderr ?? ""}`,
-    error: result.error?.message,
-  };
-}
-
-async function runGlobalProcess(
-  root: string,
-  operation: "install" | "reconcile",
-  file: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  inherit = false,
-  windowsVerbatimArguments = false,
-  staging?: string,
-): Promise<CommandResult> {
-  const gated = process.platform === "linux";
-  const mutation = beginGlobalUpdateChild(root, operation, gated);
-  let cache: string | undefined;
-  let published = false;
-  let preservePending = false;
-  const watchers: FSWatcher[] = [];
-  let elapsed: ReturnType<typeof setTimeout> | undefined;
-  let idle: ReturnType<typeof setTimeout> | undefined;
-  let stopping: Promise<void> | undefined;
-  try {
-    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
-    const recordCache = gated && staging !== undefined;
-    if (recordCache) {
-      const start = processStartToken(process.pid);
-      if (!start) throw new Error("cannot identify the staged npm cache owner");
-      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
-    }
-    if (staging !== undefined) {
-      // npm is quiet during a download. Its private cache receives the archive bytes and
-      // the private prefix changes as packages unpack. Neither depends on terminal output.
-      for (const path of [cache, staging]) {
-        const watcher = watch(path, { recursive: true }, () => idle?.refresh());
-        watcher.on("error", () => { clearTimeout(idle); idle = undefined; watcher.close(); });
-        watchers.push(watcher);
-      }
-    }
-    // The pipe closes without permission if the parent dies before publishing the PID.
-    // exec keeps the published PID and the real child keeps its original argv and stdin.
-    const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
-    const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-update", file, ...args] : args, {
-      // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
-      ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
-      env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
-      // A separate process group keeps terminal interrupts out of npm's live replacement.
-      // Keep the ChildProcess referenced and await close; this is not a background update.
-      detached: true,
-      windowsHide: true,
-      windowsVerbatimArguments,
-      ...(gated ? { stdio: [inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", inherit ? "inherit" : "pipe", "pipe"] } : inherit ? { stdio: "inherit" as const } : {}),
-    }));
-    const permit = gated ? child.stdio[3] as import("node:stream").Writable : undefined;
-    let error = "";
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
-    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
-    child.once("error", (e) => { error = e.message; });
-    permit?.on("error", (e) => { error = e.message; });
-    if (child.pid !== undefined) {
-      try {
-        // Publish cache custody before the gate permits npm to write to it.
-        if (recordCache) writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
-        mutation.markLive(child.pid);
-        published = true;
-      } catch (e) {
-        error = `could not journal ${operation} child ${child.pid}: ${(e as Error).message}`;
-        preservePending = true;
-      }
-    }
-    permit?.end(published ? "run\n" : undefined);
-    let rejectClose: (error: unknown) => void;
-    const close = new Promise<{ status: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
-      rejectClose = reject;
-      child.once("close", (status, signal) => resolveClose({ status, signal }));
-    });
-    if (staging !== undefined && child.pid !== undefined) {
-      const pgid = child.pid;
-      const signalGroup = (signal: NodeJS.Signals) => {
-        try { process.kill(-pgid, signal); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
-      };
-      const grace = 2000;
-      const reap = 1000;
-      const stop = () => {
-        if (stopping) return;
-        clearTimeout(elapsed);
-        clearTimeout(idle);
-        stopping = (async () => {
-          signalGroup("SIGTERM");
-          await new Promise(resolve => setTimeout(resolve, grace));
-          if (processGroupMembers(pgid).length) signalGroup("SIGKILL");
-          const deadline = performance.now() + reap;
-          while (processGroupMembers(pgid).length) {
-            if (performance.now() >= deadline) throw new Error(`could not stop staging npm process group ${pgid}`);
-            await new Promise(resolve => setTimeout(resolve, 25));
-          }
-        })();
-        void stopping.catch(error => {
-          child.stdin?.destroy();
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.unref();
-          rejectClose(error);
-        });
-      };
-      // Leave room for TERM and KILL within the five-minute staging budget. Idle time
-      // covers three 15-second fetch attempts plus their one- and two-second backoffs.
-      elapsed = setTimeout(stop, 300_000 - grace - reap);
-      idle = setTimeout(stop, 50_000);
-    }
-    const closed = await close;
-    clearTimeout(elapsed);
-    clearTimeout(idle);
-    if (stopping) {
-      await stopping;
-      if (published) mutation.clear();
-      throw new RegistryUnavailable("target staging could not reach the registry");
-    }
-    if (published) mutation.complete(
-      closed.status,
-      closed.signal,
-      closed.signal !== null
-        ? `${operation} child terminated by ${closed.signal}`
-        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,
-    );
-    return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
-  } catch (e) {
-    if (e instanceof RegistryUnavailable) throw e;
-    return { status: null, stdout: "", stderr: "", error: message(e) };
-  } finally {
-    for (const watcher of watchers) watcher.close();
-    clearTimeout(elapsed);
-    clearTimeout(idle);
-    if (!published && !preservePending) mutation.clear();
-    if (cache) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
-  }
-}
-
-/** npm --json supplies the code, but its summary is the only field naming the missing spec. */
-function latestNotAvailable(result: CommandResult, version: string): boolean {
-  if (result.status === 0 || result.status === null || result.error) return false;
-  try {
-    const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown } }).error;
-    return error?.code === "ETARGET" && error.summary === `No matching version found for cotal-ai@${version}.`;
-  } catch { return false; }
-}
-
-function failure(result: CommandResult): string {
-  return [result.signal && `process terminated by ${result.signal}`, result.error, result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n") || `process exited ${result.status}`;
-}
-
-function message(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
 }

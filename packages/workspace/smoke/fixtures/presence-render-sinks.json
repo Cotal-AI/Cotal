@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1105,
+    "total": 1106,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 883
+    "non-render/control": 884
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -317,35 +317,35 @@
       "rationale": "Passes the manager-reported process state to the same inventory row formatter for an agent left running; the formatter is the classified sink above."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`state for \"${mesh.space}\" is already preserved and offline`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation attempt ${attemptId} lost its manager mid-commit and ${stillLive.length} retained principal(s) are still live (${stillLive.join(\", \")}); the cut intent is PRESERVED for inspection - stop them, then rerun \\`cotal down --preserve-state\\``",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(\", \")}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`✓ preserved state for \"${mesh.space}\"`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`  resume inventory: ${join(root, \".cotal\", \"maintenance\", \"v1\", resume.file)}`",
       "class": "non-render/control",
@@ -502,21 +502,21 @@
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`${operation} child terminated by ${closed.signal}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`Windows npm intermediary exited ${closed.status}; descendant completion is unproved`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`process exited ${result.status}`",
       "class": "non-render/control",
@@ -1267,63 +1267,63 @@
       "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: snapshots seat state before stopping components; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(delivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(manager, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(retryDelivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "omponent)))\n      await stopLocalProcess(component, context);\n    // Wire-truth quie",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "processAlive(manager, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "stopLocalProcess(delivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "stopLocalProcess(retryDelivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "uiescence))\n      await stopLocalProcess(component, context);\n    // Fail-closed: a ",
       "class": "non-render/control",
@@ -1337,7 +1337,7 @@
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
@@ -3642,14 +3642,14 @@
       "rationale": "Clean preview: names a registration the clean removes; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
       "class": "non-render/control",
@@ -5092,42 +5092,42 @@
       "rationale": "Down preview warning text: appends the service refusal's remedy; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`the broker for \"${mesh.space}\" runs on the store ${mesh.storeDir}, not ${resolvePath(storeOverride)}; nothing was stopped`",
       "class": "non-render/control",
       "rationale": "Down refusal text: the registered broker's store differs from --store-dir; mesh is a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`omit --store-dir, or pass --store-dir ${mesh.storeDir}`",
       "class": "non-render/control",
       "rationale": "Down refusal remedy: names the registration's recorded store; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "readStoreIdentity(storeDir)",
       "class": "non-render/control",
       "rationale": "Preserve control flow: reads the store's identity to compare it with the recorded cut; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`  source: ${storeDir}`",
       "class": "non-render/control",
       "rationale": "Preserve report line: prints the preserved source store path; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation attempt ${attemptId} no longer matches its manager's inventory (${(cause as Error).message}); the stale cut intent was aborted - rerun \\`cotal down --preserve-state\\``",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`",
       "class": "non-render/control",
@@ -6590,6 +6590,13 @@
       "rationale": "Stack journal refusal remedy: names the service stop commands for the running members; a local stack record, not presence."
     },
     {
+      "path": "implementations/cli/src/lib/stack-journal.ts",
+      "kind": "derived-output",
+      "anchor": "`read \"${mesh.space}\" with \\`cotal space show ${mesh.space}\\`, stop it in its own folder, then take it off this address with \\`cotal space forget ${mesh.space} --plain\\``",
+      "class": "non-render/control",
+      "rationale": "Stack journal refusal remedy: names the space show and space forget commands for each registration that shares the broker address; local registry rows, not presence."
+    },
+    {
       "path": "implementations/cli/src/lib/stack-runs.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
@@ -7540,7 +7547,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "version);\n          if (realpathSync(entry) !== realpathSync(entryS",
+      "anchor": "realpathSync(entry)",
       "class": "non-render/control",
       "rationale": "Paused recovery compares canonical executable paths to bind repair authority, not peer presence."
     },

@@ -1,7 +1,9 @@
 // The agent-side durable membership of CotalEndpoint, as an internal component: ask the delivery daemon to
 // join or leave a channel's Plane-3 backstop, retry the tombstone of a membership a refused live sub forced
 // out, check a lifecycle's ACL row and copy the catch-up window for a privileged join. Moved verbatim from
-// endpoint.ts; the endpoint keeps the fields and forwards to these. Not re-exported by the index.
+// endpoint.ts; the component owns its pending leaves, reads the endpoint's identity and remaining shared
+// fields through its dependencies, and the endpoint forwards to it. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { readAcl } from "./acls.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
@@ -16,7 +18,6 @@ import { nanos } from "@nats-io/transport-node";
 export interface EndpointDurableDeps {
   js: () => JetStreamClient | undefined;
   jsm: () => JetStreamManager | undefined;
-  space: () => string;
   stopped: () => boolean;
   plane3Channels: () => Map<string, number>;
   aclRegistry: () => Promise<KV>;
@@ -38,11 +39,10 @@ export class EndpointDurable {
    *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
   private readonly pendingDurableLeave = new Map<string, number>();
 
-  constructor(private readonly deps: EndpointDurableDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointDurableDeps) {}
 
   private get js() { return this.deps.js(); }
   private get jsm() { return this.deps.jsm(); }
-  private get space() { return this.deps.space(); }
   private get stopped() { return this.deps.stopped(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
   private aclRegistry(): Promise<KV> { return this.deps.aclRegistry(); }
@@ -76,7 +76,7 @@ export class EndpointDurable {
     owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<number> {
     if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return 0;
-    const subject = chatSubject(this.space, "*", "*", channel);
+    const subject = chatSubject(this.identity.space, "*", "*", channel);
     const family = isChannelFamily(channel);
     const durableClass = new Map<string, Promise<boolean>>();
     const stored = (ch: string): Promise<boolean> => {
@@ -94,14 +94,14 @@ export class EndpointDurable {
     const cuP = parsePrincipalKey(owner);
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
     // A failed read throws, leaving the pending row to retry over the same window.
-    await this.deleteConsumerIfPresent(chatStream(this.space), name);
-    await this.jsm.consumers.add(chatStream(this.space), {
+    await this.deleteConsumerIfPresent(chatStream(this.identity.space), name);
+    await this.jsm.consumers.add(chatStream(this.identity.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
       inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: fromSeqExcl + 1,
     });
     let copied = 0;
     try {
-      const consumer = await this.js.consumers.get(chatStream(this.space), name);
+      const consumer = await this.js.consumers.get(chatStream(this.identity.space), name);
       let pending = (await consumer.info()).num_pending;
       while (pending > 0) {
         const want = Math.min(pending, 256);
@@ -124,7 +124,7 @@ export class EndpointDurable {
         pending -= got;
       }
     } finally {
-      await this.deleteConsumerIfPresent(chatStream(this.space), name);
+      await this.deleteConsumerIfPresent(chatStream(this.identity.space), name);
     }
     return copied;
   }

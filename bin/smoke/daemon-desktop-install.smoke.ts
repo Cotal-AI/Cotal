@@ -91,17 +91,27 @@ function checkInstallation(target: Isolated): void {
   assert.equal(receipt.unitSha256, createHash("sha256").update(readFileSync(target.unit)).digest("hex"));
 }
 
-// A real account-shell failure must remain actionable before any service operation.
-const shellFailure = isolated("shell-failure");
-for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), "exit 1\n", { mode: 0o600 });
-const refusedPath = await request(shellFailure, "install");
-assert.equal(refusedPath.ok, false);
-assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
-assert.equal(refusedPath.error?.message, "the account's application PATH could not be read; no service was changed");
-assert.equal(refusedPath.error?.remedy, "check that your login shell starts successfully, then choose Check again");
-assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
-assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
-console.log("install PATH refusal preserves its message/remedy without service effects");
+// A real account-shell failure must remain actionable before any service operation: the refusal names the shell,
+// how it ended and its last error output, so the person can fix that startup file.
+const shellCases = [
+  { name: "shell-failure", profile: "exit 1\n", message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 1; no service was changed$/ },
+  { name: "shell-error-output", profile: "printf '\\033[31mbrew: \"command\" isn'\\''t `found`\\033[0m\\n' >&2\nexit 127\n",
+    message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 127; its last error output was "brew: ’command’ isn’t ’found’"; no service was changed$/ },
+  { name: "shell-noisy-start", profile: "head -c 70000 /dev/zero | tr '\\0' x\n",
+    message: /^the account's application PATH could not be read: the login shell \/\S+ printed more than 64 KiB while starting; no service was changed$/ },
+];
+for (const shellCase of shellCases) {
+  const shellFailure = isolated(shellCase.name);
+  for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), shellCase.profile, { mode: 0o600 });
+  const refusedPath = await request(shellFailure, "install");
+  assert.equal(refusedPath.ok, false);
+  assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
+  assert.match(refusedPath.error?.message ?? "", shellCase.message);
+  assert.equal(refusedPath.error?.remedy, "check that your login shell starts successfully, then choose Check again");
+  assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
+  assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
+}
+console.log(`install PATH refusal names the shell's failure without service effects (${shellCases.length} cases)`);
 
 // A Windows non-timeout PATH read refusal never mentions a login shell, and a Windows timeout advises waiting and retrying.
 const winRoot = join(root, "win-system-root");
@@ -115,7 +125,7 @@ try {
     () => windowsApplicationPath(),
     (err: { code?: string; message?: string; remedy?: string }) => {
       assert.equal(err.code, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(err.message, "the account's application PATH could not be read; no service was changed");
+      assert.equal(err.message, "the account's application PATH could not be read: PowerShell exited with status 1; no service was changed");
       assert.equal(err.remedy, "choose Try again, or run `cotal daemon install` in a terminal for diagnostics");
       assert.ok(!String(err.remedy).includes("login shell"), "Windows remedy must not mention a login shell");
       return true;

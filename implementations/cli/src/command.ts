@@ -805,9 +805,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
   if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
-    // `up` meets the seed's refusals here but seeds only when it first starts a process, so a refusal
-    // in its own body leaves the operator-global store as it found it.
-    const deferred = cmd?.name === "up";
+    // Startup checks seed compatibility here and reconciles at launch. A restore that refuses
+    // before launch leaves the operator-global store as it found it.
+    const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) {
         // Broker-only startup still checks the store generation. An explicit restore can start its

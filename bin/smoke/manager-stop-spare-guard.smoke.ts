@@ -26,6 +26,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const SELF = "bin/smoke/manager-stop-spare-guard.smoke.ts";
@@ -62,11 +63,7 @@ const FROZEN_DROPPED = [
   "implementations/manager/smoke/manager-restart-live.smoke.ts",
 ] as const;
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 function smokeSources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -259,5 +256,5 @@ check(
   !/readonly supportsRelease\s*=\s*true/.test(legacySrc) && !/release:\s*/.test(legacySrc),
 );
 
-console.log(`\nMANAGER-STOP-SPARE-GUARD ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`\nMANAGER-STOP-SPARE-GUARD ${failed() === 0 ? "OK" : "FAILED"}  (${passed()} passed, ${failed()} failed)`);
+finish();

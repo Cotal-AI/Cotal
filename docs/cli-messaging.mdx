@@ -41,8 +41,9 @@ can carry, such as one holding `\` or longer than 128 characters, is refused wit
 before any presence lookup. A name collision refuses
 with `TARGET_AMBIGUOUS` and lists the full identities that carry the name, each with its display
 name, its kind (`agent`, `endpoint` or `chat session`) and the local time its process started, and a target that is not
-present refuses with `TARGET_NOT_FOUND` and points at `cotal who --all`. No fuzzy match selects an
-agent for you.
+present refuses with `TARGET_NOT_FOUND`. The suggested `cotal who --all` command uses the resolved
+space and keeps any explicit broker and credential file so it lists the same roster. No fuzzy match
+selects an agent for you.
 
 
 ### Message addressing

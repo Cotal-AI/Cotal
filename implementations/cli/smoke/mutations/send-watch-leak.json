@@ -33,8 +33,8 @@
     {
       "name": "a read-once endpoint watches presence",
       "file": "packages/core/src/endpoint-connection.ts",
-      "find": "    if (this.doWatch && this.readOnce) await this.readPresenceOnce();",
-      "replace": "    if (this.doWatch && this.readOnce && false) await this.readPresenceOnce();",
+      "find": "    if (this.identity.doWatch && this.identity.readOnce) await this.readPresenceOnce();",
+      "replace": "    if (this.identity.doWatch && this.identity.readOnce && false) await this.readPresenceOnce();",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
       "expectRed": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",
       "cell": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",
@@ -43,7 +43,7 @@
     {
       "name": "a read-once endpoint watches the channel registry",
       "file": "packages/core/src/endpoint-connection.ts",
-      "find": "      if (watchChannels) await (this.readOnce ? this.readChannelsOnce() : this.startChannelWatch());",
+      "find": "      if (watchChannels) await (this.identity.readOnce ? this.readChannelsOnce() : this.startChannelWatch());",
       "replace": "      if (watchChannels) await this.startChannelWatch();",
       "afterRestore": "pnpm --filter @cotal-ai/cli... build",
       "expectRed": "three one-shot sends leave no consumer on the presence or channel-registry stream (#4091)",

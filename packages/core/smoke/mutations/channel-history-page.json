@@ -80,7 +80,7 @@
       "name": "page drops this callers own messages",
       "file": "packages/core/src/endpoint-history.ts",
       "find": "          delivered++;\n          const msg = this.deps.decodeHistory(m);\n          if (msg) {",
-      "replace": "          delivered++;\n          const msg = this.deps.decodeHistory(m);\n          if (msg && msg.from.id !== this.card.id) {",
+      "replace": "          delivered++;\n          const msg = this.deps.decodeHistory(m);\n          if (msg && msg.from.id !== this.identity.card.id) {",
       "expectRed": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first",
       "cell": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first"
     }

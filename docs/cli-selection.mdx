@@ -116,7 +116,7 @@ remedy. For `--server`, the `--force` route follows either one.
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
 its mode was not checked: `space` and `space show` show the mode as not checked, with
-`modeChecked: false` in `--json`, and `whoami` does not state what that mode implies as fact.
+`modeChecked: false` in `--json`. `whoami` reports conditional access and points to `cotal space show <name>`.
 If its broker does not answer, `space show` tells you to wait and check again. Once the broker
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
 root, mode and transport settings in place. It quotes the root when the shell would otherwise split
@@ -587,7 +587,13 @@ With no `--space`, `--server` or `--creds`, nothing selected and no project in t
 that several running spaces could serve asks which one when it runs in a terminal. The answer is the
 target of that one run, and the selection stays as it is; cancelling the question does nothing and
 exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
-`TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
+`TARGET_AMBIGUOUS`, exit 2, naming the candidates. When an unchecked open registration competes
+with another reachable record, the CLI checks the broker's space inventory. It leaves the
+registration intact and excludes it from automatic selection if the broker does not serve that
+space. If the CLI cannot read the inventory and still has to refuse, it marks the unchecked
+record as unverified and gives the exact `--space` choice for each candidate. An explicit
+`--server` can still require `--space` when several records name that address.
+Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
 
@@ -1310,6 +1316,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 When a stopped local broker's address accepts a connection without a NATS greeting, `status`
 and read commands name the occupied address and recommend stopping that listener or starting
 on another port. They keep the space's registration.
+When a controller stack keeps its recorded address, a refused restart does not clear the diagnosis.
+`status` checks the address again and names the listener to stop if it still holds the port.
 
 When `--server` matches several registered spaces, add `--space <name>` to choose one.
 Selecting a default with `cotal use <name>` applies only after removing `--server`.

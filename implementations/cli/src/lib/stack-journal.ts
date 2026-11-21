@@ -1046,5 +1046,14 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   }
   if (brokerStopped) return;
   const sharing = loadMeshes().filter((mesh) => mesh.space !== journal.space && mesh.server === journal.server);
-  if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) } });
+  // The stop is refused because this listener answers for more than one registration, so the
+  // operator needs the command that takes the other registration off this address. Each other space
+  // is named with its own `space show` to read it first and `space forget --plain` to take it off
+  // the address once its own stack is stopped; forget refuses while that space runs, and the stop
+  // to run again once the address is this stack's alone. The forget is never automatic: an active
+  // shared space is not safe to stop.
+  if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) }, remedy: [
+    ...sharing.map((mesh) => `read "${mesh.space}" with \`cotal space show ${mesh.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${mesh.space} --plain\``),
+    `then run ${next}`,
+  ].join("; ") });
 }

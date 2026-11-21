@@ -1,14 +1,16 @@
 // The anycast request rail of CotalEndpoint, as an internal component: the daemon side (arm and drop the
 // take responder and the request records, answer takes, send request and mention notices, answer status
 // and cancel) and the holder side (take a request, read or cancel one of this endpoint's own). Moved
-// verbatim from endpoint.ts; the endpoint keeps the fields and forwards to these. Not re-exported by the index.
+// verbatim from endpoint.ts; the rail owns its take responder state, reads the endpoint's identity and
+// remaining shared fields through its dependencies, and the endpoint forwards to it. Not re-exported by the index.
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { AnycastRequestAuthority, ANYCAST_RECORDS_CREDENTIAL_OUTDATED, type AnycastTakeReply, type AnycastTakeRequest, isAnycastSeq, type AnycastNotice, ANYCAST_NOTICE_KEY, ANYCAST_CANCEL_OP, type AnycastStatus, ANYCAST_TAKES_OP, ANYCAST_STATUS_OP } from "./anycast-requests.js";
 import { ANYCAST_SWEEP_MS, MAX_TAKES_IN_FLIGHT, ANYCAST_TAKE_TIMEOUT_MS } from "./endpoint-options.js";
 import { isPermissionDenied } from "./permission-denied.js";
 import { assertValidName } from "./resolve.js";
 import { anycastStoreDefinition } from "./streams.js";
 import { taskStream, takeServeFilter, TAKE_ROUTE, parseTakeSubject, isPrincipalOwnerToken, parsePrincipalKey, unicastSubject, MENTION_NOTICE_KEY, takeSubject } from "./subjects.js";
-import type { AgentCard, EndpointRef, ControlReply, CotalMessage, AnycastTakeOutcome } from "./types.js";
+import type { EndpointRef, ControlReply, CotalMessage, AnycastTakeOutcome } from "./types.js";
 import type { JetStreamManager, JetStreamClient } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
 import { type NatsConnection, type Subscription, type Msg, NoRespondersError, RequestError } from "@nats-io/transport-node";
@@ -21,10 +23,6 @@ export interface EndpointAnycastDeps {
   nc: () => NatsConnection | undefined;
   jsm: () => JetStreamManager | undefined;
   js: () => JetStreamClient | undefined;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
-  card: () => AgentCard;
   authed: () => boolean;
   subs: () => Subscription[];
   anycastUnavailable: () => string | undefined;
@@ -47,15 +45,11 @@ export class EndpointAnycast {
   private anycastSweep?: ReturnType<typeof setInterval>;
   private takesInFlight = 0;
 
-  constructor(private readonly deps: EndpointAnycastDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointAnycastDeps) {}
 
   private get nc() { return this.deps.nc(); }
   private get jsm() { return this.deps.jsm(); }
   private get js() { return this.deps.js(); }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get card() { return this.deps.card(); }
   private get authed() { return this.deps.authed(); }
   private get subs() { return this.deps.subs(); }
   private get anycastUnavailable() { return this.deps.anycastUnavailable(); }
@@ -74,7 +68,7 @@ export class EndpointAnycast {
   async armAnycastRequests(): Promise<void> {
     if (!this.nc || !this.jsm) return;
     this.dropAnycastRequests();
-    const definition = anycastStoreDefinition(this.space);
+    const definition = anycastStoreDefinition(this.identity.space);
     let kv: KV;
     try {
       kv = await new Kvm(this.nc).create(definition.bucket, definition.createOptions);
@@ -90,7 +84,7 @@ export class EndpointAnycast {
     const authority = new AnycastRequestAuthority({
       jsm: this.jsm,
       kv,
-      stream: taskStream(this.space),
+      stream: taskStream(this.identity.space),
       send: (to, event) => this.sendAnycastNotice(to, event),
       mayAct: () => this.plane3MayAct(),
       onError: (e) => this.emitRecoverable(e),
@@ -119,7 +113,7 @@ export class EndpointAnycast {
    *  and shares nothing with any other take but the row's CAS. The reply is bound to the caller's own
    *  request subtree, as `serveControl`'s `boundReply` binds it. */
   private serveTakes(authority: AnycastRequestAuthority): import("@nats-io/transport-node").Subscription {
-    const sub = this.nc!.subscribe(takeServeFilter(this.space), { queue: TAKE_ROUTE });
+    const sub = this.nc!.subscribe(takeServeFilter(this.identity.space), { queue: TAKE_ROUTE });
     this.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
@@ -178,12 +172,12 @@ export class EndpointAnycast {
     const msg: CotalMessage = {
       id: event.key,
       ts: Date.now(),
-      space: this.space,
+      space: this.identity.space,
       from: this.ref(),
       to,
       parts: [{ kind: "text", text: event.text }, { kind: "data", data: { [ANYCAST_NOTICE_KEY]: event.notice } }],
     };
-    await this.js.publish(unicastSubject(this.space, recipient.owner, recipient.actor, this.owner, this.actor), JSON.stringify(msg), { msgID: msg.id });
+    await this.js.publish(unicastSubject(this.identity.space, recipient.owner, recipient.actor, this.identity.owner, this.identity.actor), JSON.stringify(msg), { msgID: msg.id });
   }
 
   /** DM a post's sender that its mentions of `names` reached no one, because each of those agents
@@ -197,7 +191,7 @@ export class EndpointAnycast {
     const notice: CotalMessage = {
       id: `mention.${seq}.${msg.id}`,
       ts: Date.now(),
-      space: this.space,
+      space: this.identity.space,
       from: this.ref(),
       to: msg.from.id,
       parts: [
@@ -205,7 +199,7 @@ export class EndpointAnycast {
         { kind: "data", data: { [MENTION_NOTICE_KEY]: { channel, message: msg.id, names: [...names] } } },
       ],
     };
-    await this.js.publish(unicastSubject(this.space, recipient.owner, recipient.actor, this.owner, this.actor), JSON.stringify(notice), { msgID: notice.id });
+    await this.js.publish(unicastSubject(this.identity.space, recipient.owner, recipient.actor, this.identity.owner, this.identity.actor), JSON.stringify(notice), { msgID: notice.id });
   }
 
   /** Answer a sender's status or cancel for one of its own requests. The caller is the
@@ -241,8 +235,8 @@ export class EndpointAnycast {
     if (!nc) return { taken: false, drop: false, reason: "daemon-down", detail: this.notLiveMsg() };
     const held = (reason: "daemon-busy" | "daemon-down" | "daemon-outdated" | "credential-outdated", detail: string): AnycastTakeOutcome =>
       ({ taken: false, drop: false, reason, detail });
-    const subject = takeSubject(this.space, role, this.owner, this.actor);
-    const body: AnycastTakeRequest = { from: { id: this.card.id, name: this.card.name }, seq, id, count, epoch };
+    const subject = takeSubject(this.identity.space, role, this.identity.owner, this.identity.actor);
+    const body: AnycastTakeRequest = { from: { id: this.identity.card.id, name: this.identity.card.name }, seq, id, count, epoch };
     let reply: AnycastTakeReply;
     try {
       const m = await this.requestBoundReply(nc, subject, JSON.stringify(body), `${subject}.reply.${randomUUID()}`, ANYCAST_TAKE_TIMEOUT_MS);

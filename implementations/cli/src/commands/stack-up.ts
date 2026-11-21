@@ -97,7 +97,7 @@ function websocketPortTaken(error: unknown, wsPort: number, logFile: string | un
 export interface StackUpNative {
   /** `userAuth` asks the native `authSetup` user arm (`prepareServer`) and must return its private
    *  `user` material; any other mode must return none. */
-  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { mintProvisioner(): Promise<string>; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
+  prepareBroker(opts: { transport: BrokerTransport; server: string; space: string; open: boolean; userAuth?: { idpUrl?: string }; host?: string; wsPort?: number; storeDir?: string; existingStore?: ExistingStorePin; maxFileStore?: number; logFile?: string; logfileSizeLimit?: number; logfileMaxNum?: number; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full"; noManager?: boolean; channels?: string; seed?: unknown }): Promise<{ root: string; server: string; space: string; storeDir: string; transport: BrokerTransport; setup?: { mintProvisioner(): Promise<string>; wsPort: number; moveWebsocketPort(): Promise<number> }; user?: StackUserPrepared; confPath: string; bin: string; source: "path" | "bundled"; version: string | null; seedFile?: unknown; authTimeout?: number; maxPayload?: number; accountResolver?: "memory" | "full" }>;
   /** Recreation options are accepted only on a fresh broker before space services start. */
   initializeStreams(server: string, space: string, setup: { mintProvisioner(): Promise<string> } | undefined, seedFile: unknown, recreateIssuedStores?: string, recreateMembershipStore?: boolean): Promise<void>;
   /** On a broker the stack reuses, create the space's streams again when every one of them is gone,
@@ -599,14 +599,20 @@ async function recordedAddressHeld(space: string, server: string, bindHost?: str
   return holders.length ? { says: `${held.says}, where process ${holders.join(", ")} of this account listens`, frees: held.frees } : held;
 }
 
-/** The restart blocker for a prepared space whose controller stack completed its stop. */
+/** The live address blocker for a stopped controller stack with a recorded broker. */
 export async function stoppedStackAddressProblem(root: string, space: string): Promise<{ message: string; remedy: string } | undefined> {
   try {
     const journal = readStackJournal(root)?.journal;
-    if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") return undefined;
+    if (journal?.space !== space) return undefined;
+    const { kind, phase } = journal.operation;
+    const cleanStop = kind === "down" && phase === "completed";
+    const refusedRestart = kind === "up" && phase === "refused" && !stackNeverStarted(journal)
+      && journal.members.some((row) => row.role === "broker" && row.state === "refused");
+    if (!cleanStop && !refusedRestart) return undefined;
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
-    const restart = `${displayCmd()} up${journal.members.some((row) => row.role === "manager" && row.state === "not-attempted") ? " --no-manager" : ""}`;
+    const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
+    const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
     return { message: held.says, remedy: `${held.frees}, then run ${codeSpan(restart)} in ${root}; this stack keeps its recorded address` };
   } catch (error) {
     // An unreadable local record does not establish an address conflict.
@@ -1008,6 +1014,12 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       });
     }
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
+    let pinnedWsPort: number | undefined;
+    if (!brokerRunning && mode !== "open" && savedManager?.type === "adapter" && savedManager.adapter === STACK_ADAPTER.manager && savedManager.options.root === root) {
+      const port = savedManager.options["ws-port"];
+      if (typeof port === "number" && serviceInstances(space, STACK_DEFINITION.manager).some((row) =>
+        row.record.value.definitionRevision === managerDefinition?.record.revision && observeServiceProcess(row.record.value) === "running")) pinnedWsPort = port;
+    }
     if (!brokerRunning) {
       if (request.rotateSys) {
         // Rotated here, after the address check, so no broker can still serve the retired account.
@@ -1021,7 +1033,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         }
         failedRole = undefined;
       }
-      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.accountResolver !== undefined ? { accountResolver: request.accountResolver } : {}), ...(request.noManager ? { noManager: true } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
+      prepared = await native.prepareBroker({ transport: request.transport, server, space, open: mode === "open", ...(mode === "user" ? { userAuth: request.idp !== undefined ? { idpUrl: request.idp } : {} } : {}), ...(brokerHost ? { host: brokerHost } : {}), ...(pinnedWsPort !== undefined ? { wsPort: pinnedWsPort } : {}), ...(brokerStore ? { storeDir: brokerStore } : {}), ...(storePin ? { existingStore: storePin } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}), ...(brokerLogFile !== undefined ? { logFile: brokerLogFile } : {}), ...(brokerLogfileSizeLimit !== undefined ? { logfileSizeLimit: brokerLogfileSizeLimit } : {}), ...(brokerLogfileMaxNum !== undefined ? { logfileMaxNum: brokerLogfileMaxNum } : {}), ...(request.authTimeout !== undefined ? { authTimeout: request.authTimeout } : {}), ...(request.maxPayload !== undefined ? { maxPayload: request.maxPayload } : {}), ...(request.accountResolver !== undefined ? { accountResolver: request.accountResolver } : {}), ...(request.noManager ? { noManager: true } : {}), ...(request.manifest ? { seed: request.manifest.seed } : request.channels ? { channels: request.channels } : {}) });
       if (canonicalRoot(prepared.root) !== root || prepared.space !== space || prepared.server !== server || (prepared.setup === undefined) !== (mode === "open") || (prepared.user === undefined) !== (mode !== "user")) throw new CommandFailure("refused", "CONFLICT", "the prepared broker configuration names another root, space, address or auth mode; the stack did not continue");
       if (mode === "user") assertUserStackTransport(server, prepared.transport.kind === "tls-required");
       // The validated transport decision is recorded before the broker child starts, so its
@@ -1039,14 +1051,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const broker = ensureDefinition(space, "broker", adapterDefinition(space, STACK_ADAPTER.broker, brokerOptions, 30000), root, replace("broker"));
     if (storePin) recheckExistingStore(storePin, { root, space });
     const storeIdentity = prepared ? readStoreIdentity(prepared.storeDir) : undefined;
-    // The preparation chose a free websocket port, but nothing holds it until the broker binds it. When
-    // another process takes it first, the broker exits before readiness, and a broker this call
-    // prepared is launched again on a newly chosen port.
+    // Retry a websocket bind failure on another port only when no running manager advertises it.
     let brokerInstance: ServiceInstanceSnapshot;
     for (;;) {
       try { brokerInstance = await start("broker", broker); break; }
       catch (error) {
         if (!prepared?.setup || brokerRelaunches === BROKER_WEBSOCKET_RELAUNCHES || !websocketPortTaken(error, prepared.setup.wsPort, brokerLogFile === undefined ? undefined : resolve(brokerLogFile))) throw error;
+        if (pinnedWsPort !== undefined) throw new CommandFailure("failed", "OPERATION_FAILED", `the broker could not bind websocket port ${pinnedWsPort}, which the running manager still advertises`, { remedy: `free websocket port ${pinnedWsPort}, then run \`cotal up\` again` });
         const wsPort = await prepared.setup.moveWebsocketPort();
         if (request.presentation !== "json") process.stderr.write(`another process took the broker's websocket port ${prepared.setup.wsPort} before the broker bound it; launching the broker again with port ${wsPort}\n`);
         prepared = { ...prepared, setup: { ...prepared.setup, wsPort } };
@@ -1149,7 +1160,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!request.noManager && !loginBlock) {
       const options: Record<string, unknown> = { root, runtime: request.runtime, server };
-      if (prepared?.setup?.wsPort !== undefined) options["ws-port"] = prepared.setup.wsPort;
+      const wsPort = prepared?.setup?.wsPort ?? definitionListeners(broker)?.find((listener) => listener.name === "websocket")?.port;
+      if (wsPort != null) options["ws-port"] = wsPort;
       if (maxSessions !== undefined) options["max-sessions"] = maxSessions;
       if (brokerHost) options["console-host"] = brokerHost;
       if (request.manifest) {

@@ -584,7 +584,8 @@ In a stopped local space's project folder, `cotal stop <agent> --json` writes on
 
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof
-without inventing a native effect outcome.
+without inventing a native effect outcome. When a manager cannot resolve the agent named by `stop`,
+its suggested `ps` command keeps the original space and broker options and any explicit manager selection.
 
 When the manager refuses a stop, terminal input or first attach before anything ran, for example
 because the agent is not running or the caller may not control it, its reply carries
