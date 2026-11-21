@@ -109,7 +109,7 @@
     },
     {
       "name": "status component probe loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "  ep.on(\"warning\", ignoreComponentWarning);",
       "replace": "  void ignoreComponentWarning;",
       "cell": "status component probe deliberately ignores recoverable side-channel warnings",

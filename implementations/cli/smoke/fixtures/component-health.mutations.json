@@ -5,7 +5,7 @@
   "mutations": [
     {
       "name": "a failed reconciliation state overrides a reachable manager service holding its lease",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "return { name: \"manager\", verdict: lease || credential.kind === \"user\" ? \"serving\" : \"not-serving\", facts };",
       "replace": "const reconcileFailed = reconcile?.state === \"failed\";\n    return { name: \"manager\", verdict: (lease || credential.kind === \"user\") && !reconcileFailed ? \"serving\" : \"not-serving\", facts };",
       "expectRed": "benign foreign-owned reconciliation stays serving with exact failure facts",
@@ -23,7 +23,7 @@
     },
     {
       "name": "a confirmed stale-or-missing manager process is reported as present-but-not-serving instead of component-absent",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "if (record.kind === \"absent\" || record.kind === \"dead\") return \"absent\";",
       "replace": "if (record.kind === \"absent\" || record.kind === \"dead\") return \"not-serving\";",
       "expectRed": "no manager process exits component-absent (1)",
@@ -41,7 +41,7 @@
     },
     {
       "name": "a live pid with no recorded bound address is guessed onto the default port instead of refused",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "  if (!bound) return { name: \"web\", verdict: \"refused\", facts: [...facts, \"probe refused (no bound address recorded)\"] };",
       "replace": "  if (!bound) bound = { host: \"127.0.0.1\", port: 7799, url: \"http://127.0.0.1:7799/\", readiness: \"\" };",
       "expectRed": "a live pidfile with no recorded bound address is a probe refusal (3), never a healthy default-port guess",
@@ -77,7 +77,7 @@
     },
     {
       "name": "the web row does not name the service instance whose record it read",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "  if (source.instance !== undefined) facts.push(`service instance ${source.instance}`);",
       "replace": "",
       "expectRed": "a service-run dashboard is graded from its own instance's session record",

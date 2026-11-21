@@ -1,7 +1,6 @@
 {
   "version": 1,
   "files": {
-    "implementations/cli/src/commands/status.ts": 2078,
     "implementations/cli/src/commands/up.ts": 6066,
     "implementations/cli/src/commands/update.ts": 2127,
     "implementations/manager/src/manager.ts": 2432,
