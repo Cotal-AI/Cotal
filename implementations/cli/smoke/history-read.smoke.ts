@@ -158,6 +158,16 @@ try {
     }
     check(`control: the owned broker at ${s} is ready`, ready, s);
   }
+  // Nothing has provisioned history on the open broker yet.
+  const empty = await run(["history", "clear", "--server", openServers, "--yes", "--plain"]);
+  check("history clear on a fresh open broker reports zero and names the absent chat stream",
+    empty.status === 0 && empty.stdout.includes("0 messages purged") && empty.stderr.includes(chatStream("main")), shown(empty));
+  const emptyDms = await run(["history", "clear", "--server", openServers, "--yes", "--dms", "--json"]);
+  const emptyReceipt = emptyDms.envelope?.result as { acknowledged?: unknown[] } | null | undefined;
+  check("history clear --dms on a fresh open broker reports a complete no-op with both stream names",
+    emptyDms.status === 0 && emptyDms.envelope?.outcome === "no-op" && emptyDms.envelope.completeness === "complete"
+      && emptyReceipt?.acknowledged?.length === 0 && emptyDms.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream("main")) && w.message.includes(dmStream("main"))), shown(emptyDms));
+
   // A provisioner credential lives five minutes by default and this one stays connected for the
   // whole suite, which runs longer than that on a loaded machine.
   const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner", { expiresInSeconds: 3600 });
@@ -1070,8 +1080,8 @@ try {
     await drop(chatStream(space));
     const chatOnly = await run(["history", "clear", "--yes", "--json"]);
     const dmKept = await messages(dmStream(space));
-    check("history clear with only the chat stream gone refuses TARGET_NOT_FOUND and leaves direct messages",
-      chatOnly.status === 2 && chatOnly.envelope?.error?.code === "TARGET_NOT_FOUND" && chatOnly.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged" && before > 0 && dmKept === before,
+    check("history clear with only the chat stream gone is a no-op and leaves direct messages",
+      chatOnly.status === 0 && chatOnly.envelope?.outcome === "no-op" && chatOnly.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space))) && before > 0 && dmKept === before,
       { chatOnly: shown(chatOnly), before, dmKept });
     const cleared = await run(["history", "clear", "--yes", "--dms", "--json"]);
     const dmAfter = await messages(dmStream(space));
@@ -1081,8 +1091,8 @@ try {
       { cleared: shown(cleared), before, dmAfter });
     await drop(dmStream(space));
     const none = await run(["history", "clear", "--yes", "--dms", "--json"]);
-    check("history clear --dms refuses TARGET_NOT_FOUND when the chat and direct-message streams are both gone",
-      none.status === 2 && none.envelope?.outcome === "refused" && none.envelope.error?.code === "TARGET_NOT_FOUND" && none.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged",
+    check("history clear --dms is a no-op when the chat and direct-message streams are both gone",
+      none.status === 0 && none.envelope?.outcome === "no-op" && none.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space)) && w.message.includes(dmStream(space))),
       shown(none));
   }
 
