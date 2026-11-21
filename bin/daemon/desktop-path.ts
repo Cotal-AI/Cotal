@@ -6,10 +6,11 @@ import { dirname, join, posix, win32 } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { pinnedPath } from "./install.js";
 
-/** The last few lines a failed PATH read printed to stderr, bounded and with tokens and control characters removed. */
+/** The last few lines a failed PATH read printed to stderr, bounded and with tokens and control characters removed.
+ *  Its own quote marks become ’ so the caller's quotes hold the whole tail: telemetry masks quoted values. */
 function lastErrorOutput(stderr: string): string {
   const lines = stderr.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>")
-    .split(/\r?\n/).map((line) => line.replace(/[\u0000-\u001f\u007f]/g, "").trim()).filter(Boolean);
+    .split(/\r?\n/).map((line) => line.replace(/[\u0000-\u001f\u007f]/g, "").replace(/["'`]/g, "’").trim()).filter(Boolean);
   const tail = lines.slice(-3).join(" / ");
   return tail.length > 300 ? `…${tail.slice(-299)}` : tail;
 }
@@ -21,7 +22,7 @@ function readFailure(error: ExecFileException, stderr: string, reader: string): 
     : error.signal ? `${reader} was stopped by ${error.signal}`
     : `${reader} could not be started${error.code ? ` (${error.code})` : ""}`;
   const output = lastErrorOutput(stderr);
-  return `the account's application PATH could not be read: ${what}${output ? `; its last error output was: ${output}` : ""}; no service was changed`;
+  return `the account's application PATH could not be read: ${what}${output ? `; its last error output was "${output}"` : ""}; no service was changed`;
 }
 
 const run = (command: string, args: string[], reader: string, remedy: string, timeoutRemedy = remedy) => new Promise<string>((resolve, reject) => {

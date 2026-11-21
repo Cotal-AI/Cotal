@@ -95,8 +95,8 @@ function checkInstallation(target: Isolated): void {
 // how it ended and its last error output, so the person can fix that startup file.
 const shellCases = [
   { name: "shell-failure", profile: "exit 1\n", message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 1; no service was changed$/ },
-  { name: "shell-error-output", profile: "printf '\\033[31mbrew: command not found\\033[0m\\n' >&2\nexit 127\n",
-    message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 127; its last error output was: brew: command not found; no service was changed$/ },
+  { name: "shell-error-output", profile: "printf '\\033[31mbrew: \"command\" isn'\\''t `found`\\033[0m\\n' >&2\nexit 127\n",
+    message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 127; its last error output was "brew: ’command’ isn’t ’found’"; no service was changed$/ },
   { name: "shell-noisy-start", profile: "head -c 70000 /dev/zero | tr '\\0' x\n",
     message: /^the account's application PATH could not be read: the login shell \/\S+ printed more than 64 KiB while starting; no service was changed$/ },
 ];
