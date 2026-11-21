@@ -127,6 +127,7 @@ Set `COTAL_DETACH_KEY=ctrl-<char>` if that conflicts with the application's keyb
 
 For a pty agent that exits on its own, the manager's `seat reaped:` log line includes its exit code and signal, when applicable.
 If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal-<name>/<part>]`, the report includes its last such line, limited to 240 characters.
+A Jcode startup failure that names a private log keeps the full path so you can open it on the manager host.
 
 On Linux, a manager can adopt and reap seats that an older manager left under detached per-seat custodians.
 It does not launch new custodians.
