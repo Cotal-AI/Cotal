@@ -369,8 +369,8 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    // Endpoint work and Manager unit installation are listed but have no runnable examples.
-    const unavailable = (cmd.name === "endpoint" && path[0] === "work") || (cmd.name === "manager" && path[0] === "install");
+    // Gated endpoint modes and Manager unit installation are listed but have no runnable examples.
+    const unavailable = (cmd.name === "endpoint" && ["watch", "session", "work"].some((mode) => mode === path[0])) || (cmd.name === "manager" && path[0] === "install");
     if (unavailable ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
@@ -531,7 +531,7 @@ for (const [args, usage, foreign] of [
     webStart.status === 0 && /^  --no-open\b/m.test(webStart.stdout),
     { manager: shown(managerStart), refused: shown(rejectedNoOpen), web: shown(webStart) });
 
-  for (const path of [["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
+  for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
       help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));
