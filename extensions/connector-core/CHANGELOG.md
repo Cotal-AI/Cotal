@@ -1,5 +1,15 @@
 # @cotal-ai/connector-core
 
+## 0.172.2
+
+### Patch Changes
+
+- efdc7d1: The installation reference documents the fields of `cotal completion --json` and of the `install` and `uninstall` receipts. The agent control reference says `stop` and `input` take `--json` and `attach` is text only.
+- f261418: Move the `cotal_inbox` tool spec and the inbox read it runs out of `tool-specs.ts` into `tool-specs-inbox.ts`. The tool types and the shared result helpers move into `tool-specs-shared.ts`. `tool-specs.ts` re-exports the types, and the package index exports the inbox names it exported before. The package surface is unchanged.
+- 2b1e7b4: Move the `cotal_spawn`, `cotal_feedback`, `cotal_despawn`, `cotal_yield`, `cotal_run`, `cotal_persona` and `cotal_personas` tool specs out of `tool-specs.ts` into `tool-specs-manager.ts`, in the same order and with the same capability filtering. The package index exports `shownSpawnName` and `spawnResult` as before. The package surface is unchanged.
+- cfc9f1e: Document the fields returned by `cotal docs --search --json`, including the empty `result.hits` array when nothing matches.
+- edb3a55: The startup reference documents `cotal up --recreate-membership-store`, including when to stop the space and which flags cannot be combined with it.
+
 ## 0.172.1
 
 ### Patch Changes

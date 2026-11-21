@@ -1,5 +1,12 @@
 # @cotal-ai/connector-jcode
 
+## 0.172.2
+
+### Patch Changes
+
+- 13da322: The jcode host keeps its turn state in one typed object shared by the closures that drive turns. Behaviour is unchanged.
+- 004dae3: The jcode host turn closures (inbox driver, mid-turn steering, queue fallback, bridge recovery and client watcher) live in their own module. Behaviour is unchanged.
+
 ## 0.172.1
 
 No changes in this release.

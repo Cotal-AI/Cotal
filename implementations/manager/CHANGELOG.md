@@ -1,5 +1,23 @@
 # @cotal-ai/manager
 
+## 0.172.2
+
+### Patch Changes
+
+- e93f99e: When the recorded local broker is down, `cotal endpoint deregister` tells you where to restart it and confirms that no registration deletion was attempted.
+- 8b77abe: Let self-update finish when a daemon-hosted Manager starts with the Claude Code connector, and keep a closing parent channel from crashing that Manager.
+- 584ab32: Manager install help now explains that unit installation and preview are unsupported and shows how to run the manager from your own unit.
+- 03c937e: Speed up hosted Manager restarts by verifying existing broker contracts without trying to publish them again.
+- Updated dependencies [801c561]
+- Updated dependencies [ed5599e]
+- Updated dependencies [731d13e]
+- Updated dependencies [6b69068]
+- Updated dependencies [ef90254]
+- Updated dependencies [e09d43d]
+  - @cotal-ai/workspace@0.172.2
+  - @cotal-ai/core@0.172.2
+  - @cotal-ai/seat@0.172.2
+
 ## 0.172.1
 
 ### Patch Changes
