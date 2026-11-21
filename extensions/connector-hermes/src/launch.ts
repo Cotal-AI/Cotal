@@ -17,12 +17,12 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
-import { ADOPT_HOME_ENV, LaunchRefused, requireManagedModel } from "./profile-options.js";
+import { ADOPT_HOME_ENV, adoptedHome, LaunchRefused, requireManagedModel } from "./profile-options.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
@@ -144,18 +144,6 @@ function parseLine(raw: string): [number, number] | null {
 }
 
 const cmp = (a: [number, number], b: [number, number]): number => a[0] - b[0] || a[1] - b[1];
-
-/** Resolve the adopt-home opt-in, or undefined for the managed default. A relative value is
- *  refused: it would resolve against whatever directory the launcher runs in, and a `~` no shell
- *  expanded would name a directory called `~` there, so the profile written to would depend on
- *  where the seat started. */
-export function adoptedHome(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const raw = env[ADOPT_HOME_ENV]?.trim();
-  if (!raw) return undefined;
-  if (!isAbsolute(raw))
-    throw new LaunchRefused(`${ADOPT_HOME_ENV}=${raw} is not an absolute path — set it to the full path of your Hermes profile directory, e.g. ${ADOPT_HOME_ENV}=$HOME/.hermes`);
-  return raw;
-}
 
 /**
  * Install the cotal plugin into an EXISTING Hermes profile, and change nothing else about it.

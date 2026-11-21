@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/connector-hermes": patch
+"@cotal-ai/manager": patch
 ---
 
-Direct Hermes launches and previews now report a missing model during launch validation. On a local mesh this happens before agents get credentials. An adopted Hermes profile can still supply its own model.
+Hermes reports a missing model or a relative adopted-profile path before issuing credentials for local foreground and manager-hosted launches. The direct preview reports the same errors. An adopted Hermes profile can still supply its own model.

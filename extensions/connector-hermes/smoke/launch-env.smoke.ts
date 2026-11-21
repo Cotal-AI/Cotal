@@ -18,8 +18,8 @@ import { discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type L
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
-import { adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
-import { ADOPT_HOME_ENV, LaunchRefused } from "../src/profile-options.js";
+import { assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
+import { ADOPT_HOME_ENV, adoptedHome, LaunchRefused } from "../src/profile-options.js";
 import { briefing } from "@cotal-ai/connector-core";
 
 /**

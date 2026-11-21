@@ -587,6 +587,40 @@ export class SeatStart {
     // name, no mint and no footprint behind.
     const overCap = this.seatCapRefusal(owner);
     if (overCap) return { ok: false, code: overCap.code, error: overCap.message, ...(overCap.details ? { details: overCap.details } : {}) };
+    // The uid is only a value until acceptance. Once-capable connectors can validate against it.
+    // Hosted enrollment may replace it with the authoritative uid before launch.
+    let lifecycleUid = mintLifecycleUid();
+    const cwd = resolvedCwd ?? this.workspaceRoot;
+    const launchInputs: LaunchOpts = {
+      ...hostFields,
+      name,
+      role,
+      configPath,
+      lifecycleUid,
+      model,
+      variant,
+      launchOptions,
+      resume: opts.resume,
+      reopenSession,
+      // A reopened seat already had its kickoff turn. A once seat receives it as a relayed task.
+      prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
+      ...(opts.once !== undefined ? { once: true } : {}),
+      subscribe,
+      allowSubscribe,
+      allowPublish,
+      capabilities,
+      // Always forward the resolved list so the session never reads a changed persona file for it.
+      endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
+      events,
+      eventPayloads,
+      cwd,
+    };
+    // Delegated seats validate on their execution host. A carried resume keeps its build-time
+    // checks against the prepared private profile rather than validating as an ordinary resume.
+    if (connector.supportsLaunchValidation && !runtime.spawnDelegated && !carried) {
+      try { connector.buildLaunch({ ...launchInputs, validateOnly: true }); }
+      catch (error) { return { ok: false, error: rejectionText(error) }; }
+    }
     // Set once the agent's footprint (durables + creds, or the user-mode grant + secret files)
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
@@ -612,15 +646,6 @@ export class SeatStart {
       // A stable nkey identity assigned at spawn: the public key is the agent's card.id (threaded via
       // COTAL_ID); the seed is retained to mint matching creds later.
       const identity = newIdentity();
-      // The incarnation's lifecycle UID (SPEC 13.1), minted ONCE per spawn: every lifecycle-keyed
-      // broker resource (dm_/dlv_/chathist_ durables, ACL row, memberships) and the teardown
-      // credential carry it, so a same-name successor's footprint is name-disjoint by construction.
-      //
-      // On the HOSTED enrollment arm (#1972) this value is PROVISIONAL. The host selects the
-      // authoritative uid, because it alone reads the retirement tombstones that make a uid
-      // permanently unusable, and the enrollment below rebinds this binding to what the host
-      // returned before anything durable is keyed by it.
-      let lifecycleUid = mintLifecycleUid();
       // Reserve the seat's custody reference NOW, before any durable row and long before the
       // launch. Minting it inside `runtime.spawn` (as it used to be) put the processes on disk
       // before anything recorded how to address them, so a crash in that window left a live seat
@@ -817,12 +842,6 @@ export class SeatStart {
         await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
         provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) }; // footprint now exists — the finally rolls it back if the spawn throws
       }
-      // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
-      // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
-      // agent shares the workspace root (the prior, unchanged behavior).
-      // The realpath the admission check above already resolved (#385 item 2) — never re-resolved here,
-      // so the admission refusal and the launch cwd can never disagree on the same request.
-      const cwd = resolvedCwd ?? this.workspaceRoot;
       // An inline persona's snapshot, and its catalog copy when saved, are written here: after the
       // grant (the static issuance, the user-auth ledger, a hosted enrollment that may replace the
       // uid) and before launch, so a refused grant leaves neither file and the snapshot carries the
@@ -839,9 +858,7 @@ export class SeatStart {
         : undefined;
       const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
       const launchOpts: LaunchOpts = {
-        ...hostFields,
-        name,
-        role,
+        ...launchInputs,
         // User mode: the principal IS the identity (the endpoint derives card.id from owner+actor);
         // no nkey id, no static creds.
         id: userLaunch ? undefined : identity.id,
@@ -853,33 +870,8 @@ export class SeatStart {
         lifecycleUid,
         acceptedToken: issued?.acceptedToken,
         configPath,
-        model,
-        variant,
-        launchOptions,
-        // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
-        // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
-        // construction. An unsupported connector throws here before any process is spawned.
-        resume: opts.resume,
-        reopenSession,
-        // Initial prompt: the `--prompt` flag, or the manifest entry's `prompt:` on a resolved launch.
-        // A reopened session already had its kickoff turn, so it is not submitted again. A once
-        // seat gets its prompt as its one relayed task instead.
-        prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
-        ...(opts.once !== undefined ? { once: true } : {}),
-        // The SAME access set the creds were minted from (above) — forwarded so the session's
-        // runtime read/post set matches its credentials. Without this a manifest-spawned agent
-        // (materialized persona has no access frontmatter) has no channel set to read and joins
-        // nothing, even though its creds authorize the manifest's channels.
-        subscribe,
-        allowSubscribe,
+        // Include the own event grant, derived from the allocated principal after validation.
         allowPublish,
-        capabilities,
-        // Always the list the launch resolved, `[]` included, so the session never reads a persona
-        // file that may have changed since.
-        endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
-        events,
-        eventPayloads,
-        cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
       // manager path is produced for it, only the handoff its runtime writes into the child.

@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
-import { ADOPT_HOME_ENV, requireManagedModel } from "./profile-options.js";
+import { adoptedHome, requireManagedModel } from "./profile-options.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
@@ -57,7 +57,7 @@ export const hermesConnector: Connector = {
     // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
     if (process.platform === "win32")
       throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
-    const adoptHome = process.env[ADOPT_HOME_ENV]?.trim();
+    const adoptHome = adoptedHome();
     // Resume forks: the launcher copies the named session out of the operator's Hermes profile into
     // the seat's own before the seat joins the mesh, and refuses there, by name, a session it cannot
     // find (see plugin/cotal/resume.py). The adopted profile already holds the session, so it is

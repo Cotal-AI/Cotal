@@ -78,6 +78,21 @@ setInterval(() => {}, 60_000);
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
+    env.COTAL_HERMES_ADOPT_HOME = "relative-profile";
+    try {
+      for (const preview of [true, false]) {
+        const result = cli("spawn", "-H", "hermes", ...(preview ? ["--dry-run", "--json"] : []));
+        check(`Hermes ${preview ? "preview" : "foreground"} refuses a relative profile before credentials or a child`,
+          result.status === 1 && /COTAL_HERMES_ADOPT_HOME=relative-profile is not an absolute path/.test(result.out)
+          && !/wrote creds|retired creds|spawning .* on the mesh/.test(result.out) && creds() === initialCreds, result.out);
+      }
+    } finally {
+      delete env.COTAL_HERMES_ADOPT_HOME;
+    }
+    const managed = cli("spawn", "-d", "-H", "hermes", "--name", "hermes_missing_model", "--json");
+    check("the manager refuses a missing Hermes model before acceptance or issuance",
+      managed.status === 2 && /managed Hermes profile needs a model/.test(managed.out)
+      && /"outcome":\s*"not-executed"/.test(managed.stdout) && creds() === initialCreds, managed.out);
     const hermesPersona = join(root, "hermes.md");
     writeFileSync(hermesPersona, "---\nname: hermes_test\nmodel: test-model\n---\n");
     const hermesPreview = cli("spawn", "-H", "hermes", "--file", hermesPersona, "--dry-run");
