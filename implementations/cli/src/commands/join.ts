@@ -14,6 +14,7 @@ import {
   deleteMember,
   isChannelFamily,
   isConcreteChannel,
+  assertValidChannel,
   openAclRegistry,
   openMembersRegistry,
   principalKey,
@@ -40,7 +41,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, codeSpan, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -67,7 +68,7 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
   if (credential !== undefined && missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credential.lifecycleUid}, so it cannot join with it`, {
-      remedy: credentialInboxRemedy(space, credential.channel),
+      remedy: credentialJoinRemedy(space, credential.channel, true),
     });
   if (missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
@@ -87,9 +88,20 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
   return undefined;
 }
 
-function credentialInboxRemedy(space: string, channel: string): string {
-  const read = `--allow-subscribe ${shellWord(channel)}`;
-  return `ask the space's owner to mint the credential with \`cotal auth mint <name> --provision ${read} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports. To keep the original grants, replace \`${read}\` with \`--identity <original-file>\``;
+function credentialJoinRemedy(space: string | undefined, channel: string, keepOriginalGrants = false): string {
+  const read = `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+  const target = space === undefined ? " --space <space>" : ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+  const mint = codeSpan(`cotal auth mint <name> --provision ${read}${target} --no-persona --out <file>`);
+  const remedy = `ask the space's owner to mint the credential with ${mint}, then join with the lifecycle UID that mint reports using \`--lifecycle-uid\``;
+  return keepOriginalGrants ? `${remedy}. To keep the original grants, replace ${codeSpan(read)} with \`--identity <original-file>\`` : remedy;
+}
+
+function malformedCredentialReplacement(space: string | undefined, channel: string): string {
+  try { assertValidChannel(channel); }
+  catch {
+    return "if it is unavailable, choose a valid landing channel and ask the space's owner for a provisioned credential with read access to that channel, then pass its new UID with `--lifecycle-uid`";
+  }
+  return `if it is unavailable, use a new output path and ${credentialJoinRemedy(space, channel)}`;
 }
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
@@ -155,7 +167,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds) : undefined,
+    creds: values.creds ? readCredsFile(values.creds, () => malformedCredentialReplacement(values.space ?? link?.space, channel)) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
@@ -519,7 +531,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
         target: { space },
         remedy: values.creds
-          ? credentialInboxRemedy(space, channel)
+          ? credentialJoinRemedy(space, channel, true)
           : "run the same `cotal join` again to start a new session",
       }));
     print(c.yellow(`! ${e.message}`));

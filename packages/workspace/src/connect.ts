@@ -902,8 +902,9 @@ async function userConnect(target: MeshTarget): Promise<Connection> {
 /** Read a `--creds` file and check it before anything is dialed, so a missing, unreadable or
  *  malformed file is refused naming the file and what is wrong with it, rather than reaching a
  *  serving broker as an unreachable one. A file other accounts can read is still used, with a
- *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself. */
-export function readCredsFile(path: string): string {
+ *  warning on stderr: the private-file rule refuses only the credentials Cotal keeps itself.
+ *  A caller can supply its own replacement advice for malformed files. CRLF keeps its own repair. */
+export function readCredsFile(path: string, replacementAdvice?: () => string): string {
   const refuse = (problem: string, code: RefusalCode, remedy: string) =>
     new ConnectRefusal(`✗ creds file ${problem}`, `  ${remedy}`, { code, parts: { message: `creds file ${problem}`, remedy }, target: { path } });
   let stat: Stats;
@@ -930,7 +931,7 @@ export function readCredsFile(path: string): string {
   const problem = credsProblem(text);
   if (problem) throw refuse(`${path} cannot be used: ${problem.message}`, "SCHEMA_INVALID", problem.code === "crlf"
     ? `save it with LF line endings, for example with \`dos2unix ${path}\``
-    : "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
+    : `pass the complete credential file as it was issued; ${replacementAdvice?.() ?? "`cotal auth mint <label> --out <file>` writes a new one"}`);
   const exposure = credentialFileExposure(path, stat);
   if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));
   return text;

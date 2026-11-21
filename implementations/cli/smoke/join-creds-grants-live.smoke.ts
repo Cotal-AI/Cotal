@@ -107,6 +107,54 @@ try {
     await killAndAwaitExit(run.proc);
     await run.exited;
   }
+
+  async function checkMalformedCredentialRecovery(uid: string) {
+    const truncated = "truncated.creds";
+    writeFileSync(join(project, truncated), "-----BEGIN NATS USER JWT-----\nincomplete test fixture\n", { mode: 0o600 });
+    const link = `${broker.servers.replace(/^nats:/, "cotal:")}/${space}?channel=review.%3E`;
+    const joinWithFile = (file: string, ...flags: string[]) => cli("join", "--link", link, "--creds", file, "--lifecycle-uid", uid, ...flags);
+    const rejected = joinWithFile(truncated);
+    check("truncated file keeps its classified refusal and suggests restoring the complete file", await rejected.exited === 1 &&
+      /Code: +SCHEMA_INVALID/.test(rejected.output()) && rejected.output().includes(`creds file ${truncated} cannot be used: it has no complete NATS user JWT block`) &&
+      rejected.output().includes("pass the complete credential file as it was issued"), rejected.output());
+    const command = /`cotal auth mint (<name> [^`]+)`/.exec(rejected.output())?.[1];
+    assert.equal(command, `<name> --provision --allow-subscribe 'review.>' --space ${space} --no-persona --out <file>`, rejected.output());
+    check("replacement guidance names the link's landing channel and pairs the file with its new UID", rejected.output().includes("lifecycle UID that mint reports using `--lifecycle-uid`") && !rejected.output().includes("--identity"), rejected.output());
+    const replacement = "parse-repair.creds";
+    const minted = cli("auth", "mint", ...command.split(" ").map((arg) => {
+      if (arg === "<name>") return "parse_repair";
+      if (arg === "<file>") return replacement;
+      return arg.replace(/^'(.*)'$/, "$1");
+    }));
+    check("the printed replacement command provisions a credential for the linked channel", await minted.exited === 0, minted.output());
+    const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(minted.output())?.[1];
+    assert.ok(replacementUid && replacementUid !== uid, "replacement mint did not report a new lifecycle UID");
+    await joins("parse-repair", replacement, replacementUid, "review.>");
+
+    const override = joinWithFile(truncated, "--channel=--channel-placeholder");
+    check("an explicit channel overrides the link and a leading dash is not parsed as a flag", await override.exited === 1 &&
+      override.output().includes("--allow-subscribe=--channel-placeholder"), override.output());
+    const unnamed = cli("join", "--server", broker.servers, "--creds", truncated, "--lifecycle-uid", uid);
+    check("without a link or named channel the advice uses general and does not guess the mint space", await unnamed.exited === 1 &&
+      unnamed.output().includes("--allow-subscribe general --space <space>"), unnamed.output());
+    const invalid = joinWithFile(truncated, "--channel", "review.code,>");
+    check("an invalid landing channel never becomes a list of grants in the advice", await invalid.exited === 1 &&
+      invalid.output().includes("choose a valid landing channel") && !invalid.output().includes("auth mint"), invalid.output());
+    const missingFile = joinWithFile("misspelled.creds");
+    check("a missing file still points at the path", await missingFile.exited === 2 && /Code: +TARGET_NOT_FOUND/.test(missingFile.output()) &&
+      missingFile.output().includes("check the path") && !missingFile.output().includes("--provision"), missingFile.output());
+    const crlf = "crlf.creds";
+    writeFileSync(join(project, crlf), (await mintCreds(auth, newIdentity(), "observer")).replace(/\n/g, "\r\n"), { mode: 0o600 });
+    const repairLineEndings = joinWithFile(crlf);
+    check("CRLF still recommends converting the file in place", await repairLineEndings.exited === 1 && /Code: +SCHEMA_INVALID/.test(repairLineEndings.output()) &&
+      repairLineEndings.output().includes(`dos2unix ${crlf}`) && !repairLineEndings.output().includes("auth mint"), repairLineEndings.output());
+    const inspect = cli("whoami", "--creds", truncated);
+    check("non-join credential inspection retains the file-only guidance", await inspect.exited === 1 && /Code: +SCHEMA_INVALID/.test(inspect.output()) &&
+      inspect.output().includes("cotal auth mint <label> --out <file>") && !inspect.output().includes("--provision"), inspect.output());
+  }
+
+  await checkMalformedCredentialRecovery(allowed.uid);
+
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
   writeFileSync(foreign, await mintCreds(foreignAuth, newIdentity(), "agent", {
