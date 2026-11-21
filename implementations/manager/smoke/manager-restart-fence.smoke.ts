@@ -140,9 +140,9 @@ try {
   });
   client.on("error", () => {});
   await client.start();
-  const cache = (client as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const cache = (client as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
   // Recovery drops the full handle and resolves only the command being retried.
-  const commandCache = (client as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const commandCache = (client as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const boundFor = (command: string) => (cache.get(MANAGER_ENDPOINT) ?? commandCache.get(MANAGER_ENDPOINT)?.get(command))?.responder;
   const pubs = (): number => (client as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
   await client.describeService(MANAGER_ENDPOINT);
@@ -159,8 +159,8 @@ try {
   });
   reader.on("error", () => {});
   await reader.start();
-  const readerCache = (reader as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
-  const readerCommandCache = (reader as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const readerCache = (reader as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
+  const readerCommandCache = (reader as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const readerBound = () => (readerCache.get(MANAGER_ENDPOINT) ?? readerCommandCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder;
   const readerPubs = (): number => (reader as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
   await reader.describeService(MANAGER_ENDPOINT);

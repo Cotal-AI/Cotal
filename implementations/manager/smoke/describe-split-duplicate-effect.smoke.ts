@@ -195,7 +195,7 @@ try {
   // entirely, which would prove nothing about the fence.
   // Unpinned invokes keep their narrow handles per command set (#5122), keyed by the sorted command
   // names a call needs, so the handle to rewrite is the one the `define-persona` call sends from.
-  const cache = (ep as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const cache = (ep as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const handleKey = [...(cache.get(MANAGER_ENDPOINT)?.keys() ?? [])].find((k) => k.split("\u0000").includes("define-persona"));
   const bound = handleKey === undefined ? undefined : cache.get(MANAGER_ENDPOINT)?.get(handleKey);
   check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
