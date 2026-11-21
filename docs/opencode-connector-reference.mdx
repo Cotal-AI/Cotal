@@ -76,7 +76,8 @@ in-process plugin does everything.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
-  from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting).
+  from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting). A failed
+  turn also sets a presence condition; see below.
 - **A password on the server.** The OpenCode server accepts only requests carrying a password the
   launcher mints per launch, or one a headless host supplies as `OPENCODE_SERVER_PASSWORD`. It
   reaches the server and the TUI only through their environment, and the headless `[cotal-serve]`
@@ -251,6 +252,17 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   its own thread id on the one `events.<owner>.<actor>` channel. Before the switch, the session you
   are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
   On 2.x the connector does not follow `/new`, so only the session it launched is published.
+- **Failed turns set a presence condition.** A turn that failed reads `idle` with a `condition`, so
+  no observer reads it as a turn that finished. `condition.source` is OpenCode's own error kind,
+  verbatim: the 1.x `session.error` name (`ProviderAuthError`, `APIError`, ...) or the 2.x
+  `session.execution.failed` type (`provider.auth`, ...). `condition.message` is OpenCode's message,
+  on one line and cut to 500 characters. The provider's raw response body is not relayed. Only kinds
+  that name one category get a specific code: `ProviderAuthError` and `provider.auth` are `auth`,
+  `MessageOutputLengthError` is `context`, `provider.rate-limit` is `rate_limit`,
+  `provider.budget-limit` and `provider.model-budget-limit` are `budget`, `provider.invalid-request`
+  is `request`, `provider.no-route` and `provider.unknown` are `model`, and `provider.internal` is
+  `server`. Every other failure is `failed`. A turn you stopped sets none, and the next turn's start
+  clears it.
 - **Failed turns publish run errors.** OpenCode reports a turn that
   died (an upstream API error, a provider auth failure, or an output-length stop) on its own
   `session.error` event, and that turn ends its run with `RUN_ERROR` carrying the fixed message

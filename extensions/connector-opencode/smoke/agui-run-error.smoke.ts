@@ -148,6 +148,10 @@ Object.assign(process.env, {
 
 type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
 let hooks: Hooks | undefined;
+// Presence is read the way any observer reads it: off the roster of a second endpoint.
+const observer = new CotalEndpoint({ space: SPACE, servers, card: { name: "Watcher", kind: "agent", id: "watcher" }, channels: ["general"] });
+observer.on("error", () => {});
+const otto = () => observer.getRoster().find((p) => p.card.name === "Otto");
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({
@@ -157,6 +161,7 @@ try {
     file: { defaults: { replay: false }, channels: { [CHANNEL]: { replay: true } } },
   });
 
+  await observer.start();
   hooks = await bootPlugin();
   await sleep(1_500);
   const fire = (event: unknown): Promise<void> => (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
@@ -197,6 +202,12 @@ try {
   await errored;
   check("barrier:the native prompt goes through once the read has answered", (await Promise.race([typed, sleep(2_000).then(() => "stuck" as const)])) === "returned");
   await sleep(2_500);
+  // The failed turn says why in presence (SPEC §6), so no observer sees a bare idle for it.
+  const failedPresence = otto();
+  const { since: failedSince, ...failure } = failedPresence?.condition ?? { since: undefined };
+  check("condition:the failed turn reads idle with OpenCode's own error name and message as its condition",
+    failedPresence?.status === "idle" && JSON.stringify(failure) === JSON.stringify({ code: "failed", source: "APIError", message: "upstream returned 500" }) && typeof failedSince === "number",
+    { status: failedPresence?.status, condition: failedPresence?.condition });
 
   // ---- Turn 2: a real turn, then a USER ABORT. Not a failure, and the control that says so.
   content.set(A, [...turn(A, 1), ...turn(A, 2)]);
@@ -209,6 +220,9 @@ try {
     properties: { sessionID: A, error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } } },
   });
   await sleep(2_500);
+  const stoppedPresence = otto();
+  check("condition:the next turn's start cleared it, and a turn someone stopped sets none",
+    stoppedPresence?.status === "idle" && stoppedPresence.condition === undefined, { status: stoppedPresence?.status, condition: stoppedPresence?.condition });
 
   // ---- Turn 3: a turn that ends on `session.idle`, the same barrier on the other arm.
   content.set(A, [...turn(A, 1), ...turn(A, 2), ...turn(A, 3)]);
@@ -402,12 +416,13 @@ try {
     a7i >= 0 && earlyCloses.length === 1 && earlyCloses[0]?.type === "RUN_ERROR", { a7i, earlyCloses });
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 25;
+  const EXPECTED = 27;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
   console.log(`opencode-run-error smoke: ${pass} passed, ${fail} failed`);
 } finally {
+  await observer.stop().catch(() => {});
   await disposeInProcess(hooks);
   oc.close();
   broker.kill("SIGKILL");
