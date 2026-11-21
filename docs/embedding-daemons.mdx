@@ -163,6 +163,11 @@ A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it.
 
+`nativeIssuancePruneMs` sets the delay between native issuance cleanup sweeps. It accepts
+integers from 100 to 3,600,000 milliseconds and defaults to 60,000. Sweeps check for new
+receipts and remove expired ordinary receipts. They retain service evidence without rereading it
+on each sweep.
+
 ### Endpoint registry
 
 Auth can host the space's permission-scoped endpoint registry. It is off by default. Import

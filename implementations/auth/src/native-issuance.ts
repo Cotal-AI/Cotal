@@ -9,7 +9,7 @@
  * that do not write it, and static (non-callout) JWTs have no row and are never inferred.
  */
 import type { KV } from "@nats-io/kv";
-import type { MsgRequest } from "@nats-io/jetstream";
+import type { MsgRequest, StoredMsg } from "@nats-io/jetstream";
 import { fromPublic } from "@nats-io/nkeys";
 import {
   EP_AUTH_MARKER_TTL_MS, SERVICE_ACCESS_TTL_SECONDS, contractDigest, epAuthBucket, epcredRowKey, nativeIssuanceKey,
@@ -162,55 +162,70 @@ export async function readNativeIssuance(kv: KV, userNkey: string): Promise<Nati
  *  one must not be retried as if the store had only been unreachable. */
 export class CorruptNativeIssuanceEvidence extends Error {}
 
-/**
- * Remove the rows whose minted JWT expired more than the clock tolerance ago (a session-caller's
- * row carries its grant's expiry, so it lives as long as that grant). The walk is the leader-served
- * `STREAM.MSG.GET` `next_by_subj` read over `natkey.` (no consumer: none may be created on the auth
- * bucket), and each removal is a KV purge pinned to the exact sequence read. A row that does not
- * parse throws {@link CorruptNativeIssuanceEvidence}: corrupt evidence is the caller's fault to
- * surface, never a skipped row. Any other throw comes from the store reads and purges, and leaves
- * the rows as they were, because a purge is pinned to the sequence read. The purge marker carries
- * the bucket's own marker TTL, so it expires too. Expired service evidence is
- * retained: elapsed JWT time alone is not topology-qualified absence or terminal retirement.
- * A bounded pass counts markers too and returns `nextSeq` for its continuation. Cancellation
- * stops between store operations, never abandoning an in-flight purge.
- */
-export async function pruneNativeIssuance(registry: LifecycleRegistry, nowSec: number,
-  opts: { seq?: number; maxRows?: number; signal?: AbortSignal } = {},
-): Promise<{ live: number; pruned: number; retainedService: number; nextSeq?: number }> {
+function ordinaryExpiry(m: StoredMsg, key: string): number | undefined {
+  const op = m.header?.get("KV-Operation");
+  if (op === "DEL" || op === "PURGE") return;
+  try {
+    if (assertUserNkey(key.slice("natkey.".length)) !== key) throw new Error(`natkey: stored subject ${JSON.stringify(m.subject)} is not a natkey row`);
+    const record = parseNativeIssuanceRecord(m.json());
+    if (record.service && nativeIssuanceKey(record.service.connection.userNkey) !== key)
+      throw new Error("natkey: service receipt key does not match its connection");
+    if (!record.service) return record.exp + CLOCK_TOLERANCE_SEC;
+  } catch (e) {
+    throw new CorruptNativeIssuanceEvidence(e instanceof Error ? e.message : String(e), { cause: e });
+  }
+}
+
+/** One plane's cleanup state for the bound stream. Discovery keeps its leader-served cursor
+ * across sweeps. Service receipts need no expiry recheck, and every replacement has a new
+ * revision. Call batches serially. True means continue without waiting for the next sweep. */
+export function makeNativeIssuancePruner(registry: LifecycleRegistry, signal?: AbortSignal): (nowSec: number, maxRows?: number) => Promise<boolean> {
   const { authKv, jsm, space } = registryStores(registry);
   const bucket = epAuthBucket(space);
+  const stream = `KV_${bucket}`;
   const prefix = `$KV.${bucket}.`;
-  let seq = opts.seq ?? 1, live = 0, pruned = 0, retainedService = 0;
-  const maxRows = opts.maxRows ?? Number.MAX_SAFE_INTEGER;
-  if (!Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(maxRows) || maxRows < 1)
-    throw new Error("natkey: cleanup sequence and row limit must be positive safe integers");
-  for (let visited = 0; visited < maxRows; visited++) {
-    opts.signal?.throwIfAborted();
-    const m = await jsm.streams.getMessage(`KV_${bucket}`, { seq, next_by_subj: `${prefix}natkey.>` } as unknown as MsgRequest);
-    if (!m) return { live, pruned, retainedService };
-    seq = m.seq + 1;
-    const op = m.header?.get("KV-Operation");
-    if (op === "DEL" || op === "PURGE") continue;
-    const key = m.subject.slice(prefix.length);
-    let record: NativeIssuanceRecord;
-    try {
-      if (assertUserNkey(key.slice("natkey.".length)) !== key) throw new Error(`natkey: stored subject ${JSON.stringify(m.subject)} is not a natkey row`);
-      record = parseNativeIssuanceRecord(m.json());
-      if (record.service && nativeIssuanceKey(record.service.connection.userNkey) !== key)
-        throw new Error("natkey: service receipt key does not match its connection");
-    } catch (e) {
-      throw new CorruptNativeIssuanceEvidence(e instanceof Error ? e.message : String(e), { cause: e });
-    }
-    // Validate a read already in flight even during close: corrupt evidence must still trip a
-    // draining service-host operation. Cancellation may stop new IO, never hide that evidence.
-    opts.signal?.throwIfAborted();
-    if (record.exp + CLOCK_TOLERANCE_SEC < nowSec && record.service) {
-      retainedService++;
-    } else if (record.exp + CLOCK_TOLERANCE_SEC < nowSec) {
-      await authKv.purge(key, { previousSeq: m.seq, ttl: `${EP_AUTH_MARKER_TTL_MS / 1000}s` });
-      pruned++;
-    } else live++;
+  const live = new Map<string, { revision: number; expiresAt: number }>();
+  let seq = 1;
+  let rechecks: ReturnType<typeof live.entries> | undefined;
+  let check: [string, { revision: number; expiresAt: number }] | undefined;
+  const purge = (key: string, revision: number) =>
+    authKv.purge(key, { previousSeq: revision, ttl: `${EP_AUTH_MARKER_TTL_MS / 1000}s` });
+
+  async function processReceipt(key: string, m: StoredMsg | undefined, nowSec: number): Promise<void> {
+    const expiresAt = m && ordinaryExpiry(m, key);
+    // Validate reads already in flight during close, but do not start a new purge.
+    signal?.throwIfAborted();
+    if (m === undefined || expiresAt === undefined) live.delete(key);
+    else if (expiresAt < nowSec) {
+      await purge(key, m.seq);
+      live.delete(key);
+    } else live.set(key, { revision: m.seq, expiresAt });
   }
-  return { live, pruned, retainedService, nextSeq: seq };
+
+  async function revisit(key: string, revision: number, nowSec: number): Promise<void> {
+    // A failed purge may have committed. A replacement belongs to forward discovery.
+    const current = await jsm.streams.getMessage(stream, { last_by_subj: `${prefix}${key}` });
+    await processReceipt(key, current?.seq === revision ? current : undefined, nowSec);
+  }
+
+  return async (nowSec, maxRows = Number.MAX_SAFE_INTEGER) => {
+    if (!Number.isSafeInteger(maxRows) || maxRows < 1) throw new Error("natkey: cleanup row limit must be a positive safe integer");
+    for (let visited = 0; visited < maxRows; visited++) {
+      signal?.throwIfAborted();
+      // Keep this entry until its store operations succeed, including across a batch retry.
+      check ??= rechecks?.next().value;
+      if (check !== undefined) {
+        const [key, { revision, expiresAt }] = check;
+        if (expiresAt < nowSec) await revisit(key, revision, nowSec);
+        check = undefined;
+        continue;
+      }
+      rechecks = undefined;
+      const m = await jsm.streams.getMessage(stream, { seq, next_by_subj: `${prefix}natkey.>` } as unknown as MsgRequest);
+      if (!m) { rechecks = live.entries(); return false; }
+      await processReceipt(m.subject.slice(prefix.length), m, nowSec);
+      seq = m.seq + 1;
+    }
+    return true;
+  };
 }

@@ -2287,7 +2287,7 @@ broker triple, and its user key must match the natkey key. Recording checks the 
 binding before and after the create-only write, verifies its receipt, reauthorizes and checks the
 original expiry before release. Existing receipt history cannot be reused. Expired service evidence
 is retained until topology-qualified retirement authorizes removal; the ordinary expiry pruner
-reports it separately and cannot remove it. That terminal pruning path is not implemented yet.
+cannot remove it. That terminal pruning path is not implemented yet.
 
 **Native-key issuance evidence.** Every callout success first writes one create-only
 `natkey.<userNkey>` row in the same auth bucket, where `userNkey` is the broker-generated
@@ -2301,14 +2301,15 @@ then may the JWT leave. Any failure is a signed deny. A row is evidence of an is
 that a client received the JWT or that the broker accepted the connection: a write that landed
 before a refusal stays. `natkey.` is not a ledger family and authorizes nothing. The issuing
 service removes a row only after its `exp` plus the clock tolerance. Startup performs a bounded
-cleanup check, then the service continues the walk in bounded background batches and repeats it
-on its own timer. The walk uses the leader-served `STREAM.MSG.GET` `next_by_subj` read (never a
-consumer) and purges each row pinned to the sequence it read, with the bucket's marker TTL on the
-purge marker so it expires too. A row that does not parse fails the boot open if encountered in
-the startup check, or fences the running service when a background batch reaches it. Connections admitted
-before this row existed, responders that do not write it, and static (non-callout) JWTs have no
-row. This evidence names keys; it does not by itself stop a still-authorized bearer from
-connecting again under a fresh key.
+cleanup check, then the service continues the walk in bounded background batches. Periodic
+sweeps resume discovery after the last processed revision and recheck known ordinary receipts
+when they are due to expire. The cursor is in memory and starts from sequence 1 on each plane
+open. Discovery uses the leader-served `STREAM.MSG.GET` `next_by_subj` read (never a consumer).
+Each purge is pinned to the revision read and carries the bucket's marker TTL. A row that does not
+parse fails the boot open if encountered in the startup check, or fences the running service when
+a background batch reaches it. Connections admitted before this row existed, responders that do
+not write it, and static (non-callout) JWTs have no row. This evidence names keys; it does not by
+itself stop a still-authorized bearer from connecting again under a fresh key.
 
 **Remote manager-service authority (user-auth only).** `manager-service` is one CLOSED,
 server-authored authority view, not a profile name, arbitrary bearer profile, or client-supplied
