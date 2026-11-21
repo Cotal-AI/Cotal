@@ -35,7 +35,7 @@ function credentialRefsIssuedBy(space: string, accountPub: string): ServiceDefin
 export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values), dryRun = args.values["dry-run"] === true, yes = args.values.yes === true;
   if (!dryRun && !yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired("reset space needs a terminal confirmation or --yes with the exact space name", { target: { space }, remedy: `review \`cotal reset space ${space} --dry-run\` first, then run \`cotal reset space ${space} --yes\`` });
-  const selected = selectResetTarget(space, "reset space");
+  const selected = selectResetTarget(space, "reset space", dryRun);
   const root = selected.root, target = { space, root };
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this guarded identity reset currently needs Linux process-custody observations; no other platform was treated as stopped", { target });
   let address: URL;
@@ -45,7 +45,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   if (root === canonicalRoot(homedir()) || selected.storeDir !== undefined && !isAbsolute(selected.storeDir)) throw new CommandFailure("refused", "CONFLICT", "the root or store path is not one isolated absolute project target", { target });
 
   const eligible = async (): Promise<ReturnType<typeof safeStoreCleanupPath>> => {
-    const store = await assertResetEligible(selected, "reset space");
+    const store = await assertResetEligible(selected, "reset space", dryRun);
     if (!store.identity && lstatSync(store.path, { throwIfNoEntry: false }))
       throw new CommandFailure("refused", "CONFLICT", "the store path exists but is not a pinned real directory; nothing was removed", { target: { ...target, store: store.path } });
     return store;

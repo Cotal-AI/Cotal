@@ -705,7 +705,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (useExtensionOverlay) {
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
-      recoverExtensionPromotion();
+      // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
+      if (builtin?.name !== "topology") recoverExtensionPromotion();
     } catch (e) {
       if (!skipUnreadableConnectorOverlay(e)) {
         if (repeatedLeading) {

@@ -478,6 +478,8 @@ remove nothing, so `status` there does not offer `clean store`. A legacy root wh
 A native start records its launching Cotal home in `.cotal/stack-home.json`. While its broker runs,
 `up` and `down` from another Cotal home refuse and name the launching `COTAL_HOME`; `status` names
 that home instead of calling the stack stopped.
+When Cotal needs this record and it is malformed, it names the file and asks you to restore the
+intact record before retrying. `status` still reports the machine information it can read.
 
 A journal that is not valid JSON, as an interrupted write or a full disk can leave it, makes `up`,
 `down`, `clean`, `reset` and `space create` refuse `SCHEMA_INVALID`, exit 1, naming its path, and
