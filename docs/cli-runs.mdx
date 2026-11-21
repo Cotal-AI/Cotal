@@ -373,7 +373,11 @@ moves the virtual clock forward.
 | `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
 | `events` | `wait` results. `null` is a timeout |
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
-| `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+| `faults` | An array of fault entries. Each requires a step key `at`, such as `/sleep#0` or `turn:build#1`, and a string `kind`. `code` and `message` are optional strings. The default code is `L4002` |
+
+A fault entry with an unknown field, a missing or blank step key, or an invalid field type is
+refused before simulation with `SCHEMA_INVALID`, exit 1. The refusal names the results file and
+the entry, such as `faults[0]`.
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
 program does not reach that effect. The refusal names the results file and the field to correct.

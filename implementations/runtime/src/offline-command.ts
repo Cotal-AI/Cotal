@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -81,8 +81,12 @@ function scriptOf(file: string | undefined): SimScript {
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
     if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
-    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
+    if (key === "faults") {
+      if (!Array.isArray(item)) throw new CommandFailure("refused", "SCHEMA_INVALID", `faults in the simulation results script ${file} must be an array`, { target: { file } });
+      validateFaults(item, file);
+    } else if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
+    }
   }
   const clock = script.clock as Record<string, unknown> | undefined;
   const start = clock?.start;
@@ -132,6 +136,30 @@ function scriptOf(file: string | undefined): SimScript {
     }
   }
   return script as SimScript;
+}
+
+const faultFields = { at: true, kind: true, code: true, message: true } satisfies Record<keyof SimFault, true>;
+
+function validateFaults(faults: readonly unknown[], file: string): void {
+  for (const [index, fault] of faults.entries()) {
+    const problem = faultProblem(fault);
+    if (problem !== undefined) {
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted fault at faults[${index}] in ${file}: ${problem}`, { target: { file } });
+    }
+  }
+}
+
+function faultProblem(fault: unknown): string | undefined {
+  if (!fault || typeof fault !== "object" || Array.isArray(fault)) return "a fault must be an object";
+  const fields = fault as Record<string, unknown>;
+  const unknown = Object.keys(fields).find((key) => !Object.hasOwn(faultFields, key));
+  if (unknown !== undefined) return `unknown field '${unknown}'`;
+  if (typeof fields.at !== "string" || !fields.at.trim()) return "at must be a non-empty step key";
+  if (typeof fields.kind !== "string") return "kind must be a string";
+  for (const key of ["code", "message"]) {
+    if (fields[key] !== undefined && typeof fields[key] !== "string") return `${key} must be a string`;
+  }
+  return undefined;
 }
 
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The

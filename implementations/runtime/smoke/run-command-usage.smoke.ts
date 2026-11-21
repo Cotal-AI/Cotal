@@ -374,17 +374,39 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
     const write = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
     const to = { kind: "spawned", agent: "sim.ana", persona: "ana" };
-    let handoff: unknown, clock: unknown;
+    let handoff: unknown, clock: unknown, fault: unknown;
     try {
       writeFileSync(program, 'const builder = await spawn("builder");\nconst ana = await spawn("ana");\nfor (const attempt of [1, 2]) {\n  const result = await turn(builder, { name: "build" });\n  log(result.status, result.to?.agent === ana.agent);\n}\n');
       handoff = await simulate({ turns: { build: [{ status: "blocked" }, { status: "handoff", to, note: "yours" }] } }, { json: true });
       writeFileSync(program, 'await sleep("1ms");\nlog("done");\n');
       clock = await simulate({ clock: { start: 1000 } }, { json: true });
+      fault = await simulate({ faults: [{ at: "/sleep#0", kind: "unreachable" }] }, { json: true });
     } finally { process.stdout.write = write; }
-    const [turnOut, clockOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
+    const [turnOut, clockOut, faultOut] = shown.join("").trim().split("\n").map((line) => JSON.parse(line));
     c("sequential turn results preserve their order and carry the agent handle", handoff === undefined && turnOut.result?.outcome === "completed"
       && JSON.stringify(turnOut.result.log.map((entry: { values: unknown }) => entry.values)) === JSON.stringify([["blocked", false], ["handoff", true]]), { handoff, turnOut });
     c("a finite nonzero clock start still measures elapsed time from that start", clock === undefined && clockOut.result?.elapsedMs === 1, { clock, clockOut });
+    c("a valid scripted fault fails the named step with L4002 before it advances time", fault === undefined && faultOut?.result?.outcome === "failed"
+      && faultOut.result.failure?.code === "L4002" && faultOut.result.failure.step === "/sleep#0" && faultOut.result.elapsedMs === 0, { fault, faultOut });
+  }
+  const faultTable = await simulate({ faults: {} });
+  c("a non-array faults field is refused naming the results file", scriptRefusal(faultTable, `faults in the simulation results script ${handler} must be an array`), faultTable);
+  for (const [fault, problem] of [
+    [{ att: "/sleep#0", kind: "unreachable" }, "unknown field 'att'"],
+    [{ at: "/sleep#0", kind: "unreachable", extra: true }, "unknown field 'extra'"],
+    [null, "a fault must be an object"],
+    [[], "a fault must be an object"],
+    [{ kind: "unreachable" }, "at must be a non-empty step key"],
+    [{ at: "  ", kind: "unreachable" }, "at must be a non-empty step key"],
+    [{ at: 42, kind: "unreachable" }, "at must be a non-empty step key"],
+    [{ at: "/sleep#0" }, "kind must be a string"],
+    [{ at: "/sleep#0", kind: "unreachable", code: 42 }, "code must be a string"],
+    [{ at: "/sleep#0", kind: "unreachable", message: null }, "message must be a string"],
+  ] as const) {
+    const invalid = await simulate({ faults: [{ at: "/sleep#0", kind: "unreachable" }, fault] });
+    c(`a malformed fault is refused naming its index, file and cause (${JSON.stringify(fault)})`,
+      scriptRefusal(invalid, `faults[1] in ${handler}: ${problem}`)
+      && isCommandFailure(invalid) && invalid.outcome === "refused" && (invalid.target as { file?: string } | undefined)?.file === handler, invalid);
   }
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
   // A simulation that stops says why and where: a missing entry is the script's gap, named with the
