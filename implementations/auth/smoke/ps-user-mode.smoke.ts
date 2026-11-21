@@ -3,7 +3,8 @@
  *
  *   1. up --user-auth + device login + admin grant
  *   2. cotal ps exits 0 (the product claim C authorises)
- *   3. manager killed — ps says no manager answered and lists your agents from presence, exit 0,
+ *   3. manager starting: ps lists presence and keeps the retry's target and output flags
+ *   4. manager killed: ps says no manager answered and lists your agents from presence, exit 0,
  *      never a bare empty list
  *
  * Spawn-only `ps` and `status --components` run under `actor grant --full` after the admin ps
@@ -15,8 +16,8 @@
  * spawn-only commands stays in user-spawn.smoke.ts B1e.
  * Gated: a RED here is C or the user-mode connect path broken.
  *
- * STEP 3 follows the product decision that a user-auth `ps` with no manager answering is not an
- * error: it says so, lists the agents presence shows, read-only, and names how to start the manager.
+ * When no manager answers, user-auth `ps` lists the agents presence shows, read-only. It names
+ * how to retry the list during startup or how to start a manager when none runs.
  * What it must never be is a bare empty list, which reads as "no agents".
  */
 import { execFileSync, spawn } from "node:child_process";
@@ -125,12 +126,12 @@ function managerIdentityPath(dir: string, instanceId: string): string | undefine
   return undefined;
 }
 
-function cotal(args: string[], timeoutMs = 120_000): Promise<Run> {
+function cotal(args: string[], timeoutMs = 120_000, cwd = root, anchor = sandbox): Promise<Run> {
   return new Promise((res) => {
     const options = {
-      cwd: root, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: [...(["ignore", "pipe", "pipe"] as const)],
+      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: [...(["ignore", "pipe", "pipe"] as const)],
     };
-    assertSmokeSandboxDown(sandbox, args, options);
+    assertSmokeSandboxDown(anchor, args, options);
     const child = spawn(TSX, [BIN, ...args], options);
     let out = "";
     let timedOut = false;
@@ -182,6 +183,69 @@ function mustHaveRun(r: Run, what: string): void {
     `${what} ${why}: that yields status null and no output, which is exactly the shape the ` +
       `empty-success cell treats as a pass. Grading it would be a false green.`,
   );
+}
+
+async function checkStartingManager(sub: string): Promise<void> {
+  const { clearCurrent, getCurrent, setCurrent } = await import("@cotal-ai/workspace");
+  const { observeServiceProcess, serviceInstances } = await import("../../cli/src/lib/service-instances.js");
+  const { stackManagerStarting } = await import("../../cli/src/lib/stack-journal.js");
+  const space = `${SPACE}-startup`;
+  const project = mkdtempSync(join(scratch, "startup-"));
+  const anchor = recordSmokeSandbox({ root: project, cotalHome: home, xdgConfigHome: configDir });
+  const server = `nats://127.0.0.1:${await pickFreePort()}`;
+  const start = ["up", "--user-auth", "--idp", base, "--server", server, "--space", space];
+  const selected = getCurrent();
+  const run = (args: string[]) => cotal(args, 120_000, project, anchor);
+  const requireOk = async (args: string[]) => {
+    const result = await run(args);
+    mustHaveRun(result, args[0]!);
+    if (result.status !== 0) throw new Error(`startup fixture ${args[0]} exited ${result.status}: ${result.out.slice(-400)}`);
+  };
+  const down = ["down", "--yes", "--space", space];
+  await requireOk(["space", "create", space]);
+  try {
+    await requireOk([...start, "--no-manager"]);
+    await requireOk(["actor", "grant", "cli", "--space", space, "--sub", sub, "--full", "--scope", "spawn,role:default,admin"]);
+    await requireOk(down);
+    setCurrent(SPACE);
+    const up = run(start);
+    const retry = ["ps", "--wide", "--plain", "--server", server];
+    try {
+      const deadline = Date.now() + 60_000;
+      const runningDelivery = () => serviceInstances(space, "stack-delivery").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value;
+      let delivery: ReturnType<typeof runningDelivery>;
+      while (Date.now() < deadline && !(delivery = runningDelivery())) await wait(15);
+      if (!delivery?.process || !stackManagerStarting(project, space)) throw new Error("did not reach the manager-starting window");
+      const pid = delivery.process.pid;
+      process.kill(pid, "SIGSTOP");
+      try {
+        await checkStartingRetry(space, retry);
+        await checkStartingRetry(space, ["ps", "--wide", "--plain", "--space", space]);
+      } finally {
+        if (observeServiceProcess(delivery) === "running") process.kill(pid, "SIGCONT");
+      }
+    } finally {
+      const started = await up;
+      mustHaveRun(started, "restart after releasing delivery");
+      if (started.status !== 0) throw new Error(`startup fixture restart exited ${started.status}: ${started.out.slice(-400)}`);
+    }
+    setCurrent(SPACE);
+    const listed = await cotal(retry, 20_000);
+    check("the same user-auth ps arguments list managed seats once startup completes",
+      listed.status === 0 && listed.out.includes(`Mesh: ${space}\n`) && listed.out.includes("No managed agents."), listed.out);
+  } finally {
+    try { await requireOk(down); }
+    finally { if (selected === undefined) clearCurrent(); else setCurrent(selected); }
+  }
+}
+
+async function checkStartingRetry(space: string, args: string[]): Promise<void> {
+  const starting = await cotal(args, 15_000);
+  mustHaveRun(starting, "`cotal ps` while the manager is starting");
+  const next = starting.out.split("\nNext\n")[1]?.trimStart().split(/ {2,}|\n/)[0];
+  check(`user-auth ps lists presence during startup and keeps ${args.at(-2)} and the layout in Next`,
+    starting.status === 0 && starting.out.includes(`Mesh: ${space}\n`) && starting.out.includes("No manager answered") &&
+      next === `cotal ${args.join(" ")}` && starting.out.includes("List again once"), starting.out);
 }
 
 /**
@@ -323,6 +387,7 @@ try {
   });
   const grant = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--scope", "spawn,role:default,admin", "--label", "ps human"]);
   check("actor grant succeeds", grant.status === 0 && /^Actor grant stored$/m.test(grant.out), grant.out.slice(-300));
+  if (process.platform !== "win32") await checkStartingManager(sub);
 
   console.log("3) cotal ps under user-mode admin bearer (C: ep.one)");
   const ps = await cotal(["ps", "--space", SPACE], 20_000);

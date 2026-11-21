@@ -584,11 +584,11 @@ function psRerun(v: FlagValues<typeof psFlags>, command: "ps" | "slots"): string
     ...(v.json ? ["--json"] : []),
     ...(v.plain ? ["--plain"] : []),
   ];
-  return codeSpan(onRerun("cotal ps", v, words));
+  return onRerun("cotal ps", v, words);
 }
 
 function liveSeatsRemedy(v: FlagValues<typeof psFlags>): string {
-  return `run ${psRerun(v, "ps")} without --slots to list live agents`;
+  return `run ${codeSpan(psRerun(v, "ps"))} without --slots to list live agents`;
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
@@ -655,7 +655,7 @@ async function psFromPresence(v: FlagValues<typeof psFlags>, presentation: Retur
     .filter((p) => p.card.kind !== "endpoint" && (owner === undefined || p.card.id.startsWith(`${owner}.`)))
     .map((p) => ({ name: p.card.name, id: p.card.id, status: p.status, activity: p.activity ?? null, harness: meta(p, "connector"), host: meta(p, "host") }))
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
-  const next = startManagerNext(connection.root, space, v.space !== undefined);
+  const next = startManagerNext(connection.root, space, v);
   writeResult(presentation, { command: "ps", target: { space, scope: "presence" }, result: { kind: "presence", items, managers: [] } }, (result): Report => ({ sections: [
     { title: "Agents on the mesh", blocks: [
       { kind: "lines", lines: [{ text: "No manager answered, so these are your agents as presence shows them. Stopping or attaching one needs a manager.", tone: "waiting" }] },
@@ -671,13 +671,13 @@ async function psFromPresence(v: FlagValues<typeof psFlags>, presentation: Retur
 /** What gets `space` a manager that answers. On the root whose `cotal up` started the space, as `ps`
  *  refuses for a static stack: waiting for the `up` that is starting its manager, ending the stack
  *  manager that does not answer, or bare `cotal up`. Anywhere else, `cotal manager start`. */
-function startManagerNext(root: string | undefined, space: string, named: boolean): { command: string; description: string } {
-  const at = named ? ` --space ${space}` : "";
-  if (root !== undefined && stackManagerStarting(root, space)) return { command: `cotal ps${at}`, description: "List again once `cotal up` reports the manager started" };
+function startManagerNext(root: string | undefined, space: string, v: FlagValues<typeof psFlags>): { command: string; description: string } {
+  if (root !== undefined && stackManagerStarting(root, space)) return { command: psRerun(v, "ps"), description: "List again once `cotal up` reports the manager started" };
   const pid = root === undefined ? undefined : runningStackManagerPid(root, space);
   if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare `cotal up` then starts it again" };
   const entry = findMesh(space);
   if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
+  const at = v.space !== undefined ? ` --space ${space}` : "";
   return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
 }
 
@@ -859,7 +859,7 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
     const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
     if (stackManagerStarting(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", {
-        target, native, remedy: `run ${psRerun(v, command)} again once \`cotal up\` reports the manager started`,
+        target, native, remedy: `run ${codeSpan(psRerun(v, command))} again once \`cotal up\` reports the manager started`,
       });
     if (stackManagerAbsent(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: startStackManagerRemedy(t.space, t.server) });
