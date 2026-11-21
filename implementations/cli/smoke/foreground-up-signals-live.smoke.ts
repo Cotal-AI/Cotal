@@ -7,8 +7,8 @@
  * A controller-route cell interrupts a prepared root's foreground `up` while it is still starting,
  * and again as it writes its start receipt. A foreground `team boot` gets SIGTERM at the broker's
  * readiness announcement. Another cell cuts a ready stack's stop as a closed terminal
- * does. The controller hold cell checks start and stop refusals before the hold is recorded, then
- * checks the conflict and takeover behavior of a running stack.
+ * does. The controller hold cell checks refusals during preflight and before hold publication,
+ * then checks the detached retry, conflict and takeover behavior of a running stack.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -21,12 +21,12 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, maintenancePaths, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
-import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   console.log("SKIP foreground-up-signals: POSIX terminal process groups do not apply on Windows");
@@ -568,6 +568,38 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
+const detachedStartup = ["up", "--detach", "--json"];
+
+async function checkStartupRefusals(
+  root: string, mesh: string, env: NodeJS.ProcessEnv, sandbox: SmokeSandboxAnchor, pid: number,
+  phase: "first-lock" | "before-hold",
+): Promise<void> {
+  const probe = async (label: string, args: string[]) => {
+    const run = await foregroundCliProbe(cliEntry, tsx, mesh, env, args, 60_000);
+    const output = run.out + run.err;
+    writeFileSync(join(root, `${phase}-${label}.log`), output, { mode: 0o600 });
+    assert.equal(run.code, 2, output); passed++;
+    assert.match(output, /LIFECYCLE_BLOCKED/); passed++;
+    return run;
+  };
+  const foreground = (await probe("foreground", ["up", "--foreground"])).err;
+  assert.ok(foreground.includes(`holds this root (pid ${pid})`), foreground); passed++;
+  assert.match(foreground.replace(/\s+/g, " "), /keeps the stack once startup finishes.*`cotal status`.*Ctrl-C in that terminal/); passed++;
+
+  const detached = JSON.parse((await probe("detached", detachedStartup)).out);
+  assert.equal(detached.target.holderPid, pid); passed++;
+  assert.match(detached.error.remedy, /`cotal status`.*retry this start after startup finishes/); passed++;
+  assert.doesNotMatch(detached.error.remedy, /Ctrl-C|before starting it here/); passed++;
+
+  const stopArgs = ["down", "--yes", "--plain"];
+  assertSmokeSandboxDown(sandbox, stopArgs, { cwd: mesh, env });
+  const stopRun = await probe("stop", stopArgs);
+  const stop = stopRun.out + stopRun.err;
+  assert.ok(stop.includes(`(pid ${pid})`), stop); passed++;
+  assert.match(stop.replace(/\s+/g, " "), /Ctrl-C.*wait for startup to finish and retry/); passed++;
+  assert.doesNotMatch(stop, /before starting it here|is not running/); passed++;
+}
+
 async function controllerHoldCell(otherHome = false): Promise<void> {
   const name = otherHome ? "controller-hold-other-home" : "controller-hold";
   const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
@@ -579,20 +611,34 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: machine, XDG_CONFIG_HOME: join(home, "xdg"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", mesh]);
   assert.equal(created.code, 0, `space create prepares the controller root: ${created.err}`); passed++;
-  const holdPath = join(mesh, ".cotal", "stack-foreground.hold");
-  const foreground = (args: string[], pauseBeforeHold = false) => {
-    const preload = pauseBeforeHold ? ["--import", join(import.meta.dirname, "_foreground-hold-pause.ts")] : [];
-    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const holdPath = join(realpathSync(mesh), ".cotal", "stack-foreground.hold");
+  const lockPath = maintenancePaths(mesh).lock, journalPath = join(mesh, ".cotal", "stack-controller.json");
+  const foreground = (args: string[], pausePath?: string) => {
+    const preload = pausePath ? ["--import", join(import.meta.dirname, "_foreground-startup-pause.ts")] : [];
+    const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env: pausePath ? { ...env, COTAL_SMOKE_STARTUP_PAUSE_PATH: pausePath } : env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const io = { out: "", err: "" };
     child.stdout?.on("data", (b: Buffer) => { io.out += b.toString(); });
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
     return { child, io, state: observeOwnedChild(child) };
   };
-  const server = ["--server", `nats://127.0.0.1:${port}`];
-  let holder = foreground(server);
+  let holder = foreground(["--server", `nats://127.0.0.1:${port}`], otherHome ? undefined : lockPath);
   let taker: ReturnType<typeof foreground> | undefined;
+  const checkPaused = async (phase: "first-lock" | "before-hold", releasePath: string) => {
+    await until(() => holder.io.err.includes("Foreground startup paused") || holder.state.exited, 30_000, () => holder.io.err);
+    assert.ok(holder.child.pid && !holder.state.exited && !existsSync(holdPath), holder.io.err); passed++;
+    const lock = readFileSync(lockPath);
+    assert.equal(JSON.parse(lock.toString()).operation, "foreground up"); passed++;
+    const before = existsSync(journalPath) ? readFileSync(journalPath) : undefined;
+    assert.equal(before === undefined, phase === "first-lock"); passed++;
+    await checkStartupRefusals(root, mesh, env, sandbox, holder.child.pid, phase);
+    assert.deepEqual(readFileSync(lockPath), lock, "contenders leave the owner's lock intact"); passed++;
+    assert.deepEqual(existsSync(journalPath) ? readFileSync(journalPath) : undefined, before, "contenders leave the journal unchanged"); passed++;
+    assert.ok(!existsSync(holdPath) && !(await portOpen(port)), "contenders publish no hold and start no listener"); passed++;
+    writeFileSync(`${releasePath}.test-release`, "", { mode: 0o600 });
+  };
   try {
     if (!otherHome) {
+      await checkPaused("first-lock", lockPath);
       await until(() => holder.io.out.includes("Controller stack started") || holder.state.exited, 120_000, () => holder.io.err);
       assert.ok(!holder.state.exited, holder.io.err);
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
@@ -600,30 +646,8 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
       assert.equal(stopped.code, 0, stopped.out + stopped.err); passed++;
       await waitForOwnedChild(() => holder.state.closed, 10_000, `${root}: initial foreground released`);
       assert.ok(holder.state.code === 0 && !existsSync(holdPath) && !(await portOpen(port)), "the first down stops the stack and leaves its journal"); passed++;
-      const journalPath = join(mesh, ".cotal", "stack-controller.json");
-      const stoppedJournal = readFileSync(journalPath);
-      holder = foreground([], true);
-      await until(() => holder.io.err.includes("Ready to publish foreground hold") || holder.state.exited, 30_000, () => holder.io.err);
-      assert.ok(!holder.state.exited && !existsSync(holdPath), holder.io.err); passed++;
-      const contender = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground"], 60_000);
-      writeFileSync(join(root, "startup-refusal.log"), contender.out + contender.err, { mode: 0o600 });
-      assert.equal(contender.code, 2, contender.out + contender.err); passed++;
-      assert.match(contender.err, /LIFECYCLE_BLOCKED/); passed++;
-      assert.ok(contender.err.includes(`holds this root (pid ${holder.child.pid})`), contender.err); passed++;
-      assert.match(contender.err.replace(/\s+/g, " "), /keeps the stack once startup finishes.*`cotal status`.*Ctrl-C in that terminal/); passed++;
-      assert.doesNotMatch(contender.err, /run the command again after that operation finishes/); passed++;
-      const stopArgs = ["down", "--yes", "--plain"];
-      assertSmokeSandboxDown(sandbox, stopArgs, { cwd: mesh, env });
-      const stop = await foregroundCliProbe(cliEntry, tsx, mesh, env, stopArgs, 60_000);
-      const refusal = stop.out + stop.err;
-      writeFileSync(join(root, "startup-stop-refusal.log"), refusal, { mode: 0o600 });
-      assert.equal(stop.code, 2, refusal); passed++;
-      assert.match(refusal, /LIFECYCLE_BLOCKED/); passed++;
-      assert.ok(refusal.includes(`holds this root (pid ${holder.child.pid})`), refusal); passed++;
-      assert.match(refusal.replace(/\s+/g, " "), /stop the stack with Ctrl-C.*wait for startup to finish and retry this stop/); passed++;
-      assert.doesNotMatch(refusal, /before starting it here/); passed++;
-      assert.deepEqual(readFileSync(journalPath), stoppedJournal, "both refusals leave the stopped journal unchanged"); passed++;
-      writeFileSync(`${holdPath}.test-release`, "", { mode: 0o600 });
+      holder = foreground([], holdPath);
+      await checkPaused("before-hold", holdPath);
     }
     await until(() => {
       if (holder.state.error) throw holder.state.error;
@@ -631,6 +655,15 @@ async function controllerHoldCell(otherHome = false): Promise<void> {
       return holder.io.out.includes("Controller stack started");
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
+    if (!otherHome) {
+      const hold = readFileSync(holdPath);
+      const retry = await foregroundCliProbe(cliEntry, tsx, mesh, env, detachedStartup, 60_000);
+      writeFileSync(join(root, "detached-retry.log"), retry.out + retry.err, { mode: 0o600 });
+      assert.equal(retry.code, 0, retry.out + retry.err); passed++;
+      assert.equal(JSON.parse(retry.out).outcome, "no-op"); passed++;
+      assert.ok(!holder.state.exited && await portOpen(port), "detached retry leaves the foreground stack running"); passed++;
+      assert.deepEqual(readFileSync(holdPath), hold, "detached retry does not change foreground custody"); passed++;
+    }
     const secondEnv = otherHome ? { ...env, COTAL_HOME: join(home, "other-machine") } : env;
     const secondSandbox = otherHome ? recordSmokeSandbox({ root: mesh, cotalHome: secondEnv.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME }) : sandbox;
     const second = await foregroundCliProbe(cliEntry, tsx, mesh, secondEnv, ["up", "--foreground"], 60_000);

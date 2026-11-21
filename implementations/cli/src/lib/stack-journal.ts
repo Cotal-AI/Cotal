@@ -428,8 +428,10 @@ export function acquireStackOperationLock(root: string, operation?: string): Mai
 
 function stackLockRemedy(held: string | undefined, contender: string | undefined): string {
   if (held === "foreground up") {
-    if (contender === "up" || contender === "foreground up")
+    if (contender === "foreground up")
       return `the other foreground terminal keeps the stack once startup finishes; check it with ${codeSpan(`${displayCmd()} status`)} or stop it with Ctrl-C in that terminal before starting it here`;
+    if (contender === "up")
+      return `check the foreground startup with ${codeSpan(`${displayCmd()} status`)} and retry this start after startup finishes`;
     if (contender === "down")
       return "stop the stack with Ctrl-C in the owning terminal, or wait for startup to finish and retry this stop";
   }
