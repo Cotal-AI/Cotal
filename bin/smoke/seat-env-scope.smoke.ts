@@ -105,6 +105,9 @@ const baseOpts: LaunchOpts = {
  *  zero-length loop is a green suite that checked nothing. */
 const CONNECTORS = ["claude", "opencode", "codex", "hermes", "jcode", "pi"] as const;
 
+// The Hermes fixture uses a managed profile, regardless of the operator's environment.
+delete process.env.COTAL_HERMES_ADOPT_HOME;
+
 /** What the operator-env-keep census parses as assigned per spawn, read from the same sources. */
 const parsed = perSpawnAssignments();
 
