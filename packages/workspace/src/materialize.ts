@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
@@ -96,15 +97,21 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const dir = extensionPackageDir(pkg);
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
-  let entry = meta.main ?? "index.js";
+  let exported: string | undefined;
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
+  if (typeof dot === "string") exported = dot;
   else if (dot && typeof dot === "object") {
     const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
+    exported = d.import ?? d.default ?? undefined;
+  } else if (typeof meta.exports === "string") exported = meta.exports;
   try {
-    await import(pathToFileURL(join(dir, entry)).href);
+    let file = join(dir, exported ?? meta.main ?? "index.js");
+    if (exported === undefined && meta.main !== undefined && statSync(file, { throwIfNoEntry: false })?.isDirectory()) {
+      // Resolve this directory as a package, without probing sibling files or evaluating it via require().
+      const require = createRequire(import.meta.url);
+      file = require.resolve(`${resolve(file)}/`);
+    }
+    await import(pathToFileURL(file).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }

@@ -1,6 +1,6 @@
-/** Real npm removal and failed seed cleanup must preserve copied file-based extensions.
- * Exercises both paths offline with an empty npm cache, using the built CLI and Claude connector
- * in private prefixes. Never starts a connector or broker.
+/** Exercise extension entry loading and preservation of copied file-based extensions through real
+ * npm operations, using the built CLI and Claude connector in private prefixes.
+ * Never starts a connector or broker.
  * Build the workspace first. Run: pnpm smoke:ext-install-copies
  */
 import assert from "node:assert/strict";
@@ -164,6 +164,46 @@ function main(): void {
           existsSync(join(prefix, "node_modules", "cotal-ext-bin-first")) && existsSync(join(prefix, "node_modules", "cotal-ext-bin-second")));
       check("shared bin: the bin link still reaches the shared package", symlinked() && existsSync(link));
     }
+    for (const variant of ["file", "directory", "nested-main", "missing", "exports"]) {
+      const dir = join(root, `entry-${variant}`);
+      const { cli, offline } = sandbox(dir);
+      const name = "cotal-directory-entry-test";
+      const source = join(dir, "extension");
+      const dist = join(source, "dist");
+      mkdirSync(dist, { recursive: true });
+      writeFileSync(join(source, "package.json"), JSON.stringify({
+        name, version: "1.0.0", type: "module", main: variant === "file" ? "./dist/index.js" : "./dist",
+        ...(variant === "exports" ? { exports: { ".": { import: "./entry.mjs" } } } : {}),
+        peerDependencies: { "@cotal-ai/core": "*" },
+      }));
+      if (variant === "nested-main") writeFileSync(join(dist, "package.json"), '{"main":"./register.mjs"}');
+      const entry = variant === "exports" ? join(source, "entry.mjs") : join(dist, variant === "nested-main" ? "register.mjs" : "index.js");
+      const register = `import { registry } from "@cotal-ai/core";
+await Promise.resolve();
+registry.register({ kind: "command", name: "directory-entry-example", summary: "fixture", run() { console.log("Hello"); } });
+`;
+      if (variant === "missing" || variant === "exports") writeFileSync(join(dist, "placeholder.txt"), "no entry here");
+      if (variant === "missing") {
+        writeFileSync(join(source, "index.js"), register);
+        writeFileSync(join(source, "dist.js"), register);
+      } else {
+        writeFileSync(entry, register);
+      }
+
+      const added = cli(["ext", "add", "./extension"], offline);
+      const listed = cli(["ext", "--json"]);
+      assert.equal(listed.status, 0, listed.stderr);
+      const { items } = JSON.parse(listed.stdout).result as { items: { pkg: string; provides: string[] }[] };
+      if (variant === "missing") {
+        check("missing directory entry: add names the failed import and rolls back",
+          added.status === 1 && added.stderr.includes(`extension ${name}@1.0.0 failed to import`) && added.stderr.includes("the add was rolled back") && items.length === 0);
+      } else {
+        if (added.status !== 0) console.error(added.stderr);
+        check(`${variant} entry: add advertises the command`, added.status === 0 && items.length === 1 && items[0]?.pkg === name && items[0].provides.includes("command:directory-entry-example"));
+        const command = cli(["directory-entry-example"]);
+        check(`${variant} entry: a fresh CLI dispatches the command`, command.status === 0 && command.stdout.trim() === "Hello");
+      }
+    }
     // Add uses one candidate metadata snapshot too, even when the entry changes its own file.
     for (const damage of [false, true]) {
       const dir = join(root, damage ? "metadata-changed" : "metadata-control");
@@ -182,7 +222,7 @@ function main(): void {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 33 : 30, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 42 : 39, "all expected extension checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

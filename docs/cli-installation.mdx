@@ -728,6 +728,8 @@ canonical service preset and local-process example. Installed packages and their
 Each load or add reads the installed package's metadata once, using that same result for its version,
 peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
 that later changes its own `package.json` cannot change the peer range used to diagnose that import.
+If the selected `main` points to a directory, Cotal uses Node's directory resolution to find the file
+to import. For example, `"main": "./dist"` can load `dist/index.js`.
 When linking siblings, only a missing package directory can be skipped with a warning. A directory
 without metadata, or a dangling package link, is damaged and still refuses.
 Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
