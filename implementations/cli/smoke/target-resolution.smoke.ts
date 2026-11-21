@@ -217,10 +217,17 @@ const QUESTION = "Which one?";
     run(["use", "planned"]);
     const marker = `${pointer}.adopted`;
     mkdirSync(marker);
+    writeFileSync(join(marker, "keep"), "");
     const unreadable = run(["who", "--json"]);
     check("an unreadable selection marker is named and does not permit fallback",
       unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
-    rmSync(marker, { recursive: true });
+    const reselected = run(["use", "planned", "--json"]);
+    check("selecting again repairs an unreadable marker without losing its directory contents",
+      reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&
+      readdirSync(env.COTAL_HOME!).some(name => name.startsWith("current-mesh.adopted.corrupt.") && existsSync(join(env.COTAL_HOME!, name, "keep"))), shown(reselected));
+    mkdirSync(marker);
+    const clearedMarker = run(["use", "--clear", "--plain"]);
+    check("clearing an unreadable marker clears the saved selection", clearedMarker.status === 0 && !existsSync(pointer) && !existsSync(marker), shown(clearedMarker));
 
     writeFileSync(pointer, "");
     const cleared = run(["use", "--clear", "--plain"]), fallback = run(["who", "--json"]);

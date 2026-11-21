@@ -77,7 +77,7 @@ import {
   preparedNeverStarted,
   pruneStaleMeshes,
   renderWorkspaceError,
-  resolveMeshTarget,
+  resolveMeshTarget, withInstallCustodyRead,
   type ControlTarget,
   type MeshTarget,
   type MeshTargetErrorDetails,
@@ -1094,8 +1094,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     let peek: MeshTarget | undefined;
     try {
       // This sweep only probes. Read-only staged checks need the same liveness verdict.
-      sweep = await pruneStaleMeshes(server, space === undefined ? "targets" : "brokers");
-      peek = resolveMeshTarget(process.cwd(), { server, space, ...sweep });
+      sweep = await withInstallCustodyRead(() => pruneStaleMeshes(server, space === undefined ? "targets" : "brokers"));
+      peek = withInstallCustodyRead(() => resolveMeshTarget(process.cwd(), { server, space, ...sweep }));
     } catch (e) {
       // An unreadable prepared record is not evidence about Manager custody. The updater can
       // leave it alone only if it was not asked for a broker or instance and has no potentially
@@ -1186,12 +1186,12 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   }
   let target: ControlTarget;
   try {
-    target = await resolveControlTarget({
+    target = await withInstallCustodyRead(() => resolveControlTarget({
       ...(typeof flags.space === "string" ? { space: flags.space } : {}),
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
       ...sweep,
-    }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
+    }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true }), typeof flags.creds !== "string");
   } catch (e) {
     const failure = e instanceof ConnectRefusal ? e.failure() : isCommandFailure(e) ? e : undefined;
     if (remoteSpace !== undefined && on === undefined && e instanceof ConnectRefusal && failure?.code === "PERMISSION_DENIED" && /\(view "manager-caller"\) was refused: manager-caller selection found (?:[2-9]|\d{2,}) live remote manager candidates for owner \S+ \([A-Za-z0-9_, -]+\); exactly one is required, so name one with --on <instanceId>/.test(failure.message)) {
