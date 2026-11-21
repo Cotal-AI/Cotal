@@ -1,6 +1,7 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { drainAndClose } from "@cotal-ai/core";
 import { type ChildProcess } from "node:child_process";
+import { openBrokerLog, prepareForegroundBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
 import { randomUUID } from "node:crypto";
 import { createConnection, createServer, isIP } from "node:net";
@@ -63,7 +64,6 @@ import {
   LEASE_TTL_MS,
   EpEnvelopeError,
   mkSecretDir,
-  openPrivateAppend,
   writeSecretFile,
   type AuthPrepared,
   type SpaceAuth,
@@ -2411,10 +2411,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       throw new Error(`resume store ${storeDir} no longer matches the preserved source identity; refusing to open JetStream over it`);
   }
   if (values["store-dir"]) warnForeignStoreEntries(storeDir);
-  if (logFile !== undefined) {
-    mkdirSync(dirname(logFile), { recursive: true, mode: 0o700 });
-    closeSync(openBrokerLog(logFile));
-  }
+  prepareForegroundBrokerLog(logFile);
   // Owner-private regardless of umask: a recursive create also makes a missing `.cotal`, which every
   // later protection check walks as an ancestor.
   mkdirSync(storeDir, { recursive: true, mode: 0o700 });
@@ -4441,20 +4438,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
   return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, maxPayload, confPath, args, bin, source, version };
 }
 
-/**
- * Open a broker log with {@link openPrivateAppend}: created `0600` whatever the umask,
- * never through a symlink, and an earlier log this user owns set to `0600`. A symlink, a log another
- * user owns or a name that is not a regular file is refused and left unchanged.
- */
-export function openBrokerLog(path: string): number {
-  try {
-    return openPrivateAppend(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `no broker was started: ${(error as Error).message}`,
-      { target: { path }, remedy: `remove ${shellWord(path)} or replace it with a regular file you own, then repeat the same startup command` });
-  }
-}
+export { openBrokerLog };
 
 /**
  * Start a background nats-server (JetStream), wait until it's reachable, pre-create the
