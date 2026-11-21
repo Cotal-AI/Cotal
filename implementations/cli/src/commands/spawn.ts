@@ -5,7 +5,6 @@ import { resolve as resolvePath } from "node:path";
 import {
   assertValidChannel,
   assertValidRole,
-  agentFilePath,
   connectorServers,
   spawnEnvAllow,
   deprovisionAgent,
@@ -83,7 +82,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, checkSpawnExpiryTarget, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -525,7 +524,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const personaProject = resolvePath(target.personaRoot, "..", "..");
-  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : agentFilePath(personaProject, ref);
+  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : directPersonaPath(personaProject, ref, values.config === undefined && positionals.length > 0);
   // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
   // written from the shipped template here and launched. This also applies to positional `default`.
   // A missing file, preference or other catalog name is still refused.

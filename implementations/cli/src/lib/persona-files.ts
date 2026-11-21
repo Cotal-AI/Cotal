@@ -1,11 +1,10 @@
-import { isUtf8 } from "node:buffer";
 import { spawn, type StdioOptions } from "node:child_process";
 import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import {
   acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
+  parseAgentFileSource, saveAgentFile, utf8Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
@@ -114,7 +113,7 @@ export function requirePersonaSource(path: string): PersonaSource {
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
   // Its encoding names no value from the file, so it is the one reason given.
   const source = bytes.toString("utf8");
-  const encoding = utf16Problem(source) ?? (isUtf8(bytes) ? undefined : "it is not valid UTF-8");
+  const encoding = utf8Problem(bytes, source);
   if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
   try { def = parseAgentFileSource(source, path); }

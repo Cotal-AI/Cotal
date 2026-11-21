@@ -1,4 +1,6 @@
+import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { agentFilePath, personaDir } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
@@ -11,6 +13,15 @@ export function spawnPersona(configFlag: string | undefined, positionals: readon
   if (explicit !== undefined) return { ref: explicit };
   const winner = resolvePreference("persona", ctx).winner!;
   return winner.source === "default" ? { ref: winner.value } : { ref: winner.value, from: describeLayer(winner) };
+}
+
+/** A positional catalog entry takes precedence over a same-named legacy path. */
+export function directPersonaPath(root: string, ref: string, positional: boolean): string {
+  if (positional && ref.endsWith(".md") && !isAbsolute(ref) && !/[\\/]/.test(ref)) {
+    const catalogPath = join(personaDir(root), `${ref}.md`);
+    if (lstatSync(catalogPath, { throwIfNoEntry: false })) return catalogPath;
+  }
+  return agentFilePath(root, ref);
 }
 
 /** The harness a launch falls back to when neither `--agent` nor the persona names one, as this

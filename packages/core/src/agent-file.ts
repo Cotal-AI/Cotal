@@ -31,7 +31,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
-import { utf16Problem } from "./text-encoding.js";
+import { utf16Problem, utf8Problem } from "./text-encoding.js";
 import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
@@ -160,7 +160,11 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
 export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  return parseAgentFileSource(readFileSync(path, "utf8"), path, options);
+  const bytes = readFileSync(path);
+  const source = bytes.toString("utf8");
+  const encoding = utf8Problem(bytes, source);
+  if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
+  return parseAgentFileSource(source, path, options);
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
@@ -525,7 +529,7 @@ export interface PersonaCatalogEntry {
   def?: AgentDef;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
-  /** The encoding problem when the file was saved as UTF-16. */
+  /** The encoding problem when the file is not valid UTF-8. */
   encoding?: string;
   /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
   notRegular?: true;
@@ -580,7 +584,10 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
       return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
       let encoding: string | undefined;
-      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
+      try {
+        const bytes = readFileSync(path);
+        encoding = utf8Problem(bytes, bytes.toString("utf8"));
+      } catch { /* unreadable: `error` says so */ }
       return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });
