@@ -95,8 +95,8 @@ Setup needs an installed connector. When `--harness` names a built-in connector 
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
 for that connector. Setup does not reinstall removed connectors. If none are installed in a source
 checkout, setup instead points to a released install or to `COTAL_ALLOW_CHECKOUT_SEED=1` for a
-sandboxed release test. An unknown `--harness` reports `USAGE_INVALID` before setup seeds any
-built-in extensions.
+sandboxed release test. An unknown `--harness` reports `USAGE_INVALID` before setup seeds
+built-in extensions or completes a pending extension installation.
 
 After successful preparation, the terminal asks separately whether to start, and only a typed `y`
 or `yes` starts it. An explicit

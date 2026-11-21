@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource, loadExtensionsManifest, type ExtensionsManifest } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -13,28 +13,43 @@ interface Promotion {
   readonly stageIdentity: { readonly dev: string; readonly ino: string; readonly birth: number };
   readonly oldIdentity?: { readonly dev: string; readonly ino: string; readonly birth: number };
 }
-const journalPath = (): string => join(connectorConfigDir(), ".extensions-promotion.json");
+const journalPath = (config = connectorConfigDir()): string => join(config, ".extensions-promotion.json");
 function save(record: Promotion): void {
   const path = journalPath(), temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });
   renameSync(temp, path);
 }
-function checkedRecord(): Promotion | undefined {
-  const path = journalPath();
-  if (!existsSync(path)) return undefined;
-  if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error("extension promotion journal is not a regular file");
+function checkedRecord(config = resolve(connectorConfigDir()), sourceConfig = config): Promotion | undefined {
+  const path = journalPath(sourceConfig);
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return undefined;
+  if (!stat.isFile()) throw new Error("extension promotion journal is not a regular file");
   assertProtectedFileAccess();
   const source = readLocalRecordSource(path, 64 * 1024);
   if (!source) throw new Error("extension promotion journal disappeared");
   const record = JSON.parse(Buffer.from(source).toString("utf8")) as Promotion;
-  const config = resolve(connectorConfigDir());
   if (record.v !== 1 || !record.stageIdentity || resolve(record.root) !== join(config, "extensions") ||
       dirname(record.stage) !== config || !record.stage.startsWith(join(config, ".extensions.stage-")) ||
       dirname(record.old) !== config || !record.old.startsWith(join(config, ".extensions.rollback-"))) throw new Error("invalid extension promotion journal");
   return record;
 }
+
+/** Read the inventory recovery would publish, without taking a writer lock or importing code. */
+export function setupExtensionInventory(): ExtensionsManifest {
+  const { config, source, recoverPromotion } = connectorConfigDir({ observeRecovery: true });
+  const record = recoverPromotion ? checkedRecord(resolve(config), source) : undefined;
+  const prefix = record ? checkedPromotion(record).verified : join(source, "extensions");
+  const before = lstatSync(prefix, { throwIfNoEntry: false });
+  const manifest = loadExtensionsManifest({ prefix, staged: record !== undefined });
+  const after = lstatSync(prefix, { throwIfNoEntry: false });
+  if ((record && JSON.stringify(before && statIdentity(before)) !== JSON.stringify(record.stageIdentity)) ||
+      JSON.stringify(before && statIdentity(before)) !== JSON.stringify(after && statIdentity(after)) ||
+      (!record && recoverPromotion && existsSync(journalPath(source))))
+    throw new Error("extension promotion changed while setup read its inventory; retry setup");
+  return manifest;
+}
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
-export function recoverExtensionPromotion(prepareForUpdate = false): boolean {
+export function recoverExtensionPromotion(prepareForUpdate = false, validate?: () => void): boolean {
   if (!canRecoverConnectorConfig() || !checkedRecord()) return false;
   const releaseClosure = claimUpdateClosureAccess(true);
   try {
@@ -43,27 +58,37 @@ export function recoverExtensionPromotion(prepareForUpdate = false): boolean {
     try {
       const record = checkedRecord();
       if (!record) return false;
+      // Setup checks once without locks to reject typos without writes, then checks the inventory
+      // again under the writer barrier before a concurrent promotion can publish different bytes.
+      validate?.();
       finish(record, prepareForUpdate);
       return true;
     }
     finally { release(); }
   } finally { releaseClosure(); }
 }
-function identity(path: string): Promotion["stageIdentity"] {
-  const stat = lstatSync(path);
+function statIdentity(stat: Stats): Promotion["stageIdentity"] {
   return { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs };
 }
+function promotionDirectory(path: string): Stats | undefined {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (stat && !stat.isDirectory()) throw new Error("extension promotion directory is not a real directory");
+  return stat;
+}
+function checkedPromotion(record: Promotion): { verified: string; moveOld: boolean } {
+  const root = promotionDirectory(record.root), stage = promotionDirectory(record.stage), old = promotionDirectory(record.old);
+  const verified = stage ?? root;
+  if (!verified || JSON.stringify(statIdentity(verified)) !== JSON.stringify(record.stageIdentity)) throw new Error("extension promotion no longer names its verified prefix");
+  const previous = old ?? (stage && root);
+  if (previous && JSON.stringify(statIdentity(previous)) !== JSON.stringify(record.oldIdentity)) throw new Error("extension promotion no longer names its previous prefix");
+  if (stage && root && old) throw new Error("ambiguous extension promotion directories");
+  return { verified: stage ? record.stage : record.root, moveOld: stage !== undefined && root !== undefined };
+}
+
 function finish(record: Promotion, prepareForUpdate = false): void {
-  const root = existsSync(record.root), stage = existsSync(record.stage), old = existsSync(record.old);
-  for (const path of [record.root, record.stage, record.old]) if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error("extension promotion directory is not a real directory");
-  const verified = stage ? record.stage : root ? record.root : undefined;
-  if (!verified || JSON.stringify(identity(verified)) !== JSON.stringify(record.stageIdentity)) throw new Error("extension promotion no longer names its verified prefix");
-  const previous = old ? record.old : stage && root ? record.root : undefined;
-  if (previous && (!record.oldIdentity || JSON.stringify(identity(previous)) !== JSON.stringify(record.oldIdentity))) throw new Error("extension promotion no longer names its previous prefix");
-  if (stage && root && !old) renameSync(record.root, record.old);
-  else if (stage && root) throw new Error("ambiguous extension promotion directories");
-  else if (!root && !stage) throw new Error("extension promotion has no complete prefix");
-  if (stage) renameSync(record.stage, record.root);
+  const { verified, moveOld } = checkedPromotion(record);
+  if (moveOld) renameSync(record.root, record.old);
+  if (verified === record.stage) renameSync(record.stage, record.root);
   // After promotion the journal can only name a complete verified new prefix. Old bytes remain
   // available until that rename is observable, including if the process exits between these calls.
   if (existsSync(record.old)) {
@@ -116,7 +141,7 @@ export function stageExtensions(): ExtensionStage {
       const ready = `${stage}.ready`;
       renameSync(prefix, ready);
       if (existsSync(old)) throw new Error("extension rollback destination already exists");
-      const record: Promotion = { v: 1, root, stage: ready, old, stageIdentity: identity(ready), ...(existsSync(root) ? { oldIdentity: identity(root) } : {}) };
+      const record: Promotion = { v: 1, root, stage: ready, old, stageIdentity: statIdentity(lstatSync(ready)), ...(existsSync(root) ? { oldIdentity: statIdentity(lstatSync(root)) } : {}) };
       save(record);
       promoted = true;
       finish(record);

@@ -111,10 +111,10 @@ export function commandSurface(): Command[] {
 export function installedExtensionsEnabled(): boolean { return installedEnabled; }
 
 /** Registered and installed provider names without importing packages (safe for help/completion). */
-export function extensionNames(kind: string): string[] {
+export function extensionNames(kind: string, installed?: readonly InstalledExtension[]): string[] {
   const names = new Set(registry.all().filter((ext) => ext.kind === kind && (kind !== "local-process" || (ext as LocalProcess).controllerOnly !== true)).map((ext) => ext.name));
   if (installedEnabled) {
-    for (const ext of loadExtensionsManifest().extensions) {
+    for (const ext of installed ?? loadExtensionsManifest().extensions) {
       if (kind === "local-process") {
         for (const process of extensionLocalProcesses(ext)) if (!process.controllerOnly) names.add(process.name);
       } else {

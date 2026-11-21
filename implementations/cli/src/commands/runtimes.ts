@@ -1,5 +1,5 @@
 import { registry, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
-import { extensionProvides, jsonFlag, loadExtensionsManifest, plainFlag, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
+import { extensionProvides, jsonFlag, loadExtensionsManifest, plainFlag, presentationOf, writeResult, type InstalledExtension, type Report, type Styled } from "@cotal-ai/workspace";
 import { OFFICIAL_RUNTIMES, materializeExtension } from "../ext-loader.js";
 
 export const runtimesFlags = [jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -63,9 +63,9 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
 /** Name → owning package, for every runtime provider an installed extension advertises (read from
  *  the manifest; no import yet). A provider already registered in core (a library build) has no
  *  package name. */
-export function runtimeProviders(): Map<string, string | undefined> {
+export function runtimeProviders(installed: readonly InstalledExtension[] = loadExtensionsManifest().extensions): Map<string, string | undefined> {
   const providers = new Map<string, string | undefined>();
-  for (const ext of loadExtensionsManifest().extensions)
+  for (const ext of installed)
     for (const ref of extensionProvides(ext)) if (ref.kind === "runtime") providers.set(ref.name, ext.pkg);
   for (const ext of registry.all()) if (ext.kind === "runtime" && !providers.has(ext.name)) providers.set(ext.name, undefined);
   return providers;

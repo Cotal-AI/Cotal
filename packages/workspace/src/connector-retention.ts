@@ -207,7 +207,7 @@ function ownedAncestors(path: string): void {
   }
 }
 
-function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
+function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void, observeRecovery = false): string | undefined {
   const sets = dirname(id.path);
   const path = join(sets, "current.json");
   const bytes = readLocalRecordSource(path, 8192, true);
@@ -217,9 +217,10 @@ function previousConfig(id: { entry: string; path: string }, prepare?: (path: st
   if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || dirname(record.root) !== join(sets, record.version) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("invalid previous connector retention selection");
   const { root } = record;
   prepare?.(root);
-  ownedAncestors(root);
+  const source = observeRecovery ? retiredConfigSource(root, id.path) : root;
+  ownedAncestors(source);
   for (const name of ["seed", "extensions"]) {
-    const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
+    const path = join(source, name), stat = lstatSync(path, { throwIfNoEntry: false });
     if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`previous connector state is not a real directory: ${path}`);
   }
   return root;
@@ -241,14 +242,14 @@ function updateSnapshot(id: { entry: string; version: string; path: string }): s
   return snapshot;
 }
 
-function currentConfig(id: { entry: string; version: string; path: string }, prepare?: (path: string) => void): string | undefined {
+function currentConfig(id: { entry: string; version: string; path: string }, prepare?: (path: string) => void, observeRecovery = false): string | undefined {
   if (existsSync(id.path)) ownedAncestors(id.path);
   const path = join(id.path, "selection.json");
   const bytes = readLocalRecordSource(path, 8192, true);
   if (!bytes) {
     const snapshot = updateSnapshot(id);
     if (snapshot) return;
-    const previous = previousConfig(id, prepare);
+    const previous = previousConfig(id, prepare, observeRecovery);
     return previous && dirname(previous) === id.path ? previous : undefined;
   }
   ownedAncestors(id.path);
@@ -257,18 +258,35 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
   const snapshot = updateSnapshot(id);
   const { root } = record;
   if (!snapshot || record.snapshot === snapshot) prepare?.(root);
-  ownedDirectory(root);
+  const source = observeRecovery ? retiredConfigSource(root, id.path) : root;
+  ownedDirectory(source);
   for (const name of ["seed", "extensions"]) {
-    const path = join(root, name);
+    const path = join(source, name);
     if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error(`retained connector state is not a real directory: ${path}`);
   }
   return snapshot && record.snapshot !== snapshot ? undefined : root;
 }
 
+interface ConnectorConfigObservation {
+  readonly config: string;
+  readonly source: string;
+  readonly recoverPromotion: boolean;
+}
+
 /** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */
-export function connectorConfigDir(): string {
+export function connectorConfigDir(): string;
+/** Project the selected config after a recoverable rename, without repairing it. */
+export function connectorConfigDir(options: { observeRecovery: true }): ConnectorConfigObservation;
+export function connectorConfigDir(options?: { observeRecovery: true }): string | ConnectorConfigObservation {
   const id = identity();
-  return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
+  const observe = options?.observeRecovery === true;
+  const current = id && currentConfig(id, undefined, observe);
+  const snapshot = id && !current ? updateSnapshot(id) : undefined;
+  const previous = id && !current && (observe || !snapshot) ? previousConfig(id, undefined, observe) : undefined;
+  const legacy = globalConfigDir();
+  const config = current ?? snapshot ?? previous ?? (id && !["extensions", "seed", ".extensions-promotion.json"].some(name => existsSync(join(legacy, name))) ? join(id.path, "cotal") : legacy);
+  if (!observe) return config;
+  return { config, source: id ? retiredConfigSource(config, id.path) : config, recoverPromotion: current !== undefined || previous === undefined };
 }
 
 /** Restore write access before staging, without touching another installation or following managed links. */
@@ -372,6 +390,15 @@ function removeRetiredConnectorTree(path: string): void {
 }
 
 const retiredCanonical = (set: string) => join(set, ".retired-cotal");
+
+/** During an interrupted canonical rename, its still-owned aside is the same graph. */
+function retiredConfigSource(root: string, set: string): string {
+  if (root !== join(set, "cotal") || lstatSync(root, { throwIfNoEntry: false })) return root;
+  const aside = retiredCanonical(set);
+  if (!lstatSync(aside, { throwIfNoEntry: false })) return root;
+  ownedAncestors(aside);
+  return aside;
+}
 
 function recoverRetiredCanonical(set: string): void {
   const aside = retiredCanonical(set);

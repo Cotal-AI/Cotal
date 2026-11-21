@@ -622,6 +622,20 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   }
 }
 
+/** Setup owns its built-in grammar even while the extension prefix is being promoted. */
+function prepareSetupCommand(cmd: Command, rest: string[], arm: () => void, configFolder: ConfigFolderProblem | undefined): ParsedArgs {
+  arm();
+  if (configFolder) failureExit(cmd, configFolderRefusal(configFolder), asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
+  const parsed = parseOrExit(cmd, rest);
+  try {
+    recoverExtensionPromotion(false, () => cmd.validate?.(parsed));
+  } catch (error) {
+    if (isCommandFailure(error)) failureExit(cmd, error, parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    throw error;
+  }
+  return parsed;
+}
+
 /**
  * Dispatch `argv` against the commands self-registered in a {@link Registry}. The single entry point
  * a composition root calls — no hardcoded command list.
@@ -711,11 +725,27 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     return true;
   }
   const configFolder = globalConfigDirProblem();
+  // Arm before parsing so a usage refusal is recorded, with any notice before command output.
+  const arm = (cmd: Command | undefined, rest: string[]): void => {
+    if (!cmd) return;
+    try {
+      armTelemetry(registry, cmd, words, startedAt);
+    } catch (e) {
+      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
+      throw e;
+    }
+  };
+  let parsedSetup: ParsedArgs | undefined;
   if (useExtensionOverlay) {
     try {
-      if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
-      // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
-      if (builtin?.name !== "topology") recoverExtensionPromotion();
+      if (builtin?.name === "setup") {
+        const rest = ownWords(builtin);
+        if (!asksForHelp(rest)) parsedSetup = prepareSetupCommand(builtin, rest, () => arm(builtin, rest), configFolder);
+      } else {
+        if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
+        // Topology only renders a manifest, without finishing an install.
+        if (builtin?.name !== "topology") recoverExtensionPromotion();
+      }
     } catch (e) {
       if (!skipUnreadableConnectorOverlay(e)) {
         if (repeatedLeading) {
@@ -768,18 +798,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   for (const warning of pendingWarnings) console.error(c.red(`! ${warning.message}`));
   const wantsHelp = asksForHelp(rest);
   ({ cmd, rest } = await serviceSurface(cmd, rest));
-  // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
-  // counts too, and before anything runs, so the one-time notice precedes the command's output.
-  const arm = (): void => {
-    if (!cmd) return;
-    try {
-      armTelemetry(registry, cmd, words, startedAt);
-    } catch (e) {
-      if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
-      throw e;
-    }
-  };
-  arm();
+  if (!parsedSetup) arm(cmd, rest);
   // A seeded package's command (`web`) can be absent only because the first seed has not installed
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
@@ -794,7 +813,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
   // line, where `--help` is a word being completed, not a request.
   if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
-  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
+  let parsed = parsedSetup ?? (cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined);
   // ---- Effects: only a validated invocation reaches this line. ----
   // A config folder that is a file fails every read and write of the preferences, the config file and
   // the extensions, so a command that could use them stops here, before the seed would write there.
@@ -841,7 +860,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (repeated) return repeatedGlobalFlag(repeated, cmd, ownWords(cmd), warnings);
       for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
       ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
-      arm();
+      arm(cmd, rest);
     }
   }
   // An extension stub materializes before parsing: verify the version pin, import the package

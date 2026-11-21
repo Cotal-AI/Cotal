@@ -121,9 +121,9 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
 /** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
  *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
- *  silently vanish from help). */
-export function loadExtensionsManifest(): ExtensionsManifest {
-  const p = extensionsManifestPath();
+ *  silently vanish from help). A verified extension stage must contain its manifest. */
+export function loadExtensionsManifest(options?: { prefix: string; staged?: boolean }): ExtensionsManifest {
+  const p = options ? join(options.prefix, "extensions.json") : extensionsManifestPath();
   const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
   let parsed: unknown;
   try {
@@ -136,8 +136,8 @@ export function loadExtensionsManifest(): ExtensionsManifest {
       closeSync(fd);
     }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
-    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
+    if (!options?.staged && (e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
+    if (!options?.staged && (e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
     throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message}. ${repair}`);
   }
   const m = parsed as ExtensionsManifest | null;

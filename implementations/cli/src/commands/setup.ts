@@ -40,13 +40,14 @@ import {
   writeResult,
   type Cell,
   type ErrorCode,
+  type InstalledExtension,
   type MeshEntry,
   type Outcome,
   type OutputWarning,
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, installedExtensionsEnabled, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -60,6 +61,7 @@ import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { setupExtensionInventory } from "../lib/extension-stage.js";
 import { cotalOnPath, displayCmd, displayRemedy, isNpx, isPnpmDlx, selfArgv } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -217,7 +219,7 @@ function unknownHarness(name: string, known: readonly string[]): CommandFailure 
 }
 
 /** Validate inputs before connector seeding or preparation writes. */
-export function validateSetupArguments(args: ParsedArgs): void {
+export function validateSetupArguments(args: ParsedArgs, observePromotion = true): void {
   const values = args.values as SetupValues;
   if (args.positionals.length) throw usage("setup takes flags, not positional inputs");
   if (values.skills) {
@@ -237,9 +239,13 @@ export function validateSetupArguments(args: ParsedArgs): void {
     if (values["configure-only"] || (!values.start && !interactive)) throw usage("--on requires a possible startup; pass --start for a scripted setup");
   }
   if (values.start && !values.detach && !interactive) throw usage("setup --start requires --detach when it cannot open an interactive terminal");
-  if (!interactive) scriptedInputs(values, runtimeChoices());
+  const checksRuntime = !interactive && !!values.runtime?.length;
+  const installed = observePromotion && installedExtensionsEnabled() && (values.harness !== undefined || checksRuntime)
+    ? setupExtensionInventory().extensions
+    : undefined;
+  if (!interactive) scriptedInputs(values, checksRuntime ? runtimeChoices(installed) : []);
   if (values.harness !== undefined) {
-    const known = knownHarnesses(extensionNames("connector"));
+    const known = knownHarnesses(extensionNames("connector", installed));
     if (!known.includes(values.harness)) throw unknownHarness(values.harness, known);
   }
 }
@@ -260,7 +266,7 @@ export function validateSetupArguments(args: ParsedArgs): void {
  * `--skills` only reconciles skills.
  */
 export async function setup(args: ParsedArgs): Promise<void> {
-  validateSetupArguments(args);
+  validateSetupArguments(args, false);
   const values = args.values as SetupValues;
   if (values.skills) {
     await runSkillsOnly();
@@ -553,8 +559,8 @@ async function harnessCandidates(harness?: string): Promise<SetupConnectorCandid
 
 /** The runtimes setup offers: `pty`, the official ones in a stable order, then each third-party one
  *  an installed extension provides. */
-function runtimeChoices(): RuntimeChoice[] {
-  const providers = runtimeProviders();
+function runtimeChoices(installed?: readonly InstalledExtension[]): RuntimeChoice[] {
+  const providers = runtimeProviders(installed);
   const official = Object.keys(OFFICIAL_RUNTIMES).map((name): RuntimeChoice => {
     const tool = OFFICIAL_RUNTIME_TOOLS[name] ?? { names: [] };
     const override = tool.override === undefined ? undefined : process.env[tool.override]?.trim();
