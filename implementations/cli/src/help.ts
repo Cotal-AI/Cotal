@@ -309,7 +309,7 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   out(renderReport({ sections }, "rich", width));
 }
 
-/** Resolve only declared literal metadata. Neither aliases nor nesting import provider code. */
+/** Resolve declared subcommands and aliases. Words after a leaf subcommand are operands. */
 export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   let surface: Pick<Command, "subcommands"> = cmd;
   let selected: Subcommand | undefined;
@@ -327,6 +327,7 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
       process.exit(1);
     }
     path.push(sub.name); selected = sub; surface = sub;
+    if (!sub.subcommands?.length) break;
   }
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }
