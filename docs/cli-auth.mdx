@@ -78,8 +78,10 @@ cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>
 The fixed-profile forms use the existing native static credential profiles. No generic host
 profile is exposed.
 A space registered as open refuses `UNSUPPORTED`, since it authenticates no one and issues no
-credentials. Per-user-auth spaces refuse too; a cached login does not replace signing authority. The
-resolved root supplies the persona ACL, signer and default storage together. With no space selected
+credentials. Per-user-auth spaces also refuse `UNSUPPORTED`. A file-only mint from a local project
+that records per-user auth refuses even when the space is stopped. Use the space's login or
+enrollment path instead of minting a static credential. The resolved root supplies the persona
+ACL, signer and default storage together. With no space selected
 or available, start a local static-auth space with `cotal up` in its project folder and retry there.
 You can also use `--space <name>` to select a static-auth space with signing trust on this machine.
 For a prepared space that has never started, the refusal says how to run `cotal up` to create
@@ -210,7 +212,9 @@ chat and DM history start empty (see [Backups](cli-backups.mdx#backups)).
 ## Endpoint caller credentials [#endpoint-caller-credentials]
 
 `--endpoint` is a separate closed mode, not an ACL override on an observer or admin profile. It
-requires a private `--out` in an existing protected physical parent outside managed state. Only
+requires a private `--out` in an existing protected physical parent outside managed state. If the
+parent directory is missing, the command refuses with `TARGET_NOT_FOUND` before endpoint discovery.
+Create the directory privately or choose an existing protected directory for `--out`. Only
 `--channels`, `--expires-in`, space/server and presentation flags combine with it. It has no default
 lifetime: without `--expires-in` the caller carries no expiry claim. An empty or
 omitted channel list grants no explicit read/post channels. Supplied channels deliberately enter
