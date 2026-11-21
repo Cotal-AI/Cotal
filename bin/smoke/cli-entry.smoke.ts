@@ -1101,6 +1101,14 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
   check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
     json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+  // up -f's structured refusal keeps the same sentence and Next, rather than a generic read error.
+  for (const format of ["--json", "--plain"]) {
+    const up = cotal(["up", "-f", dir, "--dry-run", format], undefined, { ...noSeed, LC_ALL: "C.UTF-8" });
+    const said = format === "--json" ? (() => { try { return (JSON.parse(up.stdout) as { error?: { message?: string; remedy?: string } }).error; } catch { return undefined; } })() : { message: up.stdout + up.stderr, remedy: up.stdout + up.stderr };
+    check(`up -f --dry-run ${format} of a folder names the directory and the Next, not a generic read error`,
+      up.status === 1 && said?.message?.includes(`the manifest file ${JSON.stringify(dir)} is a directory; a manifest is one file`) === true
+        && said.remedy?.includes("name the manifest file in it, such as its cotal.yaml") === true && !(up.stdout + up.stderr).includes("could not be read"), shown(up));
+  }
 }
 
 // A retained teardown ledger uses the manifest source hash, without reading launch-time personas.

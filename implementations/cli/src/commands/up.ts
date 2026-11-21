@@ -3658,6 +3658,9 @@ function manifestFileRefusal(e: unknown, path: string): CommandFailure {
     const issues = e.issues.map((issue) => ({ ...issue, message: issue.message.split("\n")[0]!.replace(/(at line \d+, column \d+):$/, "$1") }));
     return new CommandFailure("refused", "SCHEMA_INVALID", `the manifest does not validate, so nothing was started: ${issues.map((issue) => formatIssue(e.file, issue)).join("; ")}`, { target: { path, issues }, remedy: "fix each named problem and run the command again" });
   }
+  // A refusal that already names the problem, such as a directory given as the manifest, keeps its
+  // own sentence and remedy, as the text path prints them.
+  if (e instanceof CommandFailure) return e;
   const code = (e as NodeJS.ErrnoException)?.code;
   return new UnusableFile(code === "ENOENT" ? `manifest file not found: ${path}` : `the manifest ${path} could not be read (${code ?? (e as Error).message})`, { file: path });
 }
