@@ -435,9 +435,17 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     if (req.dms) {
       const dmLimit = Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER);
       const dms = await ep.dmHistory({ limit: dmLimit });
-      const merged = [...read, ...dms.slice(-req.limit).map((msg) => itemOf(msg, {}))].sort((a, b) => a.ts.localeCompare(b.ts));
-      if (dms.length > req.limit || merged.length > req.limit) olderRetained = true;
-      read = merged.slice(-req.limit);
+      const direct = dms.slice(-req.limit).map((msg) => itemOf(msg, {})).sort((a, b) => a.ts.localeCompare(b.ts));
+      if (dms.length > req.limit || read.length + direct.length > req.limit) olderRetained = true;
+      // Channel rows arrive in broker sequence order. Compare timestamps only to choose between
+      // the two streams, taking from the end so the window keeps the newest channel posts first.
+      const merged: HistoryItem[] = [];
+      while (merged.length < req.limit && (read.length || direct.length)) {
+        const chat = read.at(-1);
+        const dm = direct.at(-1);
+        merged.push(!dm || (chat && chat.ts.localeCompare(dm.ts) > 0) ? read.pop()! : direct.pop()!);
+      }
+      read = merged.reverse();
       // An absent stream reads as no messages. That is a missing read, not an empty history.
       try {
         if (!(await ep.dmStreamPresent()))
@@ -538,12 +546,15 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   }
   const replay: HistoryResult["replay"] = absent ? [] : policies.map(({ channel, replay, window }) => ({ channel, replay, window }));
 
-  // Whether the window goes back to `--since`: it does when nothing older is retained, or when its
-  // oldest message is at or before the point asked for. Otherwise messages in between may be missing.
+  // A mixed window is not ordered by sender time, so any retained row can reach a time cutoff.
   const oldest = read[0];
   const before = (since: Since, item: HistoryItem) => (since.kind === "seq" ? item.seq !== null && item.seq <= since.seq + 1 : Date.parse(item.ts) <= since.ms);
-  const atOrPastEnd = req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq >= lastSeq;
-  const reachesSince = req.since === undefined ? null : atOrPastEnd || olderRetained === false || (oldest !== undefined && before(req.since, oldest)) ? true : olderRetained === null ? null : false;
+  const since = req.since;
+  const atOrPastEnd = since?.kind === "seq" && lastSeq !== undefined && since.seq >= lastSeq;
+  const reached = since !== undefined && (req.dms && since.kind === "time"
+    ? read.some((item) => before(since, item))
+    : oldest !== undefined && before(since, oldest));
+  const reachesSince = since === undefined ? null : atOrPastEnd || olderRetained === false || reached ? true : olderRetained === null ? null : false;
   return {
     warnings,
     result: {
