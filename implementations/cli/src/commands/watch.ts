@@ -40,8 +40,11 @@ export async function watch(args: ParsedArgs): Promise<void> {
     // failure a CommandFailure does, so it is read through `failure()` rather than falling into the
     // generic sentence below under OPERATION_FAILED. Any other failure keeps that sentence, because
     // its message is not written for an operator.
-    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
-    const target = { requestedSpace: args.values.space ?? null, ...(resolved.space === undefined ? {} : { space: resolved.space }) };
+    const refusal = isConnectRefusal(error) ? error : undefined;
+    const failure = isCommandFailure(error) ? error : refusal?.failure();
+    const refusedSpace = refusal?.target?.space;
+    const space = resolved.space ?? (typeof refusedSpace === "string" ? refusedSpace : undefined);
+    const target = { requestedSpace: args.values.space ?? null, ...(space === undefined ? {} : { space }) };
     const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
     writeStreamRecord(streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }));
     writeStreamRecord(streamRecord("watch", "end", target, { reason: "setup-failed" }));
