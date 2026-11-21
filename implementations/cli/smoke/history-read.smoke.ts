@@ -138,6 +138,8 @@ async function checkFollowUsage(): Promise<void> {
       { args: ["#general", "--server", server, "--limit"], output: ["-j"], channel: "general" },
       { args: ["--server", server, "--limt"], output: ["--json"], channel: null },
       { args: ["--server", server, "\u2013\u2013limit=0"], output: ["--json"], channel: null },
+      { args: ["--server", server, "\u2013\u2013limit", "clear"], output: ["--json"], channel: null },
+      { args: ["--server", server, "\u2013\u2013grep", "limit", "#general"], output: ["--json"], channel: "general" },
     ];
     for (const { args, output, channel } of cases) {
       const finite = await run(["history", "--json", ...args]);
@@ -164,11 +166,13 @@ async function checkFollowUsage(): Promise<void> {
       duplicate.status === 1 && duplicate.stderr === "" && duplicate.stdout.includes("Option '--no-input' cannot be repeated")
         && duplicate.stdout.includes('"reason":"setup-failed"') && connections === 0, shown(duplicate));
     for (const args of [["clear", "--follow", "--limit"], ["limit", "--follow", "--space", ""],
+      ["--follow", "\u2013\u2013space", "private", "clear"], ["--follow", "\u2013\u2013space", "--", "clear"],
       ["--follow", "--plain", "--limit", "0"], ["--limit", "0", "--", "--follow"], ["--grep=--follow", "--limit", "0"]]) {
       const finite = await run(["history", "--json", ...args]);
       check(`history ${args.join(" ")} does not select a JSON follow read`,
         finite.status === 1 && finite.envelope?.command === "history" && finite.envelope.error?.code === "USAGE_INVALID", shown(finite));
     }
+    await checkFollowSetupFailures(server, () => connections);
     await checkFollowUsagePipe(server);
     if (process.platform === "linux" && existsSync("/dev/full")) {
       const full = await runHistoryOutput(["--limit", "0", "--server", server], '"$@" > /dev/full');
@@ -177,6 +181,39 @@ async function checkFollowUsage(): Promise<void> {
     }
   } finally {
     await new Promise<void>((resolve) => probe.close(() => resolve()));
+  }
+}
+
+async function checkFollowSetupFailures(server: string, connections: () => number): Promise<void> {
+  const root = join(home, "refused-follow-setup");
+  const project = join(root, "project");
+  const config = join(root, "config");
+  const notFolder = join(root, "file");
+  mkdirSync(project, { recursive: true });
+  mkdirSync(join(config, "cotal"), { recursive: true });
+  writeFileSync(join(project, ".cotal"), "not a directory");
+  writeFileSync(notFolder, "not a directory");
+  writeFileSync(join(config, "cotal", "preferences.json"), "{ invalid JSON");
+  const cases = [
+    { label: "a project .cotal file", cwd: project, env: {}, code: "CONFLICT", status: 2 },
+    { label: "a file at COTAL_HOME", cwd: shell, env: { COTAL_HOME: notFolder }, code: "SCHEMA_INVALID", status: 1 },
+    { label: "a file at the config root", cwd: shell, env: { XDG_CONFIG_HOME: notFolder }, code: "SCHEMA_INVALID", status: 1 },
+    { label: "invalid preferences", cwd: shell, env: { XDG_CONFIG_HOME: config }, code: "SCHEMA_INVALID", status: 1 },
+  ];
+  for (const { label, cwd, env, code, status } of cases) {
+    const args = ["history", "#general", "--json", "--space", space, "--server", server, "--limit", "1"];
+    const finite = await run(args, cwd, env);
+    const follow = await run([...args, "--follow"], cwd, env);
+    const records = follow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as StreamRecord<{ code?: string; message?: string; remedy?: string; reason?: string }>);
+    check(`JSON history follow closes its stream when setup refuses ${label}`,
+      finite.status === status && finite.envelope?.command === "history" && finite.envelope.error?.code === code
+        && follow.status === status && follow.stderr === "" && follow.stdout.endsWith("\n") && connections() === 0
+        && records.map(({ type }) => type).join() === "error,end"
+        && records.every(({ schemaVersion, stream, target }) => schemaVersion === 1 && stream === "history"
+          && JSON.stringify(target) === JSON.stringify({ space, channel: "general", dms: false }))
+        && records[0]?.data.code === code && records[0].data.message === finite.envelope.error.message
+        && records[0].data.remedy === finite.envelope.error.remedy && records[1]?.data.reason === "setup-failed",
+      { finite: shown(finite), follow: shown(follow), connections: connections() });
   }
 }
 

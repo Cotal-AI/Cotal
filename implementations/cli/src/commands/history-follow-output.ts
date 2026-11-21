@@ -3,10 +3,10 @@ import { concreteChannelProblem, streamRecord, type CommandFailure, type StreamR
 import { metadataPositionals } from "../lib/command-path.js";
 
 /** The refusal's argv may not parse. Only recognized switches outside operands select the stream. */
-export function historyFollowUsageRecords(cmd: Command, words: readonly string[], failure: CommandFailure, misspelledIndex?: number): StreamRecord[] | undefined {
+export function historyFollowFailureRecords(cmd: Command, words: readonly string[], failure: CommandFailure): StreamRecord[] | undefined {
   const flags = new Set<string>();
   const values = new Map<string, string>();
-  const [first] = metadataPositionals(cmd, words, { refusal: { flags, values, skipIndex: misspelledIndex } }).positionals;
+  const [first] = metadataPositionals(cmd, words, { refusal: { flags, values } }).positionals;
   if (!flags.has("follow") || !flags.has("json") || flags.has("plain") || findSubcommand(cmd, first?.value)) return;
   const channel = first?.value.replace(/^#/, "");
   const space = values.get("space");

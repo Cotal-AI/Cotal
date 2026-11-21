@@ -63,11 +63,11 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
-import { historyFollowUsageRecords } from "./commands/history-follow-output.js";
+import { historyFollowFailureRecords } from "./commands/history-follow-output.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
-import { metadataPositionals } from "./lib/command-path.js";
+import { metadataPositionals, typographicOptionParts } from "./lib/command-path.js";
 import { chooseMeshTarget } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
@@ -159,19 +159,19 @@ function debugStacks(failure: Error): void {
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
 
-class HistoryUsageRefusal extends Error {
-  constructor(readonly records: readonly StreamRecord[], readonly status: number) { super("history follow refused"); }
+class HistorySetupFailure extends Error {
+  constructor(readonly records: readonly StreamRecord[], readonly status: number) { super("history follow setup failed"); }
 }
 
 /** A classified failure: its line and remedy on stderr, its envelope on stdout when requested,
  *  and the exit code its outcome sets. A history follow is handed back to the dispatch boundary
  *  so piped records can flush before the process exits. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], misspelledIndex?: number): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], historyStarted = false): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
-  if (cmd.name === "history" && failure.code === "USAGE_INVALID") {
-    const records = historyFollowUsageRecords(cmd, words, failure, misspelledIndex);
-    if (records) throw new HistoryUsageRefusal(records, exitCode(failure.outcome, failure.code));
+  if (cmd.name === "history" && !historyStarted) {
+    const records = historyFollowFailureRecords(cmd, words, failure);
+    if (records) throw new HistorySetupFailure(records, exitCode(failure.outcome, failure.code));
   }
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
   // missing --yes, a missing scripted input or a removed working folder is not a grammar mistake,
@@ -386,10 +386,10 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
-function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = [], misspelledIndex?: number): never {
+function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = [], historyStarted = false): never {
   if (cmd && (json || cmd.name === "history")) {
     const next = json ? remedy ?? `run \`cotal help ${cmd.name}\`` : remedy;
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: next }), json, !json && plain, undefined, words, misspelledIndex);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: next }), json, !json && plain, undefined, words, historyStarted);
   }
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
@@ -401,10 +401,10 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
 function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []): { message: string; remedy?: string } | undefined {
-  const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
+  const typed = typographicOptionParts(word);
   if (!typed) return undefined;
-  const [, name, value] = typed;
-  const long = names.has(name!);
+  const { name, value } = typed;
+  const long = names.has(name);
   const flag = flags.find((flag) => long ? flag.name === name : flag.short === name);
   if (!long && !flag) return undefined;
   const message = `${word} starts with a typographic dash, so it is not an option`;
@@ -427,7 +427,7 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
-function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string; index: number } | undefined {
+function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
   const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS]);
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
@@ -440,10 +440,10 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const quoted = shellWord(value);
       const long = `--${flag.name}=${quoted}`;
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
-      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}`, index };
+      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = typographicOption(word, names, cmd.flags);
-    if (typed) return { ...typed, index };
+    if (typed) return typed;
   }
   return undefined;
 }
@@ -484,7 +484,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const plain = !seed && rest.includes("--plain");
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
-  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest, misspelled.index);
+  if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
@@ -640,7 +640,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   try {
     await dispatchCommand(registry, argv, opts);
   } catch (error) {
-    if (!(error instanceof HistoryUsageRefusal)) throw error;
+    if (!(error instanceof HistorySetupFailure)) throw error;
     process.exitCode = error.status;
     for (const record of error.records) writeStreamRecord(record);
   }
@@ -898,6 +898,8 @@ async function dispatchCommand(registry: Registry, argv: string[], opts: RunCliO
   // A failure raised after the command recorded the space it resolved is reported in that space. A
   // completion writes its warnings, as its errors, only under COTAL_COMPLETE_DEBUG.
   const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
+  // History handles its own setup until the snapshot, and owns the stream after that.
+  let historyStarted = false;
   const execute = async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
@@ -911,6 +913,7 @@ async function dispatchCommand(registry: Registry, argv: string[], opts: RunCliO
         if (folder) recordOperationWarning(folder.warning);
       }
       if (cmd.prepare) await cmd.prepare(parsed);
+      historyStarted = cmd.name === "history";
       await cmd.run(parsed);
     });
   };
@@ -928,7 +931,7 @@ async function dispatchCommand(registry: Registry, argv: string[], opts: RunCliO
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest, historyStarted);
     // A refused manager selection among several live managers becomes the choice: each manager
     // and the command again with `--on` for it. A space whose stack folder is gone names its stop.
     const target = { space: typeof parsed.values.space === "string" ? parsed.values.space : undefined, server: typeof parsed.values.server === "string" ? parsed.values.server : undefined };
@@ -936,7 +939,9 @@ async function dispatchCommand(registry: Registry, argv: string[], opts: RunCliO
       const [{ managerChoiceFailure, rosterOf }, { goneStackRefusal }] = await Promise.all([managerChoice(), import("./commands/stack-gone.js")]);
       return (await managerChoiceFailure(failure, () => rosterOf(target), argv)) ?? goneStackRefusal(failure);
     };
-    if (isCommandFailure(e)) failureExit(cmd, inOperationSpace(await choice(e), scope.space), json, parsed.values.plain === true, scope, rest);
+    const exit = (failure: CommandFailure): never => failureExit(cmd, failure, json, parsed.values.plain === true, scope, rest, historyStarted);
+    const inSpace = (failure: CommandFailure): never => exit(inOperationSpace(failure, scope.space));
+    if (isCommandFailure(e)) inSpace(await choice(e));
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
@@ -947,20 +952,20 @@ async function dispatchCommand(registry: Registry, argv: string[], opts: RunCliO
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
           const { stoppedStackAddressProblem } = await import("./commands/stack-up.js");
           const held = await stoppedStackAddressProblem(cause.details.root, cause.details.space);
-          if (held) failureExit(cmd, inOperationSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }), scope.space), json, parsed.values.plain === true, scope, rest);
+          if (held) inSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }));
         }
-        failureExit(cmd, inOperationSpace(await choice(failure), scope.space), json, parsed.values.plain === true, scope, rest);
+        inSpace(await choice(failure));
       }
       if (isWorkspaceTargetError(e)) {
         const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
         const target = spaceRootTarget({ root: e.details.root, space: targetErrorSpace(e.details) });
-        failureExit(cmd, inOperationSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy: renderRemedy?.(remedy) ?? remedy } : {}), ...(target ? { target } : {}) }), scope.space), json, parsed.values.plain === true, scope, rest);
+        inSpace(new CommandFailure("refused", targetErrorCode(e.code), message, { ...(remedy ? { remedy: renderRemedy?.(remedy) ?? remedy } : {}), ...(target ? { target } : {}) }));
       }
       // A registry record or directory it could not read is refused by its file, as `space` reports
       // it, and as a target it could not resolve is refused above.
-      if (isMeshRegistryError(e)) failureExit(cmd, inOperationSpace(registryFailure(e), scope.space), json, parsed.values.plain === true, scope, rest);
-      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json, parsed.values.plain === true, scope, rest);
-      failureExit(cmd, inOperationSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }), scope.space), json, parsed.values.plain === true, scope, rest);
+      if (isMeshRegistryError(e)) inSpace(registryFailure(e));
+      if (e instanceof CatalogPreparationError) exit(new CommandFailure("refused", e.code, e.message));
+      inSpace(new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e), { cause: e }));
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe
