@@ -12,9 +12,8 @@
  * a landed pin from a dropped one.
  *
  * A launch that stands while only its pin read fails is a partial outcome: the seat, its id, its
- * manager and runtime, the unaudited pin and `cotal ps --on <manager>`, in the text and in the
- * structured content the MCP renderer sends. A refusal there read as "nothing was spawned", and the
- * caller's retry started a second seat on the same work.
+ * manager and runtime, and the unaudited pin in the text and structured content the MCP renderer
+ * sends, with guidance to inspect the live seat using `cotal_invoke`.
  *
  * An inline `persona` rides whole to the manager through a closed schema, and its `model` is audited
  * like the override. `cotal_persona` carries `capabilities` and `endpoints` for the manager to bound.
@@ -168,8 +167,9 @@ const taskAgent = new MeshAgent(cfg);
 };
 (taskAgent as unknown as { _connected: boolean })._connected = true;
 const taskReply = await spawnTool!.run(taskAgent, cfg, { name: "helper", prompt: "Do one thing.", once: true });
+const goalReadback = "Read the outcome with cotal_invoke on the manager endpoint using the goal-result command";
 check("a once spawn's result names its task goal, its deadline and how to read the outcome",
-  /Its task is goal "task-goal", with a deadline of 2030-01-01T00:00:00.000Z/.test(taskReply.text) && /command="goal-result", args=\{"goalId":"task-goal"\}/.test(taskReply.text), taskReply.text);
+  /Its task is goal "task-goal", with a deadline of 2030-01-01T00:00:00.000Z/.test(taskReply.text) && taskReply.text.endsWith(`${goalReadback}.`), taskReply.text);
 
 const pinToolAgent = new MeshAgent(cfg);
 const callsPinTool = record(pinToolAgent);
@@ -263,7 +263,7 @@ const MANAGER = "mmmmmmmmmmmmmmmmmmmmmmmmmm";
 const PIN = "grok-4.6";
 const launched = { ok: true, data: { name: "rev", id: "u_x.rev", agent: "claude", mode: "orca", lifecycleUid: "llllllllllllllllllllllllll" } };
 type Structured = {
-  status?: string; name?: string; id?: string; manager?: string; runtime?: string; joined?: boolean; next?: string; message?: string;
+  status?: string; name?: string; id?: string; manager?: string; runtime?: string; goalId?: string; joined?: boolean; next?: string; message?: string;
   model?: { requested?: string; audited?: boolean; reported?: boolean; error?: string };
 };
 type Result = { text: string; isError?: boolean; structured?: Structured };
@@ -297,7 +297,8 @@ const partial = await spawnWith(new Error("timeout"));
 check(
   "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime",
   partial.isError !== true && !/Couldn't spawn/.test(partial.text) && /it joined the mesh/.test(partial.text) && partial.text.includes("(id u_x.rev, manager " + MANAGER + ", runtime orca)")
-    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && !partial.text.includes("cotal ps"),
+    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`)
+    && partial.text.endsWith("It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint."),
   partial,
 );
 const st = partial.structured;
@@ -335,9 +336,30 @@ const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, erro
 check(
   "a launch still booting with its pin unaudited is the same partial, marked as not joined",
   booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
+    && booting.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options.")
     && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
   booting,
 );
+
+const followLost = await spawnWith(new Error("audit should not run"), {
+  id: "g", ok: false, error: { code: "deadline-exceeded", outcome: "unknown", message: "follow timed out" }, data: accepted,
+});
+check("an accepted spawn with no observed outcome names the goal and how to check it",
+  followLost.isError !== true && followLost.structured?.status === "unknown" && followLost.structured.goalId === "g"
+    && followLost.text.includes("An identical retry in this session returns the same goal")
+    && followLost.text.endsWith(`${goalReadback} as the same caller, or check for the seat with cotal_roster.`), followLost);
+
+const submissionLostAgent = new MeshAgent(cfg);
+record(submissionLostAgent);
+submissionLostAgent.invokeEndpoint = () => Promise.reject(new EpEnvelopeError(
+  "deadline-exceeded", "submission wait ended", [{ kind: EP_UNANSWERED, endpoint: "manager", command: "spawn", requestId: "g" }], "unknown",
+));
+const submissionLost = await spawnTool!.run(submissionLostAgent, cfg, { name: "rev", model: PIN }) as Result;
+check("an unconfirmed spawn submission preserves its goal and gives read-only guidance",
+  submissionLost.isError !== true && submissionLost.structured?.status === "unknown" && submissionLost.structured.goalId === "g"
+    && submissionLost.text.includes("Acceptance has not been confirmed; the seat may appear later. Do not retry: another submission could start a second agent.")
+    && submissionLost.structured.next === `${goalReadback} as the same caller, or check for the seat with cotal_roster.`
+    && submissionLost.text.includes(submissionLost.structured.next) && submissionLost.text.endsWith("A missing result does not prove the submission failed."), submissionLost);
 
 const refused = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "failed-precondition", message: `no persona "rev"` } });
 check(
@@ -492,7 +514,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 83;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
