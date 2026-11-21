@@ -1,5 +1,25 @@
 # @cotal-ai/workspace
 
+## 0.172.1
+
+### Patch Changes
+
+- 46f5a7a: `cotal auth mint` now explains how to re-mint an exported credential when `--replace` and `--out` are used together. Leave off `--replace` and pass the existing file to both `--out` and `--identity`.
+- e9d7585: Explain the minimum lifetime and how to retry when `cotal auth mint` refuses `--expires-in 0`.
+- 2ec9a4d: A prepared space record containing `null` no longer blocks listing or selecting other spaces, and `cotal space forget` can remove it.
+- a880a09: Fix `cotal ext add` for packages that declare their entry through a root `exports` entry without a `main` field.
+- 6f05bd5: When a local broker's payload limit is too low for a manager, agent commands explain how to stop and restart the stack with a higher limit.
+- ee3a15c: Let `cotal down` finish stopping the stack when the Manager writes matching stop receipts while the CLI is reading them.
+- f346cde: Chat now asks for one concrete channel when `/join` receives a wildcard, instead of suggesting a command that cannot work.
+- 6e98cc0: When an endpoint invocation times out before sending the command, the CLI tells you to change only `--timeout` on the original command without displaying its argument values.
+- cceb29a: Show the completed stop and where to restart when `cotal history` or `cotal send` cannot reach a stopped local space at its saved broker address.
+- 6a6a4e4: Quote arguments in commands printed by `cotal space` and `cotal status`, so you can verify a space whose project path contains spaces.
+- 9a06339: Let `cotal ext seed --repair` replace an unreadable connector selection while keeping the original record for recovery.
+- fb6c87f: Keep the selected space, broker and applicable manager in the roster commands suggested after agent lookup and unsupported `ps --slots` refusals.
+- 2037c77: Allow file-only credential minting from a stopped local static-auth project when `--space` matches, and show restart guidance if provisioning needs the broker.
+- Updated dependencies [c3d0a38]
+  - @cotal-ai/core@0.172.1
+
 ## 0.172.0
 
 ### Minor Changes
