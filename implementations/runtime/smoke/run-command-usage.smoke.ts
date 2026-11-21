@@ -55,12 +55,11 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   c("no verb at all is the list command, not a refusal", !(bare instanceof Error) && bare.verb === "ps", bare);
 }
 
-// --json and --plain on a form that prints text only name a form that takes the flag, or the same
-// command without it, and print no help. They used to say "use the hosted form" to revoke and check,
-// which have none.
+// Text-only forms give a retry without help: use a supported form or remove the output flag.
 {
   const cases: [string, string[], Record<string, string | boolean>, string, string][] = [
-    ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "run it without --json: cotal run revoke run-1 --local --by <who> --reason <text>"],
+    ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "remove --json from the original command and rerun it"],
+    ["revoke --local --plain", ["revoke", "run-1"], { local: true, by: "a", reason: "b", plain: true }, "run revoke prints no --plain output", "remove --plain from the original command and rerun it"],
     ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: `cotal run check run-1 --file p.cotal.js`"],
     ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: `cotal run start <file> --json`"],
     ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: `cotal run resume run-1 --json`"],

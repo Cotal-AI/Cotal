@@ -1254,10 +1254,9 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     const flag = values.json ? "--json" : "--plain";
     if (verb === "start" || verb === "resume")
       usage(`run ${raw} --local prints no ${flag} output`, `drop --local to ${raw} it on the manager, which takes ${flag}: \`cotal run ${verb === "start" ? "start <file>" : `resume ${a}`} ${flag}\``);
-    if (verb === "migrate" && values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server))
+    if (verb === "revoke" || (verb === "migrate" && values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server)))
       usage(`run ${raw} prints no ${flag} output`, `remove ${flag} from the original command and rerun it`);
-    const retry = verb === "revoke" ? `cotal run revoke ${a} --local --by <who> --reason <text>`
-      : codeSpan(`cotal run check ${a}${(["file", "space", "server", "creds", "endpoint"] as const).map((key) => retryFlag(key, values[key])).join("")}${args.values.local === true ? " --local" : ""}`);
+    const retry = codeSpan(`cotal run check ${a}${(["file", "space", "server", "creds", "endpoint"] as const).map((key) => retryFlag(key, values[key])).join("")}${args.values.local === true ? " --local" : ""}`);
     usage(`run ${raw} prints no ${flag} output`, `run it without ${flag}: ${retry}`);
   }
   return { values, verb, ...(a === undefined ? {} : { a }), ...(b === undefined ? {} : { b }) };
