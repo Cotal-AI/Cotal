@@ -44,7 +44,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
     return resetSpaceApply(space, args);
   }
   if (args.values["dry-run"] !== true) return resetStoreApply(space, args);
-  const mesh = selectResetTarget(space, "reset store");
+  const mesh = selectResetTarget(space, "reset store", true);
   const root = mesh.root;
   if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a reset preview", { target: { space } });
   try {
@@ -87,7 +87,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   if (mesh.tlsRequired || /^(?:tls|wss):\/\//i.test(mesh.server))
     refusal = new CommandFailure("refused", "UNSUPPORTED", "a credless broker probe cannot establish that a TLS-first listener is stopped, so reset store is not offered", { target: { space }, remedy: "use a trusted TLS-aware stopped-broker check before a guarded reset can be offered" });
   else {
-    try { await assertResetEligible(mesh, "reset store"); }
+    try { await assertResetEligible(mesh, "reset store", true); }
     catch (error) { if (!(error instanceof CommandFailure)) throw error; refusal = error; }
   }
   const runsAtDown = runsAtLastDown(root);
