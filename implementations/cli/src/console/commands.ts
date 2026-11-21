@@ -100,10 +100,10 @@ export const COMMANDS: ConsoleCommand[] = [
     run: async (ctx, rest) => {
       let channel = ctx.activeChannel === "all" ? "general" : ctx.activeChannel;
       let text = rest;
-      const m = rest.match(/^#(\S+)\s+([\s\S]+)/);
+      const m = rest.match(/^#(\S+)(?:\s+|$)/);
       if (m) {
         channel = m[1];
-        text = m[2];
+        text = rest.slice(m[0].length);
       }
       if (!text.trim()) return ctx.notify("usage: msg [#channel] <text>");
       if (!(await ctx.ensureParticipant())) return;

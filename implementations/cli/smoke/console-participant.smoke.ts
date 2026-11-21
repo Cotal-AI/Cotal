@@ -140,7 +140,7 @@ try {
   mkdirSync(cHome, { recursive: true });
   const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, {}, { cols: 140, rows: 36 });
   stops.push(async () => cs.close());
-  check("the console paints against the open mesh", await cs.waitFor(`${space} · #`, 40_000), clean(cs.out).slice(-200));
+  check("the console opens on the all feed", await cs.waitFor(`${space} · #all`, 40_000), clean(cs.out).slice(-200));
 
   // Identify the console's peer by what it IS, not by a name this file already used: section A's
   // own operator is still on the roster as an offline record, and the console names its peer after
@@ -151,6 +151,18 @@ try {
   check("before the operator sends anything, the console has put nobody on the roster", operators().length === 0, seats());
 
   let mk = cs.mark();
+  const generalBefore = await watcher.channelHistory("general");
+  await cs.command("msg #other");
+  const answered = await cs.waitFor(/usage: msg \[#channel\] <text>|→ #general/, 4_000, mk);
+  const notice = clean(cs.out.slice(mk));
+  check("a channel target without message text shows usage", answered && notice.includes("usage: msg [#channel] <text>"), notice.slice(-500));
+  const generalAfter = await watcher.channelHistory("general");
+  check("a channel target without message text stays out of #general history", generalAfter.length === generalBefore.length,
+    generalAfter.flatMap((msg) => msg.parts));
+  check("a channel target without message text stays out of #other history", (await watcher.channelHistory("other")).length === 0);
+  check("an incomplete palette command does not activate the console on the roster", operators().length === 0, seats());
+
+  mk = cs.mark();
   await cs.compose("from-the-console");
   const joined = await until(() => (operators().length === 1 ? true : undefined), 12_000);
   check("the console's FIRST send activates participant mode by itself", joined === true, seats());
@@ -169,9 +181,13 @@ try {
   await cs.command("DM alice Keep DM Case");
   const dm = await until(() => readPaletteMessage("Keep DM Case"), 4000);
   check("uppercase DM sends the unchanged body to alice", dm?.to === alice.card.id && dm?.text === "Keep DM Case", dm ?? clean(cs.out).slice(-500));
-  await cs.command("MSG #general Keep Channel Case");
-  const msg = await until(() => readPaletteMessage("Keep Channel Case"), 4000);
-  check("uppercase MSG sends the unchanged body to #general", msg?.channel === "general" && msg?.text === "Keep Channel Case", msg ?? clean(cs.out).slice(-500));
+  mk = cs.mark();
+  await cs.command("MSG #other Keep Channel Case");
+  check("a complete MSG to #other reports a send", await cs.waitFor("→ #other", 4_000, mk), clean(cs.out.slice(mk)).slice(-500));
+  const otherHistory = await watcher.channelHistory("other");
+  const msg = otherHistory[0];
+  check("uppercase MSG sends the unchanged body to #other", otherHistory.length === 1 && msg?.channel === "other" &&
+    msg.parts.some((p) => p.kind === "text" && p.text === "Keep Channel Case"), otherHistory);
 
   // Idempotence is NOT visible as a second roster row: a duplicate peer registers under the same
   // card id, so the roster still shows one. What it is visible as is an ORPHAN. Without the guard

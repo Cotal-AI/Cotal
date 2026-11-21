@@ -34,6 +34,9 @@ same per-action instrument path as `cotal stop` and `cotal ps`, never the observ
 [`cotal attach`](cli-agent-control.mdx#managed-seats) in place and returns to the console on detach. See
 [Watch a mesh](watch-a-mesh.mdx).
 
+When the console can post, Ctrl+P opens a palette that accepts `msg [#channel] <text>`.
+Typing only a channel destination shows usage and sends nothing.
+
 Message bodies, names and other text from peers are untrusted. Both views show a control character
 in them as its `\uXXXX` escape, so a message cannot clear the screen, retitle the terminal or plant
 a hyperlink. The TUI keeps a body's line breaks, and `--plain` prints each message on one line.
