@@ -126,7 +126,7 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const target = { space: connection.space, ...(name ? { channel: name } : {}) };
   if (!writes) {
     const full = await readChannelRegistry({ ...options, directGet: batchedRead(connection, channelBucket(connection.space)) });
-    const registry = action === "show" ? namedRegistry(full, name!) : full;
+    const registry = action === "show" ? namedRegistry(full, name!) : action === "defaults" ? defaultsRegistry(full) : full;
     writeResult(presentation, { command: "channel", target, result: { action, name, space: connection.space, registry, scope: "configured channel metadata" } }, (result) => registryView(result, connection.mode === "open"));
     return;
   }
@@ -256,6 +256,11 @@ function namedRegistry({ defaults, channels, undecodable }: ChannelRegistryRead,
   const entry = channels && Object.hasOwn(channels, name) ? channels[name] : undefined;
   const errors = undecodable?.filter(({ key }) => key === name || key === CHANNEL_DEFAULTS_KEY);
   return { defaults, channels: entry === undefined ? {} : { [name]: entry }, ...(errors?.length ? { undecodable: errors } : {}) };
+}
+
+function defaultsRegistry({ defaults, undecodable }: ChannelRegistryRead): ChannelRegistryRead {
+  const errors = undecodable?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY);
+  return { defaults, ...(errors?.length ? { undecodable: errors } : {}) };
 }
 
 function registryView(result: { action: string; name?: string; space: string; registry: ChannelRegistryRead }, open: boolean): Report {
