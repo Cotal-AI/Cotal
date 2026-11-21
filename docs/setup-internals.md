@@ -562,9 +562,12 @@ inspection does not invoke `ps`. Each inspection reads the owner record once and
 with the observed inode. Reclaim checks both again under its sentinel before it removes the lock
 file it judged.
 
-The reconcile journals a crash cursor before each connector mutation. The next boot detects a
-SIGKILL mid-run and fails loud. `ext seed --repair` then reinstalls the interrupted connector before
-it clears the evidence. A SIGTERM to the seed command lets the current transaction finish, then stops
+The reconcile journals a crash cursor before each connector mutation. On a setup retry, reconcile
+checks the staged add and the seed records under both locks. When those records identify an
+interrupted first install and no installer is active or ambiguous, setup uses the same verified
+reinstall as `cotal ext seed --repair`. A missing generation stamp alone is not enough.
+When reconcile cannot establish safe recovery, it keeps the cursor and reports the repair command.
+A SIGTERM to the seed command lets the current transaction finish, then stops
 before another starts. If an ordinary install verified, cancellation clears the cursor without
 stamping the generation, so a plain retry can finish seeding.
 

@@ -850,6 +850,8 @@ recorded in that file again with `cotal ext add`.
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
 the last seed failed, and why, or was interrupted.
+Setup can resume an interrupted first installation once it identifies the staged add and confirms
+that no installer is active or ambiguous.
 
 If `cotal ext seed` receives SIGTERM during an install, it waits for that install to finish,
 starts no further installs, and exits 143. Run `cotal ext seed` again to finish after a verified

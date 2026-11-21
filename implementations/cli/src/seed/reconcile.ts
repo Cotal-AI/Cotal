@@ -1,4 +1,4 @@
-import { existsSync, renameSync } from "node:fs";
+import { existsSync, readdirSync, renameSync } from "node:fs";
 import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -30,7 +30,7 @@ import { selfArgv, verifiedCotalExecutables } from "../lib/self-exec.js";
 import { claimExtensionMutation } from "../lib/ext-mutation.js";
 import { recoverExtensionPromotion } from "../lib/extension-stage.js";
 import { exitInterrupted, handOverStartupNotice, INTERRUPT_SIGNALS, type InterruptSignal } from "../lib/interrupt-notice.js";
-import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, stampPath } from "./paths.js";
+import { assertReleasedSeedWriter, entryScript, isValidSemver, parseSemver, SEED_BUILTINS, seedDir, seedGeneration, seedStoreDir, seedStorePath, stampPath } from "./paths.js";
 import {
   acquireReconcileLock,
   clearChildMarker,
@@ -114,8 +114,8 @@ export class SeedChildFailure extends Error {
 }
 
 /** Auto reconcile for the boot gate: silent no-op when the stamp is current and healthy. */
-export async function reconcileSeededConnectors(): Promise<void> {
-  await reconcile("auto", true);
+export async function reconcileSeededConnectors(resumeFirstSeed = false): Promise<void> {
+  await reconcile("auto", true, resumeFirstSeed);
 }
 
 /** Whether the seed journal, authority and installed built-in payloads need no package repair. */
@@ -167,7 +167,7 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode, automatic = false): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
@@ -183,10 +183,10 @@ async function reconcile(mode: Mode, automatic = false): Promise<ReconcileResult
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode, automatic);
+  return reconcileUnderClosure(mode, automatic, resumeFirstSeed);
 }
 
-async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<ReconcileResult> {
+async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean): Promise<ReconcileResult> {
   const generation = seedGeneration();
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
@@ -232,7 +232,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<Re
           await reconcile("repair", automatic);
           return NOOP;
         }
-        throw seedRepairRefusal(cursor, generation);
+        if (!resumeFirstSeed || !interruptedFirstSeed(cursor, generation)) throw seedRepairRefusal(cursor, generation);
       }
     } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
@@ -296,7 +296,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean): Promise<Re
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
-      }, checkInterrupted);
+      }, checkInterrupted, resumeFirstSeed);
     } catch (e) {
       // This process is alive to see the failure, so the cursor it leaves says so: the next run
       // reports why the seed failed, not an interruption. Failing to note it leaves that cursor as an
@@ -331,6 +331,19 @@ function interruptedUpgrade(cursor: ReconcileCursor, generation: string): { read
   const stamp = readStamp();
   if (!stamp || !isValidSemver(stamp.generation) || !isStrictlyNewer(generation, stamp.generation)) return undefined;
   return { from: stamp.generation };
+}
+
+/** An absent stamp is not enough: look for the current staged add and rule out a prior seed or repair. */
+function interruptedFirstSeed(cursor: ReconcileCursor | undefined, generation: string): boolean {
+  if (!cursor || cursor.phase !== "add" || cursor.failed !== undefined ||
+      readStamp() || readWitness() || everSeededUnion() || recoveryPending() ||
+      !existsSync(join(seedStorePath(generation, cursor.package), "package.json"))) return false;
+  return readdirSync(seedStoreDir()).every((entry) => entry === generation) &&
+    loadExtensionsManifest().extensions.every((entry) => {
+      const name = officialNameOfPkg(entry.pkg);
+      return name !== undefined && entry.source === "seeded" && entry.version === generation &&
+        entry.spec === seedStorePath(generation, name);
+    });
 }
 
 /** Authority present, readable, and structurally valid (a corrupt one is NOT intact — it routes to
@@ -399,7 +412,7 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>): Promise<ReconcileResult> {
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>, checkInterrupted: (verifiedInstall?: boolean) => Promise<void>, resumeFirstSeed: boolean): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
   // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
   // pending marker or corrupt record stays fail-loud.
@@ -428,6 +441,9 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   // must not replace a newer machine-wide generation. Check before any maintenance quarantine.
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
+
+  // A competing writer may have changed the cursor or committed while setup waited for the locks.
+  if (mode === "auto" && resumeFirstSeed && interruptedFirstSeed(readCursor(), generation)) mode = "repair";
 
   // Maintenance modes must survive a corrupt manifest / corrupt seed state: quarantine the unreadable
   // file(s) aside so the reads below (and the commit) can't wedge on them. `manifestRebuilt` ⇒ reconcile
