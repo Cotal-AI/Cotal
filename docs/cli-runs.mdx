@@ -319,16 +319,21 @@ status, a non-string note, an unknown field, a scripted `at`, and a missing, mal
 unexpected destination. A destination refusal names the `to` field, including the array index
 for a list entry.
 
-A missing script entry or an exhausted list raises L6001. If the program does not catch it, the
-simulation exits 5 with `OPERATION_FAILED`. The error names the table, the step and the entry to
-add, and `target.step` carries the step key. For an exhausted list the error names the needed result,
-counted from 1, while the step key counts occurrences from 0.
+A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
+table and step and suggests what to add. For an exhausted list it names the needed result, counted
+from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
+journal entry matches the error code. That can be a different step from the one in the message,
+for example when parallel branches both raise L6001.
 
-When the program itself fails under the script, as a checkpoint scripted `expired` under the default
-`onExpiry: "fail"` does with L4007, the simulation completes and exits 0. It reports a failed program
-outcome and the language error, with the step and its outcome or the last step the program settled
-before its own code failed. A simulation does not establish live authority, installed applications
-or readiness. All three support JSON and plain output and contact no broker.
+If L6001 or a statement such as `throw "boom"` goes uncaught, the simulator produces no report.
+The CLI exits 5 with `OPERATION_FAILED`. Its JSON envelope has `outcome: "failed"` and
+`result: null`.
+
+A simulation that returns a report exits 0 with envelope `outcome: "ok"`. This includes reports of
+program faults with language error codes L3xxx or L4xxx, such as L4007 when a checkpoint expires
+under the default `onExpiry: "fail"`. Those reports have `result.outcome: "failed"`.
+A simulation does not establish live authority, installed applications or readiness. All three
+offline commands support JSON and plain output and contact no broker.
 
 The `--handler` file is one JSON object in UTF-8, with an optional leading byte-order mark.
 It must be a regular file or a symlink to one, as the program file must be.
@@ -368,21 +373,27 @@ A checkpoint scripted as `expired` expires at the step's `timeout`, as a live de
 resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
 
 When the simulation returns a report, `cotal run simulate <file> --json` puts these fields in the
-`result` object, including when the program fails under the script:
+`result` object:
 
 | Field | Meaning |
 |---|---|
 | `result.kind` | `workflow-simulation`. |
 | `result.outcome` | The program's outcome, `completed` or `failed`, inside the CLI's `ok` envelope. |
-| `result.failure` | `null` when the program succeeds. On failure, `code`, `title`, `cause`, `fix`, `step`, `stepOutcome` and `after` describe the error and where it occurred. Unavailable details are `null`. |
+| `result.failure` | `null` when the program succeeds. Otherwise contains `code`, `title`, `cause`, `fix` and the journal diagnostics `step`, `stepOutcome` and `after`. Unavailable details are `null`. |
 | `result.steps` | The number of interpreter steps charged against the step budget, including work that does not call an effect. `null` if the program fails. |
 | `result.elapsedMs` | Milliseconds advanced on the virtual clock since `clock.start` (default `0`). |
 | `result.effects` | Simulation journal entries with `step` (the step key), `kind`, `name` (empty if unnamed) and `status` (the journal state if no status was recorded). An effect inside `once` can also carry `atMostOnce: true`. |
 | `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
 | `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
-| `result.checkpoints` | Reached checkpoints with `step`, `name` and `prompt`, plus `timeout`, `onExpiry` and `to` if supplied. |
-| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that the simulator never matched to an effect, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even if it is empty or has no result for that occurrence. |
+| `result.checkpoints` | One row per checkpoint request sent to the simulator, with `step`, `name`, `prompt` and any `timeout`, `onExpiry` and `to` from the request. An escalation adds a second row with the same step key and `onExpiry: "proceed"`. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. |
 | `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
+
+In `result.failure`, `step` and `stepOutcome` describe the last failed entry in journal order with
+the same error code. If there is no match and the code is L4007, they describe the last settled entry
+if it is an expired checkpoint. These are journal matches, so they may not identify the source of
+the uncaught error. When no step matches, `after` names the last settled entry in journal order, if
+there is one.
 
 `result.elapsedMs` does not measure how long the CLI process ran. For example, `await sleep("1h")`
 advances virtual time by `3600000` milliseconds without waiting an hour in real time.
