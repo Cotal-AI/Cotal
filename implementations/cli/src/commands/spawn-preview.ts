@@ -2,10 +2,10 @@ import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { agentFilePath, connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, spawnNameError, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isWorkspaceTargetError, loadLaunchPersonaFile, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
-import { callerHarness, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
+import { callerHarness, checkSpawnExpiryTarget, missingConnector, missingPersona, spawnPersona, spawnUsesManager, type PersonaSite } from "../lib/spawn-defaults.js";
 import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import type { spawnFlags } from "./spawn.js";
@@ -37,6 +37,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   let space: string;
   let broker: string | null = null;
   let targetMode: string | null = null;
+  let selected: MeshTarget | undefined;
   // Where a missing persona was looked for. A space that is not started is a local root `up` starts.
   let site: PersonaSite;
   try {
@@ -44,7 +45,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     // the recorded brokers before it resolves. The preview reads the same, without signing in.
     const flags = { space: values.space, server: values.server };
     const offline = resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(values.server)).offline : [];
-    const selected = resolveMeshTarget(process.cwd(), { ...flags, offline, readOnly: true });
+    selected = resolveMeshTarget(process.cwd(), { ...flags, offline, readOnly: true });
     root = selected.root; space = selected.space; broker = brokerAddressForDisplay(selected.server) ?? null; targetMode = selected.mode; site = selected;
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
@@ -59,6 +60,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   recordOperationSpace(space);
+  if (selected) checkSpawnExpiryTarget(values, selected);
   const { ref, from } = spawnPersona(values.config, args.positionals, { space, preferences: cachedPreferences() });
   const requested = { persona: ref, source: values.file ? "file" : values.config !== undefined || args.positionals.length ? "argument" : from ?? "default", harness: values.agent ?? null, name: values.name ?? null, model: values.model ?? null, cwd: values.cwd ?? null, instanceId: values.on ?? null, runtime: values.runtime?.trim() ?? null, restarts: values.restarts === undefined ? null : Number(values.restarts), restartWindowMs: values["restart-window"] === undefined ? null : Number(values["restart-window"]) };
   // A folder whose records name no space is refused above, so a preview never names an assumed space.
@@ -88,11 +90,11 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.
   let personaWrite: "none" | "shipped-default" = "none";
-  const implicitDefault = requested.source === "default" && values["enrollment-file"] === undefined;
+  const useShippedDefault = ref === "default" && from === undefined && values.config === undefined && values["enrollment-file"] === undefined;
   try { definition = loadLaunchPersonaFile(path); }
   catch (error) {
     // A missing persona is refused as the launch refuses it, naming where it was looked for.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && implicitDefault) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && useShippedDefault) {
       definition = parseAgentFileSource(DEFAULT_AGENT, path);
       personaWrite = "shipped-default";
     } else if ((error as NodeJS.ErrnoException).code === "ENOENT") {

@@ -946,7 +946,7 @@ function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJ
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
 }
 
-type RestoreLaunch = Pick<PreparedRestore, "root" | "targetPath" | "space" | "mode" | "server" | "host" | "runtime">;
+type RestoreLaunch = Pick<PreparedRestore, "root" | "targetPath" | "space" | "mode" | "server" | "host" | "runtime" | "maxFileStore">;
 
 /** Check the named artifact without taking a lock or staging it. */
 export function restoreArtifactPath(root: string, dir: string, source: string): string {
@@ -969,11 +969,13 @@ export function restoreLaunch(root: string, flags: RestoreFlags, journal: Mainte
   const agents = (resume.inventory as { agents?: Array<{ launch?: { runtime?: unknown } }> }).agents ?? [];
   const runtimes = [...new Set(agents.map((agent) => agent.launch?.runtime).filter((value): value is string => typeof value === "string"))];
   if (runtimes.length > 1) throw new Error(`resume inventory requires multiple runtimes: ${runtimes.join(", ")}`);
-  const launch = resume.launch as { server?: unknown } | undefined;
+  const launch = resume.launch as { server?: unknown; maxFileStore?: unknown } | undefined;
   const server = canonicalServerEndpoint(controller ? journal.cut.launch.server : flags.server ?? (typeof launch?.server === "string" ? launch.server : "nats://127.0.0.1:4222"));
   const host = (!controller ? flags.host : undefined) ?? new URL(server).hostname;
   const runtime = flags.runtime ?? runtimes[0] ?? "pty";
-  return { launch: { root, targetPath, space: journal.space, mode: journal.mode, server, host, runtime } satisfies RestoreLaunch, resume, preservedRuntime: runtimes[0], source };
+  const maxFileStore = parsePositiveIntegerFlag("--max-file-store", flags["max-file-store"])
+    ?? (controller ? undefined : journaledMaxFileStore(launch?.maxFileStore));
+  return { launch: { root, targetPath, space: journal.space, mode: journal.mode, server, host, runtime, ...(maxFileStore !== undefined ? { maxFileStore } : {}) } satisfies RestoreLaunch, resume, preservedRuntime: runtimes[0], source };
 }
 
 /** Recheck the validated launch under the operation lock, before staging. `progress` receives the
@@ -1025,7 +1027,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     }
     if (!journal || journal.state !== "ready") throw notRestorable(root, journal);
     const { launch, resume, preservedRuntime, source } = restoreLaunch(root, flags, journal);
-    const { server: effectiveServer, host: effectiveHost, runtime: effectiveRuntime } = launch;
+    const { server: effectiveServer, host: effectiveHost, runtime: effectiveRuntime, maxFileStore } = launch;
     // A preserved store gone from its recorded path either moved with this folder, which no restore
     // here may replace, or is lost, which only --accept-missing-source restores over.
     if (source.state === "moved") throw movedFolderRefusal(root, journal.space, journal.source.path, source, "run the restore");
@@ -1274,7 +1276,6 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     // The controller binding journals each member start before it.
     const controllerLaunch = controller ? newControllerAttemptLaunch() : undefined;
     // The restored broker starts with this cap, so the journal keeps it for a re-entry that adopts it.
-    const maxFileStore = parsePositiveIntegerFlag("--max-file-store", flags["max-file-store"]);
     writeRestoreCommitIntent(lock, {
       attemptId,
       targetPath,

@@ -89,8 +89,16 @@ export async function historyClear(values: Values): Promise<void> {
       if (denied) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some history purges were acknowledged, but the next stream was refused; no retry was made", { target, changed: acknowledged, native: { outcome: "not-executed", detail } });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "a history purge was submitted without a confirmed outcome; it was not retried", { target, changed: acknowledged, native: { outcome: "unknown", detail }, remedy: "inspect retained history on the original broker before another purge; an unknown result does not mean nothing changed" });
     } finally { await nc.close(); }
-    if (absent.length === streams.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the streams this clear asked for are not on the broker, so nothing was purged", { target, native: { code: "not-found", outcome: "not-executed", detail: { acknowledged, absent } } });
+    const noOp = absent.length === streams.length;
     const warnings = absent.length === 0 ? undefined : [{ code: "HISTORY_STREAM_ABSENT", target, message: `these streams are not on the broker, so they were not purged: ${absent.join(", ")}` }];
-    writeResult(presentation, { command: "history", target, warnings, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({ sections: [{ title: "History purge acknowledged", blocks: [{ kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] }, { kind: "table", columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) }, { kind: "lines", lines: ["These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] }] }] }));
+    writeResult(presentation, { command: "history", target, warnings, noOp, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({
+      sections: [{ title: noOp ? "No retained history to clear" : "History purge acknowledged", blocks: [
+        { kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] },
+        ...(noOp ? [] : [
+          { kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) },
+        ]),
+        { kind: "lines", lines: [noOp ? "0 messages purged." : "These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] },
+      ] }],
+    }));
   } finally { release?.(); }
 }

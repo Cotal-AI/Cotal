@@ -54,6 +54,7 @@ const coreDist = join(WT, "packages", "core", "dist", "index.js");
 const openConfPath = join(root, ".cotal", "server-open.conf");
 // Roomy enough for the fixture's real writes; what is under test is that the record keeps it.
 const CAP = 17179869184;
+const RESTORE_CAP = CAP * 2;
 const recorded = (space: string): { attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown } | undefined => {
   const dir = join(home, "meshes");
   for (const f of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
@@ -264,7 +265,7 @@ try {
 
   console.log("\n2) SUBJECT A: the first `up --restore` reaches the listener-bind boundary");
   const restore = runSync(
-    ["up", "--restore", artifact, "--detach", "--server", server, "--space", space, "--max-file-store", String(CAP)],
+    ["up", "--restore", artifact, "--detach", "--server", server, "--space", space, "--max-file-store", String(RESTORE_CAP)],
     { COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND: "1" },
   );
   const restoreLog = tail(restore);
@@ -281,7 +282,7 @@ try {
   const boundPid = intent.listenerProof?.processOwner?.pid;
   ok("…and its bound listener is ALIVE (the re-entry precondition)", alive(boundPid), { boundPid });
   const jetstream = existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
-  ok("…and that listener runs with the restore's store cap", jetstream.includes(`max_file_store: ${CAP}`), jetstream);
+  ok("…and that listener runs with the explicit replacement cap", jetstream.includes(`max_file_store: ${RESTORE_CAP}`), jetstream);
 
   console.log("\n4) SUBJECT B: the restore RE-ENTRY completes under the inherited lock");
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
@@ -295,7 +296,7 @@ try {
   const adopted = recorded(space);
   ok("the adopted record keeps the attach host and the session ceiling",
     adopted?.attachHost === "127.0.0.1" && adopted.maxSessions === 7, adopted);
-  ok("…and the store cap the restored broker runs with", adopted?.maxFileStore === CAP, adopted);
+  ok("…and the store cap the restored broker runs with", adopted?.maxFileStore === RESTORE_CAP, adopted);
 
   runSync(["down", "--yes"]);
   console.log(`\nUP RESTORE RE-ENTRY SMOKE OK ✅  (${pass} passed)`);

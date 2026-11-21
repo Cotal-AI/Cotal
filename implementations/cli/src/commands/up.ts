@@ -1052,9 +1052,9 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         "accept-missing-source": undefined,
         __restoreAttempt: attemptId,
         space: values.space ?? launch.space,
-        server: launch.server,
-        host: launch.host,
+        server: launch.server, host: launch.host,
         runtime: launch.runtime,
+        "max-file-store": launch.maxFileStore === undefined ? undefined : String(launch.maxFileStore),
         open: launch.mode === "open",
         "user-auth": launch.mode === "user",
       } };
