@@ -29,14 +29,6 @@ export interface EndpointAnycastDeps {
   subs: () => Subscription[];
   anycastUnavailable: () => string | undefined;
   setAnycastUnavailable: (value: string | undefined) => void;
-  anycastAuthority: () => AnycastRequestAuthority | undefined;
-  setAnycastAuthority: (value: AnycastRequestAuthority | undefined) => void;
-  takeServeSub: () => import("@nats-io/transport-node").Subscription | undefined;
-  setTakeServeSub: (value: import("@nats-io/transport-node").Subscription | undefined) => void;
-  anycastSweep: () => ReturnType<typeof setInterval> | undefined;
-  setAnycastSweep: (value: ReturnType<typeof setInterval> | undefined) => void;
-  takesInFlight: () => number;
-  setTakesInFlight: (value: number) => void;
   emitRecoverable: (err: Error) => void;
   plane3MayAct: () => boolean;
   notLiveMsg: () => string;
@@ -46,8 +38,15 @@ export interface EndpointAnycastDeps {
   requestDelivery: (op: string, args: Record<string, unknown>, timeoutMs?: number) => Promise<ControlReply>;
 }
 
-/** One endpoint's anycast request rail. Internal: `CotalEndpoint` keeps the fields and forwards to it. */
+/** One endpoint's anycast request rail. Internal: it owns its take responder state, and `CotalEndpoint` keeps the shared fields and forwards to it. */
 export class EndpointAnycast {
+  /** The anycast take responder, the request records it writes, and their maintenance timer
+   *  (delivery daemon, SPEC §8.1). Bound with the other Plane-3 responders and dropped with them. */
+  private takeServeSub?: import("@nats-io/transport-node").Subscription;
+  private anycastAuthority?: AnycastRequestAuthority;
+  private anycastSweep?: ReturnType<typeof setInterval>;
+  private takesInFlight = 0;
+
   constructor(private readonly deps: EndpointAnycastDeps) {}
 
   private get nc() { return this.deps.nc(); }
@@ -61,14 +60,6 @@ export class EndpointAnycast {
   private get subs() { return this.deps.subs(); }
   private get anycastUnavailable() { return this.deps.anycastUnavailable(); }
   private set anycastUnavailable(value: string | undefined) { this.deps.setAnycastUnavailable(value); }
-  private get anycastAuthority() { return this.deps.anycastAuthority(); }
-  private set anycastAuthority(value: AnycastRequestAuthority | undefined) { this.deps.setAnycastAuthority(value); }
-  private get takeServeSub() { return this.deps.takeServeSub(); }
-  private set takeServeSub(value: import("@nats-io/transport-node").Subscription | undefined) { this.deps.setTakeServeSub(value); }
-  private get anycastSweep() { return this.deps.anycastSweep(); }
-  private set anycastSweep(value: ReturnType<typeof setInterval> | undefined) { this.deps.setAnycastSweep(value); }
-  private get takesInFlight() { return this.deps.takesInFlight(); }
-  private set takesInFlight(value: number) { this.deps.setTakesInFlight(value); }
   private emitRecoverable(err: Error): void { return this.deps.emitRecoverable(err); }
   private plane3MayAct(): boolean { return this.deps.plane3MayAct(); }
   private notLiveMsg(): string { return this.deps.notLiveMsg(); }
