@@ -50,7 +50,7 @@ import {
   observeUnownedRecovery,
   UnreadableConnectorSelection,
 } from "@cotal-ai/workspace";
-import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
+import { resumePublishedUpdate, retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
@@ -148,6 +148,7 @@ export interface ExecutionReplacement {
   publish(): void;
   restore(): void;
   verify(version: string): void;
+  verifyPublished?(version: string): boolean;
   /** Remove a retained target that was never published. */
   discard?(): void;
   /** Complete retained publication bookkeeping after successful reconciliation. */
@@ -400,11 +401,9 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
       }
     }
   }
-  const restored = await recoverInterruptedUpdate(rt);
-  if (restored) {
-    if (args.values.self !== true) return;
-    if (restored.version !== rt.version()) return restored.entry;
-  }
+  const restored = await recoverInterruptedUpdate(rt, false, targetArgv(args.values));
+  if (restored && (args.values.self !== true || restored.resumed)) return;
+  if (restored && restored.version !== rt.version()) return restored.entry;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
   try {
@@ -432,7 +431,7 @@ async function updateInstallation(args: ParsedArgs, rt: UpdateRuntime): Promise<
 }
 
 /** Resume an abandoned replacement before a command or daemon can activate its closure. */
-export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false): Promise<{ entry: string; version: string } | undefined> {
+export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false, flags: string[] = []): Promise<{ entry: string; version: string; resumed?: true } | undefined> {
   if (childBinding(rt).kind === "bound") return;
   const observed = readUpdateRecovery();
   if (!observed) return;
@@ -452,6 +451,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${decision.instruction} Cannot save the first observation: ${message(error)}`, { remedy: "correct access to the Cotal home, then run `cotal update --self`" }); }
       decision = recoveryDisposition(record, now, rt.recoveryOwnerStart ?? recoveryProcessStartToken);
     }
+    if (!startup && (decision.action === "restore" || decision.action === "retire") && record.execution && record.target === rt.version() && (record.phase === "replacing" || record.phase === "verified-ready")) return await resumePublishedUpdate(rt, record, flags);
     if (decision.action === "retire") {
       let retained;
       try { retained = retainUnusableRecovery(record, now); }
