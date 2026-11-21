@@ -330,6 +330,8 @@ export async function launchManagedPersona(
       const elsewhere = missing ? await managersWithPersona(flags, reply.managerInstanceId ?? on, ref).catch((): string[] => []) : [];
       throw new CommandFailure("refused", code, reply.error ? oneLine(reply.error) : "the manager refused the launch before execution", { target, native, remedy: elsewhere.length
         ? `nothing was launched; ${elsewhere.length === 1 ? "this manager of yours has" : "these managers of yours have"} ${ref === "default" ? "a default persona" : `persona "${ref}"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(" or ")}`
+        : missing && ref === "default" && reply.error?.startsWith('no persona "default" in the catalog of manager ')
+          ? `nothing was launched; in the project shown above on the manager's host, run ${codeSpan(`cotal persona create default --space ${shellWord(t.space)} --prompt 'You are an agent on the Cotal mesh.' --subscribe ''`)}, then run the spawn again`
         : missing ? "nothing was launched; create that file on the manager's host, then run the spawn again"
         // This CLI refused before sending, so the manager reported nothing; the refusal names the side to update.
         : reply.details?.some((d) => d.kind === EP_UNDECLARED_ARG) ? "nothing was launched; update the side the refusal names, then run the spawn again"
