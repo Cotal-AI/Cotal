@@ -596,7 +596,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--follow` | off | Keep listening and print each new message |
 | `--json` / `-j` | off | One JSON document, or with `--follow` one JSON record per line |
 | `--plain` | off | The same report without color or marks |
-| `--yes` / `-y` | off | `clear` and `limit`: confirm without prompting. Scripts and `--json` require it |
+| `--yes` / `-y` | off | `clear` and `limit`: confirm without prompting. Scripts and `--json` require it for a purge or a limit change |
 | `--dry-run` | off | `clear`: show the selected target and streams without connecting, and purge nothing |
 | `--max-age <age\|none>` | none | `limit`: delete a channel post once it is older than this, from `2m` to `3650d`, or `none` |
 | `--per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest posts on each channel, at least 1, or `none` |
@@ -700,8 +700,9 @@ gives how many of those copies the agent's consumer has not delivered yet, and s
 delivered and not acknowledged yet may be among them too. For the
 inbox and DMs it says that copies not passed on yet and DMs not read yet may be among them. The
 preview lists every agent and DM pair, because the operator reads the streams under the space root's
-trust. Raising asks nothing, and entries deleted under an earlier limit do not come back. Scripts and
-`--json` need `--yes`, checked before any credential is minted. `result.lowered` carries the same
+trust. Raising asks nothing in a terminal, and entries deleted under an earlier limit do not come back.
+Scripts and `--json` need `--yes` to change a limit. If the streams already hold all the requested
+values, the command reports that the limits are unchanged and writes nothing. `result.lowered` carries the same
 preview, and each `result.streams[]` entry gives its `from` and `to` limits and its `outcome`.
 
 The streams change one at a time: channel posts, the inbox, stored copies, then DMs. Each update

@@ -225,7 +225,7 @@ try {
     check(`history limit refuses ${what} as usage, before resolving any target`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && r.envelope.error.message.includes(needle), shown(r));
   }
   const noYes = await run(["history", "limit", "--max-age", "7d", "--json", "--space", space]);
-  check("--json without --yes is refused before any credential is minted", noYes.status === 1 && noYes.envelope?.error?.code === "USAGE_INVALID" && noYes.envelope.error.message.includes("requires --yes"), shown(noYes));
+  check("--json without --yes refuses a real change", noYes.status === 1 && noYes.envelope?.error?.code === "USAGE_INVALID" && noYes.envelope.error.message.includes("requires --yes"), shown(noYes));
   check("...and changed nothing", same(await limitOf(jsm, space), CHAT_HISTORY_DEFAULT));
   const noTrust = await run(["history", "limit", "--max-age", "7d", "--yes", "--json", "--space", untrusted], roots.untrusted);
   check("a root without the space's trust is refused PERMISSION_DENIED", noTrust.status === 2 && noTrust.envelope?.error?.code === "PERMISSION_DENIED" && noTrust.envelope.error.message.includes("no trust material"), shown(noTrust));
@@ -248,6 +248,11 @@ try {
   await onc.flush();
   await wait(300);
   check("the read-only call publishes no STREAM.UPDATE", quietRead.status === 0 && updates.length === 0, { updates, run: shown(quietRead) });
+  const quietRepeat = await run(["history", "limit", "--per-sender", "1000", "--plain", "--space", noAgeSpace], roots.open);
+  const quietRefusal = await run(["history", "limit", "--per-sender", "500", "--plain", "--space", noAgeSpace], roots.open);
+  await wait(300);
+  check("without a terminal or --yes, the current count succeeds without publishing STREAM.UPDATE", quietRepeat.status === 0 && quietRepeat.stdout.includes("History limits unchanged") && updates.length === 0, { updates, run: shown(quietRepeat) });
+  check("without a terminal or --yes, lowering the count is refused", quietRefusal.status === 1 && quietRefusal.stderr.includes("history limit requires --yes") && same(await limitOf(ojsm, noAgeSpace), CHAT_HISTORY_DEFAULT), shown(quietRefusal));
 
   // ── a part alone, and none ───────────────────────────────────────────────────────────────────────
   const countOnly = await run(["history", "limit", "--per-sender", "500", "--yes", "--json", "--space", noAgeSpace], roots.open);
@@ -270,8 +275,8 @@ try {
   check("...which the stream holds", same(await limitOf(jsm, space), weekly));
   const plain = await run(["history", "limit", "--max-age", "7d", "--per-sender", "500", "--yes", "--plain", "--space", space]);
   check("a repeat run is a no-op that writes nothing", plain.status === 0 && plain.stdout.includes("History limits unchanged") && plain.stdout.includes("7d, 500 per sender"), shown(plain));
-  const repeatJson = await run(["history", "limit", "--max-age", "7d", "--yes", "--json", "--space", space]);
-  check("...and says so in its envelope", repeatJson.envelope?.outcome === "no-op" && repeatJson.envelope.result?.changed === false, shown(repeatJson));
+  const repeatJson = await run(["history", "limit", "--max-age", "7d", "--json", "--space", space]);
+  check("--json without --yes also succeeds and reports the no-op", repeatJson.status === 0 && repeatJson.envelope?.outcome === "no-op" && repeatJson.envelope.result?.changed === false, shown(repeatJson));
 
   // Posts for the prompt: one sender over the coming count on #general, one under it.
   const agent = async (name: string) => {
