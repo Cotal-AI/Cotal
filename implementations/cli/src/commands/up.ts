@@ -413,8 +413,8 @@ export const upFlags: FlagSpec[] = [
   { name: "no-manager", type: "boolean", description: "broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager (refuses on a mesh whose manager is live)" },
   { name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "launch a whole mesh from a manifest" },
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
-  { ...jsonFlag, description: "controller-owned stack only: one structured receipt on stdout" },
-  { ...plainFlag, description: "controller-owned stack only: plain line-oriented receipt" },
+  { ...jsonFlag, description: "one structured receipt on stdout (controller-owned stack only, without --foreground)" },
+  { ...plainFlag, description: "plain line-oriented receipt (controller-owned stack only, without --foreground)" },
 ];
 
 /** Completion for `cotal up` — `--runtime <TAB>` offers `pty` + installed runtime providers (the same
@@ -495,7 +495,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (args.values.file !== undefined && args.values.foreground === true) throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime");
-  if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt");
+  if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
   parsePositiveIntegerFlag("--max-sessions", args.values["max-sessions"] as string | undefined);

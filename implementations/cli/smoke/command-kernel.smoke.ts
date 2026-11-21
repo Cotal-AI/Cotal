@@ -32,9 +32,10 @@ const noop = async (): Promise<void> => {};
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
     HOME: join(root, "home"), COTAL_HOME: home, XDG_CONFIG_HOME: config,
     COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1",
+    COTAL_FEEDBACK_URL: "https://127.0.0.1:1",
   };
-  const run = (words: string[]) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
-    cwd: root, env, encoding: "utf8", timeout: 30_000,
+  const run = (words: string[], extraEnv?: NodeJS.ProcessEnv) => spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...words], {
+    cwd: root, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 30_000,
   });
   try {
     const cases: string[][] = [];
@@ -66,6 +67,37 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
+    const upHelp = run(["up", "--help"]);
+    assert.equal(upHelp.status, 0, upHelp.stderr);
+    const upText = upHelp.stdout.replace(/\s+/g, " ");
+    assert.match(upText, /\[--foreground \| \[-d\|--detach\] \[-j\|--json\|--plain\]\]/);
+    assert.equal((upText.match(/without --foreground/g) ?? []).length, 2);
+    const prepared = run(["space", "create", "sample"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
+    assert.equal(prepared.status, 0, prepared.stdout + prepared.stderr);
+    const foreground = ["up", "--foreground", "--open", "--no-manager", "--server", "nats://127.0.0.1:37026"];
+    const jsonForeground = run([...foreground, "--json"]);
+    assert.equal(jsonForeground.status, 1, jsonForeground.stdout + jsonForeground.stderr);
+    assert.equal(jsonForeground.stderr, "");
+    const error = JSON.parse(jsonForeground.stdout).error;
+    assert.equal(error.code, "USAGE_INVALID");
+    assert.match(error.remedy, /omit --json .* or omit --foreground/);
+    const plainForeground = run([...foreground, "--plain"]);
+    assert.equal(plainForeground.status, 1, plainForeground.stdout + plainForeground.stderr);
+    assert.match(`${plainForeground.stdout}\n${plainForeground.stderr}`.replace(/\s+/g, " "), /omit --plain .* or omit --foreground/);
+
+    const feedbackHelp = run(["feedback", "--help"]);
+    assert.equal(feedbackHelp.status, 0, feedbackHelp.stderr);
+    const feedbackUsage = feedbackHelp.stdout.split("Usage\n")[1]?.split("\n\n")[0] ?? "";
+    assert.match(feedbackUsage, /--key-file\s+<private-file>/);
+    assert.doesNotMatch(feedbackHelp.stdout, /--key(?!-file)\b/);
+    const legacyKey = run(["feedback", "Example report", "--key", "private-placeholder", "--json"]);
+    assert.equal(legacyKey.status, 1, legacyKey.stderr);
+    assert.equal(legacyKey.stderr, "");
+    const keyError = JSON.parse(legacyKey.stdout).error;
+    assert.equal(keyError.code, "USAGE_INVALID");
+    assert.match(keyError.message, /no request was made/);
+    assert.doesNotMatch(legacyKey.stdout, /private-placeholder/);
+
     const sync = run(["sync", "--json"]);
     assert.equal(sync.status, 0, sync.stdout + sync.stderr);
     assert.deepEqual(JSON.parse(sync.stdout).result.accounts, []);
@@ -298,6 +330,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     run: noop,
   };
   assert.equal(commandUsage(gen), "cotal t4 <name> [--out <path>] [--force] [-f|--file <value>]");
+  assert.equal(commandUsage({ ...gen, flagNames: ["out", "file"] }), "cotal t4 <name> [--out <path>] [-f|--file <value>]");
   const over: Command = { ...gen, usage: "custom usage" };
   assert.equal(commandUsage(over), "custom usage");
 }

@@ -44,6 +44,16 @@ try {
   assert.equal(logs.detached.code, 0, `the detached stack starts: ${logs.detached.err}`); passed++;
   assert.equal(await portOpen(port), true, "the detached broker listens"); passed++;
 
+  const downHelp = logs.downHelp = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["help", "down"]);
+  assert.equal(downHelp.code, 0, downHelp.err); passed++;
+  assert.match(downHelp.out.replace(/\s+/g, " "), /cotal down --dry-run inspect without stopping anything\. For a running legacy stack, this is partial \(exit 4\), not a stop plan/); passed++;
+  assertSmokeSandboxDown(sandbox, ["down", "--dry-run"], { cwd: mesh, env });
+  const dryRun = logs.dryRun = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--dry-run"]);
+  assert.equal(dryRun.code, 4, dryRun.out + dryRun.err); passed++;
+  assert.match(dryRun.out, /Whole-stack local inspection/); passed++;
+  assert.match(dryRun.out, /not a stop plan/); passed++;
+  assert.equal(await portOpen(port), true, "the dry run leaves the running broker alone"); passed++;
+
   logs.foreground = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", ...stack]);
   assert.notEqual(logs.foreground.code, 0, `foreground up over a running stack must not succeed: ${logs.foreground.out}`); passed++;
   assert.match(logs.foreground.err, /already running .* can't keep it in this terminal/, "the refusal names the running stack"); passed++;
