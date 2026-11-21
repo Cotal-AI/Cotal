@@ -188,8 +188,10 @@ prepared the same way, before it starts anything, and names `cotal space forget`
 record, because a space added from elsewhere is carried by the same files.
 If saving a prepared-space record fails, Cotal attempts to remove its temporary sibling and
 reports the original error without publishing a partial record.
-It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
-space's root, and the home folder, whose `.cotal` holds this machine's own records. It refuses a
+Running `space create` again for the same prepared space in the same root keeps its record and
+finishes writing a missing default persona. It refuses with `CONFLICT` a registered name, a name
+prepared in another root, a folder already used by another space, and the home folder, whose
+`.cotal` holds this machine's own records. It refuses a
 folder that is, or is in, a control directory, which is a project's `.cotal` or the Cotal home,
 judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. A
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
@@ -250,7 +252,11 @@ writes nothing: the registration, the selection and the root's files stay. A spa
 deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
 whose instance records show a member still running names `cotal down --space <space> --yes`. Any
 other such space refuses while something still listens at its recorded broker address that no other
-registration names, and names the process listening there to stop. A member whose process
+registration names, and names the process listening there to stop. If only the registration is
+missing, forget still refuses while a stack member runs. When the journal and running broker let
+`down` rebuild the registration, the refusal names `cotal down --yes` in the stack's root. If the
+folder is gone, it names `cotal down --space <space> --yes` instead. If no stop can be determined
+without the registration, it tells you to restore it first. A member whose process
 is gone without its stop receipt does not block, and the result warns with `STACK_MEMBER_UNSETTLED`
 that it was never stopped cleanly. A prepared space is forgotten the same way, and the `.cotal/`
 that `space create` made stays. A prepared record that cannot be read names no folder, so forgetting

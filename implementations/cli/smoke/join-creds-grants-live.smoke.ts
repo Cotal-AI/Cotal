@@ -187,10 +187,10 @@ try {
   await joins("replacement", replacement, repairedUid, "review.code");
   check("the remedy explains how to preserve additional grants", missing.output().includes("replace `--allow-subscribe review.code` with `--identity <original-file>`"), missing.output());
 
-  function terminal(name: string, file: string, uid: string) {
+  function terminal(name: string, file: string, uid: string, channel = "general") {
     const terminalEnv = { ...env };
     delete terminalEnv.COTAL_NO_PROMPT;
-    const proc = cotalPty(["join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name], {
+    const proc = cotalPty(["join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel], {
       cwd: project, env: Object.fromEntries(Object.entries(terminalEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)),
     });
     terminals.add(proc);
@@ -226,6 +226,17 @@ try {
   writer.proc.write("/quit\r");
   await until(() => reader.code() !== undefined && writer.code() !== undefined);
   check("both interactive sessions quit successfully", reader.code() === 0 && writer.code() === 0);
+
+  const family = await mint("family", "--allow-subscribe", "review.>", "--allow-publish", "review.code");
+  const follower = terminal("follower", family.file, family.uid, "review.>");
+  await until(() => follower.output().includes("Commands:") || follower.code() !== undefined);
+  check("family join announces that broadcasts need a concrete channel", follower.output().includes("Broadcasts need a concrete channel") && !follower.output().includes("Type to broadcast"), follower.output());
+  follower.proc.write("not a broadcast target\r");
+  await until(() => follower.output().includes("Nothing was sent.") || follower.code() !== undefined);
+  check("broadcast to a family is refused without suggesting a credential change", follower.output().includes("Nothing was sent.") && !follower.output().includes("auth mint"), follower.output());
+  follower.proc.write("/quit\r");
+  await until(() => follower.code() !== undefined);
+  check("interactive family join quits successfully", follower.code() === 0, follower.output());
   emitSentinel({ passed, failed: 0 });
 } finally {
   for (const terminal of terminals) terminal.kill();

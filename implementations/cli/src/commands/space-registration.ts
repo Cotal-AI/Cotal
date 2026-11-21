@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   CommandFailure,
   authDir,
@@ -53,12 +53,13 @@ import {
 } from "@cotal-ai/workspace";
 import { forgetChatSessions } from "@cotal-ai/workspace/chat";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
+import { brokerLaunchAt } from "../lib/broker-service.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { mkdirPrivate } from "../lib/private-directory.js";
 import { removeStep } from "../lib/registry-errors.js";
-import { displayCmd, displayRemedy } from "../lib/self-exec.js";
-import { adoptionRefusal, adoptStackJournal, journalRecordedElsewhere, releaseStackDefinitions, runningStackRoles, stackRootGone } from "../lib/stack-journal.js";
+import { displayCmd, displayRemedy, selfArgv } from "../lib/self-exec.js";
+import { adoptionRefusal, adoptStackJournal, goneStackRoot, journalRecordedElsewhere, readStackJournal, releaseStackDefinitions, runningStackRoles, stackRootGone, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
 import { pruneEmptyServiceSpace } from "../lib/service-process.js";
 import {
   candidateTarget,
@@ -83,8 +84,8 @@ import {
 import { canPrompt, clackIO } from "./meshes-wizard.js";
 import { detail, type SpaceDetail } from "./space.js";
 import { MissingFlags } from "../lib/missing-flags.js";
-import { readStackJournal } from "../lib/stack-journal.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
+import { observeServiceProcess, serviceInstanceStore } from "../lib/service-instances.js";
 import { goneLegacyMembers, goneLegacyRoot } from "./stack-gone.js";
 
 /** The flags only `space add` takes. */
@@ -426,23 +427,32 @@ export async function spaceCreate(rest: readonly string[], rootFlag: string | un
     const blocked = found && adoptionRefusal(root, found);
     if (blocked) throw refuse("CONFLICT", `${blocked.message}; it was not adopted and nothing was written`, { space: name, root: canonicalRoot(root), recordedRoot: found!.recordedRoot }, displayRemedy(blocked.remedy));
   }
-  checkLocalSpace(name, root, "--root", false, adopt);
+  const state = checkLocalSpace(name, root, "--root", adopt ? false : "prepared", adopt);
+  const existing = state === "prepared" ? findPreparedSpace(name) : undefined;
+  if (state === "prepared") {
+    if (!existing || canonicalRoot(existing.root) !== canonicalRoot(root))
+      throw refuse("CONFLICT", `the preparation for "${name}" changed; nothing was written`, { space: name, root });
+    protectedLocalDirectory(root, "the project root");
+    const dir = join(root, ".cotal");
+    if (lstatSync(dir, { throwIfNoEntry: false })) protectedLocalDirectory(dir, "the project's .cotal directory");
+  }
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
-  const prepared = recordLocalSpace(name, root);
-  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), { what: "prepared space", path: prepared.file }];
+  const { file, preparedAt } = existing ? { file: undefined, preparedAt: existing.ts } : recordLocalSpace(name, root);
+  const written = [...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
   const personaPath = join(personaDir(root), "default.md");
   let persona: ReturnType<typeof seedDefaultPersona>;
   try { persona = seedDefaultPersona(root); }
   catch (error) {
     const failure = localWriteFailure(error, personaPath);
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", `prepared ${name} at ${prepared.file}, but ${failure.message}; the persona file may be incomplete`, {
+    if (!file) throw failure;
+    throw new CommandFailure("partial", "OPERATION_PARTIAL", `prepared ${name} at ${file}, but ${failure.message}; the persona file may be incomplete`, {
       target: { space: name, path: personaPath },
       changed: written, native: failure.native, cause: error,
-      remedy: `${failure.remedy}; check and repair ${personaPath} before running \`cotal up\` in ${root}`,
+      remedy: `${failure.remedy}; check and repair ${personaPath}, then run ${codeSpan(`${displayCmd()} space create ${shellWord(name)} --root ${shellWord(root)}`)}`,
     });
   }
   if (persona) written.push(persona);
-  const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: prepared.preparedAt, current: getCurrent() === name, written };
+  const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt, current: getCurrent() === name, written };
   writeResult(presentation, { command: "space", target: { space: name }, result }, createdView);
 }
 
@@ -454,10 +464,11 @@ export type LocalSpaceState = "created" | "prepared" | "started";
  * The checks `space create` runs before it prepares `name` at `root`; it writes nothing. `flag`
  * names the input that chose the root. With `again`, a space already prepared or started at this
  * same root is reported as its state instead of refused, so `cotal setup` run again with the same
- * answers changes nothing. With `adopting`, a stack journal another folder recorded here counts as
+ * answers changes nothing. With `again` set to `"prepared"`, only an existing preparation can
+ * be reused. With `adopting`, a stack journal another folder recorded here counts as
  * this root's own, as `space create --adopt` is about to make it.
  */
-export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean, adopting = false): LocalSpaceState {
+export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean | "prepared", adopting = false): LocalSpaceState {
   const target = { space: name };
   // `cotal up` starts a space only under a name that is one native routing token, short enough for
   // the file names that carry it. A name it refuses names no space, so its refusal is not headed with it.
@@ -477,7 +488,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
   const registered = findMesh(name);
   if (registered) {
-    if (again && registered.origin === "up" && here(registered.root)) return "started";
+    if (again === true && registered.origin === "up" && here(registered.root)) return "started";
     throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with \`cotal space show ${name}\``);
   }
   const prepared = findPreparedSpace(name);
@@ -511,7 +522,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   }
   const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
   // A space started here before and stopped since keeps its trust in this root.
-  if (again && held.length === 1 && held[0] === name) return "started";
+  if (again === true && held.length === 1 && held[0] === name) return "started";
   if (held.length > 0) {
     // This root's stack journal: its space, undefined when there is none, null when it cannot be read.
     let journaled: string | null | undefined = null;
@@ -618,9 +629,8 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
   const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
-    // A damaged registration names no root, but the prepared record and instance store still do.
     const running = runningStackRoles(name);
-    if (running.length) throw refuse("LIFECYCLE_BLOCKED", `"${name}" still has running stack members (${running.join(", ")}); nothing was forgotten`, target, `stop its stack with \`cotal down --space ${name} --yes\`, then run \`cotal space forget ${name}\` again`);
+    if (running.length) throw refuse("LIFECYCLE_BLOCKED", `"${name}" still has running stack members (${running.join(", ")}); nothing was forgotten`, target, unregisteredStackStop(name, damaged.length > 0));
     let p: ReturnType<typeof findPreparedSpace>;
     try {
       p = findPreparedSpace(name);
@@ -670,6 +680,29 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   removeMesh(name);
   const warnings = unsettled.map((member) => ({ code: "STACK_MEMBER_UNSETTLED", target, message: `the stack member ${member} is gone but was never stopped cleanly: its record has no stop receipt` }));
   forgotten(presentation, { space: name, server: m.server, root: m.root, origin: m.origin ?? null, releasedDefinitions: release.released, keptServices }, preferencesRevision, [...damagedWarnings, ...warnings, ...keptWarnings(name, release.kept)]);
+}
+
+/** Down can rebuild a missing open or static registration from an intact root only when the
+ *  journal's exact broker launch still runs. The rootless stop is for a gone root only. */
+function unregisteredStackStop(space: string, damaged: boolean): string {
+  const restore = "restore the stack's registration before stopping it; a working stop could not be determined without it";
+  if (damaged) return restore;
+  try {
+    const displayed = displayCmd();
+    const cmd = displayed === "pnpm cotal" ? selfArgv().map(shellWord).join(" ") : displayed;
+    if (goneStackRoot(space) !== undefined) return `stop its stack with ${codeSpan(`${cmd} down --space ${shellWord(space)} --yes`)}`;
+    const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+    const root = launch?.type === "adapter" && launch.adapter === STACK_ADAPTER.broker ? launch.options.root : undefined;
+    if (typeof root !== "string" || !isAbsolute(root) || rootPathProblem(root) || cotalDirLink(root) !== undefined) return restore;
+    const journal = readStackJournal(root)?.journal;
+    if (!journal || journal.space !== space || journal.mode === "user") return restore;
+    const id = journal.members.find((member) => member.role === "broker")?.instanceId;
+    const broker = id ? serviceInstanceStore(space).read(id)?.record.value : undefined;
+    if (broker?.definition === STACK_DEFINITION.broker && observeServiceProcess(broker) === "running" && brokerLaunchAt(space, broker.instanceId, broker.launchRequestId, root, journal.server)) {
+      return `stop its stack with ${codeSpan(`cd ${shellWord(root)} && ${cmd} down --yes`)}, then run ${codeSpan(`${cmd} space forget ${shellWord(space)}`)} again`;
+    }
+  } catch { /* Unreadable records do not establish a working stop. */ }
+  return restore;
 }
 
 /** Refuses to forget a space whose folder is gone while the stack it started there may still run: a
