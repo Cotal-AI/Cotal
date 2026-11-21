@@ -50,7 +50,7 @@
       "name": "the restore sets only the chat stream's age, as before",
       "file": "implementations/cli/src/lib/restore.ts",
       "find": "      if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);\n",
-      "replace": "      if (wanted.includes(record.stream) && historyLimitStreamOf(journal.space, record.stream) === \"chat\") await applyRecordedAge(broker, journal.space, record);\n",
+      "replace": "      if (wanted.includes(record.stream) && (await import(\"@cotal-ai/core\")).historyLimitStreamOf(journal.space, record.stream) === \"chat\") await applyRecordedAge(broker, journal.space, record);\n",
       "expectRed": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
       "cell": "...then holds the recorded age and count on each stream, INBOX and DLV apart and DLV with no count",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/cli build"
