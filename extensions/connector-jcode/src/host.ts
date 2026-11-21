@@ -127,6 +127,7 @@ interface HostTurnState {
   lastTurnError: string | undefined;
   fallbackDelayMs: number;
   fallbackRunning: boolean;
+  fallbackTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 export async function runJcodeHost(): Promise<void> {
@@ -691,9 +692,9 @@ export async function runJcodeHost(): Promise<void> {
     for (const batch of heldReservations) agent.releaseInFlight([...batch]);
     heldReservations.clear();
     eventWaitStop.abort();
-    if (fallbackTimer !== undefined) {
-      clearTimeout(fallbackTimer);
-      fallbackTimer = undefined;
+    if (hostState.fallbackTimer !== undefined) {
+      clearTimeout(hostState.fallbackTimer);
+      hostState.fallbackTimer = undefined;
     }
     await retireRelay(relayServer, relay);
     try {
@@ -1449,7 +1450,7 @@ export async function runJcodeHost(): Promise<void> {
   /** Pacing for the level-triggered server. Reset whenever a delivery is accepted, so a seat that
    *  recovers does not inherit a minute-long delay from the stall it just left. */
   hostState.fallbackDelayMs = FALLBACK_INITIAL_MS;
-  let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  hostState.fallbackTimer = undefined;
   hostState.fallbackRunning = false;
 
   /**
@@ -1463,15 +1464,15 @@ export async function runJcodeHost(): Promise<void> {
    * At most one timer, never while stopping, and unref'd so it can never hold the process open.
    */
   const armQueueFallback = (): void => {
-    if (hostState.stopping || fallbackTimer !== undefined) return;
+    if (hostState.stopping || hostState.fallbackTimer !== undefined) return;
     if (!fallbackStillOwed(fallbackState())) return;
     const delay = hostState.fallbackDelayMs;
     hostState.fallbackDelayMs = nextFallbackDelay(hostState.fallbackDelayMs);
-    fallbackTimer = setTimeout(() => {
-      fallbackTimer = undefined;
+    hostState.fallbackTimer = setTimeout(() => {
+      hostState.fallbackTimer = undefined;
       void serveQueueFallback();
     }, delay);
-    fallbackTimer.unref?.();
+    hostState.fallbackTimer.unref?.();
   };
 
   const serveQueueFallback = async (): Promise<void> => {
