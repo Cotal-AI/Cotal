@@ -53,7 +53,7 @@ import {
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
-import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
+import { assertConfigAncestorProtected, prepareUpdateConnectorConfig, repairCurrentUpdateConnectorSelection, repairUpdateConnectorSelection } from "../lib/update-connector-config.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { collectUpdateCaches } from "./update-caches.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -673,8 +673,8 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       return code;
     }
     if (unreadableSelection) {
-      rt.err(unreadableSelection.message);
-      rt.out("No newer CLI version. No connector reconciliation was run.");
+      if (!repairCurrentUpdateConnectorSelection(Boolean(rt.prepareExecution), unreadableSelection, line => rt.err(line))) return 1;
+      rt.out("No newer CLI version.");
       reportVersion(current, latest.version, rt, false);
       return 0;
     }

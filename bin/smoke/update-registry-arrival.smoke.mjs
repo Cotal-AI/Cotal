@@ -226,12 +226,6 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const unreadable = rollback ? current : local;
       if (!rollback) writeFileSync(current, record, { mode: 0o600 });
       writeFileSync(unreadable, corrupt, { mode: 0o400 });
-      armed = false;
-      const noNewer = await run(process.execPath, [entry, 'update', '--self'], 60000);
-      assert.equal(noNewer.code, 0, noNewer.output);
-      assert.match(noNewer.output, /No connector reconciliation was run/);
-      assert.equal(readFileSync(unreadable, 'utf8'), corrupt);
-      armed = true;
       const started = Date.now();
       const result = await run(process.execPath, [entry, 'update', '--self'], 180000);
       const elapsedMs = Date.now() - started;
