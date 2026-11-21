@@ -4,6 +4,7 @@ import {
   accountFromCreds,
   credsClaims,
   contractArtifactCanonicalBytes,
+  contractArtifactDigestHex,
   contractRefToHex,
   contractStoreContext,
   dialerFor,
@@ -92,11 +93,17 @@ export async function registerRemoteManagerAuthority(args: {
       const store = await contractStoreContext(nc, args.space);
       const artifacts = managerClusterArtifacts();
       const all = [...managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];
-      console.error(`manager registration: publishing and verifying ${all.length} contract artifacts`);
-      // Settle every independent create-only CAS before closing a failed connection.
+      console.error(`manager registration: verifying ${all.length} contract artifacts and publishing any that are missing`);
+      // A restart usually finds the same immutable artifacts. Read and verify them instead of
+      // spending a failed create before each read. Publish only on an observed miss, using the
+      // same create-only fence in case another Manager publishes the artifact first.
       for (let offset = 0; offset < all.length; offset += 32) {
-        const results = await Promise.allSettled(all.slice(offset, offset + 32).map(value =>
-          publishContractArtifact(store, contractArtifactCanonicalBytes(value))));
+        // Settle all work in the batch before closing a failed connection.
+        const results = await Promise.allSettled(all.slice(offset, offset + 32).map(async value => {
+          const bytes = contractArtifactCanonicalBytes(value);
+          if (await fetchContractArtifact(store, contractArtifactDigestHex(bytes)) === undefined)
+            await publishContractArtifact(store, bytes);
+        }));
         for (const result of results) if (result.status === "rejected") throw result.reason;
       }
       console.error("manager registration: contract artifacts verified; acquiring the serving registration");
