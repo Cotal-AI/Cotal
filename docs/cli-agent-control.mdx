@@ -44,8 +44,9 @@ bare `up` starts the stack's own manager. A stack manager whose process died sta
 `ps` waits out the manager's answer deadline first, then refuses the same way and names bare
 `cotal up`, which starts it again. While an `up` is still starting the
 stack's manager, `ps` refuses `TARGET_UNAVAILABLE` saying the manager is starting, and its Next is
-to run `cotal ps` again once `up` reports it started. That `up` holds the root's maintenance lock;
-once it has exited, `ps` gives the refusal above.
+to retry once `up` reports it started. The retry keeps any explicit `--space` and `--server`,
+along with the listing mode and output flags. That `up` holds the root's maintenance lock. Once
+it exits, `ps` gives the refusal above.
 
 On any other static or open space, such as a legacy stack started with `--no-manager`, a manager
 registry that lists no live manager makes `ps` refuse `TARGET_UNAVAILABLE`, exit 2: no manager is

@@ -17,8 +17,9 @@
  *     killed process left. Once delivery is killed, `status` reads its ready row as stale instead of
  *     bound. The `down --yes` that stops it prints one receipt: the mesh once, the members in stop
  *     order with their results, and `cotal up` as the next step.
- *  2b. A `ps` while an `up` is still starting the manager says it is starting. Once that `up` is
- *     killed, `ps` gives the no-manager refusal again.
+ *  2b. A `ps` while an `up` is still starting the manager says it is starting and keeps the
+ *     requested target, listing mode, and output flags in the retry. Once that `up` is killed,
+ *     `ps` gives the no-manager refusal again.
  *  3. Busy port on a first `up`. It refuses CONFLICT naming the address and the bind error and
  *     launches nothing; once the port is free the same `up` starts. A second space whose first `up`
  *     finds that stack's broker answering refuses CONFLICT naming the address and that space, with a
@@ -511,17 +512,26 @@ try {
   {
     const space = "starting";
     const root = prepare(space);
-    const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: "ignore" });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", server, "--json"], { cwd: root, env, stdio: "ignore" });
     const pinned = await until(() => pidOf(space, "stack-delivery") !== null, 120_000);
     const delivery = pidOf(space, "stack-delivery");
     if (delivery !== null) process.kill(delivery, "SIGSTOP");
     track(space);
     const manager = () => readStackJournal(root)?.journal.members.find((row) => row.role === "manager")?.state;
-    const starting = cli(root, "ps", "--space", space, "--json");
+    const starting = cli(root, "ps", "--space", space, "--server", server, "--json");
     check("ps while an up starts the stack says its manager is starting, TARGET_UNAVAILABLE, exit 2",
       pinned && child.exitCode === null && manager() === "planned" && starting.status === 2 && starting.env?.error?.code === "TARGET_UNAVAILABLE" &&
         starting.env.error.message === "the stack's manager is starting, so it has no managed agents to list yet", { ...shown(starting), manager: manager() });
+    check("the startup retry keeps the explicit target and JSON output",
+      starting.env?.error?.remedy?.includes(`\`cotal ps --json --space ${space} --server ${server}\``) === true, shown(starting));
+    const slots = cli(root, "ps", "--slots", "--space", space, "--json");
+    check("a static-auth slot read keeps --slots in the startup retry",
+      slots.status === 2 && slots.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        slots.env.error.remedy?.includes(`\`cotal ps --slots --json --space ${space}\``) === true, shown(slots));
+    const wide = cli(root, "ps", "--wide", "--server", server, "--plain");
+    check("a wide read keeps its server, wide layout, and plain output in the startup retry",
+      wide.status === 2 && wide.stderr.includes(`\`cotal ps --wide --plain --server ${server}\``), shown(wide));
     child.kill("SIGKILL");
     await exited(child);
     const dead = cli(root, "ps", "--space", space, "--json");
