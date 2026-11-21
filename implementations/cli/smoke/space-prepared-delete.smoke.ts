@@ -29,7 +29,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string; repair?: { attempted?: boolean } }; warnings?: { code: string }[]; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string | null }; result?: { space?: string | null; credentialScope?: string; repair?: { attempted?: boolean }; current?: string | null; folder?: string | null }; warnings?: { code: string }[]; error?: { code?: string; message?: string; remedy?: string } }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-prepared-delete-"));
@@ -157,6 +157,14 @@ check("a shell reads that --root back as the prepared folder", shellRead !== und
 // selection, and none from a folder that holds no space.
 const selected = run(["use", "b4d"]);
 check("rig: the other prepared space is selected", selected.status === 0, shown(selected));
+const child = mkdtempSync(join(root, "child-"));
+const localUse = run(["use", "--plain"], child);
+check("bare use in a prepared project's subdirectory shows how to target that project's space",
+  localUse.status === 0 && localUse.stdout.includes('commands here target "b4d"') && localUse.stdout.includes("--space b4b or `cotal use --clear`"), shown(localUse));
+const useJson = run(["use", "--json"], child);
+check("bare use reports the prepared folder separately from the explicit selection",
+  useJson.status === 0 && useJson.envelope?.outcome === "ok" && useJson.envelope.target?.space === "b4d" &&
+    useJson.envelope.result?.current === "b4d" && useJson.envelope.result.folder === "b4b", shown(useJson));
 const bareOwn = run(["doctor", "auth", "--json"]);
 check("bare doctor auth in the first root still names its own space, not the selected one", bareOwn.status === 4 && bareOwn.envelope?.error?.remedy === BARE_HERE, shown(bareOwn));
 const bareSpecial = run(["doctor", "auth", "--json"], special);

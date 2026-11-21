@@ -999,13 +999,14 @@ export function folderSpaceStopped(cwd: string, current: string): { space: strin
 
 /** The one space REGISTERED at the root of the project folder `cwd` is in, which a command without
  *  `--space` targets there while it runs, or, with none registered, the space of the root's own half
- *  started or half stopped stack ({@link unfinishedStackSpace}). Undefined outside a project and where
- *  the root has none or several. A space prepared here and never started is not one: see
- *  {@link folderSpaceHeld}. */
-export function folderSpace(cwd: string): string | undefined {
+ *  started or half stopped stack ({@link unfinishedStackSpace}). For inspection, `includePrepared`
+ *  also reports the root's prepared space when neither of those applies. Undefined outside a project
+ *  or where several spaces are registered at the root. */
+export function folderSpace(cwd: string, options?: { includePrepared?: boolean }): string | undefined {
   const folder = folderSpaces(cwd, loadMeshes());
   if (!folder) return undefined;
-  return folder.registered.length === 1 ? folder.registered[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
+  if (folder.registered.length) return folder.registered.length === 1 ? folder.registered[0] : undefined;
+  return unfinishedStackSpace(folder.root) ?? (options?.includePrepared ? folder.prepared : undefined);
 }
 
 /** The space a command without `--space` targets in the project folder `cwd` is in when that is not

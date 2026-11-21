@@ -450,9 +450,10 @@ the command that targets it reports that. Selecting the explicit selection again
 registered or prepared is refused with `TARGET_NOT_FOUND`, exit 2, naming the known spaces, and the
 selection stays. That refusal has no `Mesh:` heading, and its remedy names `cotal use --clear` only
 while a space is selected. Bare `use` reports
-the selection and whether Cotal adopted it automatically. Inside a project, it names the folder's
-space and how to reach it with `--space <name>` or `cotal use --clear`. `use --json` keeps its keys;
-`folder` identifies the local folder's space, not an override of explicit intent. `cotal space` and
+the selection and whether Cotal adopted it automatically. When an explicit selection differs from
+the folder's space, bare `use` names the folder's space, even before its first start, and shows how
+to target it with `--space <name>` or `cotal use --clear`. In `use --json`, `result.folder` reports
+the folder's space, including a prepared space, independently of the selection. `cotal space` and
 `cotal status` mark the folder as the target only when no explicit selection overrides it.
 A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.

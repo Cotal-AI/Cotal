@@ -77,7 +77,7 @@ export async function use(args: ParsedArgs): Promise<void> {
       if (found?.recordedRoot === p.root && found.journal.space === p.space) moved = found;
     } catch { /* An unusable journal does not identify a moved project. */ }
   }
-  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd) ?? null };
+  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd, { includePrepared: true }) ?? null };
   const warnings: OutputWarning[] = current !== null && name === undefined && !m && !p
     ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: current }, message: `the selected space "${current}" is not registered here - select another with \`cotal use <name>\`` }]
     : [];
