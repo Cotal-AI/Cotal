@@ -197,11 +197,17 @@ answer without `--value` carries no value: the step settles as answered, and the
 program's checkpoint result has no `value`. `--value` is refused with `SCHEMA_INVALID` before
 anything is sent when the record would not hold what you typed: an object that names a key twice,
 a number outside the range JSON carries (such as `1e999`), or a value nested more than 1000 levels
-deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The receipt of `answer` and
-`amend` names the step, the value it filed or that none was given, any artifact and the answer id. A value longer than
-120 characters is cut there too, with a line that says so. With `--json` they are in
-`result.answer`, whole, where `valueGiven` says whether a value was sent. `amend` records a changed
-position on a settled checkpoint or `ask`: it files a new answer beside the accepted one, naming it, and the journal lists it under the step. The pause stays
+deep. An empty or blank `--artifact` is refused with `USAGE_INVALID`. The text receipts for `answer`
+and `amend` show the step, the submitted value or that none was given, any artifact and the answer
+ID. They shorten values longer than 120 characters and say when they do.
+
+With `--json`, `result.answer` contains `step`, the full `value` and `artifact` if supplied, and
+`valueGiven`, which is false when `value` is absent. The returned answer ID is in
+`result.result.answerId`. An amendment also reports the ID of the accepted answer in
+`result.result.supersedes`.
+
+`amend` records a changed position on a settled checkpoint or `ask`: it files a new answer beside
+the accepted one, and the journal lists it under the step. The pause stays
 settled and the run keeps the answer it acted on. A step that is still open or settled without an
 answer refuses an amend. So does a run ID that no run is recorded under, and that refusal says no
 run is recorded under that ID. With `--local` these refusals are `TARGET_NOT_FOUND`, exit 2, as the
