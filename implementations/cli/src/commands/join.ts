@@ -41,7 +41,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, codeSpan, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, checkServer, codeSpan, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -68,7 +68,7 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
   if (credential !== undefined && missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credential.lifecycleUid}, so it cannot join with it`, {
-      remedy: credentialJoinRemedy(space, credential.channel, true),
+      remedy: credentialJoinRemedy(space, credential.channel, { keepOriginalGrants: true }),
     });
   if (missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
@@ -88,20 +88,37 @@ function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid:
   return undefined;
 }
 
-function credentialJoinRemedy(space: string | undefined, channel: string, keepOriginalGrants = false): string {
+function credentialJoinRemedy(space: string | undefined, channel: string, options: { brokerFlag?: string; keepOriginalGrants?: boolean } = {}): string {
   const read = `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
   const target = space === undefined ? " --space <space>" : ` --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
-  const mint = codeSpan(`cotal auth mint <name> --provision ${read}${target} --no-persona --out <file>`);
+  const mint = codeSpan(`cotal auth mint <name> --provision ${read}${target}${options.brokerFlag ?? ""} --no-persona --out <file>`);
   const remedy = `ask the space's owner to mint the credential with ${mint}, then join with the lifecycle UID that mint reports using \`--lifecycle-uid\``;
-  return keepOriginalGrants ? `${remedy}. To keep the original grants, replace ${codeSpan(read)} with \`--identity <original-file>\`` : remedy;
+  return options.keepOriginalGrants ? `${remedy}. To keep the original grants, replace ${codeSpan(read)} with \`--identity <original-file>\`` : remedy;
 }
 
-function malformedCredentialReplacement(space: string | undefined, channel: string): string {
+function mintBrokerAddress(server: string, tls: boolean): string | undefined {
+  const addresses: string[] = [];
+  for (const value of server.split(",")) {
+    const address = value.trim();
+    // Anything beyond host and port can contain private data, including WebSocket paths.
+    if (!/^[a-z]+:\/\/[a-z0-9.:[\]_-]+\/?$/i.test(address) || !checkServer(address, "broker URL").ok) return undefined;
+    if (tls && /^ws:/i.test(address)) return undefined;
+    addresses.push(tls ? address.replace(/^nats:/i, "tls:") : address);
+  }
+  return addresses.join(",");
+}
+
+function malformedCredentialReplacement(space: string | undefined, channel: string, server: string | undefined, tls: boolean): string {
   try { assertValidChannel(channel); }
   catch {
     return "if it is unavailable, choose a valid landing channel and ask the space's owner for a provisioned credential with read access to that channel, then pass its new UID with `--lifecycle-uid`";
   }
-  return `if it is unavailable, use a new output path and ${credentialJoinRemedy(space, channel)}`;
+  const broker = server === undefined ? undefined : mintBrokerAddress(server, tls);
+  const needsBroker = server !== undefined || tls;
+  const brokerFlag = needsBroker ? ` --server ${broker === undefined ? "<broker-url>" : shellWord(broker)}` : "";
+  const brokerHint = needsBroker && broker === undefined
+    ? ` Replace \`<broker-url>\` with the space owner's verified ${tls ? "TLS-enabled " : ""}broker URL without embedded credentials.` : "";
+  return `if it is unavailable, use a new output path and ${credentialJoinRemedy(space, channel, { brokerFlag })}${brokerHint}`;
 }
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
@@ -163,12 +180,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
+  const explicitServer = values.server ?? link?.servers;
+  const tls = values.tls ?? link?.tls ?? false;
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds, () => malformedCredentialReplacement(values.space ?? link?.space, channel)) : undefined,
-    tls: values.tls ?? link?.tls ?? false,
+    creds: values.creds ? readCredsFile(values.creds, () => malformedCredentialReplacement(values.space ?? link?.space, channel, explicitServer, tls)) : undefined,
+    tls,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
   // COTAL_LIFECYCLE_UID) is scoped STRICTLY to an explicit --creds join: that credential's durable
@@ -235,12 +254,12 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     if (expiresAt !== undefined) throw expiryRefusal("this join connects with a credential it was given");
     // With no space or broker named, the credential goes to the selected space or this folder's.
-    const resolved = values.space === undefined && link?.space === undefined && values.server === undefined ? credsSpace(process.cwd()) : undefined;
+    const resolved = values.space === undefined && link?.space === undefined && explicitServer === undefined ? credsSpace(process.cwd()) : undefined;
     space = values.space ?? link?.space ?? resolved?.space ?? resolveSpace(process.cwd());
     // The credential goes only to a broker the caller paired it with: `--server`, the link's own
     // address, or the address the space is registered at. The default address is never assumed for it.
-    const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;
-    const paired = values.server ?? link?.servers ?? recorded?.server;
+    const recorded = explicitServer === undefined ? findMesh(space) : undefined;
+    const paired = explicitServer ?? recorded?.server;
     if (paired === undefined)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.creds ? "--creds" : "--token"} needs --server <url> or a registered --space: space "${space}" is not registered here, so nothing was dialed`, {
         remedy: "pass the broker this credential belongs to with --server <url>, or join with its link",
@@ -251,7 +270,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     await registrationPolicy({ space, policy: findMesh(space)?.policy });
     // An omitted server must still match a recorded user mesh on a non-default port, so the check
     // gets the caller's own server and not the one resolved from the record.
-    refuseStaticCredsForKnownUserAuth(space, values.server ?? link?.servers, "interactive join");
+    refuseStaticCredsForKnownUserAuth(space, explicitServer, "interactive join");
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
@@ -531,7 +550,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
         target: { space },
         remedy: values.creds
-          ? credentialJoinRemedy(space, channel, true)
+          ? credentialJoinRemedy(space, channel, { keepOriginalGrants: true })
           : "run the same `cotal join` again to start a new session",
       }));
     print(c.yellow(`! ${e.message}`));

@@ -59,7 +59,8 @@ const broker = await bootBroker(auth);
 let daemon: CotalEndpoint | undefined;
 try {
   saveSpaceAuth(authDir(project), auth);
-  recordMesh({ space, server: broker.servers, root: project, mode: "auth", ts: new Date().toISOString() });
+  const mesh = { space, server: broker.servers, root: project, mode: "auth" as const, ts: new Date().toISOString() };
+  recordMesh(mesh);
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: broker.servers, space, creds: provisioner });
   await seedChannelRegistry({ servers: broker.servers, space, creds: provisioner, file: { channels: { general: {}, "review.code": {} } } });
@@ -100,8 +101,8 @@ try {
   const other = await mint("other_channel", "--allow-subscribe", "review.>");
   await refused("other-channel", other.file, other.uid, /does not grant read access to #general[\s\S]*--allow-subscribe general/);
 
-  async function joins(name: string, file: string, uid: string, channel: string) {
-    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
+  async function joins(name: string, file: string, uid: string, channel: string, ...flags: string[]) {
+    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel, ...flags);
     await until(() => run.output().includes("holding presence") || run.proc.exitCode !== null);
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);
@@ -111,15 +112,15 @@ try {
   async function checkMalformedCredentialRecovery(uid: string) {
     const truncated = "truncated.creds";
     writeFileSync(join(project, truncated), "-----BEGIN NATS USER JWT-----\nincomplete test fixture\n", { mode: 0o600 });
-    const link = `${broker.servers.replace(/^nats:/, "cotal:")}/${space}?channel=review.%3E`;
+    const link = `${broker.servers.replace(/^nats:\/\//, "cotal://private-user:private-link-marker@")}/${space}?channel=review.%3E`;
     const joinWithFile = (file: string, ...flags: string[]) => cli("join", "--link", link, "--creds", file, "--lifecycle-uid", uid, ...flags);
     const rejected = joinWithFile(truncated);
     check("truncated file keeps its classified refusal and suggests restoring the complete file", await rejected.exited === 1 &&
       /Code: +SCHEMA_INVALID/.test(rejected.output()) && rejected.output().includes(`creds file ${truncated} cannot be used: it has no complete NATS user JWT block`) &&
       rejected.output().includes("pass the complete credential file as it was issued"), rejected.output());
     const command = /`cotal auth mint (<name> [^`]+)`/.exec(rejected.output())?.[1];
-    assert.equal(command, `<name> --provision --allow-subscribe 'review.>' --space ${space} --no-persona --out <file>`, rejected.output());
-    check("replacement guidance names the link's landing channel and pairs the file with its new UID", rejected.output().includes("lifecycle UID that mint reports using `--lifecycle-uid`") && !rejected.output().includes("--identity"), rejected.output());
+    assert.equal(command, `<name> --provision --allow-subscribe 'review.>' --space ${space} --server ${broker.servers} --no-persona --out <file>`, rejected.output());
+    check("replacement guidance pairs the new file and UID without repeating link credentials", rejected.output().includes("lifecycle UID that mint reports using `--lifecycle-uid`") && !/--identity|private-user|private-link-marker/.test(rejected.output()), rejected.output());
     const replacement = "parse-repair.creds";
     const minted = cli("auth", "mint", ...command.split(" ").map((arg) => {
       if (arg === "<name>") return "parse_repair";
@@ -129,11 +130,34 @@ try {
     check("the printed replacement command provisions a credential for the linked channel", await minted.exited === 0, minted.output());
     const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(minted.output())?.[1];
     assert.ok(replacementUid && replacementUid !== uid, "replacement mint did not report a new lifecycle UID");
-    await joins("parse-repair", replacement, replacementUid, "review.>");
+    await joins("parse-repair", replacement, replacementUid, "review.>", "--server", broker.servers);
 
     const override = joinWithFile(truncated, "--channel=--channel-placeholder");
     check("an explicit channel overrides the link and a leading dash is not parsed as a flag", await override.exited === 1 &&
       override.output().includes("--allow-subscribe=--channel-placeholder"), override.output());
+  }
+
+  async function checkMalformedCredentialTargets(uid: string) {
+    const truncated = "truncated.creds";
+    const joinWithFile = (file: string, ...flags: string[]) => cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, ...flags);
+    const conflicting = `cotal://127.0.0.1:1/${space}`;
+    const override = joinWithFile(truncated, "--server", broker.servers, "--link", conflicting);
+    check("an explicit broker wins over the link for replacement provisioning", await override.exited === 1 &&
+      override.output().includes(`--server ${broker.servers}`) && !override.output().includes("127.0.0.1:1 "), override.output());
+    const tlsLink = joinWithFile(truncated, "--link", broker.servers.replace(/^nats:/, "cotals:") + `/${space}`);
+    check("replacement advice retains the TLS requirement from a secure join link", await tlsLink.exited === 1 &&
+      tlsLink.output().includes(`--server ${broker.servers.replace(/^nats:/, "tls:")}`), tlsLink.output());
+    for (const [url, problem] of [
+      ["nats://private-url-marker@localhost:4222", "must not embed credentials"],
+      ["wss://localhost/?token=private-url-marker", "drop its query string"],
+    ] as const) {
+      const invalidUrl = joinWithFile(truncated, "--server", url);
+      check(`broker URL validation says to ${problem} without repeating the URL`, await invalidUrl.exited === 1 &&
+        invalidUrl.output().includes(problem) && !invalidUrl.output().includes("private-url-marker"), invalidUrl.output());
+    }
+    const privateRoute = joinWithFile(truncated, "--server", "wss://localhost/private-url-marker");
+    check("a private broker route requires a verified address without repeating the route", await privateRoute.exited === 1 &&
+      privateRoute.output().includes("--server <broker-url>") && privateRoute.output().includes("verified broker URL without embedded credentials") && !privateRoute.output().includes("private-url-marker"), privateRoute.output());
     const unnamed = cli("join", "--server", broker.servers, "--creds", truncated, "--lifecycle-uid", uid);
     check("without a link or named channel the advice uses general and does not guess the mint space", await unnamed.exited === 1 &&
       unnamed.output().includes("--allow-subscribe general --space <space>"), unnamed.output());
@@ -153,7 +177,14 @@ try {
       inspect.output().includes("cotal auth mint <label> --out <file>") && !inspect.output().includes("--provision"), inspect.output());
   }
 
-  await checkMalformedCredentialRecovery(allowed.uid);
+  const stale = `nats://127.0.0.1:${await freePort()}`;
+  recordMesh({ ...mesh, server: stale });
+  try {
+    await checkMalformedCredentialRecovery(allowed.uid);
+    await checkMalformedCredentialTargets(allowed.uid);
+  } finally {
+    recordMesh(mesh);
+  }
 
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
