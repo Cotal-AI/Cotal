@@ -467,12 +467,14 @@ function mintedProfile(profile?: string): string | undefined {
 
 /** The `auth mint --replace` that replaces a standing `<label>.creds`, with the lifetime it gets. It
  *  mints a new key, which holds only the profile and grants its mint names, so it names the ones the
- *  file holds. An incarnation file, `<alias>.<lifecycleUid>.creds`, is no label's standing credential. */
+ *  file holds. The claims do not say whether the broker provisioned an inbox. */
 function standingReplace(path: string, space?: string, grants?: AgentGrants, profile?: string): string | undefined {
   const label = basename(path);
   if (space === undefined || !label.endsWith(".creds") || incarnationUidOf(label) !== undefined) return undefined;
   const flag = mintedProfile(profile);
-  return `\`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}${flag ? ` --profile ${flag}` : ""}${grants ? grantMintFlags(grants) : ""}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+  const replace = `\`${displayCmd()} auth mint ${aliasOf(label)} --replace --space ${space}${flag ? ` --profile ${flag}` : ""}${grants ? grantMintFlags(grants) : ""}\`, which lasts 24 hours unless --expires-in <seconds> or --expires-at <unix-seconds> sets another time`;
+  if (profile !== "agent") return replace;
+  return `${replace}. This is a file-only replacement. For a join-ready replacement, add \`--provision\` before running that mint while the broker is up, then join with the lifecycle UID it reports`;
 }
 
 /** The repair for an agent file whose key was revoked. A revoked key is never signed again, so a

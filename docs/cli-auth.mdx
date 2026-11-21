@@ -491,6 +491,11 @@ read and post channels and its role as `--allow-subscribe`, `--allow-publish` an
 the replacement is a new key, which holds only the profile and grants its mint names. For an
 observer or admin file it names no managed renewal, as no manager runs one.
 
+Doctor cannot tell from a standing agent credential whether its inbox was provisioned. The printed
+replacement command writes a credential without creating an inbox. To use the replacement with
+`cotal join`, add `--provision` before running the mint while the broker is up, then join with the
+lifecycle UID the mint reports.
+
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
 are not findings. A file missing its user seed block is unreadable even if its JWT still parses.
