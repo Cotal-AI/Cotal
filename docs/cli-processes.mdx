@@ -614,6 +614,9 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+`service-connect`, `service-disconnect` and `service-status` reject malformed space names with
+`USAGE_INVALID` before contacting the daemon. Use 1 to 64 ASCII letters, digits, underscores or hyphens.
+
 On Linux, daemon installation and setup require a systemd host and `systemctl` on PATH.
 On Linux without systemd, run `cotal daemon serve` under your own supervisor, such as OpenRC,
 runit or s6. Use `cotal update --self` for manual updates.

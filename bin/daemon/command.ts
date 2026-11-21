@@ -326,6 +326,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${op} needs --space <s>`);
+  if (!isDaemonSpaceName(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   const { paths, home } = resolveTarget(args);
   let reply;
   try {
