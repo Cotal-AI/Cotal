@@ -121,11 +121,12 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         console.log(`PASS foreground-up-signals ${name}: manager exit during an interrupted startup is not reported as degradation`);
         return true;
       }
-      await until(() => /control plane degraded:.*exited before it came up/.test(err), 20_000, () => err.slice(-3000));
+      // The consequence is the last line of the degraded notice on stderr.
+      await until(() => err.includes("Spawn and retirement require a functioning control plane.\n"), 20_000, () => err.slice(-3000));
       assert.equal(live(manager), false, "the failed manager's recorded birth is gone"); passed++;
       assert.equal(state.exited, false, "a genuine startup failure does not masquerade as an operator stop"); passed++;
       assert.equal(await portOpen(port), true, "the degraded stack's broker remains running"); passed++;
-      assert.match(err, /Spawn and retirement require a functioning control plane/); passed++;
+      assert.match(err, /control plane degraded:.*exited before it came up/); passed++;
       console.log(`PASS foreground-up-signals ${name}: genuine manager startup failure reported before any stop request`);
       return true;
     }
