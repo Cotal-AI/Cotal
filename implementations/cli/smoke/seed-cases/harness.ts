@@ -71,9 +71,9 @@ const seedDir = (cfg: string) => join(cfg, "cotal", "seed");
 const manifestPath = (cfg: string) => join(cfg, "cotal", "extensions", "extensions.json");
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 const writeJson = (p: string, v: unknown) => writeFileSync(p, JSON.stringify(v));
-/** A boot through the seed gate: a command that is not a read, so the gate reconciles before it runs.
- *  Unsetting an absent user color preference then writes nothing and needs no network. */
-const boot = (cfg: string, extraEnv: Record<string, string> = {}): Run => cotal(cfg, ["config", "unset", "color", "--user"], extraEnv);
+/** A boot through the seed gate. Removing an absent extension makes no change after the seed. */
+const bootArgs = ["ext", "remove", "@fixture/absent"];
+const boot = (cfg: string, extraEnv: Record<string, string> = {}): Run => cotal(cfg, bootArgs, extraEnv);
 /** The connectors listed after a boot, or none when the boot refused. */
 const listNames = (cfg: string): string[] => {
   if (boot(cfg).status !== 0) return [];
@@ -81,7 +81,7 @@ const listNames = (cfg: string): string[] => {
   return ["claude", "opencode", "codex", "hermes", "jcode", "pi"].filter((n) => out.includes(`connector:${n}`));
 };
 
-export { spawn, spawnSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, tmpdir, delimiter, dirname, join, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, REPO, BIN, check, HOST_ENV, boot, cotal, fakeCotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track };
+export { spawn, spawnSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, tmpdir, delimiter, dirname, join, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, REPO, BIN, check, HOST_ENV, boot, bootArgs, cotal, fakeCotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track };
 
 export function counts(): { passed: number; failed: number } {
   return { passed: pass, failed: fail };

@@ -178,6 +178,7 @@ try {
   const fern = started("join", "--creds", fernCreds, "--lifecycle-uid", fernUid, "--space", SPACE, "--name", "fern", "--channel", "team.>");
   const member = (channel: string) => census(channel)?.members.find((m) => m.name === "fern");
   const online = await until(() => member("team.build")?.durable === true && member("team.chat")?.live === true, 90_000);
+  check("provisioned fern starts a headless join on the channel family", fern.out.includes("holding presence"), fern.out);
   const build = member("team.build"), chat = member("team.chat");
   check("while connected, fern is a live and durable member of #team.build", online && build?.live === true && build.durable === true, { build, out: fern.out });
   check("while connected, fern is a live member of #team.chat with no stored copies", chat?.live === true && chat.durable === false, { chat, out: fern.out });

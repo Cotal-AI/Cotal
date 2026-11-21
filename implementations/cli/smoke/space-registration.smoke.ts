@@ -951,6 +951,23 @@ if (process.platform === "linux") {
 
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
+  const project = projectRoot("retry-create");
+  const agents = join(project, ".cotal", "agents");
+  writeFileSync(agents, "obstacle");
+  const failed = await json(["space", "create", "retry-space"], project);
+  const prepared = findPreparedSpace("retry-space");
+  const file = join(preparedSpacesDir(), `${spaceSegment("retry-space")}.json`);
+  const before = prepared && readFileSync(file, "utf8");
+  check("a failed persona seed leaves the preparation in place", failed.status === 3 && failed.env?.error?.code === "OPERATION_UNKNOWN" && prepared?.root === project, shown(failed));
+  renameSync(agents, `${agents}.old`);
+  const retried = await json(["space", "create", "retry-space"], project);
+  check("the same create fills in just the default persona without replacing the prepared record",
+    retried.status === 0 && existsSync(join(agents, "default.md")) && retried.env?.result.preparedAt === prepared?.ts &&
+    retried.env?.result.written.map((w: { what: string }) => w.what).join() === "default persona" && before === readFileSync(file, "utf8"), shown(retried));
+  check("the same name in another root still conflicts", refused(await json(["space", "create", "retry-space"], root), 2, "CONFLICT"));
+  removePreparedSpace("retry-space");
+}
+{
   const before = registryFiles();
   const fresh = join(home, "fresh");
   mkdirSync(fresh);
