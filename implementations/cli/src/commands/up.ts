@@ -242,6 +242,7 @@ import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
 import { checkLocalSpace } from "./space-registration.js";
+import { checkNewUpSpace, preparedUpRoot } from "./up-target.js";
 import { cleanedManifestStart, interruptedStartBroker, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
@@ -735,23 +736,7 @@ function machineHomeRoot(): string | undefined {
   return canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()) ? root : undefined;
 }
 
-/** An explicit root is an existing local workspace, not a hint to find another ancestor or
- *  create trust in an arbitrary directory. Validation runs before the dispatcher seeds extensions. */
-export function preparedUpRoot(value: string): string {
-  if (!value) throw new CommandFailure("refused", "USAGE_INVALID", "--root needs an existing prepared project directory; an empty value is not the current folder");
-  let root: string;
-  try {
-    root = realpathSync(resolve(value));
-    if (!statSync(root).isDirectory()) throw new Error("not a directory");
-    const cotal = lstatSync(join(root, ".cotal"));
-    if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
-  } catch {
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { target: { root: resolve(value) }, remedy: "prepare it with `cotal space create <space> --root <dir>`, then retry with that root" });
-  }
-  if (canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
-    throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with `cotal space create <space> --root <dir>`" });
-  return root;
-}
+export { preparedUpRoot } from "./up-target.js";
 
 /** The fresh team entry refuses retained custody before `up -f` can write a launch spec,
  *  regenerate trust or stop a leftover manager. Only a recorded local root is eligible. */
@@ -941,6 +926,9 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
   let adopted = false;
   try {
     validateUpArguments(args);
+    const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
+    const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
+    checkNewUpSpace(args.values.space, root ?? fresh);
     // The broker reads an explicit channels file only once it is being prepared, so a file it would
     // refuse is named here, before the stack journal or anything else is written.
     if (typeof args.values.channels === "string") readChannelsFile(resolve(args.values.channels));
@@ -948,12 +936,10 @@ export async function up(args: ParsedArgs, inheritedLock?: MaintenanceLock, fres
     if (folderNamed) args = { ...args, values: { ...args.values, space: folderNamed, __folderNamed: true } };
     // A fresh folder under the machine home gets its own `.cotal` before anything resolves the root, so
     // every later step uses this folder. A run that stops before writing there removes it again.
-    const fresh = args.values.root === undefined ? freshFolderRoot(args.values) : undefined;
     if (fresh) {
       mkdirSync(join(fresh, ".cotal"), { mode: 0o700 });
       for (const line of hang("", `made ${join(fresh, ".cotal")} for this folder's records; the machine's home .cotal was not used`, terminalWidth(process.stderr), c.dim)) console.error(line);
     }
-    const root = args.values.root === undefined ? undefined : preparedUpRoot(String(args.values.root));
     const previousCwd = process.cwd();
     // Path flags still mean paths relative to the invoking directory, not the selected root.
     // The recursive restore/resume re-entries inherit absolute paths and the same absolute root.

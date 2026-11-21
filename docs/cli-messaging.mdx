@@ -488,7 +488,9 @@ cotal channel members <name> [--follow] [--json | --plain]
 cotal channel remove <name> [--purge] [--yes]
 ```
 
-`channel` has the shorthand `ch`; `remove` also accepts `rm`. The inventory shows configured
+`channel` has the shorthand `ch`; `remove` also accepts `rm`. For a name starting with `-`, pass
+it with a quoted `#` prefix, as in `cotal channel show '#-audit'`. The suggested commands use that
+form so the parser reads the name as an argument, not an option. The inventory shows configured
 metadata, not every channel with traffic. A saved entry whose value does not decode is listed
 under `Not decoded` with its key and the decode error, and the key is left in the registry. Its
 channel resolves to the default policy, as an endpoint's registry watch does. `show` of that

@@ -507,7 +507,8 @@ Body files and standard input from `--from` must be valid UTF-8. Invalid input i
 Complete files must be valid UTF-8, pass validation for all supported fields and name the requested
 persona. Creation keeps their original bytes. An invalid encoding refuses with `SCHEMA_INVALID`,
 names the source and asks you to save it as UTF-8. It writes nothing. A file that names another persona is
-refused with `SCHEMA_INVALID`, naming the file's own name and the `persona create` that keeps it.
+refused with `SCHEMA_INVALID`, naming the file's own name. If that name can be used in the catalog,
+the refusal gives the `persona create` command that keeps it and quotes the file path for the shell.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
 such as a missing frontmatter block, the renamed `channels` key or a `subscribe` channel outside
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.
