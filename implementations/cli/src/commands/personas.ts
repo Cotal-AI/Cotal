@@ -9,6 +9,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, personaDefinitionProblem, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -289,7 +290,9 @@ function remove(name: string | undefined, force: boolean, values: { space?: stri
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
-    console.error(c.dim(`cotal personas rm ${name} --force`));
+    const target = targetWords({ space: values.space, server: values.server });
+    const word = shellWord(name);
+    console.error(c.dim(name.startsWith("-") ? `cotal personas rm${target} --force -- ${word}` : `cotal personas rm ${word}${target} --force`));
     process.exit(1);
   }
   commitPersona(path, expected, undefined);

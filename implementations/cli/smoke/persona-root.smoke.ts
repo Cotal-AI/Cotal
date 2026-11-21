@@ -479,6 +479,34 @@ try {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
   if (process.platform !== "win32") {
+    const server = "nats://[::1]:43002";
+    recordMesh(entry("beta", BETA, server));
+    for (const { name, selectors } of [
+      { name: "same", selectors: ["--space", "beta"] },
+      { name: "same", selectors: ["--server", server] },
+      { name: "-same", selectors: ["--space", "beta", "--server", server] },
+    ]) {
+      const selected = agentFilePath(MESH, name);
+      const explicit = agentFilePath(BETA, name);
+      const localCard = `---\nname: ${name}\nsubscribe: []\n---\n\nLocal\n`;
+      const auditCard = localCard.replace("Local", "Audit");
+      writeFileSync(selected, localCard);
+      writeFileSync(explicit, auditCard);
+      const refused = native(["personas", "rm", ...selectors, "--", name], CWD, { ...childEnv, NO_COLOR: "1" });
+      const retry = refused.stderr.split("\n").find(line => line.startsWith("cotal personas rm "));
+      check(`personas rm ${selectors.join(" ")} refuses before changing either copy and prints a retry`,
+        refused.status === 1 && retry !== undefined &&
+        readFileSync(selected, "utf8") === localCard && readFileSync(explicit, "utf8") === auditCard, refused.stderr);
+      const removed = spawnSync("sh", ["-c", `cotal() { "$CLI_NODE" "$CLI_BIN" "$@"; }; ${retry}`], {
+        cwd: CWD, env: { ...childEnv, CLI_NODE: process.execPath, CLI_BIN: binary }, encoding: "utf8", timeout: 30_000,
+      });
+      check(`personas rm ${selectors.join(" ")} retry removes only the explicitly targeted card`,
+        removed.status === 0 && !existsSync(explicit) && existsSync(selected) && readFileSync(selected, "utf8") === localCard,
+        { retry, status: removed.status, stderr: removed.stderr });
+      if (selectors.includes(server)) check("the retry quotes the IPv6 server selector", retry!.includes(`--server '${server}'`), retry);
+    }
+  }
+  if (process.platform !== "win32") {
     const slow = spawnSync("sh", ["-c",
       `(printf 'First line.\\n'; sleep 3; printf 'Second line.\\n') | "$@"`,
       "sh", process.execPath, binary, "persona", "create", "slow-stdin", "--space", "meshspace",

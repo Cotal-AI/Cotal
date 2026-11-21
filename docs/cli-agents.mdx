@@ -593,6 +593,8 @@ Plain confirmation uses numbered choices. Scripts and JSON removal require `--ye
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
 `show`, `edit`, `new` and `rm --force`. Each named operation takes one persona name; `list` takes none.
 Extra names refuse with `USAGE_INVALID` before reading or changing the catalog.
+Without `--force`, `personas rm` changes nothing and prints a retry that keeps any explicit
+`--space` and `--server` selectors.
 Its `show` requires a prepared or selected space too;
 a folder containing only `.cotal/agents` refuses with `TARGET_NOT_FOUND`. Prepare that folder
 with `cotal space create <name> --root <folder>` before reading its catalog offline.
