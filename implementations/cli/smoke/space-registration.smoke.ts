@@ -1805,7 +1805,7 @@ if (process.platform === "linux") {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   recordPreparedSpace({ space: "pready", root: projectRoot("prepared-ready"), ts: new Date().toISOString() });
   const damaged = join(dir, `${spaceSegment("pf")}.json`);
-  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}']]) {
+  for (const [label, body] of [["unparsed", "{ not json"], ["unshaped", '{"space":"pf"}'], ["null", "null"]]) {
     writeFileSync(damaged, body);
     const list = await json(["space"], folder);
     const skipped = list.env?.warnings?.find((w: { code: string }) => w.code === "PREPARED_RECORD_SKIPPED");
@@ -1814,18 +1814,27 @@ if (process.platform === "linux") {
         skipped.message.endsWith("so it is skipped; remove it with `cotal space forget pf`"), shown(list));
     const other = await json(["space", "show", "pready"], folder);
     check(`space show of another space beside that record (${label}) succeeds`, other.status === 0 && other.env?.outcome === "ok", shown(other));
-    if (label === "unparsed") {
+    if (label === "null") {
+      const selected = await json(["use", "pready"], folder);
+      check("use selects the healthy prepared space beside a null record",
+        selected.status === 0 && selected.env?.result?.current === "pready" && getCurrent() === "pready", shown(selected));
+    }
+    if (label !== "unshaped") {
       const report = await json(["status"], folder);
-      check("status names that record under meshes.unreadable, exit 4, with one warning for it",
+      check(`status names that record (${label}) under meshes.unreadable, exit 4, with one warning for it`,
         report.status === 4 && Boolean(report.env?.result?.meshes?.unreadable?.some((u: { file: string }) => u.file === damaged)) &&
           (report.env?.warnings ?? []).filter((w: { target?: { file?: string } }) => w.target?.file === damaged).length === 1, shown(report));
       const text = await run(["status"], {}, folder);
-      check("status text says the record is skipped once on stderr", text.status === 4 && text.stderr.replace(/\n\s+/g, " ").split("so it is skipped").length === 2, shown(text));
+      check(`status text says the record (${label}) is skipped once on stderr`, text.status === 4 && text.stderr.replace(/\n\s+/g, " ").split("so it is skipped").length === 2, shown(text));
     }
     const own = await json(["use", "pf"], folder);
     check(`use pf with its own record damaged (${label}) refuses SCHEMA_INVALID, exit 1, naming that file and the forget that removes it`,
       refused(own, 1, "SCHEMA_INVALID") && own.env?.target?.file === damaged && own.env.error?.message === `${damaged} is not a usable prepared space record` &&
         own.env.error?.remedy === "remove it with `cotal space forget pf`", shown(own));
+    if (label === "null") {
+      check("refusing to select its null record leaves the selection and record untouched", getCurrent() === "pready" && readFileSync(damaged, "utf8") === body);
+      if (selection === undefined) clearCurrent(); else setCurrent(selection);
+    }
     const forget = await json(["space", "forget", "pf"], folder);
     check(`space forget pf removes its damaged record (${label}), with no root`,
       forget.status === 0 && forget.env?.result?.kind === "space-forgotten" && forget.env.result.root === null && !existsSync(damaged), shown(forget));
