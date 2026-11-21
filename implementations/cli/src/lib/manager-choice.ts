@@ -80,6 +80,18 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
   });
 }
 
+/** Check the selector form without looking up a live manager. */
+export function validateManagerSelector(on: string | undefined, verb: string, mode: string | undefined): void {
+  if (on === undefined || mode === "user") return;
+  try { onInstanceId(on, verb); } catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
+      target: { on },
+      remedy: `cotal ps prints each manager's instance id; rerun it as \`${verb} --on <instance>\``,
+      selfContained: true,
+    });
+  }
+}
+
 /**
  * `--on` as a manager instance id. A value with the shape of an instance id is used as it is. Any
  * other value is a manager's name or host: on a user-auth mesh it is matched against your live
@@ -93,15 +105,7 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
   const flags = targetFlags(values);
   let mode: string | undefined;
   try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: only an instance id can pin */ }
-  if (mode !== "user") {
-    try { onInstanceId(on, verb); } catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
-        target: { on },
-        remedy: `cotal ps prints each manager's instance id; rerun it as \`${verb} --on <instance>\``,
-        selfContained: true,
-      });
-    }
-  }
+  validateManagerSelector(on, verb, mode);
   const managers = await yourLiveManagers(flags);
   const matched = managers.filter((m) => selects(m, on));
   if (matched.length === 1) return matched[0]!.instanceId;

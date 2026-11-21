@@ -580,6 +580,20 @@ export function connectSpace(flags: ConnectFlags): string | undefined {
   catch { return undefined; }
 }
 
+/** Explicit coordinates for a credless connection outside the registry. Does not dial the broker. */
+export function resolveRawOpenTarget(cwd: string, flags: Pick<ConnectFlags, "space" | "server" | "creds" | "readOnly">): { space: string; server: string } | undefined {
+  const { space, server } = flags;
+  if (flags.creds || !server || !space || findMesh(space)) return undefined;
+  // A missing registry row does not make a locally hosted user-auth mesh open.
+  if (hasUserAuthState(findCotalRoot(cwd), space, { readOnly: flags.readOnly }))
+    throw new ConnectRefusal(
+      `✗ space "${space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+      undefined,
+      { code: "TARGET_NOT_FOUND" },
+    );
+  return { space, server };
+}
+
 /**
  * Resolve where a mesh-touching command connects + with what creds, THROWING {@link ConnectRefusal}
  * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
@@ -636,43 +650,35 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
   // both is as deliberate as `--creds`, but an open broker has no creds to pass — connect bare,
   // off-registry (no registry lookup, no prune). A registered `--space` still goes through the
   // resolver below (which honors `--server` as an override); `--server` alone resolves there too.
-  if (flags.server && flags.space && !findMesh(flags.space)) {
-    // Fail-closed marker, same posture as the resolver's: this machine may hold USER-AUTH state
-    // for that very space even when the registry lost (or never had) the entry — treating it as an
-    // open broker would credless-connect into a callout denial whose copy sends the operator
-    // port-hunting. Name the real state and the recovery instead.
-    if (hasUserAuthState(findCotalRoot(), flags.space))
-      throw new ConnectRefusal(
-        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
-        undefined,
-        { code: "TARGET_NOT_FOUND" },
-      );
-    const tls = tlsIntent(flags.server, false);
+  const raw = resolveRawOpenTarget(process.cwd(), { ...flags, readOnly: opts.readOnly });
+  if (raw) {
+    const { server, space } = raw;
+    const tls = tlsIntent(server, false);
     try {
-      await reachableOrThrow(flags.server, { tls });
+      await reachableOrThrow(server, { tls });
     } catch (error) {
       if (!isConnectRefusal(error) || error.code !== "TARGET_UNAVAILABLE") throw error;
       // Preparation can guide recovery, but it must not affect which broker we dial.
-      const prepared = findPreparedSpace(flags.space);
-      const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
+      const prepared = findPreparedSpace(space);
+      const at = checkServer(server, "--server").ok && !server.includes(",") ? new URL(server) : undefined;
       if (prepared && at) {
-        const stopped = stoppedStack(prepared.root, flags.space, flags.server);
+        const stopped = stoppedStack(prepared.root, space, server);
         if (stopped) {
-          const target = new MeshTargetError("not-started", `"${flags.space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space: flags.space, root: prepared.root, stopped }, { cause: error });
+          const target = new MeshTargetError("not-started", `"${space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space, root: prepared.root, stopped }, { cause: error });
           throw workspaceRefusal({ kind: "target", error: target }, { cause: target, kind: error.kind, code: error.code });
         }
       }
       const local = prepared && existsSync(prepared.root) && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
-        && preparedLifecycle(prepared.root, flags.space).state === "prepared";
-      const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`);
+        && preparedLifecycle(prepared.root, space).state === "prepared";
+      const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(space)} --server ${shellPath(server)}`);
       const remedy = command ? `if you meant to start the prepared space here, run ${command}. Otherwise, check that address and that a broker runs there` : "check that address and that a broker runs there";
       const message = error.failure().message;
       throw new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, {
         cause: error, kind: error.kind, code: error.code, parts: { message, remedy },
-        target: { space: flags.space, ...(prepared ? { root: prepared.root } : {}) },
+        target: { space, ...(prepared ? { root: prepared.root } : {}) },
       });
     }
-    return { server: flags.server, space: flags.space, tls };
+    return { ...raw, tls };
   }
   const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, openInventory: flags.openInventory, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);

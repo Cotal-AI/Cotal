@@ -29,6 +29,10 @@ be stopped, the preview reads the same without signing in. From a managed seat's
 preview without `--space` uses the seat's space instead of the local selection. A managed preview
 refuses an invalid explicit `--name` with `USAGE_INVALID` (exit 1), including the actor-token rule
 for a selected user-auth space. A successful preview exits 0 with `completeness` `not-checked`.
+From an operator shell, an explicit `--server` and unregistered `--space` can describe an open
+target without a broker check. Open and static targets require an instance ID for `--on`.
+A user-auth target can also take a manager name or host. The preview records that as
+`result.requested.managerSelector` and leaves `result.requested.instanceId` null until launch.
 The manager resolves the persona, any name taken from it, the harness and the working directory on
 its own host at launch. The preview does not substitute the caller's files.
 A named `--runtime` is checked on this machine only, through the lookup the launch

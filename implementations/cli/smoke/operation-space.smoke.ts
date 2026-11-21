@@ -26,7 +26,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { recordMesh } from "@cotal-ai/workspace";
+import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -339,7 +339,7 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string; name?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
+interface Preview { requested?: { source?: string; name?: string; instanceId?: string | null; managerSelector?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -493,20 +493,48 @@ for (const mode of [["--dry-run"], []]) {
 
 const selectedUser = cotal("use", "preview-user", "--json");
 check("fixture: the workspace explicitly selects the user-auth space", selectedUser.status === 0 && selectedUser.envelope?.target?.space === "preview-user", shown(selectedUser));
-const seatPreview = (caller: Record<string, string>, ...words: string[]) => outcome(spawnSync(process.execPath,
-  [BIN, "spawn", "remote-only", "--on", "aaaaaaaaaaaaaaaaaaaaaaaaaa", "--name", "sample-ok", "--dry-run", "--json", ...words],
+const seatPreview = (caller: Record<string, string>, on: string, ...words: string[]) => outcome(spawnSync(process.execPath,
+  [BIN, "spawn", "remote-only", "--on", on, "--name", "sample-ok", "--dry-run", "--json", ...words],
   { cwd: root, env: { ...env, COTAL_SPACE: "preview-seat", ...caller }, encoding: "utf8", timeout: 120_000 }));
-const seatIdentity = { COTAL_NAME: "parent", COTAL_ID: "parent_actor", COTAL_LIFECYCLE_UID: "aaaaaaaaaaaaaaaaaaaaaaaaaa" };
-const fromSeat = seatPreview(seatIdentity);
+const instance = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const seatIdentity = { COTAL_NAME: "parent", COTAL_ID: "parent_actor", COTAL_LIFECYCLE_UID: instance };
+const fromSeat = seatPreview(seatIdentity, instance);
 check("a managed preview uses its calling seat's open space ahead of the local selection",
   fromSeat.status === 0 && fromSeat.envelope?.target?.space === "preview-seat" && fromSeat.envelope.target.authMode === "open"
     && fromSeat.envelope.completeness === "not-checked" && (fromSeat.envelope.result as Preview | undefined)?.requested?.name === "sample-ok", shown(fromSeat));
-const bareSpaceEnv = seatPreview({});
+const bareSpaceEnv = seatPreview({}, instance);
 check("a space environment variable alone does not override the operator's selected space",
   bareSpaceEnv.status === 1 && bareSpaceEnv.envelope?.error?.code === "USAGE_INVALID" && bareSpaceEnv.envelope.target?.space === "preview-user", shown(bareSpaceEnv));
-const namedSpace = seatPreview(seatIdentity, "--space", "preview-user");
+const namedSpace = seatPreview(seatIdentity, instance, "--space", "preview-user");
 check("an explicit managed preview space takes precedence over the caller's space",
   namedSpace.status === 1 && namedSpace.envelope?.error?.code === "USAGE_INVALID" && namedSpace.envelope.target?.space === "preview-user", shown(namedSpace));
+const seatByName = seatPreview(seatIdentity, "review-manager");
+check("an open-seat preview refuses a manager name even when a user-auth space is selected locally",
+  seatByName.status === 1 && seatByName.envelope?.error?.code === "USAGE_INVALID" && seatByName.envelope.target?.space === "preview-seat"
+    && seatByName.envelope.error.message?.includes("only on a user-auth mesh") === true, shown(seatByName));
+const userByName = cotal("spawn", "remote-only", "--on", "review-manager", "--dry-run", "--json");
+const requestedPin = (userByName.envelope?.result as Preview | undefined)?.requested;
+check("a user-auth preview reports a manager name as a selector without claiming to resolve its instance",
+  userByName.status === 0 && userByName.envelope?.target?.space === "preview-user" && userByName.envelope.completeness === "not-checked"
+    && requestedPin?.instanceId === null && requestedPin.managerSelector === "review-manager", shown(userByName));
+
+const rawServer = "nats://127.0.0.1:34302";
+const rawPreview = (space: string, name: string) => cotal(...managedFile, "--server", rawServer, "--space", space, "--name", name);
+const rawInvalid = rawPreview("unregistered", "a".repeat(129));
+check("an explicit unregistered open target still checks the name before any broker request",
+  rawInvalid.status === 1 && rawInvalid.envelope?.target?.space === "unregistered" && rawInvalid.envelope.error?.code === "USAGE_INVALID"
+    && rawInvalid.envelope.error.message?.includes("exceeds the 128-character limit") === true, shown(rawInvalid));
+const rawValid = rawPreview("unregistered", "sample-ok");
+check("a valid name on an explicit unregistered open target previews the given coordinates without checking reachability",
+  rawValid.status === 0 && rawValid.envelope?.completeness === "not-checked" && rawValid.envelope.target?.space === "unregistered"
+    && rawValid.envelope.target.broker === rawServer && rawValid.envelope.target.authMode === "open", shown(rawValid));
+const lostUserAuth = userAuthStateDir(root, "unregistered-user", { readOnly: true });
+mkdirSync(lostUserAuth, { recursive: true });
+writeFileSync(join(lostUserAuth, "idp.json"), "{}");
+const userUnregistered = rawPreview("unregistered-user", "sample-ok");
+check("a user-auth marker without a registration is not treated as an open target",
+  userUnregistered.status === 2 && userUnregistered.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && userUnregistered.envelope.error.message?.includes("has user auth enabled on disk") === true, shown(userUnregistered));
 
 finish();
 process.exit(process.exitCode ?? 0);

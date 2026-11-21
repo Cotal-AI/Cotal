@@ -150,13 +150,13 @@ export async function launchManagedPersona(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  let on = await managerPin(values, spawnRerun(values, positionals));
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
   // `--on` keeps the pin on that path too.
-  const flags = { space: values.space, server: values.server, creds: values.creds };
-  const { seatIntent, space: callerSpace } = managedSpawnCaller(flags.space);
+  const { seatIntent, space } = managedSpawnCaller(values.space);
+  const flags = { space, server: values.server, creds: values.creds };
   if (seatIntent && values.creds !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "a managed seat's child launch uses that seat's own caller, not a --creds override");
+  let on = await managerPin({ ...flags, on: values.on }, spawnRerun(values, positionals));
   let cwd = values.cwd;
   // On a terminal, a pinned manager that is not known to run on this host is asked which of its
   // folders the agent works in, unless -C names one. One resolve, dropped again here, answers
@@ -184,7 +184,7 @@ export async function launchManagedPersona(
   }
   let seat: Awaited<ReturnType<typeof resolveSeatControlTarget>>;
   if (seatIntent) {
-    try { seat = await resolveSeatControlTarget({ ...flags, space: callerSpace }, on); }
+    try { seat = await resolveSeatControlTarget(flags, on); }
     catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the launching seat's own credential could not be verified; no operator identity was substituted"); }
     if (!seat) throw new CommandFailure("refused", "UNSUPPORTED", "the managed seat cannot act as itself through this CLI; missing/mismatched caller context and user-auth self impersonation do not fall back to the operator");
   }
