@@ -797,8 +797,11 @@ try {
   mustHaveRun(resolveCwdShort, "resolve-cwd with a 1ms timeout");
   const resolveCwdOut = strip(resolveCwdShort.out);
   const resolveCwdNext = nextOf(resolveCwdOut);
+  // A 1ms budget ends before the describe is answered (cell 13's refusal, exit 2) or after it (cell
+  // 14's and 15's failure, exit 5), depending on the machine. Both give the same retry advice.
+  const resolveCwdTimedOut = resolveCwdShort.status === 2 ? /Code:\s+TARGET_UNAVAILABLE/.test(resolveCwdOut) : resolveCwdShort.status === 5 && /Code:\s+OPERATION_FAILED/.test(resolveCwdOut);
   check("a timed-out resolve-cwd says to keep the original arguments and target flags without printing the argument body",
-    resolveCwdShort.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(resolveCwdOut) &&
+    resolveCwdTimedOut &&
       resolveCwdNext.includes(timeoutRemedy) &&
       !resolveCwdNext.includes("cotal endpoint invoke") && !resolveCwdOut.includes(root1),
     { status: resolveCwdShort.status, next: resolveCwdNext });
