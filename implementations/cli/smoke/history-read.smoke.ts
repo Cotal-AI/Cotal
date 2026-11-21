@@ -740,6 +740,19 @@ try {
       const after = await run(["history", "--space", openSpace, "--json"]);
       check(`history clear refuses ${label} before purging either channel`, refused.status === 1 && after.status === 0 && texts(after).length === 2 && sentinels.every((text) => texts(after).includes(text)), { refused: shown(refused), after: shown(after) });
     }
+
+    const before = await run(["history", "--space", openSpace, "--json"]);
+    for (const [path, force] of [["./absent store", false], ["./absent store", true], ["", true], ["~/store", true]] as const) {
+      const refused = await run(["clean", "history", "--store-dir", path, "--space", openSpace, ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --store-dir ${JSON.stringify(path)} ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history targets a running mesh")
+        && refused.stderr.includes("Only clean store and clean all take --store-dir")
+        && !/cotal clean history.*--force|omit --store-dir/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
+    }
   }
 
   {
