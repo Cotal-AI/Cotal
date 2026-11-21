@@ -5876,7 +5876,7 @@
       "rationale": "Self-update version field: \"waiting\" is the color tone for an available update, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-continuity.ts",
       "kind": "derived-output",
       "anchor": "printLegacyReport(report, target.space, undefined, console.log, on, remedy)",
       "class": "non-render/control",
