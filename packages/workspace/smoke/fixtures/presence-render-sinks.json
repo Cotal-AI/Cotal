@@ -261,28 +261,28 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`Couldn't yield: ${reply.error ?? \"manager refused\"}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`Turn yielded (${status}${to ? ` → ${to}` : \"\"}) — the run continues.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
       "class": "non-render/control",
       "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
       "class": "non-render/control",
@@ -1246,7 +1246,7 @@
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "agent.yieldTurn(status, { to, note, turn })",
       "class": "non-render/control",

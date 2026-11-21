@@ -40,7 +40,7 @@
     },
     {
       "name": "J4 hide join from the published MCP schema",
-      "file": "extensions/connector-core/src/tool-specs.ts",
+      "file": "extensions/connector-core/src/tool-specs-manager.ts",
       "find": "        join: z\n          .array(z.string())\n          .optional()\n          .describe(\"Channels the new peer joins at start, on top of what its persona file lists (e.g. ['general']). Concrete names only, each within YOUR read ACL (a spawn hands on only what you may read yourself; anything else is refused before launch). Omitted, a persona that lists no channel starts on none and its cotal_send with no channel is refused.\"),\n",
       "replace": "",
       "expectRed": "cotal_spawn schema exposes join"
