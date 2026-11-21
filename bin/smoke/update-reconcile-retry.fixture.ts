@@ -1,14 +1,23 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { beginGlobalUpdateChild, claimGlobalNpmUpdateLock, claimUpdateClosureAccess, readUpdateRecovery, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { beginExtensionNpmMutation, beginGlobalUpdateChild, claimExtensionMutationLock, claimGlobalNpmUpdateLock, claimUpdateClosureAccess, connectorConfigDir, readUpdateRecovery, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { waitForOwnedChild } from "../../implementations/cli/smoke/_foreground-owned-child.js";
 
 const root = process.env.RETRY_TEST_ROOT!;
 const modules = join(root, "prefix/lib/node_modules");
 const version = process.env.RETRY_TEST_VERSION!;
 
-if (process.argv[2] === "closure-only") {
+if (process.argv[2] === "connector-wrapper") {
+  const entry = join(modules, "cotal-ai/dist/cotal.js");
+  Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), { value: Object.freeze({ logicalEntry: entry, loadedEntry: entry }) });
+  const release = claimExtensionMutationLock();
+  try { beginExtensionNpmMutation().markLive(Number(process.argv[3])); }
+  finally { release(); }
+  writeFileSync(join(root, "connector-config"), connectorConfigDir());
+} else if (process.argv[2] === "connector-child") {
+  await waitForOwnedChild(() => existsSync(join(root, "connector-release")), 60_000, "release connector npm child");
+} else if (process.argv[2] === "closure-only") {
   const release = claimUpdateClosureAccess();
   try {
     writeFileSync(join(root, "closure-only"), "");

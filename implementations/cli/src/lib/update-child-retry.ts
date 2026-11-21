@@ -18,16 +18,15 @@ function changedEntry(rt: UpdateRuntime, root: string): string | undefined {
 /** Drain child custody before probing the closure, and never wait on a reverse-order recovery. */
 export function withCurrentUpdateFence<T>(rt: UpdateRuntime, check: () => T): T | { entry: string } {
   const root = installedUpdateRoot(rt);
-  if (!root) return check();
-  const releaseGlobal = rt.claimGlobalUpdate(root, announceGlobalUpdateWait(rt));
+  const releaseGlobal = root ? rt.claimGlobalUpdate(root, announceGlobalUpdateWait(rt)) : undefined;
   try {
     const releaseClosure = claimUpdateClosureAccess("immediate");
     try {
       if (updateActivationBlocked()) throw new Error("an interrupted update needs restoration; run `cotal update --self`");
-      const entry = changedEntry(rt, root);
+      const entry = root && changedEntry(rt, root);
       return entry ? { entry } : check();
     } finally { releaseClosure(); }
-  } finally { releaseGlobal(); }
+  } finally { releaseGlobal?.(); }
 }
 
 export function targetArgv(target: Record<string, unknown>): string[] {

@@ -19,10 +19,12 @@ const bin = dirname(import.meta.dirname);
 const modules = join(root, "prefix/lib/node_modules");
 const installed = join(modules, "cotal-ai");
 const entry = join(installed, "dist/cotal.js");
+const checkoutEntry = join(bin, "dist/cotal.js");
 const fixture = join(import.meta.dirname, "update-reconcile-retry.fixture.ts");
 const updateLock = join(modules, ".cotal-update.lock");
 const marker = join(modules, ".cotal-update-child");
 const recovery = join(root, "state/update-recovery.json");
+const closureLock = join(root, "state/.update-closure.lock");
 const project = join(root, "project");
 const version = JSON.parse(readFileSync(join(bin, "package.json"), "utf8")).version as string;
 const native = join(root, "native");
@@ -89,7 +91,7 @@ async function finishUpdate(job: ReturnType<typeof launch>, label: string) {
   assert.match(result.output, /installed package closure is current/);
   const after = await cli(`${label}-status`, "status");
   assert.equal(after.code, 0, after.output);
-  for (const path of [marker, recovery, join(env.COTAL_HOME!, ".update-closure.lock"), updateLock]) {
+  for (const path of [marker, recovery, closureLock, updateLock]) {
     assert.equal(existsSync(path), false, `leftover update state: ${path}`);
   }
   return result;
@@ -133,10 +135,52 @@ async function checkClosureContention(): Promise<void> {
   assert.doesNotMatch(result.output, /remove .*\.update-closure\.lock/);
   assert.doesNotMatch(result.output, /installed package closure is current/);
   assert.equal(existsSync(updateLock), false);
+  const checkout = launch("checkout-retry", [checkoutEntry, "update", "--self"]);
+  jobs.push(checkout);
+  await waitForOwnedChild(() => checkout.state.closed, 15_000, "checkout refuses without blocking on the closure writer");
+  const checkoutResult = await checkout.done;
+  assert.equal(checkoutResult.code, 3, checkoutResult.output);
+  assert.match(checkoutResult.output, new RegExp(`a closure writer.*pid ${owner.child.pid}.*retry once it finishes`));
+  assert.doesNotMatch(checkoutResult.output, /installed package closure is current/);
   writeFileSync(join(root, "closure-release"), "");
   await waitForOwnedChild(() => owner.state.closed, 15_000, "closure writer released its lock");
   assert.equal((await owner.done).code, 0);
-  console.log("Closure-only writer: the retry refused promptly and released the npm reservation.");
+  const control = launch("checkout-control", [checkoutEntry, "update", "--self"]);
+  jobs.push(control);
+  await finishUpdate(control, "checkout-after");
+  console.log("Closure-only writer: installed and checkout retries refused promptly. The checkout passed after release.");
+}
+
+async function checkConnectorChild(): Promise<void> {
+  const npm = launch("connector-child", ["--import", "tsx", fixture, "connector-child"], dirname(bin));
+  jobs.push(npm);
+  assert.ok(npm.child.pid);
+  const wrapper = launch("connector-wrapper", ["--import", "tsx", fixture, "connector-wrapper", String(npm.child.pid)], dirname(bin));
+  jobs.push(wrapper);
+  await waitForOwnedChild(() => wrapper.state.closed, 15_000, "connector wrapper has released its writer locks");
+  const published = await wrapper.done;
+  assert.equal(published.code, 0, published.output);
+  const config = readFileSync(join(root, "connector-config"), "utf8");
+  assert.notEqual(config, dirname(seed), "the installed CLI selects a retained prefix, not the checkout's prefix");
+  const connectorMarker = join(config, ".extensions.lock.npm-child");
+  const before = readFileSync(connectorMarker);
+  const passLock = join(config, ".extensions.lock.update");
+  for (const path of [closureLock, passLock, join(config, ".extensions.lock")]) assert.equal(existsSync(path), false, path);
+  const result = await cli("connector-retry", "update", "--self");
+  assert.equal(result.code, 3, result.output);
+  assert.match(result.output, new RegExp(`extension npm mutation is still running \\(pid ${npm.child.pid}\\)`));
+  assert.doesNotMatch(result.output, /installed package closure is current/);
+  assert.equal(npm.state.exited, false);
+  assert.deepEqual(readFileSync(connectorMarker), before);
+  for (const path of [closureLock, updateLock, passLock]) assert.equal(existsSync(path), false, path);
+  writeFileSync(join(root, "connector-release"), "");
+  await waitForOwnedChild(() => npm.state.closed, 15_000, "connector child exited");
+  assert.equal((await npm.done).code, 0);
+  const after = await cli("connector-after", "update", "--self");
+  assert.equal(after.code, 0, after.output);
+  assert.match(after.output, /installed package closure is current/);
+  assert.equal(existsSync(connectorMarker), false);
+  console.log("Connector npm child: the installed retry preserved live custody, then passed after the child exited.");
 }
 
 async function checkUnreadableMarker(): Promise<void> {
@@ -201,12 +245,14 @@ try {
   console.log("Retry waited for the orphan, then verified the closure. Immediate status exited 0.");
   await checkLateWriter();
   await checkClosureContention();
+  await checkConnectorChild();
   await checkUnreadableMarker();
-  emitSentinel({ passed: 7, failed: 0 });
+  emitSentinel({ passed: 9, failed: 0 });
 } finally {
   writeFileSync(join(root, "release"), "");
   writeFileSync(join(root, "late-release"), "");
   writeFileSync(join(root, "closure-release"), "");
+  writeFileSync(join(root, "connector-release"), "");
   releaseRegistry();
   if (parent && !parent.state.exited) parent.child.kill("SIGKILL");
   if (parent) await parent.done;

@@ -8,10 +8,13 @@ export function reportCurrentUpdate(current: string, latest: string, rt: UpdateR
     rt.err(unreadableSelection.message);
     rt.out("No newer CLI version. No connector reconciliation was run.");
   } else {
-    if (!rt.isCurrent?.()) return false;
-    reportUncheckedPreparedRecords(rt, target);
-    rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
-    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
+    const release = rt.claimUpdatePass();
+    try {
+      if (!rt.isCurrent?.()) return false;
+      reportUncheckedPreparedRecords(rt, target);
+      rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
+    } finally { release(); }
   }
   reportVersion(current, latest, rt, false);
   return true;
