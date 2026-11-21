@@ -4,7 +4,8 @@ import type { ManagerOptions } from "./manager.js";
 
 /** What the Manager knows about itself from construction: its identity, its operator settings and its
  *  timing. The Manager builds one and hands every part the same object, read-only. Every member is
- *  fixed once the constructor returns, except the four timings a test may shorten after construction
+ *  fixed once the constructor returns, except the three timings a test may shorten after construction
+ *  (readinessTimeoutMs, staticReconcileRetryDelaysMs, goalAcceptanceRetentionMs)
  *  through the Manager's own reference; a part reads them at use, so a shortened value is current. */
 export interface ManagerConfig {
   readonly space: string;

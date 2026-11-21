@@ -78,7 +78,7 @@ const ONCE_RETIRE_MS = 60_000;
  *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
  *  is then reported UNCERTAIN (a non-success reply that does NOT deprovision — it may still be booting, or
  *  stuck before connector startup). Generous, since a real cold agent join can take several seconds. Held
- *  as an instance field ({@link Manager.readinessTimeoutMs}) so a test can shorten it. Exported so the
+ *  on the Manager's config ({@link ManagerConfig.readinessTimeoutMs}) so a test can shorten it. Exported so the
  *  launch-parity smoke can assert every launch client's request timeout OUTLIVES this window — the tier
  *  rule forbids the clients importing it directly. */
 export const READINESS_TIMEOUT_MS = 30_000;
