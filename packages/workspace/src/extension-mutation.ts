@@ -123,12 +123,12 @@ interface LockRequest {
 type MutationPolicy = Generator<LockRequest, () => void, HeldLock>;
 
 /** Update pass: acquire it, then refuse while an extension npm child is still marked live. */
-function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
+function* updatePassPolicy(waitMs: number | undefined, writer = extensionMutationLockPath()): MutationPolicy {
   // The first lock can create the shared config root. A group-writable umask must not make
   // Cotal's own directory fail the completion writer's protected-ancestor check.
-  mkdirSync(dirname(extensionMutationLockPath()), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(writer), { recursive: true, mode: 0o700 });
   const held = yield {
-    path: extensionUpdatePassLockPath(),
+    path: `${writer}.update`,
     opts: {
       label: "a `cotal update` extension pass",
       waitMs: waitMs ?? 0,
@@ -136,7 +136,7 @@ function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
     },
   };
   try {
-    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    assertNoProcessMutation(`${writer}.npm-child`, "extension npm mutation");
     return () => held.release();
   } catch (e) {
     held.release();
@@ -146,19 +146,20 @@ function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
 
 /** Shared pass -> writer order for every extension-prefix reader that can rewrite peer links and
  * every writer. An update child may borrow its live parent's pass, but always owns the writer. */
-function* mutationPolicy(opts: ExtensionMutationOptions): MutationPolicy {
+function* mutationPolicy(opts: ExtensionMutationOptions, writer = extensionMutationLockPath()): MutationPolicy {
   let releasePass: () => void;
   if (opts.borrowUpdateParent === undefined) {
-    releasePass = yield* updatePassPolicy(opts.waitMs);
+    releasePass = yield* updatePassPolicy(opts.waitMs, writer);
   } else {
-    if (!extensionUpdatePassOwnedBy(opts.borrowUpdateParent))
+    const pass = inspectLock(`${writer}.update`);
+    if (pass.state !== "active" || pass.owner.pid !== opts.borrowUpdateParent)
       throw new Error("the extension update parent no longer owns its pass lock");
-    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    assertNoProcessMutation(`${writer}.npm-child`, "extension npm mutation");
     releasePass = () => {};
   }
   try {
     const held = yield {
-      path: extensionMutationLockPath(),
+      path: writer,
       opts: {
         label: opts.label ?? "an extension mutation",
         waitMs: opts.waitMs ?? 0,
@@ -215,10 +216,10 @@ async function runPolicyAsync(policy: MutationPolicy, waitMs: number): Promise<(
 }
 
 /** Blocking claim of the pass -> writer locks; see {@link mutationPolicy}. */
-export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}): () => void {
+export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}, config?: string): () => void {
   const release = claimUpdateClosureAccess();
   try {
-    const writer = runPolicy(mutationPolicy(opts));
+    const writer = runPolicy(mutationPolicy(opts, config === undefined ? undefined : join(config, ".extensions.lock")));
     return () => { try { writer(); } finally { release(); } };
   } catch (error) { release(); throw error; }
 }
