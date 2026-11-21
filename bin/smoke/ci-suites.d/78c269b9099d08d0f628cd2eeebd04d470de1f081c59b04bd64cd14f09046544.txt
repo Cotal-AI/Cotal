@@ -1,0 +1,2 @@
+# Audit the broker while the shipped run CLI starts a hosted sleep.
+smoke:run-pause-poll-live

@@ -1118,6 +1118,7 @@
     "smoke:lang-supervise-live": "pnpm --filter cotal-ai... build && tsx bin/smoke/lang-supervise-live.smoke.ts",
     "smoke:owned-seats": "tsx bin/smoke/owned-seats.smoke.ts",
     "smoke:run-host-live": "pnpm --filter cotal-ai... build && tsx bin/smoke/run-host-live.smoke.ts",
+    "smoke:run-pause-poll-live": "pnpm --filter cotal-ai... build && tsx bin/smoke/run-pause-poll-live.smoke.ts",
     "smoke:spawn-lifecycle-state": "tsx bin/smoke/spawn-lifecycle-state.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
     "smoke:claude-presence:live": "tsx bin/smoke/claude-presence-live.smoke.ts",

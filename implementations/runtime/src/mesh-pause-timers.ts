@@ -222,7 +222,7 @@ export class PauseTimers {
   async expired(ref: CheckpointRef | undefined): Promise<CheckpointSettleFact | undefined> {
     if (ref === undefined) return undefined;
     if (this.services) {
-      const settled = await this.services.pauses.readSettle(ref.token);
+      const settled = await this.services.pauses.pollSettle(ref.token);
       if (settled !== undefined) return settled;
       if (!(await this.services.pauses.takeFire(ref.token))) return undefined;
       return this.services.pauses.readSettle(ref.token);

@@ -820,9 +820,19 @@ const A = await driver(RUN_A, TK_A);
 
   const sleep = out.status === "completed" ? out.result.journal.entries().find((e) => e.kind === "sleep") : undefined;
   if (sleep?.requestId === undefined) throw new Error("run B produced no checkpoint token for the write control");
-  const foreignKey = `cp.${EP}.${sleep.requestId}.spec`;
+  const token = sleep.requestId;
+  const foreignKey = `cp.${EP}.${token}.spec`;
   const stored = await B.hostPlanes.kv.get(foreignKey);
   c("the foreign checkpoint key exists before the write probe", stored !== null, stored?.revision);
+  const binding = { endpoint: EP, instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" } };
+  const ownerPauses = createRunPauseHost(B.hostPlanes, binding, createRunScopeAuthority(B.hostPlanes, RUN_B, lease(takeover, 1)));
+  const ownSettle = await ownerPauses.pollSettle(token);
+  c("the pause poll returns the owning run's recorded expiry", ownSettle?.settle === "expired", ownSettle);
+  const authority = createRunScopeAuthority(A.hostPlanes, RUN_A, lease(TK_A, 1));
+  const pauses = createRunPauseHost(A.hostPlanes, binding, authority);
+  const refused = (action: () => Promise<unknown>) => action().then(() => false, (error) => error instanceof RunScopeDenied);
+  c("a poll refuses another run's existing settlement", await refused(() => pauses.pollSettle(token)));
+  c("a poll refuses to act on another run's existing timer fire", await refused(() => pauses.takeFire(token)));
   const write = await A.rawKv.update(foreignKey, stored!.value, stored!.revision)
     .then(() => "allowed", (e: unknown) => denied(e) ? "denied" : short(e));
   c("run A cannot update another run's checkpoint key", write === "denied", write);
@@ -842,22 +852,23 @@ const A = await driver(RUN_A, TK_A);
   const nextEntrySeq = Math.max(...before.records.flatMap(({ record }) => record.kind === "step" ? [(record.entry as { seq: number }).seq] : [-1])) + 1;
   const copied = {
     v: 1, seq: nextEntrySeq, run: RUN_A, scope: "", kind: "sleep", name: "copied-pause", occurrence: 0,
-    inputHash: sleep.inputHash, requestId: sleep.requestId, state: "pending", startedAt: Date.now(),
+    inputHash: sleep.inputHash, requestId: token, state: "pending", startedAt: Date.now(),
   };
   await A.js.publish(wfjSubject(S, RUN_A), new TextEncoder().encode(JSON.stringify({
     v: 1, kind: "step", run: RUN_A, n: before.records.length, at: Date.now(), entry: copied,
   })));
   const after = await replayRunJournal(A.hostPlanes.js, A.hostPlanes.jsm, S, RUN_A, TK_A);
   c("the foreign token was appended to the attacker's own broker journal",
-    after.records.some(({ record }) => record.kind === "step" && (record.entry as { requestId?: string }).requestId === sleep.requestId));
-  const authority = createRunScopeAuthority(A.hostPlanes, RUN_A, lease(TK_A, 1));
-  const pauses = createRunPauseHost(A.hostPlanes, {
-    endpoint: EP, instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" },
-  }, authority);
-  const copiedRead = await pauses.readSettle(sleep.requestId)
+    after.records.some(({ record }) => record.kind === "step" && (record.entry as { requestId?: string }).requestId === token));
+  const copiedRead = await pauses.readSettle(token)
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("copying a foreign token into the driver's own journal grants no host access", copiedRead === "denied", copiedRead);
 
+  const nextTakeover = newTakeoverId();
+  const successor = await driver(RUN_B, nextTakeover);
+  await activateRun(successor.js, successor.jsm, { space: S, runId: RUN_B, ...lease(nextTakeover, 2), expect: "existing", at: Date.now() });
+  c("a recorded settlement still requires the current attempt", await refused(() => ownerPauses.pollSettle(token)));
+  c("a recorded fire still requires the current attempt", await refused(() => ownerPauses.takeFire(token)));
 }
 
 // A relative sleep can elapse while its host authorizes the journal and reads the real pause.
@@ -1051,27 +1062,23 @@ const A = await driver(RUN_A, TK_A);
   }
 }
 
-// ── createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344) ─────────────
+// The trusted host uses the same settle watcher as the direct runtime path.
 {
   const hostSrc = readFileSync(new URL("../src/run-effect-host.ts", import.meta.url), "utf8");
-  c("createRunEffectHost constructs EpfSettleWatcher over pauses.readSettle (#3344)",
-    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.readSettle(ref.token))")
+  c("createRunEffectHost constructs EpfSettleWatcher over the pause host's poll",
+    hostSrc.includes("new EpfSettleWatcher((ref) => pauses.pollSettle(ref.token))")
       && !hostSrc.includes("awaitSettle") && !hostSrc.includes("2_000"));
   const authority = createRunScopeAuthority(A.hostPlanes, RUN_A, lease(TK_A, 1));
   const pauses = createRunPauseHost(A.hostPlanes, {
     endpoint: EP, instanceId: IID, epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" },
   }, authority);
   const directWatcher = new EpfSettleWatcher(A.hostPlanes.jsm, S);
-  const hostWatcher = new EpfSettleWatcher((ref) => pauses.readSettle(ref.token));
+  const hostWatcher = new EpfSettleWatcher((ref) => pauses.pollSettle(ref.token));
   c("direct and pause-mediated EpfSettleWatcher instances share one awaitSettle method and default cadence (#3344)",
     directWatcher.awaitSettle === hostWatcher.awaitSettle
       && (directWatcher as unknown as { pollMs: number }).pollMs === 2_000
       && (hostWatcher as unknown as { pollMs: number }).pollMs === 2_000);
-  const deniedWatch = await new EpfSettleWatcher((ref) => pauses.readSettle(ref.token), 50)
-    .awaitSettle({ endpoint: EP, token: "foreign-unrecorded-settle" })
-    .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
-  c("a pause-mediated EpfSettleWatcher enforces run-scope authority on settle reads (#3344)",
-    deniedWatch === "denied", deniedWatch);
+  await assert.rejects(pauses.pollSettle("*"), /not a valid id token/);
 }
 } catch (error) {
   fail++;

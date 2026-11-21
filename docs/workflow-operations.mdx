@@ -61,6 +61,8 @@ The manager hosts runs. `cotal run start` hands the program to the manager of th
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
 moment the id prints. The run continues on the manager through every pause. On restart, the manager
 takes back eligible runs recorded as running, using the journal to continue under a new epoch.
+While a pause waits, empty timer and settlement polls do not replay the run's journal. The manager
+checks the current journal before acting on a timer fire or using a settlement fact.
 If the startup scan fails, the manager keeps serving requests and retries the scan in the background.
 If it logs that retries are exhausted, use `cotal run resume <runId>` after the broker is reachable.
 

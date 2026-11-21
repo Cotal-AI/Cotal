@@ -1,5 +1,6 @@
 import {
   EpEnvelopeError,
+  assertIdToken,
   eptStreamName,
   eptSubject,
   handleCheckpointFire,
@@ -21,6 +22,7 @@ export interface RunPauseHost {
   arm(token: string, deadline: number): Promise<void>;
   heartbeat(token: string, deadline: number): Promise<void>;
   readSettle(token: string): Promise<CheckpointSettleFact | undefined>;
+  pollSettle(token: string): Promise<CheckpointSettleFact | undefined>;
   readAnswer(token: string): Promise<CheckpointAnswerValue | undefined>;
   takeFire(token: string): Promise<boolean>;
   claim(token: string): Promise<void>;
@@ -37,8 +39,8 @@ export class PauseOverdue extends Error {
   }
 }
 
-/** The trusted host owns these planes. Its returned methods derive every subject from the
- *  bound endpoint and attempt, and authorize tokens against its own broker journal. */
+/** The trusted host derives subjects from the bound endpoint and attempt. Empty polls of an
+ *  existing pause need no journal replay. Returning a fact or acting on a fire still does. */
 export function createRunPauseHost(
   broker: RunHostPlanes,
   binding: {
@@ -87,6 +89,11 @@ export function createRunPauseHost(
       await authority.pause(token, "read");
       return readCheckpointSettle(jsm, space, ref(token));
     },
+    async pollSettle(token: string): Promise<CheckpointSettleFact | undefined> {
+      const settled = await readCheckpointSettle(jsm, space, ref(assertIdToken(token, "pause token")));
+      if (settled !== undefined) await authority.pause(token, "read");
+      return settled;
+    },
     async readAnswer(token: string): Promise<CheckpointAnswerValue | undefined> {
       await authority.pause(token, "read");
       const settled = await readCheckpointSettle(jsm, space, ref(token));
@@ -94,13 +101,13 @@ export function createRunPauseHost(
       return readCheckpointAnswer(kv, pinned.endpoint, token, settled.answerId);
     },
     async takeFire(token: string): Promise<boolean> {
-      await authority.pause(token, "fire");
       const subject = eptSubject(space, pinned.endpoint, pinned.instanceId, pinned.epoch, token, "fire");
       const fired = await jsm.streams.getMessage(eptStreamName(space), { last_by_subj: subject }).catch((error: unknown) => {
         if ((error as { code?: unknown })?.code === 10037) return null;
         throw error;
       });
       if (fired === null || fired === undefined) return false;
+      await authority.pause(token, "fire");
       const result = await handleCheckpointFire(kv, js, jsm, space, {
         ref: ref(token), instanceId: pinned.instanceId, epoch: pinned.epoch,
         msg: { subject, ...(fired.header === undefined ? {} : { headers: fired.header }), data: fired.data },
