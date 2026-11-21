@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, readdirSync, renameSync, lstatSync } from 
 import { join } from "node:path";
 import { z } from "zod";
 import { assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, agentSecretFilePaths } from "@cotal-ai/workspace";
+import { CommandFailure, agentLifecycleSecretFilePaths, agentSecretFilePaths } from "@cotal-ai/workspace";
 
 export const LEDGER_VERSION = "cotal-ledger/v1";
 
@@ -247,7 +247,8 @@ export function listLedgerFiles(root: string, options: { requireReadable?: boole
 /** Resolve a `down -f cotal.yaml` to its ledger by the manifest's content hash. Fails (never
  *  guesses) when nothing matches (edited file) or more than one does — `--run <id>` is the escape. */
 export function findLedgerByHash(root: string, manifestHash: string): { path: string; ledger: MeshLedger } {
-  const { valid, refused } = listLedgerFiles(root);
+  // Read strictly: a ledger folder that cannot be read must not be reported as holding no ledger.
+  const { valid, refused } = listLedgerFiles(root, { requireReadable: true });
   const matches = valid.filter((l) => l.ledger.manifestHash === manifestHash);
   if (matches.length === 0) {
     // A REFUSED ledger is not an absent one. Reporting "was it edited?" while holding a validator
@@ -256,7 +257,10 @@ export function findLedgerByHash(root: string, manifestHash: string): { path: st
     // stand in for a diagnosis we already have.
     if (refused.length)
       throw new Error(`this root has ${refused.length} ledger(s) it cannot read, so a matching run may exist but be unreadable - fix or remove them, then retry:\n${refused.map((r) => `  ${r.path}: ${r.why}`).join("\n")}`);
-    throw new Error(`no ledger matches this manifest's current contents (was it edited since \`spawn -f\`?) - tear down by run id: \`cotal down -f <file> --run <id>\``);
+    // With no ledger at all there is no run id to offer, and the manifest may belong to a current deploy.
+    if (!valid.length)
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this root holds no ledger from the retired `spawn -f` deploy, so `down -f` has nothing here to tear down", { remedy: "remove a `cotal team deploy` deployment with `cotal team remove <id>`, or preview this root's whole stack with `cotal down --dry-run`" });
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `none of this root's ${valid.length} ledger(s) from the retired \`spawn -f\` deploy matches this manifest's current contents (recorded runs: ${valid.map((l) => l.ledger.runId).join(", ")})`, { remedy: "preview one with `cotal down -f <file> --run <id> --dry-run`, then run it without `--dry-run`" });
   }
   if (matches.length > 1)
     throw new Error(`${matches.length} runs share this manifest - name one: ${matches.map((m) => m.ledger.runId).join(", ")} (\`--run <id>\`)`);

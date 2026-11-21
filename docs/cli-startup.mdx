@@ -978,8 +978,11 @@ user-auth agents. `team remove` retires a returned deployment by its full ID wit
 [Recorded team views](cli-agent-views.mdx#recorded-team-views). `spawn -f` no longer deploys a manifest; an additive
 ledger written by that older path is torn down with `cotal down -f <file> --run <id>`. On retained
 legacy roots, when the manifest can be read and no additive ledger exists, `cotal down -f <file> --dry-run`
-previews this root's recorded stack and stops nothing. Controller-owned roots refuse `--file` and
-`--run`. Use `cotal down --dry-run` there.
+previews this root's recorded stack and stops nothing. With no recorded stack and no such ledger,
+`down -f` exits 1, says the root holds no ledger from the retired `spawn -f`, and names
+`cotal team remove <id>` and `cotal down --dry-run`. When ledgers exist and none matches the
+manifest, it lists their run IDs and the `--run <id> --dry-run` preview. Controller-owned roots
+refuse `--file` and `--run`. Use `cotal down --dry-run` there.
 
 `cotal up -f <file> --dry-run` starts nothing. It preflights the declared applications and can refuse
 before printing a plan if a required executable is missing. To review the declaration without
