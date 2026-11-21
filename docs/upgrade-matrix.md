@@ -68,6 +68,10 @@ product coordinates:
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 | POSIX target-owned updater stopped at its real snapshot, then killed, followed by an unassisted self-update to the synthetic next version | 2 |
 
+The Linux hosted stop-consent cell also puts a Claude Code executable fixture on the service's
+PATH. It checks that the hosted Manager resolves the official Claude Code connector before and after
+the update. It does not launch a Claude Code seat.
+
 The killed-updater cells use the installed target's public updater and native service. They hold the
 snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.
 The public `ps` command must recover and the hosted Manager must answer without a repair command.

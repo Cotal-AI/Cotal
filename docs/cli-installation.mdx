@@ -303,6 +303,8 @@ for the recorded same-installation daemon to load the new version and its intend
 to answer. It prints this wait before the continuity check. The daemon owns its automatic restart;
 the updater does not start a competing native job. On Linux, after a manual update verifies and
 reconciles the replacement, it asks the prepared daemon to exit so systemd can start the new version.
+Hosted Managers can prepare the installed Claude Code connector during startup without waiting for
+the update to finish.
 Connector reconciliation still requires the continuity check to answer. If activation does not
 finish, the failure names the last daemon or
 Manager state and asks you to inspect `cotal daemon status` and the recorded user service, restore

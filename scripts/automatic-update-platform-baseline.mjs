@@ -451,6 +451,7 @@ export async function matrixCell(options) {
   const [npm, npmPrefix] = npmCommand();
   let bootstrapEnvironment;
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
+  let removeClaudeFixture;
   const transcript = [];
   async function captureServiceEvidence(stage) {
     if (!installedService) return;
@@ -713,6 +714,20 @@ export async function matrixCell(options) {
         const space = report.participant.space;
         assert(typeof space === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(space), 'prepared participant must name its space');
         report.managerHost = { mode: 'daemon-hosted', space };
+        const claudeBin = join(root, 'claude-bin');
+        mkdirSync(claudeBin, { mode: 0o700 });
+        writeFileSync(join(claudeBin, 'claude'), '#!/bin/sh\ncase "$1 $2 $3" in\n  "--version  ") echo "2.1.330 (Claude Code)" ;;\n  "plugin list --json") echo "[]" ;;\n  *) exit 1 ;;\nesac\n', { flag: 'wx', mode: 0o700 });
+        // The official connector still materializes at boot with this existing user MCP entry.
+        // The stub keeps the native upgrade offline from Claude and does not launch a Claude seat.
+        const claudeConfig = join(home, '.claude.json');
+        const declaration = JSON.stringify({ mcpServers: { cotal: { command: 'cotal', args: [] } } });
+        writeFileSync(claudeConfig, declaration, { flag: 'wx', mode: 0o600 });
+        removeClaudeFixture = () => {
+          assert(lstatSync(claudeConfig).isFile(), 'Claude config is no longer the test-owned file');
+          assert.equal(readFileSync(claudeConfig, 'utf8'), declaration, 'Claude config changed during the hosted update');
+          unlinkSync(claudeConfig);
+        };
+        env.PATH = `${claudeBin}${delimiter}${env.PATH}`;
         ok(await cotal('register daemon-hosted stand-in connector', ['ext', 'add', fixture]), 'hosted stand-in registration');
         const fixtureRoot = await observeExtensions('hosted fixture extension root');
         const fixturePath = join(fixtureRoot.root, 'node_modules/cotal-upgrade-native-fixture');
@@ -737,6 +752,7 @@ export async function matrixCell(options) {
         assert.equal(receipt.unitSha256, digest(readFileSync(plan.unitPath)));
         const setup = JSON.parse(report.managerHost.setup.stdout).result;
         assert.equal(setup.manager?.state, 'answering');
+        assert.equal(setup.manager.connectors?.find(row => row.agent === 'claude')?.state, 'available', 'source hosted Manager must resolve the seeded Claude connector');
         assert(setup.manager.instanceId, 'daemon setup must return answering Manager identity');
         report.managerHost.instanceId = setup.manager.instanceId;
         report.managerHost.spawn = await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade_proof_worker', '--detach', '--no-events', '--space', space]);
@@ -1294,6 +1310,7 @@ export async function matrixCell(options) {
         await delay(1000);
       } while (Date.now() < deadline);
       assert(current?.state === 'answering' && current.instanceId, `current daemon-hosted Manager must answer after update: ${JSON.stringify(observed)}`);
+      check('replacement hosted Manager resolved the seeded Claude connector', current.connectors?.find(row => row.agent === 'claude')?.state === 'available', current.connectors);
       report.managerHost.instanceAfter = current.instanceId;
       const seats = await cotal('confirm consent stopped daemon-hosted seats', ['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']);
       report.managerHost.after = seats;
@@ -1503,6 +1520,10 @@ export async function matrixCell(options) {
     }
     if (restoreRegistry && !uncertain && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')) {
       try { restoreRegistry(); report.registryConfig = 'restored before candidate registry stopped'; }
+      catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
+    if (removeClaudeFixture && !uncertain && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')) {
+      try { removeClaudeFixture(); }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
