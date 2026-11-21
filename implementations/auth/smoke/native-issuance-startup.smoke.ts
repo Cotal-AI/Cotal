@@ -95,6 +95,10 @@ async function checkPeriodicTraffic({ space, accountPublicKey, auth, store, stat
     const inputs = { context: { accountPublicKey, lifecycleUid: mintLifecycleUid() }, space, servers: fixture.servers,
       store, storeIdentity: store.identity, stateDir, nativeIssuancePruneMs: 100 };
     await assert.rejects(startAuthService({ ...inputs, nativeIssuancePruneMs: 50 }), /nativeIssuancePruneMs/);
+    await assert.rejects(async () => {
+      // @ts-expect-error Exercise invalid input from a JavaScript host.
+      hosted = await startAuthService({ ...inputs, nativeIssuancePruneMs: null });
+    }, /nativeIssuancePruneMs.*got null/);
     hosted = await startAuthService(inputs);
     assert.equal((await fetch(`${hosted.url}/health`)).status, 200);
     await until(async () => reads.includes(lastHistorySeq + 1), "startup walk did not reach the end of retained history");
