@@ -67,10 +67,12 @@ it through a `--server` other than the broker its registration records, it canno
 stack runs. The Next then says to start the space's manager where its stack runs and names no local
 command.
 
-When a recorded local stack is stopped, `ps` still refuses `TARGET_UNAVAILABLE`,
-exit 2. If the recorded root's default `.cotal/channels.json` would prevent `up` from restarting the
-stack, the refusal names the file and the repair instead of recommending a restart. `ps` does not
-change the file.
+When a recorded local stack is stopped, `ps` refuses with exit 2. If the broker store is not
+writable, `ps` reports `PERMISSION_DENIED` and names the store and how to repair it, including when
+`--server` names the saved broker. A different `--server` does not use the local store to diagnose
+the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root's default
+`.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
+and the repair instead of recommending a restart. `ps` does not change the store or the file.
 
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
