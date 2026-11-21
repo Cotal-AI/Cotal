@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
@@ -263,6 +263,13 @@ export interface ExtensionInstallRequest {
   readonly source?: "seeded";
 }
 
+// Out-of-prefix extraneous entries describe another tree, not dependencies of this prefix.
+function dropForeignLockEntries(lock: { packages?: Record<string, { extraneous?: boolean }> }): void {
+  for (const [key, entry] of Object.entries(lock.packages ?? {})) {
+    if (entry.extraneous === true && (key.startsWith("../") || isAbsolute(key))) delete lock.packages![key];
+  }
+}
+
 /** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
 export async function installExtensionSet(
   requests: readonly ExtensionInstallRequest[],
@@ -281,6 +288,11 @@ export async function installExtensionSet(
   const interrupt = (): void => { interrupted = true; };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
+    // npm reads installed package paths physically. Use that spelling for its prefix and local file specs.
+    const npmPrefix = realpathSync(stage.prefix);
+    const livePrefix = join(realpathSync(ownerConfig), "extensions");
+    // npm's hidden lock describes the copied node_modules at its original path.
+    rmSync(join(npmPrefix, "node_modules", ".package-lock.json"), { force: true });
     // Keep missing local extensions in the inventory for explicit repair/removal, but do not ask npm
     // to reinstall them while reconciling other packages. Their original download directory may be gone.
     const absent = manifestBefore.extensions.filter(entry =>
@@ -291,10 +303,11 @@ export async function installExtensionSet(
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item) as {
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(livePrefix, item.slice(5))}` : item) as {
           dependencies?: Record<string, string>;
-          packages?: Record<string, { dependencies?: Record<string, string> }>;
+          packages?: Record<string, { dependencies?: Record<string, string>; extraneous?: boolean }>;
         };
+      if (name === "package-lock.json") dropForeignLockEntries(value);
       const dependencies = name === "package.json" ? value.dependencies : value.packages?.[""]?.dependencies;
       for (const entry of absent) {
         if (!dependencies?.[entry.pkg]?.startsWith("file:")) continue;
@@ -310,7 +323,8 @@ export async function installExtensionSet(
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
     const mutationPath = extensionNpmMutationPath();
-    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...requests.map(request => request.spec)], stage.prefix);
+    const specs = requests.map(({ spec }) => isPathSpec(spec) ? realpathSync(spec) : spec);
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--install-links", ...specs], npmPrefix);
     if (existsSync(mutationPath)) stage.retain();
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
@@ -343,9 +357,10 @@ export async function installExtensionSet(
       if (!existsSync(path)) continue;
       const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) => {
         if (typeof item !== "string" || !item.startsWith("file:")) return item;
-        const destination = resolve(stage.prefix, item.slice(5));
-        return `file:${relative(join(ownerConfig, "extensions"), destination).split(sep).join("/")}`;
+        const destination = resolve(npmPrefix, item.slice(5));
+        return `file:${relative(livePrefix, destination).split(sep).join("/")}`;
       });
+      if (name === "package-lock.json") dropForeignLockEntries(value);
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     const verified = loadExtensionsManifest();
