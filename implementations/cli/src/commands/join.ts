@@ -8,7 +8,15 @@ import {
   mintLifecycleUid,
   assertLifecycleToken,
   newIdentity,
+  mintCreds,
   provisionAgent,
+  deleteAcl,
+  deleteMember,
+  isChannelFamily,
+  isConcreteChannel,
+  openAclRegistry,
+  openMembersRegistry,
+  principalKey,
   partsToText,
   peerLabel,
   isConsumerNotFound,
@@ -33,6 +41,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { withProvisioner } from "../lib/provisioner.js";
@@ -269,8 +278,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       const spaceAuth = target.auth;
       const identity = newIdentity();
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
-      // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
-      // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
+      // grants, and the endpoint's binds all carry this uid.
       // A launcher-supplied uid (flag/env, resolved above) wins; the session mints only when bare.
       lifecycleUid ??= mintLifecycleUid();
       // The session's credential is an issuance (SPEC 13.15) whose evidence names this lifecycle's
@@ -281,7 +289,23 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       try {
         await withProvisioner({ space, servers: server, auth: spaceAuth }, "join-provisioner", async (prov) => {
           await activateTerminalSeat(seatTarget, thisSeat);
-          retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
+          retireSeat = async () => {
+            await retireTerminalSeat(seatTarget, thisSeat);
+            if (!isConcreteChannel(channel) && !isChannelFamily(channel)) return;
+            const principal = principalKey(DEV_OWNER, thisSeat.actor).key;
+            try {
+              const creds = await mintCreds(spaceAuth, newIdentity(), "deprovisioner", {
+                deprovisionTarget: { principal, lifecycleUid: thisSeat.lifecycleUid, memberChannels: [channel] },
+              });
+              await withControlConnection(server, { creds, tls: seatTarget.tlsRequired }, async (nc) => {
+                // An in-flight boot join must not recreate the row after retirement.
+                await deleteAcl(await openAclRegistry(nc, space), principal, thisSeat.lifecycleUid);
+                await deleteMember(await openMembersRegistry(nc, space), channel, principal, thisSeat.lifecycleUid);
+              });
+            } catch (e) {
+              stderrLine("! ", `this session's durable channel membership was not retired: ${(e as Error).message}`, c.yellow);
+            }
+          };
           // Record the read ACL so the endpoint can self-join its channel's durable backstop.
           auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
             acceptedToken = issue.issued.acceptedToken;
