@@ -231,10 +231,12 @@ export interface StackUpResult {
   clearedRecords?: LocalRecord[];
 }
 
+const PUBLIC_EXCHANGE_INPUTS: readonly string[] = ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"];
+
 /** Inputs that name a legacy-only startup refuse on the controller route. They are not dropped. A
  *  recorded stack takes `rotate-sys` on a stopped start; a first start refuses it, because it mints
  *  the space's system account new. */
-const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", "exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "tls-cert", "tls-key"] as const;
+const CONTROLLER_UNSUPPORTED = ["file", "dry-run", "restore", "restore-only", "accept-missing-source", "accept-stale-checkpoint", "rotate-sys", ...PUBLIC_EXCHANGE_INPUTS, "tls-cert", "tls-key"] as const;
 
 /** The inputs that ask for a TLS broker, which the controller stack does not serve: the certificate
  *  pair, and a `--server` that names a `tls://` address. */
@@ -264,11 +266,14 @@ const MANIFEST_ROUTE: readonly string[] = ["dry-run", ...TLS_INPUTS];
 function controllerUnsupported(root: string, options: readonly string[], prepared: boolean): CommandFailure {
   const flags = options.map((name) => `--${name}`);
   const named = flags.length === 1 ? flags[0]! : `${flags.slice(0, -1).join(", ")} and ${flags.at(-1)!}`;
+  const publicExchange = options.every((name) => PUBLIC_EXCHANGE_INPUTS.includes(name));
   const manifest = prepared && options.every((name) => MANIFEST_ROUTE.includes(name));
   const rotation = prepared && options.includes("rotate-sys") ? "; a first start mints the space's $SYS creds, so there is nothing to rotate" : "";
   return new CommandFailure("refused", "UNSUPPORTED", `${prepared ? "this root is prepared for a controller-owned stack" : "this root's stack is owned by the service controller"}, which has no route for ${named}; nothing was started through the legacy launcher`, {
     target: { root, options },
-    remedy: manifest && options.some((name) => TLS_INPUTS.includes(name))
+    remedy: publicExchange
+      ? "to serve a public exchange, run `cotal up --user-auth --idp <auth base URL>` from a new, unprepared project folder without running `cotal space create` first. Keep the broker and public exchange flags, use `--space <unused-name>`, and omit `--root`, `--json` and `--plain`"
+      : manifest && options.some((name) => TLS_INPUTS.includes(name))
       ? `run \`cotal up\` without ${named} to serve plaintext, or serve TLS from a manifest whose broker.servers names a tls:// address, with \`cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>\``
       : manifest ? `run \`cotal up\` without ${named}, or start the space from a manifest with \`cotal up -f <cotal.yaml>\`, which takes ${flags.length === 1 ? "it" : "them"}` : `run \`cotal up\` without ${named}${rotation}`,
   });

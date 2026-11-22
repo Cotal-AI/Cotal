@@ -4,6 +4,7 @@
  * Needs nats-server on PATH. Run: pnpm smoke:down-host-auth:live (after pnpm build).
  */
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -24,10 +25,11 @@ let checks = 0;
 const check = (message: string, condition: unknown, detail?: string) => { assert.ok(condition, detail ? `${message}\n${detail}` : message); checks++; console.log(`  ✓ ${message}`); };
 const stacks: Array<{ root: string; space: string; pids: number[] }> = [];
 let requests = 0;
+const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
 const idp = createServer((_req, res) => {
   requests++;
   res.writeHead(200, { "content-type": "application/json" });
-  res.end('{"keys":[]}');
+  res.end(jwks);
 });
 await new Promise<void>((done) => idp.listen(0, "127.0.0.1", done));
 const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
