@@ -511,8 +511,15 @@ A local `persona show` also accepts periods in a catalog name. For example, `cot
 reads `.cotal/agents/review.md.md` in the selected space, not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
-Local creation uses the catalog name as the default agent name. Choose a name that starts with a
-letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
+Local creation uses the catalog name as the default agent name unless you pass `--name <agent-name>`.
+The default agent name must start with a letter, digit or `_`. To save a catalog name that starts
+with `-`, set the default agent name separately:
+
+```bash
+cotal persona create --name reviewer --prompt "Review changes" --subscribe "" -- -reviewer
+```
+
+This option applies only to local creation, not to `persona create --on`.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
 paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
@@ -520,10 +527,10 @@ With `--from -`, local creation waits for the pipe to close before saving the bo
 Body files and standard input from `--from` must be valid UTF-8. Invalid input is refused with
 `SCHEMA_INVALID` before any persona is written. Convert the input to UTF-8 and retry.
 Complete files must be valid UTF-8 and pass validation for all supported fields. The frontmatter `name`
-must match the catalog name. Creation keeps the original bytes.
+must match `--name` when given, or the catalog name otherwise. Creation keeps the original bytes.
 A file with invalid encoding is refused with `SCHEMA_INVALID`, naming the source and asking you to
 save it as UTF-8. A name mismatch is refused with `SCHEMA_INVALID` and names the value in the file.
-If the file's name can be used to create a persona, the refusal gives the
+If you did not give `--name` and the file's name can be used to create a persona, the refusal gives the
 `persona create` command that keeps it and quotes the file path for the shell. With `--file -`,
 pipe the definition into the retry again.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,

@@ -782,6 +782,7 @@
   "cli:persona--harness": "current:persona create --harness",
   "cli:persona--json": "current:persona --json",
   "cli:persona--model": "current:persona create --model",
+  "cli:persona--name": "current:persona create --name",
   "cli:persona--on": [
    "current:persona --on",
    "current:persona show --on",

@@ -27,6 +27,7 @@ export const personaFlags = [
   { name: "file", short: "f", type: "string", value: "<persona.md>", description: "create: complete agent file, validated and preserved verbatim" },
   { name: "prompt", short: "p", type: "string", value: "<text>", description: "create: persona body (alternative to --file or --from)" },
   { name: "from", type: "string", value: "<path>", description: "create: read the body from a file, or - for explicit stdin" },
+  { name: "name", short: "n", type: "string", value: "<agent-name>", description: "local create: set the default agent name. With --file, match its name field" },
   { name: "role", type: "string", value: "<role>", description: "create: role" },
   { name: "model", short: "m", type: "string", value: "<model>", description: "create: model pin" },
   { name: "subscribe", type: "string", value: '<a,b|"">', description: "create from body: explicit read set, empty for none" },
@@ -40,7 +41,7 @@ export const personaFlags = [
 export type PersonaValues = FlagValues<typeof personaFlags>;
 type Values = PersonaValues;
 const usage = (message: string) => new CommandFailure("refused", "USAGE_INVALID", message);
-const createOnly = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
+const createOnly = ["file", "prompt", "from", "name", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 
 export function validatePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
@@ -142,23 +143,24 @@ async function readInput(path: string): Promise<Buffer> {
 async function createSource(name: string, path: string, values: Values): Promise<Buffer> {
   const sources = [values.file, values.prompt, values.from].filter(value => value !== undefined);
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
-  const problem = spawnNameError(name, { userMode: false });
+  const agentName = values.name ?? name;
+  const problem = spawnNameError(agentName, { userMode: false }) ?? reservedPersonaName(agentName);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem, {
-    remedy: `choose a catalog name that starts with a letter, digit or _, such as reviewer${values.file === undefined ? "" : ", and use the same name in the file's frontmatter"}`,
+    remedy: `choose a valid default agent name with \`--name <agent-name>\`${values.file === undefined ? "" : " and use that name in the file's frontmatter"}`,
   });
   if (values.file !== undefined) {
     if ([values.role, values.model, values.subscribe, values.harness, values["allow-subscribe"], values["allow-publish"]].some(value => value !== undefined)) throw usage("--file cannot be combined with definition flags");
     const bytes = await readInput(values.file);
     const source = values.file === "-" ? "standard input" : values.file;
     const def = validatePersona(bytes, source);
-    if (def.name !== name) {
+    if (def.name !== agentName) {
       const file = `--file${values.file !== "-" && values.file.startsWith("-") ? "=" : " "}${shellWord(values.file)}`;
       const retry = `cotal persona create${personaNameWords(def.name, ` ${file}${targetWords(values)}`)}`;
-      const rename = `set its name to '${name}'`;
-      const remedy = spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name) ? rename
+      const rename = `set its name to '${agentName}'`;
+      const remedy = values.name !== undefined || spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name) ? rename
         : values.file === "-" ? `pipe the original definition into ${codeSpan(retry)} again, or ${rename} and pipe the corrected definition into the original command`
         : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match ${values.name === undefined ? "the catalog name" : "--name"} '${agentName}'; ${source} names '${def.name}'`, { remedy });
     }
     return bytes;
   }
@@ -194,7 +196,7 @@ async function createSource(name: string, path: string, values: Values): Promise
   const subscribe = channels("--subscribe", values.subscribe), allowSubscribe = channels("--allow-subscribe", values["allow-subscribe"]);
   try { resolveReadAcl(subscribe ?? [], allowSubscribe); }
   catch (error) { throw usage(`${(error as Error).message}; every --subscribe channel must be within --allow-subscribe`); }
-  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
+  return serializePersona({ name: agentName, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
 }
 
 function list(catalog: PersonaCatalog, presentation: Presentation): void {

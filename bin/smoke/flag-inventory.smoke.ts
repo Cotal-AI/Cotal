@@ -201,7 +201,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   persona: {
     flags: [
       "allow-publish:string", "allow-subscribe:string", "announce:string", "file:string:f", "from:string",
-      "harness:string:H", "json:boolean:j", "model:string:m", "on:string", "plain:boolean", "prompt:string:p",
+      "harness:string:H", "json:boolean:j", "model:string:m", "name:string:n", "on:string", "plain:boolean", "prompt:string:p",
       "role:string", "server:string", "space:string:s", "subscribe:string", "yes:boolean:y",
     ],
     positionals: true,
