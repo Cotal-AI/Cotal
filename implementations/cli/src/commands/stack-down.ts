@@ -170,7 +170,7 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
   }
 }
 
-/** A stop queued during startup waits only for native preflight blockers that can be launch work. */
+/** A stop queued during startup waits for native launch work and cleanup, not other stop blockers. */
 async function waitForLaunchImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
   const deadline = performance.now() + 40_000;
   let waiting = false;
@@ -181,7 +181,7 @@ async function waitForLaunchImpact(journal: StackJournal, members: readonly Memb
       const detail = error.native?.detail as { phase?: string; blockers?: unknown } | undefined;
       const blockers = detail?.blockers;
       if (detail?.phase !== "manager-stop-preflight" || !Array.isArray(blockers) || !blockers.length ||
-        !blockers.every((name) => name === "lifecycleInFlight" || name === "reservedLaunches")) throw error;
+        !blockers.every((name) => name === "lifecycleInFlight" || name === "reservedLaunches" || name === "retirementsPending" || name === "deprovisioningInFlight")) throw error;
       if (!waiting) process.stderr.write("Waiting for pending agent launches before stopping the stack\n");
       waiting = true;
       if (performance.now() + 1_000 >= deadline) {
