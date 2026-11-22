@@ -12,7 +12,7 @@
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +32,7 @@ const hintSandbox = recordSmokeSandbox({ root: hintProject, cotalHome, xdgConfig
 // Set before the workspace is imported: it reads COTAL_HOME on each call, so the real ~/.cotal is
 // never touched.
 process.env.COTAL_HOME = cotalHome;
-const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { clearCurrent, findMesh, getCurrent, meshesDir, preparedSpacesDir, recordMesh, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
@@ -101,6 +101,53 @@ for (let i = 0; i < 50; i++) {
 }
 
 const ts = new Date().toISOString();
+{
+  const space = "moved", project = mkdtempSync(join(home, "moved-project-"));
+  const outside = mkdtempSync(join(home, "elsewhere-"));
+  mkdirSync(join(outside, ".cotal"));
+  const made = json(["space", "create", space, "--root", project], outside);
+  check("space create records the project used in the occupied-root checks", made.status === 0, shown(made));
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`);
+  const original = readFileSync(record);
+  const args = ["space", "show", space];
+  const intact = run([...args, "--plain"], {}, outside);
+  check("space show suggests startup when the prepared directory is intact",
+    intact.status === 0 && intact.stdout.includes(` up\` in ${project}`), shown(intact));
+  renameSync(project, `${project}.saved`);
+  const missing = json(args, outside);
+  check("space show distinguishes a missing prepared path", missing.status === 0 &&
+    missing.env?.result?.rootMissing === true && missing.env.result.rootProblem === "missing", shown(missing));
+
+  const replacement = "replacement file\n";
+  writeFileSync(project, replacement, { flag: "wx" });
+  const show = json(args, outside);
+  const list = json(["space"], outside);
+  const listed = list.env?.result?.prepared?.find((p: { space: string }) => p.space === space);
+  check("space show and inventory identify an occupied prepared root in JSON",
+    show.status === 0 && show.env?.result?.rootMissing === true && show.env.result.rootProblem === "file" &&
+    list.status === 0 && listed?.rootMissing === true && listed.rootProblem === "file", { show: shown(show), list: shown(list) });
+  const plain = run([...args, "--plain"], {}, outside);
+  check("space show offers restoration or re-preparation and does not suggest startup",
+    plain.status === 0 && plain.stdout.includes(`${project}, which is a file, not a project folder`) &&
+    plain.stdout.includes("restore the original project folder") && plain.stdout.includes(` space forget ${space}`) &&
+    plain.stdout.includes(` space create ${space} --root <dir>`) && !plain.stdout.includes(" up`"), shown(plain));
+  const who = json(["who", "--space", space], outside);
+  check("who refuses the file path without suggesting startup there",
+    who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" &&
+    who.env.error.message.includes(`${project}, which is a file, not a project folder`) &&
+    who.env.error.remedy.includes(`cotal space forget ${space}`) && !who.env.error.remedy.includes("cotal up"), shown(who));
+  check("prepared-root reads leave the replacement file and registration unchanged",
+    readFileSync(project, "utf8") === replacement && readFileSync(record).equals(original));
+  const forgot = json(["space", "forget", space], outside);
+  check("forget removes the stale preparation and keeps the replacement file",
+    forgot.status === 0 && !existsSync(record) && readFileSync(project, "utf8") === replacement, shown(forgot));
+  const created = json(["space", "create", space, "--root", `${project}.saved`], outside);
+  const relocated = json(args, outside);
+  check("the same space can be prepared at the moved project",
+    created.status === 0 && relocated.status === 0 && relocated.env?.result?.root === `${project}.saved`, shown(created));
+  json(["space", "forget", space], outside);
+}
+
 const root = mkdtempSync(join(home, "root-"));
 recordMesh({ space: "alpha", server: LIVE, root, mode: "open", origin: "up", ts });
 recordMesh({ space: "beta", server: DEAD, root, mode: "auth", origin: "manual", tlsRequired: true, ts });

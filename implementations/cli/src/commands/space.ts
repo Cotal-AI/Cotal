@@ -25,7 +25,10 @@ import {
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
+  prepareAgainRemedy,
   preparedLifecycle,
+  preparedRootProblem,
+  preparedRootProblemText,
   presentationOf,
   readCurrentSelection,
   recordOperationSpaceNote,
@@ -39,6 +42,7 @@ import {
   type OutputWarning,
   type Presentation,
   type PreparedSpace,
+  type PreparedRootProblem,
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
@@ -114,8 +118,9 @@ export interface PreparedRow {
   readonly root: string;
   readonly preparedAt: string;
   readonly current: boolean;
-  /** Its project folder no longer exists, so `up` cannot start it there. */
+  /** The recorded path does not resolve to a usable directory. */
   readonly rootMissing: boolean;
+  readonly rootProblem?: PreparedRootProblem;
   /** What its root's stack records, as `status` reports it: never started, stopped, or a last
    *  `up` or `down` with no recorded outcome. */
   readonly state: "prepared" | "stopped" | "unsettled";
@@ -289,9 +294,10 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
 }
 
 function preparedRow(p: PreparedSpace, current: string | null, moved?: string): PreparedRow {
-  const rootMissing = !existsSync(p.root);
-  const lifecycle = moved !== undefined ? preparedLifecycle(moved, p.space) : rootMissing ? undefined : preparedLifecycle(p.root, p.space);
-  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing, state: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
+  const rootProblem = preparedRootProblem(p.root);
+  const lifecycleRoot = moved ?? (rootProblem === undefined ? p.root : undefined);
+  const lifecycle = lifecycleRoot === undefined ? undefined : preparedLifecycle(lifecycleRoot, p.space);
+  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing: rootProblem !== undefined, ...(rootProblem === undefined ? {} : { rootProblem }), state: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
 }
 
 /** How a prepared space's own root left it, as a cell. */
@@ -359,6 +365,13 @@ function movedPreparedRemedy(project: string, moved: NonNullable<ReturnType<type
   return displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation));
 }
 
+function preparedRootCell(p: PreparedRow, moved: boolean, project: string): Cell {
+  if (moved) return { text: `${project} (moved from ${p.root})`, tone: "waiting" };
+  if (!p.rootProblem) return { text: p.root, tone: "hint" };
+  const problem = preparedRootProblemText[p.rootProblem];
+  return { text: `${p.root} (${problem})`, tone: "waiting" };
+}
+
 function spacesView(result: SpacesResult, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   const cmd = displayCmd();
   const addBroker = checkRoot(undefined, process.cwd()).ok
@@ -373,14 +386,13 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, ...(ran ? [{ key: "state", label: "State" }] : []), { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p === movedRow ? { text: `${project} (moved from ${p.root})`, tone: "waiting" } : p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: preparedRootCell(p, p === movedRow, project) })),
       },
-      // A folder that is gone cannot be started, so its space names the steps `space show` gives.
       { kind: "commands", items: [
         ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: `${cmd} up`, description: "Start a prepared space from its project folder" }] : []),
-        ...(result.prepared.some((p) => p.state === "unsettled") ? [{ command: `${cmd} status`, description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
-        ...result.prepared.filter((p) => p.rootMissing && p !== movedRow).map((p) => ({ command: `${cmd} space forget ${shellWord(p.space)}`, description: `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}` })),
+        ...(result.prepared.some((p) => !p.rootMissing && p.state === "unsettled") ? [{ command: `${cmd} status`, description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
       ] },
+      { kind: "lines", lines: result.prepared.flatMap((p) => p.rootProblem === undefined || p === movedRow ? [] : [{ text: displayRemedy(prepareAgainRemedy(p.space, p.rootProblem), cmd), tone: "hint" as const }]) },
       ...(movedRow && moved ? [{ kind: "lines" as const, lines: [{ text: movedPreparedRemedy(project, moved), tone: "hint" as const }] }] : []),
     ],
   }];
@@ -429,8 +441,8 @@ function preparedView(p: PreparedDetail, project: string, moved: ReturnType<type
     hints.push(
       { text: `this folder holds the stack journal of "${p.space}" and was moved from ${p.root}`, tone: "waiting" },
       { text: movedPreparedRemedy(project, moved), tone: "hint" });
-  } else if (p.rootMissing) {
-    hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with ${codeSpan(`${cmd} space forget ${shellWord(p.space)}`)}, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}`, tone: "hint" });
+  } else if (p.rootProblem !== undefined) {
+    hints.push({ text: `prepared in ${p.root}, which ${preparedRootProblemText[p.rootProblem]}`, tone: "waiting" }, { text: displayRemedy(prepareAgainRemedy(p.space, p.rootProblem), cmd), tone: "hint" });
   } else if (p.state === "unsettled") {
     hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {

@@ -13,6 +13,7 @@ import {
   isWorkspaceTargetError,
   localMeshesForRoot,
   preparedNeverStarted,
+  preparedRootProblemText,
   pruneStaleMeshes,
   renderWorkspaceError,
   resolveMeshTarget, withInstallCustodyRead,
@@ -281,7 +282,9 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       // Prepared-only spaces have no registry entry for the gone-root check above.
       // As with a registered gone root, leave its records and processes untouched.
       if (e.code === "not-started" && e.details.rootMissing === true) {
-        console.log(`  ${e.details.space}: folder is gone; leaving its processes untouched, continuity not checked`);
+        const problem = e.details.rootProblem;
+        const reason = problem === undefined || problem === "missing" ? "folder is gone" : `${e.details.root} ${preparedRootProblemText[problem]}`;
+        console.log(`  ${e.details.space}: ${reason}; leaving its processes untouched, continuity not checked`);
         return "none";
       }
       if (e.code === "not-started" && e.details.recordedRoot !== undefined) {

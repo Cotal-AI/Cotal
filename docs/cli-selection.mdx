@@ -71,9 +71,11 @@ recreated empty directories at the old path. Its next step stops the stack with
 `cotal down --space <space> --yes` from any folder. See [the missing-folder stop](cli-shutdown.mdx#down).
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
-`preparedAt`, `current`, `rootMissing`, which is true when its project folder no longer exists,
-`state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
-whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
+`preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when
+the recorded path does not resolve to a directory. In that case `rootProblem` says why: `missing`,
+`file`, `not-directory` or `unavailable`. `state` is `prepared` for a space that never started,
+`stopped` for one whose stack ran and was stopped, and `unsettled` when its last `up` or `down`
+recorded no outcome.
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
 `space show` of a prepared space gives those with the kind `prepared-space`. When the old path is
 gone and the current project holds the matching stack journal, `cotal space` and `cotal space show`
@@ -82,6 +84,10 @@ confirmed stopped stack, run the displayed `cotal space forget <name>` and `cota
 commands to keep the new location, then run `cotal up` from that folder. Forget releases the stopped
 stack definitions and leaves the project data in place. When no matching journal is found, the
 listing marks the missing folder `(no longer exists)` and names forget and plain create instead.
+If a file occupies the recorded path, the listing, `space show` and commands that target the
+preparation identify the file. Restore the original project folder, or run `cotal space forget <name>`
+and `cotal space create <name> --root <dir>` for its new location. Inspecting the space leaves both
+the file and the prepared record in place.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. A name
 `space create` refuses, such as one that starts with `-` or holds a `*`, given or named by a bundle,
@@ -223,9 +229,9 @@ has been started or registered yet when that is so, and `space show`, `use` and 
 Once one of them has run, the heading gets a `State` column, and the line says no space is running
 or registered. A space whose stack ran and was stopped reads as stopped in `space`, `space show` and
 `use`, with its last operation, as `status` reads it.
-A command that
-targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
-and so does `cotal up --space <name>` run from another folder. Its Next names
+A command that needs a running broker refuses a prepared space with `TARGET_UNAVAILABLE`, exit 2.
+So does `cotal up --space <name>` run from another folder. When the recorded project folder is
+available, its Next names
 `cotal up --root <root> --space <name>`, which starts it in that root from where you are, and
 `cotal space forget <name>`, which lets you start it in the current folder. When that root's last `up` or `down`
 was cut off before it recorded an outcome, as an `up` interrupted before it registered the space

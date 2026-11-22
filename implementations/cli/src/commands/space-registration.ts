@@ -29,7 +29,10 @@ import {
   personaDir,
   pinnedFetch,
   PinnedFetchRefused,
+  prepareAgainRemedy,
   preparedRecordSpace,
+  preparedRootProblem,
+  preparedRootProblemText,
   preparedSpaceAt,
   protectedLocalDirectory,
   readPreferences,
@@ -498,9 +501,9 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
-    const gone = !existsSync(prepared.root);
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, target, gone
-      ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again`
+    const problem = preparedRootProblem(prepared.root);
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem === undefined ? "" : `, which ${preparedRootProblemText[problem]}`}`, target, problem !== undefined
+      ? problem === "missing" ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again` : displayRemedy(prepareAgainRemedy(name, problem))
       : flag === "--project"
         ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
         : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
@@ -651,7 +654,10 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       removeMesh(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
-    const runningOwner = liveMeshOwner(p.root, name);
+    // A file cannot hold local process records. The home-scoped member check above still applies.
+    const problem = preparedRootProblem(p.root);
+    const occupied = problem === "file" || problem === "not-directory";
+    const runningOwner = occupied ? undefined : liveMeshOwner(p.root, name);
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
     removeDamaged();

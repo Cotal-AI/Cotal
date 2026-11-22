@@ -24,6 +24,19 @@ export interface PreparedSpace {
   readonly ts: string;
 }
 
+export type PreparedRootProblem = "missing" | "file" | "not-directory" | "unavailable";
+
+/** Inspect the recorded path itself. Only a directory can hold the prepared project. */
+export function preparedRootProblem(root: string): PreparedRootProblem | undefined {
+  try {
+    const stat = statSync(root);
+    return stat.isDirectory() ? undefined : stat.isFile() ? "file" : "not-directory";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unavailable";
+  }
+}
+
 export function preparedSpacesDir(): string {
   return join(homeCotalDir(), "prepared");
 }

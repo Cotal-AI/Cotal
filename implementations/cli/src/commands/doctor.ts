@@ -21,7 +21,7 @@ import {
 } from "@cotal-ai/core";
 import {
   boundedValue, cachedUpdateSummary,
-  CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, writeResult,
+  CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, workspaceErrorParts, writeResult,
   agentCredsDir,
   authDir,
   CONNECTION_EVICTOR_CREDS_KIND,
@@ -175,6 +175,10 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
           : `${correct}.`;
       }
       if (error instanceof MeshTargetError && error.code === "not-started") {
+        if (error.details.rootProblem !== undefined && error.details.rootProblem !== "missing") {
+          const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+          return remedy === undefined ? message : `${message} - ${remedy}`;
+        }
         if (error.details.rootMissing) registered = error.details.root;
         else if (preparedNeverStarted(error.details)) prepared = error.details.root;
       }

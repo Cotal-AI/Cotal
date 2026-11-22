@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
-import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, preparedLifecycle, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedSpace, type Report } from "@cotal-ai/workspace";
+import { boundedValue, canonicalRoot, clearCurrent, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, folderSpace, folderSpaceHeld, getCurrent, isMeshRegistryError, readCurrentSelection, jsonFlag, loadMeshes, loadPreparedSpaces, plainFlag, prepareAgainRemedy, preparedLifecycle, preparedRootProblem, preparedRootProblemText, presentationOf, readCurrent, setCurrent, shellPath, SHOWN_VALUE_MAX, stackElsewhereRemedy, writeResult, type Cell, type MeshEntry, type OutputWarning, type PreparedRootProblem, type PreparedSpace, type Report } from "@cotal-ai/workspace";
 import { registryFailure } from "../lib/registry-errors.js";
 import { displayRemedy } from "../lib/self-exec.js";
 import { journalRecordedElsewhere } from "../lib/stack-journal.js";
@@ -65,27 +64,29 @@ export async function use(args: ParsedArgs): Promise<void> {
   }
   const changed = name !== undefined && (previous !== name || readCurrentSelection()?.source !== "explicit");
   const cwd = process.cwd(), project = canonicalRoot(findCotalRoot(cwd));
+  const rootProblem = p && preparedRootProblem(p.root);
   let moved: ReturnType<typeof journalRecordedElsewhere>;
-  if (p && !existsSync(p.root) && cotalDirLink(project) === undefined) {
+  if (p && rootProblem === "missing" && cotalDirLink(project) === undefined) {
     try {
       const found = journalRecordedElsewhere(project);
       if (found?.recordedRoot === p.root && found.journal.space === p.space) moved = found;
     } catch { /* An unusable journal does not identify a moved project. */ }
   }
-  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd) ?? folderSpaceHeld(cwd)?.space ?? null };
+  const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, rootProblem, moved && project), folder: folderSpace(cwd) ?? folderSpaceHeld(cwd)?.space ?? null };
   if (changed) setCurrent(name);
   const warnings: OutputWarning[] = current !== null && name === undefined && !m && !p
     ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: current }, message: `the selected space "${current}" is not registered here - select another with \`cotal use <name>\`` }]
     : [];
-  writeResult(presentation, { command: "use", target: current === null ? null : { space: current }, result, noOp: name !== undefined && !changed, warnings }, (s) => selectionView(s, project, moved));
+  writeResult(presentation, { command: "use", target: current === null ? null : { space: current }, result, noOp: name !== undefined && !changed, warnings }, (s) => selectionView(s, project, moved, rootProblem));
 }
 
 /** The selection's local lifecycle fields, without a broker probe. */
-function prepared(p: PreparedSpace | undefined, m: MeshEntry | undefined, moved?: string): Pick<Selection, "preparedRoot" | "preparedState" | "lastOperation"> {
+function prepared(p: PreparedSpace | undefined, m: MeshEntry | undefined, problem: PreparedRootProblem | undefined, moved?: string): Pick<Selection, "preparedRoot" | "preparedState" | "lastOperation"> {
   if (m?.stoppedByDown === true && m.origin !== "manual" && m.origin !== "catalog")
     return { preparedRoot: m.root, preparedState: "stopped", lastOperation: "`cotal down`, completed" };
   if (!p) return { preparedRoot: null, preparedState: null, lastOperation: null };
-  const lifecycle = moved !== undefined ? preparedLifecycle(moved, p.space) : existsSync(p.root) ? preparedLifecycle(p.root, p.space) : undefined;
+  const lifecycleRoot = moved ?? (problem === undefined ? p.root : undefined);
+  const lifecycle = lifecycleRoot === undefined ? undefined : preparedLifecycle(lifecycleRoot, p.space);
   return { preparedRoot: p.root, preparedState: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
 }
 
@@ -103,7 +104,7 @@ function clearSelection(named: boolean, presentation: ReturnType<typeof presenta
   ] }] }] }));
 }
 
-function selectionView(s: Selection, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
+function selectionView(s: Selection, project: string, moved: ReturnType<typeof journalRecordedElsewhere>, problem: PreparedRootProblem | undefined): Report {
   if (s.current === null) return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: loadMeshes().length === 0 && loadPreparedSpaces().length === 0
     ? "no spaces are known here - sign in to Cotal Cloud with `cotal login`"
     : "no space is selected - select one with `cotal use <name>`; `cotal space` lists them", tone: "hint" }] }] }] };
@@ -117,10 +118,17 @@ function selectionView(s: Selection, project: string, moved: ReturnType<typeof j
     lines.push(
       { text: `  this folder holds the stack journal of "${s.current}" and was moved from ${moved.recordedRoot}`, tone: "waiting" },
       { text: `  ${displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation))}`, tone: "hint" });
-  } else if (s.preparedRoot) lines.push(!existsSync(s.preparedRoot) ? { text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which no longer exists - forget it with ${codeSpan(`cotal space forget ${shellPath(s.current)}`)}`, tone: "waiting" }
-    : s.preparedState === "stopped" ? { text: `  stopped; its last operation, ${s.lastOperation} - start it again with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" }
-    : s.preparedState === "unsettled" ? { text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" }
-    : { text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
+  } else if (s.preparedRoot) {
+    const rootProblem = s.currentRecorded ? preparedRootProblem(s.preparedRoot) : problem;
+    if (rootProblem !== undefined) {
+      const remedy = rootProblem === "missing" ? `forget it with ${codeSpan(`cotal space forget ${shellPath(s.current)}`)}` : displayRemedy(prepareAgainRemedy(s.current, rootProblem));
+      lines.push({ text: `  ${s.currentRecorded ? "recorded" : "prepared"} in ${s.preparedRoot}, which ${preparedRootProblemText[rootProblem]} - ${remedy}`, tone: "waiting" });
+    } else if (s.preparedState === "stopped") {
+      lines.push({ text: `  stopped; its last operation, ${s.lastOperation} - start it again with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
+    } else if (s.preparedState === "unsettled") {
+      lines.push({ text: `  its last operation, ${s.lastOperation} - run \`cotal status\` in ${s.preparedRoot}, which names the step that finishes or settles it`, tone: "waiting" });
+    } else lines.push({ text: `  prepared, not started - start it with \`cotal up\` in ${s.preparedRoot}`, tone: "hint" });
+  }
   // `use` reads no broker, so it says when this folder's space is the target rather than whether it is.
   if (s.folder && s.folder !== s.current) lines.push({ text: readCurrentSelection()?.source === "adopted"
     ? `  commands here target this folder's space "${s.folder}" while it runs; use --space ${s.current} to reach the adopted selection`

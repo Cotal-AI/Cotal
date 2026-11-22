@@ -76,7 +76,7 @@ import {
   canonicalRoot,
   clearCurrent,
   findMesh,
-  findPreparedSpace,
+  findPreparedSpace, prepareAgainRemedy, preparedRootProblem, preparedRootProblemText,
   homeCotalDir,
   legacyStackOtherHome,
   stackHomeRemedy,
@@ -4092,10 +4092,10 @@ function ensureRootForSpace(space: string): void {
   // below, so a refused start leaves nothing behind.
   const prepared = findPreparedSpace(space);
   if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root)) {
-    const gone = !existsSync(prepared.root);
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, {
+    const problem = preparedRootProblem(prepared.root);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${problem === undefined ? "" : `, which ${preparedRootProblemText[problem]}`}`, {
       target: { space, root: prepared.root },
-      remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
+      remedy: problem === undefined ? `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here` : problem === "missing" ? `forget it with \`cotal space forget ${space}\`, then start it here` : prepareAgainRemedy(space, problem),
     });
   }
   // Auth material, a locally started registration, or a preparation names what this root hosts.
