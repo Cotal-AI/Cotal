@@ -45,7 +45,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--restore <dir>` | none | Restore a completed offline backup before exposing the normal listener. An empty value refuses `USAGE_INVALID` (exit 1) without starting or writing anything. Omit the flag to start without restoring |
 | `--restore-only registry` | artifact selection | Restore only the registry component |
 | `--accept-missing-source` | off | Explicit disaster consent when the inode-bound preserved source is absent |
-| `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
+| `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon. Cannot be combined with `--file` (`-f`), which starts a fresh mesh instead of resuming a preserved stack. |
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A root whose first `up` recorded another mode refuses it |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger. A root whose first `up` recorded another mode refuses it. A stopped root whose space has user-auth state refuses a start without it, `--open` included, as `CONFLICT`, exit 2, before anything is written; add `--user-auth` to start it |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
@@ -1015,15 +1015,18 @@ previews this root's recorded stack and stops nothing. With no recorded stack an
 manifest, it lists their run IDs and the `--run <id> --dry-run` preview. Controller-owned roots
 refuse `--file` and `--run`. Use `cotal down --dry-run` there.
 
-`cotal up -f <file> --dry-run` starts nothing. It checks the selected manager runtime and the declared
-applications before printing a plan. An unavailable runtime refuses with `DEPENDENCY_UNAVAILABLE`
-(exit 2), just as it does when you apply the manifest. To review the declaration without
-installing those applications, use `cotal team boot <file> --dry-run` or `cotal team check <file> --graph`.
-When configured, the preview shows the effective broker log path and rotation bounds.
+`cotal up -f <file> --dry-run` starts nothing. When the plan includes a manager, the preview checks
+its runtime and the declared applications. An unavailable runtime refuses with `DEPENDENCY_UNAVAILABLE`
+(exit 2), just as it does when you apply the manifest. With `--no-manager`, neither the preview nor
+the start checks the manager runtime. To review the declaration without installing those applications,
+use `cotal team boot <file> --dry-run` or `cotal team check <file> --graph`.
+When configured, the preview shows the effective broker log path and rotation bounds. You can set
+the rotation bounds in the manifest and supply the path with `--log-file`.
 A manifest that declares agents refuses `--no-manager` with `USAGE_INVALID` (exit 1), including in a preview.
 `team deploy` and `team remove` take `--dry-run` to print the plan without applying it.
 `team deploy` names a missing manifest path and exits 2 with `TARGET_NOT_FOUND`, including in a preview.
-`topology` validates the manifest and renders its channel / role / ACL graph. Given a folder
+`topology view` takes one manifest path, either as a positional argument or with `-f`.
+It validates the manifest and renders its channel / role / ACL graph. Given a folder
 instead of a manifest file, `topology view`, `up -f`, `down -f` and the `team` commands that take a
 manifest refuse with exit 1, naming the path and that it is a directory. See [Define a team](define-a-team.mdx) and the
 [manifest reference](manifest.mdx).
