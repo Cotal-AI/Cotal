@@ -13,6 +13,7 @@ import {
   eventChannel,
   eventChannelPrincipal,
   isEventChannel,
+  noLiveInstances,
   parsePrincipalKey,
   principalKey,
   remoteManagerActors,
@@ -23,7 +24,7 @@ import {
   type Profile,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
+import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openObserver } from "@cotal-ai/workspace/view";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
@@ -325,7 +326,10 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
         return plan.launch.map((instanceId) => choice(instanceId));
       }
       const t = await resolve("control-caller-privileged");
-      const ids = await liveManagerIds(t.space, t.server, t.auth);
+      const ids = await liveManagerIds(t.space, t.server, t.auth).catch((e: unknown) => {
+        if (!noLiveInstances(e)) throw e;
+        throw new NoLaunchManager(`The broker for ${t.space} is reachable, but no manager is registered. To open a thread, ${startStackManagerRemedy(t.space, t.server)}`);
+      });
       const here = hostname();
       const choices = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
         // A per-instance call needs an instrument minted for that instance.

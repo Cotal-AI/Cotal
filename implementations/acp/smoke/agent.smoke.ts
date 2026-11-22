@@ -3,7 +3,7 @@
  * connection, against a fake space. No broker, no manager.
  *
  *  - `initialize` offers session load, list and delete, and a terminal sign-in only to a client that
- *    can run one;
+ *    can run one and has a target for the action;
  *  - opening the space fails as -32000 when signing in fixes it, and as an internal error otherwise;
  *  - `session/new` launches nothing and offers `<agent>/default` first, without applications that
  *    publish no event plane; deleting it hides nothing;
@@ -149,11 +149,11 @@ class MemoryHidden implements HiddenSessions {
   add(id: string) { this.ids.add(id); }
 }
 
-function connect(open: () => Promise<Mesh>, terminal = true) {
+function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async () => true) {
   const updates: SessionNotification[] = [];
   const hidden = new MemoryHidden();
   let n = 0;
-  const app = cotalAgent({ mesh: open, hidden, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 } });
+  const app = cotalAgent({ mesh: open, hidden, log: () => {}, version: "0.0.0-smoke", newName: () => `acp-s${++n}`, waits: { startMs: 300, settleMs: 100 }, canSignIn });
   const conn = client({ name: "smoke" })
     .onNotification(methods.client.session.update, ({ params }) => void updates.push(params))
     .connect(app);
@@ -174,6 +174,9 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const other = connect(async () => new FakeMesh(), false);
   check("a client that runs no terminal is offered no sign-in", (await other.init).authMethods?.length === 0);
   other.conn.close();
+  const open = connect(async () => new FakeMesh(), true, async () => false);
+  check("a target without a terminal action offers no sign-in", (await open.init).authMethods?.length === 0);
+  open.conn.close();
 }
 {
   const signIn = connect(async () => { throw new SignInRequired("sign in first"); });
@@ -303,6 +306,9 @@ check("a prompt the manager refuses to type fails with its reason", inputRefused
 mesh.onInput = () => {};
 const afterRefusal = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "/channels" }] }));
 check("a refused prompt leaves the session free for the next one", afterRefusal?.stopReason === "end_turn", afterRefusal);
+const prose = "/despawn is an example, please explain the syntax";
+const proseReply = await within(agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: prose }] }));
+check("prose beginning with /despawn goes to the running seat", proseReply?.stopReason === "end_turn" && !mesh.despawned.includes(sid) && mesh.typed.at(-1)?.text === prose, { proseReply, typed: mesh.typed, despawned: mesh.despawned });
 
 // list and delete
 mesh.rows = [
@@ -410,7 +416,7 @@ await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, m
 check("it loads while no manager may start a new agent, its lists read from the manager that holds it", heldFailed === undefined && mesh.catalogsAsked.slice(asked).every((m) => m === "m3") && mesh.catalogsAsked.length > asked, heldFailed ?? mesh.catalogsAsked.slice(asked));
 check("and its personas are read from that manager too", mesh.personasAsked.slice(personasAsked).every((m) => m === "m3") && mesh.personasAsked.length > personasAsked, mesh.personasAsked.slice(personasAsked));
 const noNew = await errorOf(agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
-check("a new thread is refused with the reason", JSON.stringify(noNew ?? null).includes("none of your managers is live"), noNew);
+check("a new thread is refused with the reason in the message", noNew?.code === -32603 && noNew.message === "none of your managers is live", noNew);
 mesh.noLaunch = undefined;
 // After /despawn the loaded thread may choose another machine and come back to the one that held it.
 await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
