@@ -36,6 +36,7 @@ import {
   recordMesh,
   resolveOnPath,
   seedConnectorServers,
+  spaceNameTooLong,
   writePreference,
   writeResult,
   type Cell,
@@ -585,9 +586,12 @@ interface SetupPlan {
 async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
-  // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
-  const spelled = token(inputs.space);
-  if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
+  if (problem) {
+    const spelled = token(inputs.space).replace(/^-+/, "");
+    throw usage(problem, /[A-Za-z0-9]/.test(spelled) && !spaceNameTooLong(spelled)
+      ? `pass --space ${spelled}, or another name of letters, digits, - and _`
+      : "choose a name that starts with a letter, digit or underscore and has only letters, digits, - and _");
+  }
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
@@ -676,7 +680,16 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   if (prefs.defaults.harness === undefined && writePreference({}, "harness", inputs.harness, prefs.revision).changed) wrote("your harness preference", preferencesPath());
 
   const narrate = opts.presentation === "rich";
-  const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
+  const path = join(inputs.project, ".cotal", "setup.log");
+  let log: SetupLog;
+  try { log = openSetupLog(path); }
+  catch (error) {
+    const partial = written.length > 0;
+    const saved = partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not open the setup log: ${error instanceof Error ? error.message : String(error)}`, {
+      target: { ...target, path }, changed: written, cause: error, remedy: `check and repair the log path ${path}, then run the same setup again`,
+    });
+  }
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
     const provider = await connectorSetupProvider(candidate.connector);

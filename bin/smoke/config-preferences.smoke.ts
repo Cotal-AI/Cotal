@@ -703,4 +703,20 @@ if (process.platform !== "win32") {
   chmodSync(open, 0o700);
 }
 
+{
+  const dir = join(home, "proto-project");
+  mkdirSync(dir, { mode: 0o700 });
+  const prepared = run(["space", "create", "__proto__", "--root", dir, "--json"]);
+  const set = run(["config", "set", "persona", "backend", "--space", "__proto__", "--json"]);
+  const get = run(["config", "get", "persona", "--space", "__proto__", "--json"]);
+  const setting = (get.envelope?.result as { setting?: Setting } | null)?.setting;
+  check("an accepted space named __proto__ saves its value for the next CLI process",
+    prepared.status === 0 && set.status === 0 && get.status === 0 && setting?.value === "backend"
+      && setting.winner?.source === "space" && setting.winner.name === "__proto__"
+      && Object.hasOwn(saved().spaces, "__proto__"), { prepared: shown(prepared), set: shown(set), get: shown(get) });
+  const unset = run(["config", "unset", "persona", "--space", "__proto__", "--json"]);
+  check("unsetting the last preference removes the literal space key",
+    unset.status === 0 && unset.envelope?.outcome === "ok" && !Object.hasOwn(saved().spaces, "__proto__"), shown(unset));
+}
+
 finish();
