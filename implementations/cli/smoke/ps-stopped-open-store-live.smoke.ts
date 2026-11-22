@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emitSentinel, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -80,16 +81,23 @@ function readOnlyStore(check: () => void): void {
   try { check(); } finally { chmodSync(jetstream, mode); }
 }
 
-const port = await freePort(), otherPort = await freePort();
-const server = `nats://127.0.0.1:${port}`;
-await startAndStop(server, "127.0.0.1");
+const otherPort = await freePort();
+// Use a separate loopback IP on Linux so suites using the default listener do not collide.
+const host = process.platform === "linux" ? "127.0.0.2" : "127.0.0.1";
+const portless = `nats://${host}`, server = `${portless}:4222`;
+const probe = createServer();
+await new Promise<void>((resolve, reject) => probe.once("error", reject).listen(4222, host, resolve));
+await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+await startAndStop(server, host);
 readOnlyStore(() => {
   permission(ps(project, "--plain"));
   permission(ps(project, "--plain", "--space", space, "--server", server));
   permission(ps(nested, "--plain", "--space", space, "--server", `${server}/`));
-  unavailable(ps(project, "--plain", "--space", space, "--server", `nats://127.0.0.1:${otherPort}`));
+  permission(ps(nested, "--plain", "--space", space, "--server", `${portless}/`));
+  unavailable(ps(project, "--plain", "--space", space, "--server", `${portless}:${otherPort}`));
   unavailable(ps(project, "--plain", "--space", "another-space", "--server", server));
   unavailable(ps(project, "--plain", "--space", space, "--server", server.replace(/^nats:/, "tls:")));
+  unavailable(ps(project, "--plain", "--space", space, "--server", portless.replace(/^nats:/, "tls:")));
   unavailable(ps(other, "--plain", "--space", space, "--server", server));
 });
 unavailable(ps(project, "--plain", "--space", space, "--server", server));
@@ -107,9 +115,10 @@ readOnlyStore(() => {
   assert.equal(json.error?.code, "PERMISSION_DENIED");
   assert.equal(json.target?.root, project);
   assert.ok(json.error?.message.includes(jetstream));
+  unavailable(ps(project, "--plain", "--space", space, "--server", portless));
   unavailable(ps(project, "--plain", "--space", space, "--server", `nats://0.0.0.0:${wildcardPort}`));
   const otherHost = process.platform === "linux" ? "127.0.0.1" : "localhost";
   unavailable(ps(project, "--plain", "--space", space, "--server", `nats://${otherHost}:${wildcardPort}`));
 });
 assert.equal(readFileSync(configPath, "utf8"), config, "ps leaves the retained configuration unchanged");
-emitSentinel({ cells: 13, passed: 13, failed: 0 });
+emitSentinel({ cells: 16, passed: 16, failed: 0 });

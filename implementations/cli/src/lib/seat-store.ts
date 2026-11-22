@@ -2,7 +2,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { realDirNoSymlink } from "@cotal-ai/core";
 import {
-  brokerUrlKey, CommandFailure, findCotalRoot, findMesh, isConnectRefusal, isGenuineSpace,
+  brokerAddressKey, brokerUrlKey, checkServer, CommandFailure, findCotalRoot, findMesh, isConnectRefusal, isGenuineSpace,
   isWorkspaceTargetError, localMeshesForRoot, NATS_PIDFILE, preparedSpaceAt, retainedOpenBroker,
   stackJournalPath, stoppedStack, type ConnectFlags,
 } from "@cotal-ai/workspace";
@@ -18,7 +18,9 @@ function stoppedOpenStoreRefusal(space: string, server: string): CommandFailure 
         lstatSync(stackJournalPath(root), { throwIfNoEntry: false })) return undefined;
     if (findMesh(space) || localMeshesForRoot(root).length || preparedSpaceAt(root)) return undefined;
     const broker = retainedOpenBroker(root);
-    if (broker?.space !== space || brokerUrlKey(server) !== brokerUrlKey(broker.server)) return undefined;
+    if (broker?.space !== space || !checkServer(server, "--server").ok) return undefined;
+    if (new URL(server).protocol !== new URL(broker.server).protocol ||
+        brokerAddressKey(server) !== brokerAddressKey(broker.server)) return undefined;
     return storeRefusal(storeWriteProblem(broker.storeDir), { space, root });
   } catch { return undefined; }
 }
