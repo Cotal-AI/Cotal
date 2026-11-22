@@ -1,27 +1,22 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
-import { resolveOnPath } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { clean, ptySpawn } from "../../implementations/cli/smoke/_console-pty.js";
 
 const entry = resolve(import.meta.dirname, "../dist/cotal.js");
 assert.ok(existsSync(entry), "build the CLI before running the ps setup smoke");
-const nats = resolveOnPath("nats-server");
-assert.ok(nats, "the ps setup smoke needs nats-server on PATH");
 
 const root = mkdtempSync(join(tmpdir(), "cotal-ps-setup-"));
 const home = join(root, "home"), project = join(root, "project"), bin = join(root, "bin");
 const config = join(root, "config"), runtime = join(root, "runtime");
 const extensions = join(config, "cotal", "extensions");
 for (const dir of [home, join(project, ".cotal"), bin, runtime, extensions]) mkdirSync(dir, { recursive: true, mode: 0o700 });
-for (const [name, target] of Object.entries({ node: process.execPath, "nats-server": nats, sh: "/bin/sh" })) {
-  symlinkSync(target, join(bin, name));
-}
+symlinkSync(process.execPath, join(bin, "node"));
 const built = join(root, "package", "dist", "cotal.js");
 mkdirSync(dirname(built), { recursive: true });
 cpSync(dirname(entry), dirname(built), { recursive: true });
@@ -68,21 +63,45 @@ function terminalPs(args: string[]): Promise<string> {
 
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
-const stack = spawn(process.execPath, [built, "up", "--foreground", "--open", "--space", "ps-setup", "--server", server], {
-  ...options, stdio: ["ignore", "pipe", "pipe"],
+const space = "ps-setup";
+const store = join(root, `${SMOKE_BROKER_TOKEN}ps-setup`);
+const mesh = run(["meshes", "add", space, "--mode", "open", "--root", project, "--server", server, "--force"]);
+assert.ifError(mesh.error);
+assert.equal(mesh.status, 0, mesh.stderr);
+
+const exited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
+// Keep both handles: foreground `up` can leave detached children if it dies before teardown.
+const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], {
+  cwd: project, env: { ...env, PATH: process.env.PATH }, stdio: ["ignore", "ignore", "pipe"],
 });
-let stackOutput = "";
-stack.stdout.on("data", (chunk) => { stackOutput += String(chunk); });
-stack.stderr.on("data", (chunk) => { stackOutput += String(chunk); });
-let passed = false;
+let brokerOutput = "";
+broker.stderr.on("data", (chunk) => { brokerOutput += String(chunk); });
+broker.on("error", (error) => { brokerOutput += `${error.message}\n`; });
+let releaseBroker: (() => void) | undefined;
+let manager: ChildProcess | undefined;
+let releaseManager: (() => void) | undefined;
+let managerOutput = "";
 try {
+  releaseBroker = teardownOnSignal(broker, store);
+  await awaitBrokerReady(async () => !exited(broker) && brokerOutput.includes("Server is ready"), {
+    servers: server, attempts: 100, delayMs: 100, output: () => brokerOutput,
+  });
+  const child = spawn(process.execPath, [built, "__daemon-manager", "--space", space, "--server", server], {
+    ...options, stdio: ["ignore", "pipe", "pipe"],
+  });
+  manager = child;
+  child.on("error", (error) => { managerOutput += `${error.message}\n`; });
+  releaseManager = teardownOnSignal(child);
+  child.stdout.on("data", (chunk) => { managerOutput += String(chunk); });
+  child.stderr.on("data", (chunk) => { managerOutput += String(chunk); });
   const deadline = Date.now() + 30_000;
   let plain = run(["ps", "--plain"]);
-  while (plain.status !== 0 && Date.now() < deadline && stack.exitCode === null && stack.signalCode === null) {
+  while (plain.status !== 0 && Date.now() < deadline && !exited(child) && !exited(broker)) {
     await delay(250);
     plain = run(["ps", "--plain"]);
   }
-  assert.equal(plain.status, 0, `${plain.stderr}\n${stackOutput}`);
+  assert.ifError(plain.error);
+  assert.equal(plain.status, 0, `${plain.stderr}\n${managerOutput}`);
   const command = nextCommand(plain.stdout);
   assert.equal(command, "cotal setup --help", plain.stdout);
   const help = run(command.split(" ").slice(1));
@@ -97,16 +116,19 @@ try {
   assert.equal(nextCommand(await terminalPs(["--no-input"])), command);
   assert.equal(nextCommand(await terminalPs(["--plain"])), command);
   console.log("PASS default output and prompt opt-outs offer help, while a promptable terminal offers guided setup");
-  passed = true;
 } finally {
-  await killAndAwaitExit(stack, "SIGINT", 30_000);
-  if (passed) {
-    assert.equal(stack.exitCode, 130, stackOutput);
-    const probe = createServer();
-    await new Promise<void>((resolve, reject) => {
-      probe.once("error", reject);
-      probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
-    });
-    rmSync(root, { recursive: true });
-  }
+  if (manager) await killAndAwaitExit(manager);
+  await killAndAwaitExit(broker);
+  releaseManager?.();
+  releaseBroker?.();
+  assert.ok(!manager?.pid || exited(manager), "owned manager did not exit");
+  assert.ok(!broker.pid || exited(broker), "owned broker did not exit");
 }
+assert.equal(manager?.exitCode, 0, managerOutput);
+assert.equal(broker.exitCode, 0, brokerOutput);
+const probe = createServer();
+await new Promise<void>((resolve, reject) => {
+  probe.once("error", reject);
+  probe.listen(port, "127.0.0.1", () => probe.close(() => resolve()));
+});
+rmSync(root, { recursive: true });
