@@ -91,11 +91,11 @@ export class ConsoleSession {
   out = "";
   exited: { code: number } | undefined;
   private readonly p: Pty;
-  constructor(args: string[], home: string, extraEnv: Record<string, string> = {}, size = { cols: 120, rows: 32 }) {
+  constructor(args: string[], home: string, extraEnv: Record<string, string> = {}, options: { cols: number; rows: number; cwd?: string } = { cols: 120, rows: 32 }) {
     this.p = cotalPty(["console", ...args], {
-      cols: size.cols,
-      rows: size.rows,
-      cwd: repoRoot,
+      cols: options.cols,
+      rows: options.rows,
+      cwd: options.cwd ?? repoRoot,
       // XDG_CONFIG_HOME isolates the seed engine's config-rooted store into the suite's own temp
       // home (COTAL_HOME does not relocate it). These are console feature smokes, not seed smokes,
       // so skip reconciliation entirely: cold extension seeding is covered by its own suite and can

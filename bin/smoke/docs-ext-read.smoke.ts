@@ -231,6 +231,35 @@ for (const [args, why] of [
   check(`${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID" && why.test(r.envelope.error.message), shown(r));
 }
 
+{
+  const config = join(home, "damaged-inventory");
+  const extensions = join(config, "cotal", "extensions");
+  const manifest = join(extensions, "extensions.json");
+  const env = { XDG_CONFIG_HOME: config };
+  mkdirSync(extensions, { recursive: true });
+  writeFileSync(manifest, "{}\n");
+  const json = run(["docs", "cli-usage", "--json"], env);
+  check("docs returns one complete bundled page with a damaged extension inventory",
+    json.status === 0 && json.stderr === "" && json.envelope?.command === "docs" &&
+    json.envelope.outcome === "ok" && json.envelope.completeness === "complete" &&
+    json.envelope.result?.kind === "docs-page" && json.envelope.result.slug === "cli-usage" &&
+    json.envelope.result.source === "bundled", shown(json));
+  const plain = run(["docs", "cli-usage", "--plain"], env);
+  check("plain docs opens with a damaged extension inventory",
+    plain.status === 0 && plain.stderr === "" && plain.stdout.startsWith(`bundled v${VERSION}\n\n# CLI usage\n`), shown(plain));
+  const list = run(["ext", "list", "--json"], env);
+  check("the extension listing still reports the damage, and docs leaves the manifest unchanged",
+    list.status === 1 && list.stdout === "" && list.stderr.includes('no "extensions" array') &&
+    readFileSync(manifest, "utf8") === "{}\n", shown(list));
+
+  const journal = join(config, "cotal", ".extensions-promotion.json");
+  writeFileSync(journal, "{}\n", { mode: 0o600 });
+  const index = run(["--no-color", "-j", "--", "docs"], env);
+  check("docs with leading flags opens the index without touching the extension promotion journal",
+    index.status === 0 && index.stderr === "" && index.envelope?.result?.kind === "docs-index" &&
+    readFileSync(journal, "utf8") === "{}\n", shown(index));
+}
+
 // ── docs: the bundle loads only when docs runs ───────────────────────────────────────────────────
 {
   const built = readFileSync(join(import.meta.dirname, "..", "dist", "docs.js"), "utf8");

@@ -392,6 +392,10 @@ have happened. The session never retries it, and it reports an unexpected failur
 same way. `failed` (`OPERATION_FAILED`) is a step that did not complete and had no effect. `stored`
 means the broker's stream accepted the message. It does not say anyone read it.
 
+A `send`, `dm` or `anycast` message that exceeds the broker's byte limit with its envelope is
+`refused` with `UNSUPPORTED`. The error names the limit when the connection can still report it,
+confirms nothing was stored, and tells you to shorten or split the message.
+
 Before a `send`, `dm` or `anycast` publishes on an authenticated or locally created space, it checks
 the chat stream. When that stream is absent, the request refuses with `TARGET_UNAVAILABLE` and the
 same message `cotal send` gives, without publishing. An unreadable stream check does not establish
@@ -524,6 +528,7 @@ or null when the roster has none. With `--follow --json`, it emits membership ND
 records. If setup fails before the snapshot, it writes an `error` with the code and any remedy,
 then an `end` with `reason: "setup-failed"` and `lastAsOf: null`. Both records name the requested
 channel and the space when known.
+This includes the name retained by a directly started local space after it stops.
 
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with

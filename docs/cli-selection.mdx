@@ -1067,10 +1067,14 @@ mesh to inspect; it starts nothing.
 
 When `status` would suggest restarting the selected stopped local stack,
 `status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.
-An invalid file is named under Next with the repair to make before restarting. The broker still
+This includes a foreground stack whose `down` removed its registration. Next names an invalid file
+and how to fix it before restarting. The broker still
 reports as unreachable when dialed. The check does not change the file or start the stack.
 In `--json`, `selected.channelSeedBlocksRestart` is `true` when this check finds a blocker, and
 `hints` names the file and its repair.
+
+If the manager exited but the broker of an open foreground stack still serves the space,
+Next recommends bare `cotal up` to restore the manager without stopping the broker.
 
 
 ### Broker probes
@@ -1269,7 +1273,8 @@ catalogs, status names both and marks which one spawn launches from. A green `de
 passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
 
 `cotal status --components` prints the report, then a fail-loud per-component health pass. It takes
-no `--json`, `--plain` or `--all`. It reads **each
+no `--json`, `--plain` or `--all`. The refusal's retry keeps the explicit space and broker address.
+It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
@@ -1329,7 +1334,9 @@ That exit replaces the report's own, so a partial report followed by a clean pas
 
 When a stopped local broker's address accepts a connection without a NATS greeting, `status`
 and read commands name the occupied address and recommend stopping that listener or starting
-on another port. They keep the space's registration.
+on another port, without changing the space's registration. For a stopped foreground stack,
+`status` and `ps` check the saved address even if `down` removed its registration. Neither command
+stops the listener.
 When a controller stack keeps its recorded address, a refused restart does not clear the diagnosis.
 `status` checks the address again and names the listener to stop if it still holds the port.
 

@@ -58,7 +58,7 @@ type Envelope = {
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; remedy?: string };
 };
 
 /** A sandboxed home that is also the working directory and its own project root, so the project
@@ -538,7 +538,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────
 {
-  const { run } = sandbox();
+  const { home, run } = sandbox();
   for (const args of [["--components", "--json"], ["--components", "--plain", "--json"], ["--components", "--all", "--json"], ["--plain", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
@@ -547,6 +547,17 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
+  const root = join(home, "component-target"), other = join(home, "component-other");
+  for (const folder of [root, other]) mkdirSync(folder, { mode: 0o700 });
+  const prepared = run(["space", "create", "component-target", "--root", root]);
+  const alternate = run(["space", "create", "component-other", "--root", other]);
+  const selected = run(["use", "component-other"]);
+  const refused = run(["status", "--components", "--space", "component-target", "--json"], {}, root);
+  const retry = /`[^`]*?\b(status --components[^`]*)`/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+  const retried = retry ? run(retry.split(" "), {}, root) : undefined;
+  check("the component retry diagnoses the requested project while another space is selected",
+    [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
+      && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
   for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

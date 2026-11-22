@@ -4,22 +4,25 @@ import { clearUpdateRecovery, homeCotalDir, protectedLocalDirectory, protectedRe
 import type { UpdateRuntime } from "../commands/update.js";
 
 /** Complete the selected execution journal without allowing npm to change the selection. */
-export async function resumePublishedUpdate(rt: UpdateRuntime, record: UpdateRecovery, flags: string[]): Promise<{ entry: string; version: string; resumed: true }> {
+export async function resumePublishedUpdate(rt: UpdateRuntime, record: UpdateRecovery, flags: string[], retireAt?: number): Promise<{ entry: string; version: string; resumed: true }> {
   const { target: version, snapshot, execution: journal } = record;
   try {
     const root = rt.executionGlobalRoot?.();
     if (!root || !snapshot || !journal) throw new Error("cannot identify the published update installation");
     const config = updateSnapshotConfig(record);
-    if (!config) throw new Error("the interrupted update snapshot does not belong to this configuration");
-    protectedResolvedDirectory(config, "the Cotal config folder");
-    const info = lstatSync(snapshot, { throwIfNoEntry: false });
-    if (info ? !info.isDirectory() : record.phase !== "verified-ready") throw new Error("the interrupted update snapshot is unavailable as a plain directory");
+    const foreign = !config && retireAt !== undefined;
+    if (config) {
+      protectedResolvedDirectory(config, "the Cotal config folder");
+      const info = lstatSync(snapshot, { throwIfNoEntry: false });
+      if (info ? !info.isDirectory() : record.phase !== "verified-ready") throw new Error("the interrupted update snapshot is unavailable as a plain directory");
+    } else if (!foreign) throw new Error("the interrupted update snapshot does not belong to this configuration");
     const release = rt.claimGlobalUpdate(root);
     try {
       const execution = rt.recoverExecution?.(journal);
       if (!execution?.verifyPublished?.(version)) throw new Error("the recorded target is not the selected execution generation");
-      writeUpdateRecovery({ ...record, owner: updateClosureOwner() });
-      if (record.phase !== "verified-ready") {
+      const needsReconcile = foreign || record.reconcileWithoutSnapshot || record.phase !== "verified-ready";
+      writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: needsReconcile ? "replacing" : record.phase, reconcileWithoutSnapshot: foreign || undefined });
+      if (needsReconcile) {
         rt.out(`Reconciling installed cotal-ai@${version}`);
         const env = { ...rt.env, COTAL_UPDATE_TARGET_VERSION: version, COTAL_UPDATE_PARENT: String(rt.pid), COTAL_UPDATE_PARENT_WAITS: "1" };
         const child = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [execution.entry, "update", ...flags], env, true);
@@ -31,7 +34,10 @@ export async function resumePublishedUpdate(rt: UpdateRuntime, record: UpdateRec
         if (deferred) throw new Error(deferred);
       }
       if (!execution.verifyPublished(version)) throw new Error("the selected execution generation changed during reconciliation");
-      rmSync(snapshot, { recursive: true, force: true });
+      if (foreign) {
+        const retained = retainUnusableRecovery(readUpdateRecovery()!, retireAt);
+        rt.out(`Retained unusable interrupted-update records in ${retained}.`);
+      } else rmSync(snapshot, { recursive: true, force: true });
       recordUpdateCompletion(version, `updated to ${version}`, true);
       execution.complete?.();
       clearUpdateRecovery();

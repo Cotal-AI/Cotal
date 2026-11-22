@@ -131,6 +131,7 @@ import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservati
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { stoppedStackAddressProblem } from "./stack-up.js";
+import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -253,7 +254,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   if (values.components && (presentation !== "rich" || values.all))
     throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
-      remedy: `run \`${displayCmd()} status --components\` on its own`,
+      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
     });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
@@ -1278,14 +1279,11 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;
-    if (!all && e.code === "ambiguous-target" && e.details.spaces && !isGenuineSpace(folder.root)) {
+    if (!all && e.code === "ambiguous-target" && e.details.server === undefined && e.details.spaces && !isGenuineSpace(folder.root)) {
       hints.push(`check the registered spaces with \`${cmd} status --all\``);
       return { resolved: false, code: e.code, message: `multiple spaces are registered but unchecked: ${(e.details.available ?? []).join(", ")}` };
     }
-    // The canonical parts name the ACTUAL repair per code (`cotal meshes rm`, `--space
-    // <name>`, `cotal up --user-auth`, …). A fixed `up --detach` hint would be right for at most one
-    // of the codes and point the others at a command that does not fix them. The section states the
-    // selection, and Next gives its repair once.
+    // The section states the selection, and Next gives the repair for the specific refusal.
     const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "target", error: e });
     const d = e.details;
     // A copy or a moved folder is reported under the space its records name, as the commands run here
@@ -1297,10 +1295,8 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
-    // A start in a root whose broker store this account cannot write fails there, so its next step is
-    // the store's, as `up` names it.
+    // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
-    // A stack journal that no command can use refuses `up` there, so Next names its way out instead.
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
     // So does a service instance record of its space that no command can read, which is also a warning.
     const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
@@ -1314,9 +1310,13 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
     else if (restartRoot !== undefined) {
       const block = channelSeedRestartBlock(restartRoot);
       if (block) {
-        result.channelSeedBlocksRestart = true;
+        Object.assign(result, { channelSeedBlocksRestart: true, root: restartRoot });
         hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
-      } else hints.push(held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
+      } else {
+        const legacy = d.lastRun ? await legacyRestartAddressProblem(d.server, `${cmd} up`) : undefined;
+        if (legacy) result.message += `; ${legacy.message}`;
+        hints.push(legacy?.remedy ?? held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
+      }
     } else if (!d.unsettled || !servedStack(folder, result)) {
       hints.push(held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
     } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with ${codeSpan(`${cmd} up`)} in ${d.root}`);
@@ -2086,9 +2086,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     const held = r.folder.heldServices ?? [], space = r.selected.space;
     items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
-  } else if (!elsewhere && legacy && dialed.mode === "open" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
+  } else if (!elsewhere && legacy && dialed.mode === "open" && dialed.connection === "ok" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
     restartBlock = channelSeedRestartBlock(dialed.root);
-    if (!restartBlock) items.unshift({ command: `${cmd} down --yes`, description: "Stop this folder's broker so the exited manager can be restarted" }, { command: `${cmd} up --foreground`, description: "Then start the stack with its manager" });
+    if (!restartBlock) items.unshift({ command: `${cmd} up`, description: "Restart this folder's manager without stopping the broker" });
   } else if (!storeBlocked && !seedBlocksRestart && local && exited.length) {
     const broker = exited.includes("nats"), manager = exited.includes("manager");
     const notes = [...(broker ? ["up reopens the recorded store"] : []), ...(manager ? ["pass --runtime again if the manager ran on one"] : [])];

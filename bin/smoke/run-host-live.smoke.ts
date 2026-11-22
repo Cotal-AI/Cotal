@@ -1154,7 +1154,7 @@ try {
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
   process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
-  let hostedOut = "", localOut = "", ps = "";
+  let hostedOut = "", localOut = "", ps = "", plainPs = "";
   let hostedRefusal: { outcome?: unknown; code?: unknown } | undefined, unknownRun: { outcome?: unknown; code?: unknown; message?: unknown } | undefined;
   let unknownPin: { outcome?: unknown; code?: unknown; message?: unknown; remedy?: unknown } | undefined, pinMs = -1, pinnedPs = "";
   const madeUp = mintLifecycleUid();
@@ -1165,6 +1165,7 @@ try {
     const realWrite = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
     try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
+    plainPs = await cli(["ps"], { plain: true });
     await cli(["show", "run-00000000000000000000000000000000"], { json: true }).catch((e: unknown) => { unknownRun = e as typeof unknownRun; });
     // A pin that names no running manager is refused before any describe, so it does not wait out
     // the describe's deadline, and it names the manager that does run.
@@ -1184,6 +1185,8 @@ try {
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
     && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
+  c("B3a. The open mesh list explains that it cannot host runs and offers offline simulation instead of start",
+    plainPs.includes("Open meshes cannot host workflow runs.") && plainPs.includes("cotal r simulate <file>") && !plainPs.includes("cotal r start"), plainPs);
   c("B4. `cotal run show` of a run the manager holds no record of is refused TARGET_NOT_FOUND for the command kernel", unknownRun?.outcome === "refused" && unknownRun.code === "TARGET_NOT_FOUND" && String(unknownRun.message).includes("no record"), unknownRun);
   c("B5. `cotal run ps --on <id>` naming no running manager is refused TARGET_NOT_FOUND at once, naming the pin and the manager that runs",
     unknownPin?.outcome === "refused" && unknownPin.code === "TARGET_NOT_FOUND" && pinMs < 5_000
@@ -1217,7 +1220,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 108;
+const EXPECTED_CELLS = 109;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

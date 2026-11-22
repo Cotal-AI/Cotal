@@ -272,7 +272,10 @@ function updateSnapshot(id: { entry: string; version: string; path: string }): s
   const record = readUpdateRecovery();
   if (!record || record.phase !== "replacing" || record.target !== id.version || record.owner?.pid !== process.ppid || !liveUpdateClosureOwner(record) || !record.snapshot) return;
   const snapshot = record.snapshot;
-  if (!snapshotConfig(snapshot, undefined, id.path)) throw new Error("update connector snapshot does not belong to this installation");
+  if (!snapshotConfig(snapshot, undefined, id.path)) {
+    if (record.reconcileWithoutSnapshot && record.execution) return;
+    throw new Error("update connector snapshot does not belong to this installation");
+  }
   ownedDirectory(snapshot);
   return snapshot;
 }

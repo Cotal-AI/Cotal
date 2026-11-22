@@ -70,6 +70,9 @@ type. Quote a value such as `"42"` or `"false"` when it is meant as a string.
 | `owner` | string | Policy set by `definePersona` to a signed-in creator or one of the manager's own seats. On a static space, another creator, including the CLI, leaves the file operator-owned. Only that owner or an admin can redefine the file over the wire. An operator-written file without an owner requires admin authority for wire redefinition. This field is not peer-supplied content. |
 | Any other non-reserved scalar key | string | Stored in `meta` for connector-specific hints. Unmodeled maps and lists are not stored. A saved definition cannot use `meta` to overwrite modeled fields or the reserved `channels`, `publish`, `cwd`, and `worktree` fields. The live session overlays connector-owned `connector`, `model`, `variant`, and `host` metadata, so the file cannot misstate its connector or machine. |
 
+Omit `endpoints` when you do not need to declare endpoint commands, or write `endpoints: []` for an explicit empty list.
+A blank `endpoints:` or an explicit null is refused.
+
 The parser refuses the old `channels` and `publish` keys.
 [Channels and permissions](channels-and-permissions.mdx) describes the three channel verbs.
 The parser also refuses `cwd` and `worktree` in frontmatter, including empty or null values.

@@ -70,6 +70,38 @@ function controllerBroker(space: string, machine: string) {
   finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
 }
 
+async function checkStoppedRestartAdvice(mesh: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
+  const inspect = (command: string) => foregroundCliProbe(cliEntry, tsx, mesh, env, [command, "--plain"], 60_000);
+  const check = async (diagnosis: string, remedy: string, alternative?: string) => {
+    for (const command of ["status", "ps"]) {
+      const result = await inspect(command), text = result.out + result.err;
+      assert.equal(result.code, command === "status" ? 0 : 2, text);
+      assert.ok(text.includes(diagnosis) && text.includes(remedy), text);
+      if (alternative) assert.ok(text.includes(alternative), text);
+      assert.doesNotMatch(text, /start it again with `[^`]*\bcotal up` in/);
+    }
+    passed++;
+  };
+  const listener = createServer((socket) => { socket.on("error", () => {}); socket.end("not NATS\n"); });
+  await new Promise<void>((resolve, reject) => listener.once("error", reject).listen(port, "127.0.0.1", resolve));
+  try {
+    await check(`another process holds the broker address 127.0.0.1:${port}`, `stop the process listening on 127.0.0.1:${port}`, "up --server nats://127.0.0.1:<port>");
+    assert.ok(await portOpen(port), "read commands leave the unrelated listener running");
+  } finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
+
+  const seed = join(mesh, ".cotal", "channels.json");
+  writeFileSync(seed, '{"channels":');
+  try {
+    await check(`the channels file ${seed} is not valid JSON`, `fix or remove ${seed}`);
+    assert.equal(readFileSync(seed, "utf8"), '{"channels":');
+    assert.equal(await portOpen(port), false, "read commands do not start a broker");
+  } finally { rmSync(seed); }
+  for (const command of ["status", "ps"]) {
+    const result = await inspect(command);
+    assert.match(result.out + result.err, /start it again with `[^`]*\bcotal up` in/);
+  }
+}
+
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), folderNamed = options.externalDown === "folder" || options.openManagerExit;
   const mesh = join(root, folderNamed ? name : "mesh"), store = join(mesh, "store");
@@ -246,15 +278,22 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         const blockedNext = blocked.out.split("\nNext\n")[1] ?? "";
         assert.ok(blockedNext.trimStart().startsWith(`Restart blocked: the channels file ${seed} is not valid JSON`), blocked.out);
         assert.ok(blockedNext.includes(`fix or remove ${seed}`), blocked.out);
-        assert.doesNotMatch(blockedNext, /cotal down --yes|cotal up --foreground/);
+        assert.doesNotMatch(blockedNext, /^ {2}(?:pnpm )?cotal (?:down|up) +/m);
         assert.ok(live(broker) && await portOpen(port));
         rmSync(seed);
         const status = await inspect("status");
         assert.equal(status.code, 0, status.out + status.err);
         assert.match(status.out, new RegExp(`^  Broker +running.*pid ${broker.pid}`, "m"));
         assert.match(status.out, /^  Manager +stopped$/m);
-        assert.match(status.out, /cotal down --yes[^\n]*exited manager[^]*cotal up --foreground/);
-        assert.ok(live(broker) && await portOpen(port));
+        const next = status.out.split("\nNext\n")[1] ?? "";
+        assert.match(next, /^ {2}(?:pnpm )?cotal up +Restart this folder's manager without stopping the broker/m);
+        assert.doesNotMatch(next, /cotal down|cotal up --foreground/);
+        const repair = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
+        ownRecords();
+        assert.equal(repair.code, 0, repair.out + repair.err);
+        assert.deepEqual(token(brokerPath), broker, "bare up keeps the original broker identity");
+        const ps = await inspect("ps");
+        assert.equal(ps.code, 0, ps.out + ps.err);
         passed++;
 
         const downArgs = ["down", "--yes"];
@@ -326,6 +365,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         } else {
           assert.match(meshes.out, /no meshes registered/); passed++;
           assert.match(spaces.out, /No spaces registered/); passed++;
+          await checkStoppedRestartAdvice(mesh, env, port);
         }
         console.log(`PASS foreground-up-signals ${name}: clean external down and expected registration`);
         return true;

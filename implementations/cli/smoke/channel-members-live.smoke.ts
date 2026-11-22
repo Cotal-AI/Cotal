@@ -36,24 +36,25 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 const SPACE = `channel-members-${process.pid}`;
 const base = mkdtempSync(join(tmpdir(), "cotal-channel-members-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), legacy = join(base, "legacy");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
-for (const dir of [home, configDir, s]) mkdirSync(dir, { mode: 0o700 });
-const sandbox = recordSmokeSandbox({ root: s, cotalHome: home, xdgConfigHome: configDir });
+for (const dir of [home, configDir, s, legacy]) mkdirSync(dir, { mode: 0o700 });
+const sandboxes = [s, legacy].map((root) => recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir }));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" });
 
 const { check, finish } = createSuite();
-const cotal = (...args: string[]) => {
-  const options = { cwd: s, env, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(sandbox, args, options);
+const at = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
+  assertSmokeSandboxDown(cwd === legacy ? sandboxes[1] : sandboxes[0], args, options);
   const run = spawnSync(TSX, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, out: `${run.stdout}${run.stderr}` };
 };
+const cotal = (...args: string[]) => at(s, ...args);
 type Census = { asOf: number | null; members: { id: string; name: string | null; live: boolean; durable: boolean }[] };
 type Envelope = { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: Census };
-type StreamRecord = { type: string; data: Census & { lastAsOf?: number | null } };
+type StreamRecord = { type: string; target: { space: string | null; channel: string }; data: Census & { code?: string; reason?: string; lastAsOf?: number | null } };
 const envelope = (stdout: string): Envelope | undefined => { try { return JSON.parse(stdout) as Envelope; } catch { return undefined; } };
 const census = (channel: string) => envelope(cotal("channel", "members", channel, "--json").stdout)?.result;
 const named = (result: Census | undefined, name: string) => result?.members.some((member) => member.name === name) ?? false;
@@ -79,6 +80,23 @@ const records = (out: string) => out.split("\n").filter((line) => line.startsWit
 const shape = (data: Census) => JSON.stringify([data.asOf !== null, data.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
 
 let up = false;
+try {
+  const legacySpace = `${SPACE}-legacy`;
+  const open = at(legacy, "up", "--detach", "--open", "--no-manager", "--space", legacySpace, "--server", `nats://127.0.0.1:${await freePort()}`);
+  up = open.status === 0;
+  if (!up) throw new Error(open.out);
+  const stopped = at(legacy, "down", "--yes");
+  if (stopped.status !== 0) throw new Error(stopped.out);
+  up = false;
+  const stoppedFollow = at(legacy, "channel", "members", "volume.posts", "--follow", "--json");
+  const [error, end, extra] = records(stoppedFollow.stdout);
+  check("a directly started and stopped space is named on both membership setup-failure records",
+    stoppedFollow.status === 2 && stoppedFollow.out === stoppedFollow.stdout && extra === undefined
+      && error?.type === "error" && error.data.code === "TARGET_UNAVAILABLE" && end?.type === "end" && end.data.reason === "setup-failed" && end.data.lastAsOf === null
+      && [error, end].every((row) => row.target.space === legacySpace && row.target.channel === "volume.posts"), stoppedFollow.out);
+} finally {
+  if (up) at(legacy, "down", "--yes");
+}
 try {
   check("space create prepares the folder", cotal("space", "create", SPACE).status === 0);
   up = true;
