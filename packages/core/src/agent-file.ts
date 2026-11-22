@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---(?:\n|$)([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -136,12 +136,10 @@ const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "su
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
 
-/** Refuse a blank `agent`, `model` or `variant`. Launchers and connectors read these as set or
+/** Refuse a whitespace-only `model` or `variant`. Launchers and connectors read these as set or
  *  absent, and a blank value is neither, so letting one through leaves each of them to drop, render
  *  or refuse it on its own. */
-function assertLaunchSelectors(def: Pick<AgentDef, "agent" | "model" | "variant">, where: string): void {
-  if (def.agent !== undefined && !def.agent.trim())
-    throw new Error(`${where}: "agent" must not be empty. Omit "agent" to use the default connector, or name an installed connector`);
+function assertLaunchSelectors(def: Pick<AgentDef, "model" | "variant">, where: string): void {
   for (const k of ["model", "variant"] as const) {
     const v = def[k];
     if (v !== undefined && !v.trim()) throw new Error(`${where}: "${k}" must not be empty`);
@@ -204,7 +202,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const agent = str("agent");
   const model = str("model");
   const variant = str("variant");
-  assertLaunchSelectors({ agent, model, variant }, `agent file ${path}`);
+  assertLaunchSelectors({ model, variant }, `agent file ${path}`);
   const rawKind = str("kind");
   const kind = rawKind !== undefined ? assertValidKind(rawKind, `agent file ${path}`) : undefined;
 
@@ -296,7 +294,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     kind,
     description: str("description"),
     tags: list("tags"),
-    agent,
+    agent: agent?.trim() ? agent : undefined,
     subscribe,
     allowSubscribe,
     allowPublish,

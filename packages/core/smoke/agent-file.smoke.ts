@@ -292,6 +292,25 @@ for (const [label, text] of [["CRLF", lf.replaceAll("\n", "\r\n")], ["a BOM", "\
   ok(`a file with ${label} reads as the LF file`, JSON.stringify(read) === JSON.stringify(plain), read);
 }
 
+for (const trailing of [" ", "\t", " \t"]) {
+  const file = join(dir, "closing-fence.md");
+  writeFileSync(file, lf.replace("\n---\n", `\n---${trailing}\n`));
+  const read = loadAgentFile(file);
+  ok(`closing fence accepts ${JSON.stringify(trailing)} without changing the body`, read.persona === plain.persona, read);
+  writeFileSync(file, lf.replace(/^---\n/, `---${trailing}\n`));
+  let error = "";
+  try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+  ok(`opening fence rejects ${JSON.stringify(trailing)}`, error === `agent file ${file}: missing "---" frontmatter block`, error);
+}
+{
+  const file = join(dir, "malformed-closing-fence.md");
+  writeFileSync(file, lf.replace("\n---\n", "\n---oops\n"));
+  let error = "";
+  try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+  ok("a malformed closing fence names the missing closing delimiter",
+    error === `agent file ${file}: missing closing "---" frontmatter fence on its own line`, error);
+}
+
 // 11) A file saved as UTF-16, as Windows PowerShell 5.1 writes it, is refused by its encoding, with
 //     or without the byte-order mark, instead of as a missing frontmatter fence.
 for (const [label, bytes] of [["UTF-16LE", Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(lf, "utf16le")])], ["UTF-16BE", Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(lf, "utf16le").swap16()])], ["UTF-16LE with no BOM", Buffer.from(lf, "utf16le")]] as const) {

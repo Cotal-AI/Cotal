@@ -701,24 +701,34 @@ try {
   const validSpawn = native(["spawn", "typed-valid", "--foreground", "--dry-run", "--json"]);
   check("spawn dry-run accepts correctly typed file", validSpawn.status === 0 && validSpawn.stdout.includes('"42"'), validSpawn.stdout + validSpawn.stderr);
 
-  for (const [name, tail, reason] of [
-    ["broken-fence", "---oops\nBody.\n", 'missing closing "---" frontmatter fence'],
-    ["blank-agent", 'agent: ""\n---\nBody.\n', 'Omit "agent" to use the default connector'],
-    ["whitespace-agent", 'agent: "  "\n---\nBody.\n', 'Omit "agent" to use the default connector'],
-  ]) {
-    const path = agentFilePath(MESH, name);
-    writeFileSync(path, `---\nname: ${name}\n${tail}`);
-    for (const args of [["persona", "show", name], ["spawn", name, "--foreground", "--dry-run"]]) {
+  {
+    const path = agentFilePath(MESH, "broken-fence");
+    writeFileSync(path, "---\nname: broken-fence\n---oops\nBody.\n");
+    for (const args of [["persona", "show", "broken-fence"], ["spawn", "broken-fence", "--foreground", "--dry-run"]]) {
       const refused = native([...args, "--json"]);
       const { error } = JSON.parse(refused.stdout);
-      check(`${args[0]} refuses ${name} as invalid frontmatter`,
-        refused.status === 1 && error?.code === "SCHEMA_INVALID" && error.message.includes(path) && error.message.includes(reason), refused.stdout + refused.stderr);
+      check(`${args[0]} refuses a malformed closing fence`, refused.status === 1 && error?.code === "SCHEMA_INVALID" &&
+        error.message.includes(path) && error.message.includes('missing closing "---" frontmatter fence'), refused.stdout + refused.stderr);
     }
-    writeFileSync(path, `---\r\nname: ${name}\r\n---\r\nBody.\r\n`);
-    const repaired = native(["persona", "show", name, "--json"]);
+    writeFileSync(path, "---\r\nname: broken-fence\r\n--- \t\r\nBody.\r\n");
+    const repaired = native(["persona", "show", "broken-fence", "--json"]);
     const definition = JSON.parse(repaired.stdout).result?.definition;
-    check(`${name} loads after repair, with the body intact and no connector pin`,
-      repaired.status === 0 && definition?.persona === "Body." && definition.agent === undefined, repaired.stdout);
+    check("persona show accepts spaces and tabs on a closing fence without changing the body",
+      repaired.status === 0 && definition?.persona === "Body.", repaired.stdout);
+    unlinkSync(path);
+  }
+  for (const pin of ["", " \t"]) {
+    const path = agentFilePath(MESH, "blank-agent");
+    writeFileSync(path, `---\nname: blank-agent\nagent: ${JSON.stringify(pin)}\n---\nBody.\n`);
+    const show = native(["persona", "show", "blank-agent", "--plain"]);
+    check(`persona show treats ${JSON.stringify(pin)} as no application pin`,
+      show.status === 0 && show.stdout.includes("Application: user default"), show.stdout + show.stderr);
+    for (const [want, flags] of [["claude", []], ["jcode", ["--harness", "jcode"]]] as const) {
+      const spawn = native(["spawn", "blank-agent", "--foreground", "--dry-run", "--json", ...flags],
+        MESH, { ...childEnv, COTAL_DEFAULT_AGENT: "claude" });
+      check(`spawn preview of ${JSON.stringify(pin)} uses ${flags.length ? "the explicit harness" : "the default"}`,
+        spawn.status === 0 && JSON.parse(spawn.stdout).result?.harness === want, spawn.stdout + spawn.stderr);
+    }
     unlinkSync(path);
   }
 
