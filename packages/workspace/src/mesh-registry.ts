@@ -6,6 +6,7 @@ import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/c
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
+import { shellPath } from "./local-record-source.js";
 
 export { homeCotalDir, userCotalDir } from "./cotal-home.js";
 
@@ -556,14 +557,24 @@ export class MeshRegistryError extends Error {
   readonly remedy?: string;
   /** Set when this account may not read the file, which is then intact as far as anyone knows. */
   readonly refusal?: "PERMISSION_DENIED";
-  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string; refusal?: "PERMISSION_DENIED" }) {
+  /** The record path is occupied by a directory, not a removable record file. */
+  readonly recordDirectory?: true;
+  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string; refusal?: "PERMISSION_DENIED"; recordDirectory?: true }) {
     super(message, options);
     this.name = "MeshRegistryError";
     this.file = file;
     this.summary = options?.summary;
     this.remedy = options?.remedy;
     this.refusal = options?.refusal;
+    this.recordDirectory = options?.recordDirectory;
   }
+}
+
+/** A directory at a record path must be moved aside intact before restoring a record. */
+export function registryRecordDirectory(file: string, cause: unknown): MeshRegistryError {
+  const summary = `${file} is a directory, not a space record file`;
+  const remedy = `move the directory ${shellPath(file)} aside to an unused path, then restore the record from backup if available`;
+  return new MeshRegistryError(file, `${summary} - ${remedy}`, { cause, summary, remedy, recordDirectory: true });
 }
 
 /** Detect a {@link MeshRegistryError} without `instanceof`, which two installed copies of this
@@ -652,6 +663,7 @@ function readMeshFile(file: string): MeshEntry | undefined {
     entry = JSON.parse(readFileSync(file, "utf8")) as MeshEntry;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((e as NodeJS.ErrnoException).code === "EISDIR") throw registryRecordDirectory(file, e);
     // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
     // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
     throw new MeshRegistryError(file, `${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`, { cause: e });
