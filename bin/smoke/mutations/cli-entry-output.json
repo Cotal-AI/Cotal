@@ -34,10 +34,10 @@
     {
       "name": "a global flag after -- is taken",
       "file": "implementations/cli/src/command.ts",
-      "find": "  const end = words.indexOf(\"--\");\n",
-      "replace": "  const end = -1;\n",
-      "expectRed": "a global flag after -- is a word",
-      "cell": "a global flag after -- is a word",
+      "find": "    if (word === \"--\") break;\n    if (!GLOBAL_FLAG_WORDS.has(word)) continue;\n",
+      "replace": "    if (!GLOBAL_FLAG_WORDS.has(word)) continue;\n",
+      "expectRed": "a global flag after -- does not turn off color",
+      "cell": "a global flag after -- does not turn off color",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },

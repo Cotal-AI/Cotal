@@ -406,6 +406,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     [["history", "--json", "--limit", "1", "--limit", "--no-input", "abc"], "--limit", "<n>"],
     [["send", "--json", "-c", "--no-input", "hello"], "--channel", "<channel>"],
     [["send", "--json", "-vc", "--no-color", "hello"], "--channel", "<channel>"],
+    [["service", "add", "demo", "--json", "--preset", "--no-input", "broker"], "--preset", "<name>"],
+    [["service", "add", "demo", "--json", "--file", "--no-input", "--preset", "alienpreset"], "--file", "<definition.json>"],
   ] as const) {
     const result = cotal([...argv]);
     const reports = envelopes(result);
@@ -417,6 +419,12 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const literal = cotal(["docs", "--json", "--search=--no-input", "--no-input"]);
   check("an attached value that looks like a global flag is still a value",
     literal.status === 0 && literal.stderr === "" && envelopes(literal)[0]?.result?.query === "--no-input", shown(literal));
+  const unknownPreset = cotal(["service", "add", "demo", "--json", "--preset", "alienpreset", "--no-input"]);
+  check("a complete service preset option still resolves the named preset", unknownPreset.status === 2 && unknownPreset.stderr === ""
+    && envelopes(unknownPreset)[0]?.error?.code === "DEPENDENCY_UNAVAILABLE", shown(unknownPreset));
+  const presetHelp = cotal(["service", "add", "--preset", "broker", "--no-input", "--help"]);
+  check("a global flag does not hide a named preset's help",
+    presetHelp.status === 0 && presetHelp.wrote.length === 0 && presetHelp.stdout.includes("--binary"), shown(presetHelp));
   const text = cotal(["version"]);
   const json = cotal(["version", "--json"]);
   local("version --json writes nothing", json);
@@ -593,6 +601,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("--no-input after the command's words is accepted", same(cotal(["version", "--no-input"]), cotal(["version"])));
   check("--no-input and --no-color together are accepted", same(cotal(["--no-input", "version", "--no-color"]), cotal(["version"])));
   refused("a global flag after -- is a word", cotal(["ext", "--", "--no-input"]), /cotal ext has no subcommand "--no-input"/);
+  const literalColor = cotal(["ext", "--", "--no-color"], undefined, forced);
+  check("a global flag after -- does not turn off color",
+    literalColor.status === 1 && ansi.test(literalColor.stderr), shown(literalColor));
   // A global flag is given once, as any flag is, wherever the two stand.
   for (const argv of [["version", "--no-color", "--no-color"], ["--no-color", "--no-color", "version"], ["--no-input", "version", "--no-input"]])
     refused(`${argv.join(" ")} is refused as a repeated flag`, cotal(argv, undefined, noSeed), new RegExp(`Option '${argv.find((word) => word.startsWith("--no-"))}' cannot be repeated`));

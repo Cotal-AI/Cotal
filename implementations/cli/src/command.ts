@@ -442,6 +442,10 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
   return undefined;
 }
 
+function missingFlagValue(flag: FlagSpec, beforeSeparator = false) {
+  return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
+}
+
 /** A parse error as a refusal. Node's own usage guidance is replaced with this CLI's remedies:
  *  a word that starts with `-` goes after `--` only where the command takes operands,
  *  an option value that starts with `-` is written `--name=value`, and an option given with no value,
@@ -455,17 +459,16 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, ambiguousV
     return takesOperands ? { message, remedy: "to pass a word that starts with \"-\", put -- before it" } : { message };
   }
   const message = error.message.split(".")[0]!;
-  const missingValue = (flag: FlagSpec, beforeSeparator = false) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingFlagValue(last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag && ambiguousValue?.flag.name === flag.name) {
     const { value } = ambiguousValue;
-    if (value === "--") return missingValue(flag, true);
+    if (value === "--") return missingFlagValue(flag, true);
     if (GLOBAL_FLAG_WORDS.has(value) || cmd.flags?.some((item) => value === `--${item.name}` || value.startsWith(`--${item.name}=`) || (item.short !== undefined && value === `-${item.short}`)))
-      return missingValue(flag);
+      return missingFlagValue(flag);
     return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
   }
   return { message };
@@ -614,6 +617,14 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
  *  Preset details can enrich a duplicate refusal but cannot replace it. */
 async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+  // An incomplete base option must not be reported as a failure to resolve the preset.
+  if (found.name === "service" && !forRefusal && !asksForHelp(words)) {
+    const { ambiguousValue } = metadataPositionals(found, words);
+    if (ambiguousValue && GLOBAL_FLAG_WORDS.has(ambiguousValue.value)) {
+      const { message, remedy } = missingFlagValue(ambiguousValue.flag);
+      usageExit(message, found, asksForJson(found, words), words.includes("--plain"), remedy, words);
+    }
+  }
   try {
     const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
     if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
