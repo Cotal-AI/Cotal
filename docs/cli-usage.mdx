@@ -181,7 +181,8 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`. The refusal names `--` when the command takes an operand and there is no spelling suggestion.
+`--`. Put output flags such as `--plain` before `--` to change how a refusal is printed.
+The refusal names `--` when the command takes an operand and there is no spelling suggestion.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`.
 An option value that starts with `-` is written `--limit=-1`,

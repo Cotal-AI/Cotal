@@ -74,6 +74,15 @@ const withValue = run(["--json", "ep", "work", "--server", "commit", "commti"]);
 check("a flag value is not a nested subcommand, including through a command alias", withValue.status === 1 && withValue.stderr === ""
   && withValue.envelope?.error?.message?.startsWith('cotal endpoint work has no subcommand "commti" - did you mean commit?') === true, shown(withValue));
 
+const plainBefore = run(["auth", "handle", "--plain", "--", "inspec"]);
+const plainAfter = run(["auth", "handle", "--", "inspec", "--plain"]);
+const withoutPlain = run(["auth", "handle", "--", "inspec"]);
+check("--plain before -- gives a plain nested subcommand refusal", plainBefore.status === 1 && plainBefore.stdout === ""
+  && plainBefore.stderr.includes("USAGE_INVALID") && plainBefore.stderr.includes('cotal auth handle has no subcommand "inspec"'), shown(plainBefore));
+check("--plain after -- leaves a nested subcommand refusal in rich text", plainAfter.status === 1 && plainAfter.stdout === ""
+  && plainAfter.stderr.startsWith('✗ cotal auth handle has no subcommand "inspec" - did you mean inspect?')
+  && plainAfter.stderr === withoutPlain.stderr, { after: shown(plainAfter), control: shown(withoutPlain) });
+
 const duplicateInput = "Option '--no-input' cannot be repeated";
 const jsonDuplicate = (r: ReturnType<typeof run>, command: string) => r.status === 1 && r.stderr === "" &&
   r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&

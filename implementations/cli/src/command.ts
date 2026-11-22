@@ -532,7 +532,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const { path, parent, unknown } = subcommandPath(cmd, parsed.positionals);
   if (unknown !== undefined) {
     const name = [cmd.name, ...path].join(" ");
-    usageExit(unknownSubcommandMessage(name, parent, unknown), cmd, json, plain, json ? `run \`cotal help ${name}\`` : undefined, rest);
+    usageExit(unknownSubcommandMessage(name, parent, unknown), cmd, json, parsed.values.plain === true, json ? `run \`cotal help ${name}\`` : undefined, rest);
   }
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
