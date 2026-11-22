@@ -70,16 +70,16 @@ const family = async (ttl: number) =>
 type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: unknown, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
-  sessionLedgerIdentity?: Identity;
-  sessionLedgerConn?: { nc: NatsConnection; creds?: string };
   goalWriterCreds?: string;
-  sessionLedgerCreds?: string;
   serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   ep: { reconnect(): Promise<void> };
   leaseStopping: boolean;
   renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void>;
   servePlane: {
     dialSessionLedgerConnection(sw: { nc: NatsConnection; creds?: string }, identity: Identity): Promise<void>;
+    sessionLedgerIdentity?: Identity;
+    sessionLedgerConn?: { nc: NatsConnection; creds?: string };
+    sessionLedgerCreds?: string;
   };
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
 };
@@ -127,8 +127,8 @@ try {
   m.credentialRenewal.remoteSupervisorCreds = initial.supervisor;
   m.credentialRenewal.remoteExecutorCreds = initial.executor;
   m.goalWriterCreds = initial.goalWriter;
-  m.sessionLedgerCreds = initial.sessionLedger;
-  m.sessionLedgerIdentity = held.sessionLedger;
+  m.servePlane.sessionLedgerCreds = initial.sessionLedger;
+  m.servePlane.sessionLedgerIdentity = held.sessionLedger;
   m.ep = { reconnect: async () => {} };
   // Only session-ledger recovery is native here. Serve replacement is a transport seam,
   // not an authorization or dispatch test. Native serve continuity has its own live suite.
@@ -140,7 +140,7 @@ try {
     return { nc, handle: { stop: async () => {} } };
   };
   const sw: { nc: NatsConnection; creds?: string } = { nc: undefined as never, creds: initial.sessionLedger };
-  m.sessionLedgerConn = sw;
+  m.servePlane.sessionLedgerConn = sw;
   await m.servePlane.dialSessionLedgerConnection(sw, held.sessionLedger);
   const first = sw.nc;
 
@@ -168,7 +168,7 @@ try {
     assert.equal(bundleCalls, 2);
     assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
     assert.equal(sw.creds, renewed.value!.sessionLedger);
-    assert.equal(m.sessionLedgerCreds, renewed.value!.sessionLedger);
+    assert.equal(m.servePlane.sessionLedgerCreds, renewed.value!.sessionLedger);
     assert.equal(m.serviceServe!.creds, renewed.value!.serve);
     assert.equal(m.goalWriterCreds, renewed.value!.goalWriter);
   });
@@ -188,7 +188,7 @@ try {
 } finally {
   console.error = origError;
   if (m) m.leaseStopping = true;
-  await m?.sessionLedgerConn?.nc?.close().catch(() => {});
+  await m?.servePlane.sessionLedgerConn?.nc?.close().catch(() => {});
   await m?.serviceServe?.nc?.close().catch(() => {});
   releaseBroker();
   await killAndAwaitExit(srv);
