@@ -23,7 +23,7 @@ function recordRefusal(result: UnresolvedTarget, e: CommandFailure): TargetRefus
 
 function unusableServiceInstances(space: string): CommandFailure | undefined {
   try { serviceInstances(space); return undefined; }
-  catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
+  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
 }
 
 async function workspaceRefusal(e: MeshTargetError, folder: StatusResult["folder"], gaps: Gaps, hints: string[]): Promise<TargetRefusal> {
@@ -49,8 +49,9 @@ async function workspaceRefusal(e: MeshTargetError, folder: StatusResult["folder
   };
   const instances = stopped && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
   if (instances) {
-    gaps.add("SERVICE_INSTANCES_UNAVAILABLE", instances.remedy ? `${instances.message}; ${instances.remedy}` : instances.message, { space: d.space, ...(instances.target as object | null) });
-    return blocked(instances.remedy ?? instances.message);
+    const diagnosis = instances.remedy ? `${instances.message}; ${instances.remedy}` : instances.message;
+    gaps.add("SERVICE_INSTANCES_UNAVAILABLE", diagnosis, { space: d.space, ...(instances.target as object | null) });
+    return blocked(instances.code === "PERMISSION_DENIED" ? diagnosis : instances.remedy ?? instances.message);
   }
   const store = localRoot === undefined ? undefined : rootStoreProblem(localRoot);
   if (store) return blocked(`${store.message}; ${store.remedy}`);
@@ -92,8 +93,8 @@ export async function readUnresolvedTarget(e: unknown, folder: StatusResult["fol
   if (!isWorkspaceTargetError(e)) throw e;
   if (unstarted !== undefined && link !== undefined) {
     hints.push(linkedCotalRemedy(unstarted, link));
-    const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-    return targetRefusal({ resolved: false, code: "not-started", message: linkedMessage(unstarted, link, cmd) }, e.code, message, remedy);
+    const message = linkedMessage(unstarted, link, cmd);
+    return targetRefusal({ resolved: false, code: "not-started", message }, e.code, message);
   }
   if (!all && e.code === "ambiguous-target" && e.details.server === undefined && e.details.spaces && !isGenuineSpace(folder.root)) {
     hints.push(`check the registered spaces with \`${cmd} status --all\``);

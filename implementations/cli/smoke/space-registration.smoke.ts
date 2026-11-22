@@ -1650,12 +1650,33 @@ if (process.platform === "linux") {
   writeFileSync(instance, "{\n", { mode: 0o600, flag: "wx" });
   try { await checkBlockedComponents("a service instance record is unreadable", `${instance}.old`); }
   finally { unlinkSync(instance); }
+  const brokerRecord = serviceInstanceStore("demo").list().find((row) => row.record.value.definition === "stack-broker")!.path;
+  const brokerRecordMode = statSync(brokerRecord).mode & 0o777;
+  chmodSync(brokerRecord, brokerRecordMode | 0o040);
+  try { await checkBlockedComponents("a service instance record is not private", `the saved local record ${brokerRecord} is not owned and private`); }
+  finally { chmodSync(brokerRecord, brokerRecordMode); }
   if (process.getuid?.() !== 0) {
     const store = join(readStackJournal(fresh)!.journal.broker!.storeDir, "jetstream");
     const mode = statSync(store).mode & 0o777;
     chmodSync(store, mode & ~0o200);
     try { await checkBlockedComponents("the store is unwritable", `chmod -R u+w ${store}`); }
     finally { chmodSync(store, mode); }
+  }
+  const controlDir = join(fresh, ".cotal");
+  const movedControlDir = join(mkdtempSync(join(home, "linked-stopped-records-")), ".cotal");
+  renameSync(controlDir, movedControlDir);
+  try {
+    symlinkSync(movedControlDir, controlDir, "dir");
+    const linked = await componentStatus();
+    const [report, health = ""] = linked.stdout.split("\nComponent Health\n");
+    const next = report?.split("\nNext\n")[1] ?? "";
+    check("component health reports the linked records of a stopped target without a restart remedy",
+      linked.status === 1 && next.includes("move the records back to the folder the stack started in") &&
+        /^  target +absent · not-started/m.test(health) && health.includes(`${controlDir} is a link to ${movedControlDir}`) &&
+        !health.includes("start it again with"), linked);
+  } finally {
+    if (lstatSync(controlDir, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(controlDir);
+    renameSync(movedControlDir, controlDir);
   }
   const repairedPs = await json(["ps", "--space", "demo"], fresh);
   check("repairing the seed restores broker-only restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === restartAdvice, shown(repairedPs));
