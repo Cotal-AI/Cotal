@@ -96,7 +96,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  describe plus the contract-store reads behind it) and invokes again, so it is many. Read before
  *  and after a call, compare the delta. */
 const pubs = (ep: CotalEndpoint): number =>
-  (ep as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  (ep as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
 
 /** REQUESTS this endpoint published on one command's request rail, counted by decoding each
  *  published subject with the SHIPPED parser rather than a hand-rolled match.
@@ -116,7 +116,7 @@ const pubs = (ep: CotalEndpoint): number =>
  *  and none for attempts; this is the second one. */
 const requestsSent = (ep: CotalEndpoint): ((endpoint: string, command: string) => number) => {
   const sent = new Map<string, number>();
-  const nc = (ep as unknown as { nc: { publish: (s: string, ...rest: unknown[]) => unknown } }).nc;
+  const nc = (ep as unknown as { conn: { nc: { publish: (s: string, ...rest: unknown[]) => unknown } } }).conn.nc;
   const orig = nc.publish.bind(nc);
   nc.publish = (subject: string, ...rest: unknown[]): unknown => {
     const p = parseEpSubject(subject);

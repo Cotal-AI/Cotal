@@ -2,8 +2,9 @@
 // everything that hangs off it, clear the connection-scoped state, close a failed bind, tear down a bind
 // that lost a race with stop, stop the endpoint, and report its native connections. Moved verbatim from
 // endpoint.ts. It owns its timers, the taps, the record of its own watch consumers and the subscription
-// denials it reported; the endpoint keeps connectAndBind, the supervisor and the retry loop and forwards to
-// these. Not re-exported by the index.
+// denials it reported, and it opens and clears the endpoint's ConnectionState; the endpoint keeps
+// connectAndBind, the supervisor and the retry loop and forwards to these. Not re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { openChannelRegistry } from "./channels.js";
@@ -25,7 +26,7 @@ import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
 import type { CotalMessage, ChannelConfig, ChannelDefaults } from "./types.js";
-import { type JetStreamClient, type JetStreamManager, type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
 import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
 
@@ -49,25 +50,11 @@ export interface EndpointConnectionDeps {
   bearerRenewalFailures: () => number;
   bearerAdoptedAtMs: () => number;
   currentCreds: () => string | undefined;
-  nc: () => NatsConnection | undefined;
-  setNc: (value: NatsConnection | undefined) => void;
-  watchDeletePermissions: () => WeakMap<object, () => IssuedSubjectPermission | undefined>;
-  ownedConnections: () => Set<NatsConnection>;
-  js: () => JetStreamClient | undefined;
-  setJs: (value: JetStreamClient | undefined) => void;
   stopped: () => boolean;
   setStopped: (value: boolean) => void;
-  issuedGeneration: () => string | undefined;
-  setIssuedGeneration: (value: string | undefined) => void;
-  kv: () => KV | undefined;
-  setKv: (value: KV | undefined) => void;
   authed: () => boolean;
-  channelKv: () => KV | undefined;
-  setChannelKv: (value: KV | undefined) => void;
   readsChannelsOnDemand: () => boolean;
   deliveryLease: () => EndpointDeliveryLease;
-  jsm: () => JetStreamManager | undefined;
-  setJsm: (value: JetStreamManager | undefined) => void;
   livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
   activeGoalFollowers: () => Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void; }>;
   authExpiryReconnectTimer: () => NodeJS.Timeout | undefined;
@@ -76,8 +63,6 @@ export interface EndpointConnectionDeps {
   presenceEpoch: () => number;
   setPresenceEpoch: (value: number) => void;
   presence: () => EndpointPresence;
-  channelWatchIter: () => Awaited<ReturnType<KV["watch"]>> | undefined;
-  setChannelWatchIter: (value: Awaited<ReturnType<KV["watch"]>> | undefined) => void;
   chatSubs: () => Map<string, Subscription>;
   chatSubDenied: () => Set<string>;
   channelConfigs: () => Map<string, ChannelConfig>;
@@ -89,17 +74,6 @@ export interface EndpointConnectionDeps {
   setChannelReadGeneration: (value: number) => void;
   channelReadApplied: () => number;
   setChannelReadApplied: (value: number) => void;
-  membershipFeedWatches: () => Set<MembershipFeedWatch>;
-  membersKv: () => KV | undefined;
-  setMembersKv: (value: KV | undefined) => void;
-  aclKv: () => KV | undefined;
-  setAclKv: (value: KV | undefined) => void;
-  membershipFeedKv: () => KV | undefined;
-  setMembershipFeedKv: (value: KV | undefined) => void;
-  managerLeaseKv: () => KV | undefined;
-  setManagerLeaseKv: (value: KV | undefined) => void;
-  daemonRenewalLeaseRevision: () => number | undefined;
-  setDaemonRenewalLeaseRevision: (value: number | undefined) => void;
   deliveryPlane: () => EndpointDeliveryPlane;
   subs: () => Subscription[];
   principalServes: () => Map<string, PrincipalServeIntent>;
@@ -111,7 +85,6 @@ export interface EndpointConnectionDeps {
   reconnecting: () => boolean;
   credsTxnsRunning: () => number;
   residentSwap: () => Promise<void> | undefined;
-  nativeBound: () => boolean;
   refreshBearer: (initial?: boolean) => Promise<void>;
   refreshCreds: (initial?: boolean) => Promise<void>;
   cancelCredsRefresh: () => void;
@@ -153,8 +126,8 @@ export interface EndpointConnectionDeps {
 }
 
 /** One endpoint's connection bind and teardown. Internal: it owns its timers, taps and watch-consumer
- *  records, and `CotalEndpoint` keeps the shared fields, connectAndBind, the supervisor and the retry loop,
- *  and forwards to it. */
+ *  records and writes the shared {@link ConnectionState}, and `CotalEndpoint` keeps the other shared
+ *  fields, connectAndBind, the supervisor and the retry loop, and forwards to it. */
 export class EndpointConnection {
   /** Whether the expired-bearer refusal has been surfaced for this outage. */
   private bearerRefusalSurfaced = false;
@@ -171,31 +144,17 @@ export class EndpointConnection {
   /** Service iterators and connection status can receive the same subscription denial. */
   private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointConnectionDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointConnectionDeps) {}
 
   private get currentBearer() { return this.deps.currentBearer(); }
   private get bearerRenewalFailures() { return this.deps.bearerRenewalFailures(); }
   private get bearerAdoptedAtMs() { return this.deps.bearerAdoptedAtMs(); }
   private get currentCreds() { return this.deps.currentCreds(); }
-  private get nc() { return this.deps.nc(); }
-  private set nc(value: NatsConnection | undefined) { this.deps.setNc(value); }
-  private get watchDeletePermissions() { return this.deps.watchDeletePermissions(); }
-  private get ownedConnections() { return this.deps.ownedConnections(); }
-  private get js() { return this.deps.js(); }
-  private set js(value: JetStreamClient | undefined) { this.deps.setJs(value); }
   private get stopped() { return this.deps.stopped(); }
   private set stopped(value: boolean) { this.deps.setStopped(value); }
-  private get issuedGeneration() { return this.deps.issuedGeneration(); }
-  private set issuedGeneration(value: string | undefined) { this.deps.setIssuedGeneration(value); }
-  private get kv() { return this.deps.kv(); }
-  private set kv(value: KV | undefined) { this.deps.setKv(value); }
   private get authed() { return this.deps.authed(); }
-  private get channelKv() { return this.deps.channelKv(); }
-  private set channelKv(value: KV | undefined) { this.deps.setChannelKv(value); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private get deliveryLease() { return this.deps.deliveryLease(); }
-  private get jsm() { return this.deps.jsm(); }
-  private set jsm(value: JetStreamManager | undefined) { this.deps.setJsm(value); }
   private get livenessResponders() { return this.deps.livenessResponders(); }
   private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
   private get authExpiryReconnectTimer() { return this.deps.authExpiryReconnectTimer(); }
@@ -204,8 +163,6 @@ export class EndpointConnection {
   private get presenceEpoch() { return this.deps.presenceEpoch(); }
   private set presenceEpoch(value: number) { this.deps.setPresenceEpoch(value); }
   private get presence() { return this.deps.presence(); }
-  private get channelWatchIter() { return this.deps.channelWatchIter(); }
-  private set channelWatchIter(value: Awaited<ReturnType<KV["watch"]>> | undefined) { this.deps.setChannelWatchIter(value); }
   private get chatSubs() { return this.deps.chatSubs(); }
   private get chatSubDenied() { return this.deps.chatSubDenied(); }
   private get channelConfigs() { return this.deps.channelConfigs(); }
@@ -217,17 +174,6 @@ export class EndpointConnection {
   private set channelReadGeneration(value: number) { this.deps.setChannelReadGeneration(value); }
   private get channelReadApplied() { return this.deps.channelReadApplied(); }
   private set channelReadApplied(value: number) { this.deps.setChannelReadApplied(value); }
-  private get membershipFeedWatches() { return this.deps.membershipFeedWatches(); }
-  private get membersKv() { return this.deps.membersKv(); }
-  private set membersKv(value: KV | undefined) { this.deps.setMembersKv(value); }
-  private get aclKv() { return this.deps.aclKv(); }
-  private set aclKv(value: KV | undefined) { this.deps.setAclKv(value); }
-  private get membershipFeedKv() { return this.deps.membershipFeedKv(); }
-  private set membershipFeedKv(value: KV | undefined) { this.deps.setMembershipFeedKv(value); }
-  private get managerLeaseKv() { return this.deps.managerLeaseKv(); }
-  private set managerLeaseKv(value: KV | undefined) { this.deps.setManagerLeaseKv(value); }
-  private get daemonRenewalLeaseRevision() { return this.deps.daemonRenewalLeaseRevision(); }
-  private set daemonRenewalLeaseRevision(value: number | undefined) { this.deps.setDaemonRenewalLeaseRevision(value); }
   private get deliveryPlane() { return this.deps.deliveryPlane(); }
   private get subs() { return this.deps.subs(); }
   private get principalServes() { return this.deps.principalServes(); }
@@ -239,7 +185,6 @@ export class EndpointConnection {
   private get reconnecting() { return this.deps.reconnecting(); }
   private get credsTxnsRunning() { return this.deps.credsTxnsRunning(); }
   private get residentSwap() { return this.deps.residentSwap(); }
-  private get nativeBound() { return this.deps.nativeBound(); }
   private refreshBearer(initial?: boolean): Promise<void> { return this.deps.refreshBearer(initial); }
   private refreshCreds(initial?: boolean): Promise<void> { return this.deps.refreshCreds(initial); }
   private cancelCredsRefresh(): void { this.deps.cancelCredsRefresh(); }
@@ -323,7 +268,7 @@ export class EndpointConnection {
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
     let watchDeletePermission: IssuedSubjectPermission | undefined;
-    this.nc = await dialerFor(this.identity.servers)({
+    this.conn.nc = await dialerFor(this.identity.servers)({
       servers: this.identity.servers,
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
       noAsyncTraces: true,
@@ -368,15 +313,15 @@ export class EndpointConnection {
     });
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
-    this.watchDeletePermissions.set(this.nc, () => watchDeletePermission);
-    this.ownedConnections.add(this.nc);
-    const owned = this.nc;
-    void owned.closed().then(() => this.ownedConnections.delete(owned));
-    this.identity.onConnection?.(this.nc);
-    requireBrokerFloor(this.nc);
-    this.armAuthExpiryReconnectFence(this.nc);
+    this.conn.watchDeletePermissions.set(this.conn.nc, () => watchDeletePermission);
+    this.conn.ownedConnections.add(this.conn.nc);
+    const owned = this.conn.nc;
+    void owned.closed().then(() => this.conn.ownedConnections.delete(owned));
+    this.identity.onConnection?.(this.conn.nc);
+    requireBrokerFloor(this.conn.nc);
+    this.armAuthExpiryReconnectFence(this.conn.nc);
     this.watchStatus();
-    this.js = jetstream(this.nc);
+    this.conn.js = jetstream(this.conn.nc);
 
     // DM-only (EndpointOptions.dmOnly): the own DM durable is the whole binding. Nothing below runs:
     // no accepted-row read, presence, channel registry, JetStream manager, lease, membership,
@@ -396,11 +341,11 @@ export class EndpointConnection {
     // connection re-reads it: the generation is bound to the credential the transport presented,
     // never to a file that may have been replaced under it.
     if (this.identity.acceptedToken !== undefined) {
-      const ref = await readAcceptedRow(this.nc, this.identity.space, this.identity.acceptedToken);
+      const ref = await readAcceptedRow(this.conn.nc, this.identity.space, this.identity.acceptedToken);
       const uid = this.requireLifecycleUid("an issued endpoint");
       if (ref.owner !== this.identity.owner || ref.actor !== this.identity.actor || ref.uid !== uid)
         throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.identity.owner}.${this.identity.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
-      this.issuedGeneration = ref.generation;
+      this.conn.issuedGeneration = ref.generation;
     }
 
     await this.identity.beforeBind?.();
@@ -409,11 +354,11 @@ export class EndpointConnection {
     // A one-shot observer must not initialize an open space just to read it.
     const createBuckets = !this.authed && !this.identity.readOnce;
     if (this.identity.doWatch || this.identity.doRegister) {
-      const kvm = new Kvm(this.nc);
-      this.kv = createBuckets
+      const kvm = new Kvm(this.conn.nc);
+      this.conn.kv = createBuckets
         ? await kvm.create(presenceBucket(this.identity.space), { ttl: this.identity.ttlMs, storage: PRESENCE_STORAGE })
         : await kvm.open(presenceBucket(this.identity.space));
-      if (!this.authed && this.identity.readOnce && !(await bucketExists(this.kv))) this.kv = undefined;
+      if (!this.authed && this.identity.readOnce && !(await bucketExists(this.conn.kv))) this.conn.kv = undefined;
     }
 
     if (this.identity.doWatch && this.identity.readOnce) await this.readPresenceOnce();
@@ -432,8 +377,8 @@ export class EndpointConnection {
     // pre-created at `cotal up`; an open live endpoint can lazily create it.
     const watchChannels = this.identity.doWatch && this.identity.doWatchChannels;
     if (watchChannels || this.identity.doConsume) {
-      this.channelKv = await openChannelRegistry(this.nc, this.identity.space, { create: createBuckets });
-      if (!this.authed && this.identity.readOnce && !(await bucketExists(this.channelKv))) this.channelKv = undefined;
+      this.conn.channelKv = await openChannelRegistry(this.conn.nc, this.identity.space, { create: createBuckets });
+      if (!this.authed && this.identity.readOnce && !(await bucketExists(this.conn.channelKv))) this.conn.channelKv = undefined;
       if (watchChannels) await (this.identity.readOnce ? this.readChannelsOnce() : this.startChannelWatch());
       // A seat reads the registry on demand, as it reads the roster; this first read fills the cache
       // its boot briefing renders from.
@@ -460,7 +405,7 @@ export class EndpointConnection {
     // incarnation's lifecycle-keyed names match its minted grants, so a wrong-uid launch dies
     // with NO presence ghost instead of advertising an agent that can never receive.
     if (this.identity.doConsume) {
-      this.jsm = await jetstreamManager(this.nc);
+      this.conn.jsm = await jetstreamManager(this.conn.nc);
       // Open mode: lazily create the streams on the first endpoint. Auth mode: they are
       // pre-created at `cotal up` and STREAM.CREATE is denied to agents, so skip.
       if (!this.authed) await this.ensureStreams();
@@ -477,7 +422,7 @@ export class EndpointConnection {
     // (a peer on the roster); pure `kind: "endpoint"` infra (manager, delivery, feedback intake)
     // holds no dm_ durable and stays exempt.
     if (this.identity.doRegister && !this.identity.doConsume && this.authed && this.identity.card.kind === "agent") {
-      const jsm = this.jsm ?? (this.jsm = await jetstreamManager(this.nc));
+      const jsm = this.conn.jsm ?? (this.conn.jsm = await jetstreamManager(this.conn.nc));
       const uid = this.requireLifecycleUid("an authed presence-registering agent");
       try {
         await jsm.consumers.info(dmStream(this.identity.space), dmDurable(this.identity.owner, this.identity.actor, uid));
@@ -555,9 +500,9 @@ export class EndpointConnection {
     // Shared-line reasoning is no longer the rebuild proof.
     if (this.stopped) return;
     this.emit("connection", { connected: true });
-    if (this.nc) {
+    if (this.conn.nc) {
       for (const follower of this.activeGoalFollowers) {
-        follower.reconnected(this.nc);
+        follower.reconnected(this.conn.nc);
       }
     }
   }
@@ -570,8 +515,8 @@ export class EndpointConnection {
 
   /** Subscribe one {@link tap} on the current connection; with none, the next bind subscribes it. */
   private bindTap(tap: (typeof this.taps)[number]): void {
-    if (!this.nc) return;
-    const sub = this.nc.subscribe(tap.subject);
+    if (!this.conn.nc) return;
+    const sub = this.conn.nc.subscribe(tap.subject);
     this.subs.push(sub);
     void (async () => {
       for await (const m of sub) {
@@ -657,8 +602,8 @@ export class EndpointConnection {
     this.presenceEpoch++;
     this.presence.cancelRebind();
     this.presence.retireWatch();
-    if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
-    this.channelWatchIter = undefined;
+    if (this.conn.channelWatchIter) this.retireKvWatch(this.conn.channelWatchIter);
+    this.conn.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
     for (const sub of this.chatSubs.values()) {
       try {
@@ -677,7 +622,7 @@ export class EndpointConnection {
     this.channelRead = undefined;
     this.channelReadGeneration++;
     this.channelReadApplied = this.channelReadGeneration;
-    for (const watch of this.membershipFeedWatches)
+    for (const watch of this.conn.membershipFeedWatches)
       watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
   }
 
@@ -705,20 +650,20 @@ export class EndpointConnection {
    * the next retry. The reviewer flagged this as an untested handle class. Zero them here so a
    * retry starts with the same empty state as a first attempt. */
   async closeFailedBind(): Promise<void> {
-    const failedNc = this.nc;
+    const failedNc = this.conn.nc;
     if (failedNc) this.disableLibraryReconnect(failedNc);
     this.clearConnectionScoped();
-    this.nc = undefined;
-    this.js = undefined;
-    this.jsm = undefined;
-    this.kv = undefined;
-    this.channelKv = undefined;
-    this.membersKv = undefined;
-    this.aclKv = undefined;
-    this.membershipFeedKv = undefined;
+    this.conn.nc = undefined;
+    this.conn.js = undefined;
+    this.conn.jsm = undefined;
+    this.conn.kv = undefined;
+    this.conn.channelKv = undefined;
+    this.conn.membersKv = undefined;
+    this.conn.aclKv = undefined;
+    this.conn.membershipFeedKv = undefined;
     this.deliveryLease.resetConnection();
-    this.managerLeaseKv = undefined;
-    this.daemonRenewalLeaseRevision = undefined;
+    this.conn.managerLeaseKv = undefined;
+    this.conn.daemonRenewalLeaseRevision = undefined;
     // Handles that armDeliveryControl created on a previous connection: null them so a rebind
     // does not carry a dead protocol's subs forward. Best-effort unsubscribe first (the sub is
     // dead with its connection either way; unsubscribing an already-dead sub is a noop).
@@ -786,16 +731,16 @@ export class EndpointConnection {
    *  true iff it tore something down (caller bails out of the rebuild). */
   async tearDownIfStopped(): Promise<boolean> {
     if (!this.stopped) return false;
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (nc) this.disableLibraryReconnect(nc);
     this.clearConnectionScoped();
     await this.closeWithoutLibraryReconnect(nc);
-    this.nc = undefined;
+    this.conn.nc = undefined;
     return true;
   }
 
   async stopOnce(): Promise<void> {
-    if (this.nc) this.disableLibraryReconnect(this.nc);
+    if (this.conn.nc) this.disableLibraryReconnect(this.conn.nc);
     this.stopped = true;
     for (const follower of this.activeGoalFollowers) {
       follower.cancel();
@@ -816,7 +761,7 @@ export class EndpointConnection {
     this.cancelBearerRenewal?.();
     this.cancelCredsRefresh();
     if (this.authExpiryReconnectTimer) clearTimeout(this.authExpiryReconnectTimer);
-    for (const watch of this.membershipFeedWatches) {
+    for (const watch of this.conn.membershipFeedWatches) {
       watch.stopped = true;
       watch.arm = watch.arm.catch(() => {}).then(async () => {
         await this.disarmMembershipWatch(watch);
@@ -825,15 +770,15 @@ export class EndpointConnection {
     }
     // Permanent endpoint shutdown has no future epoch. Try strict cleanup on the current live epoch;
     // if the broker is already gone, terminate local ownership rather than hanging shutdown forever.
-    await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm.catch((err) => {
-      if (this.nc && !this.nc.isClosed()) throw err;
+    await Promise.all([...this.conn.membershipFeedWatches].map((watch) => watch.arm.catch((err) => {
+      if (this.conn.nc && !this.conn.nc.isClosed()) throw err;
     })));
-    for (const watch of this.membershipFeedWatches) {
+    for (const watch of this.conn.membershipFeedWatches) {
       watch.resolveStop?.();
       watch.resolveStop = undefined;
       watch.rejectStop = undefined;
     }
-    this.membershipFeedWatches.clear();
+    this.conn.membershipFeedWatches.clear();
     for (const msgs of this.streamMsgs) {
       try {
         msgs.stop();
@@ -842,8 +787,8 @@ export class EndpointConnection {
       }
     }
     this.presence.retireWatch();
-    if (this.channelWatchIter) this.retireKvWatch(this.channelWatchIter);
-    this.channelWatchIter = undefined;
+    if (this.conn.channelWatchIter) this.retireKvWatch(this.conn.channelWatchIter);
+    this.conn.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
     await Promise.all(principalStops);
     try {
@@ -862,7 +807,7 @@ export class EndpointConnection {
       dmOnlyUnsettled = await withDeadline(this.dmOnlyInFlight.then(() => false), settleMs, () => new Error("unsettled"))
         .catch(() => true);
     }
-    await this.closeWithoutLibraryReconnect(this.nc);
+    await this.closeWithoutLibraryReconnect(this.conn.nc);
     // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
     // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
     // way out. A stopped endpoint has no live basis for "this bucket is refusing writes", and the
@@ -873,7 +818,7 @@ export class EndpointConnection {
     // publish a late consuming connection. doRebuild closes its stopped epoch before resolving.
     await this.rebuildPromise;
     await this.startPromise;
-    if ([...this.ownedConnections].some((nc) => !nc.isClosed()))
+    if ([...this.conn.ownedConnections].some((nc) => !nc.isClosed()))
       throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
     if (dmOnlyUnsettled)
       throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.identity.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
@@ -889,14 +834,14 @@ export class EndpointConnection {
     const unsettled = (why: string) => new Error(`endpoint connection inventory is unsettled: ${why}`);
     if (this.startPromise !== undefined || this.rebuildPromise !== undefined || this.reconnecting)
       throw unsettled("a start or rebuild is in flight");
-    const open = [...this.ownedConnections].filter((nc) => !nc.isClosed());
+    const open = [...this.conn.ownedConnections].filter((nc) => !nc.isClosed());
     if (this.stopped) {
       if (open.length > 0) throw unsettled("the endpoint stopped but a connection has not closed");
       return [];
     }
     if (this.credsTxnsRunning > 0 || this.residentSwap !== undefined)
       throw unsettled("a credential adoption is in flight");
-    if (!this.nc || !this.nativeBound) throw unsettled("the connection is down or redialing");
+    if (!this.conn.nc || !this.conn.nativeBound) throw unsettled("the connection is down or redialing");
     return open.map((nc) => nativeConnectionBinding(nc, "endpoint connection"));
   }
 }

@@ -3,6 +3,7 @@
 // `prompts` presence field and its `seq`, and calling a principal. Moved verbatim from endpoint.ts. The
 // component owns the `prompts` presence field; the endpoint keeps servePrincipal, which a smoke replaces,
 // and the shared fields, and forwards to these. Not re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { AGENT_CONTRACTS, AGENT_ENDPOINT } from "./agent-endpoint.js";
 import { epPrincipalCall } from "./endpoint-call.js";
@@ -25,7 +26,6 @@ const promptsSeqs = new Map<string, number>();
  *  copied, a field it reassigns is written back through its setter, and every method is looked up on the
  *  endpoint at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointPrincipalServeDeps {
-  nc: () => NatsConnection | undefined;
   principalServes: () => Map<string, PrincipalServeIntent>;
   principalServers: () => Map<string, PrincipalServeIntent>;
   publishPresence: () => Promise<void>;
@@ -41,9 +41,8 @@ export class EndpointPrincipalServe {
    *  endpoint is served and its subscription was accepted on the current connection. */
   private promptsPresence?: PresencePrompts;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointPrincipalServeDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointPrincipalServeDeps) {}
 
-  private get nc() { return this.deps.nc(); }
   private get principalServes() { return this.deps.principalServes(); }
   private get principalServers() { return this.deps.principalServers(); }
   private publishPresence(): Promise<void> { return this.deps.publishPresence(); }
@@ -92,7 +91,7 @@ export class EndpointPrincipalServe {
   /** The broker accepted `handle` on `nc`. When that is still the current binding, the serve is
    *  ready there. */
   private principalServeConfirmed(intent: PrincipalServeIntent, nc: NatsConnection, handle: EpPrincipalServeHandle): void {
-    if (intent.ended || intent.binding?.handle !== handle || this.nc !== nc) return;
+    if (intent.ended || intent.binding?.handle !== handle || this.conn.nc !== nc) return;
     intent.readyOn = nc;
     if (!intent.readySettled) {
       intent.readySettled = true;
@@ -104,7 +103,7 @@ export class EndpointPrincipalServe {
   /** Re-bind every principal serve on a replaced connection (a rebuild), or re-run the check on the
    *  connection the library reconnected and re-subscribed itself. */
   rebindPrincipalServes(reconnected: boolean): void {
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!nc) return;
     for (const intent of this.principalServes.values()) {
       if (intent.ended) continue;
@@ -215,7 +214,7 @@ export class EndpointPrincipalServe {
   /** The `prompts` field this process's presence carries now, or none. */
   servedPrompts(): PresencePrompts | undefined {
     const intent = this.principalServes.get(AGENT_ENDPOINT);
-    if (!intent || intent.ended || !this.nc || intent.readyOn !== this.nc) return undefined;
+    if (!intent || intent.ended || !this.conn.nc || intent.readyOn !== this.conn.nc) return undefined;
     return this.promptsPresence;
   }
 
@@ -242,7 +241,7 @@ export class EndpointPrincipalServe {
     contract?: { input: CompiledContract; output: CompiledContract };
     signal?: AbortSignal;
   }): Promise<EndpointReply> {
-    const nc = this.nc;
+    const nc = this.conn.nc;
     if (!nc) throw new Error(this.notLiveMsg());
     const contract = call.contract
       ?? (call.command === "describe" ? describeContracts() : call.endpoint === AGENT_ENDPOINT ? AGENT_CONTRACTS[call.command] : undefined);

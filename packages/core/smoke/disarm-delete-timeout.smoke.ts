@@ -39,7 +39,7 @@ const ep = new CotalEndpoint({
 
 const emitted: Error[] = [];
 ep.on("error", (err) => { emitted.push(err as Error); });
-(ep as unknown as { nc: { isClosed(): boolean }; reconnecting: boolean }).nc = { isClosed: () => false };
+(ep as unknown as { conn: { nc: { isClosed(): boolean } }; reconnecting: boolean }).conn.nc = { isClosed: () => false };
 (ep as unknown as { reconnecting: boolean }).reconnecting = false;
 
 const watch = {

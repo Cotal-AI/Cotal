@@ -4505,7 +4505,7 @@ function ensureRootForSpace(space: string): void {
   }
   throw new CommandFailure("refused", "CONFLICT", `this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}"`, {
     target: { space, root, hosted: existing },
-    remedy: `${existing.length === 1 ? `run ${names} with \`cotal up --space ${existing[0]}\`` : "run one of those with `cotal up --space <name>`"}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
+    remedy: `run ${existing.length === 1 ? names : "one of those"} with ${codeSpan(`cotal up --root ${shellWord(root)} --space ${existing.length === 1 ? shellWord(existing[0]!) : "<name>"}`)}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
   });
 }
 
