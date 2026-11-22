@@ -5733,7 +5733,7 @@
       "rationale": "Status owned-services table: \"waiting\" is the color tone for a process observed on a foreign host, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-health.ts",
       "kind": "derived-output",
       "anchor": "`HTTP ${status}`",
       "class": "non-render/control",
