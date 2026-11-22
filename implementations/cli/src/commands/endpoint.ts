@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, workspaceErrorParts, writeResult, type Report } from "@cotal-ai/workspace";
 import { endpointDeregister, validateEndpointDeregisterArguments } from "./endpoint-deregister.js";
 import { endpointAuthoring, validateEndpointAuthoringArguments } from "./endpoint-authoring.js";
 import { readEndpointInventory } from "../lib/endpoint-inventory.js";
@@ -48,11 +48,21 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (mode === "add" && (!name || args.values.file === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted endpoint add needs a name and --file; guided input requires an interactive terminal");
 }
 
-function selectedSpace(values: { space?: string }): string {
+function selectedSpace(args: ParsedArgs): string {
+  const values = args.values as { space?: string; server?: string };
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true }).space; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
+    if (error.code === "unknown-space") {
+      const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+      const savedInventory = (args.positionals[0] ?? "list") === "list" && !args.values.live;
+      const format = args.values.json ? " --json" : args.values.plain ? " --plain" : "";
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, {
+        target: { requested: error.details.requested },
+        remedy: savedInventory ? `see \`cotal space\` for space names, then retry with \`cotal endpoint --space <name>${format}\`` : remedy,
+      });
+    }
     throw new CommandFailure("refused", targetErrorCode(error.code), "the selected reference space could not be resolved; no different space was selected");
   }
 }
@@ -68,7 +78,7 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   if (modeRequested === "describe") return describeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   if (modeRequested === "invoke") return invokeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   const presentation = presentationOf(args.values);
-  const space = selectedSpace(args.values as { space?: string });
+  const space = selectedSpace(args);
   recordOperationSpace(space);
   const [mode = "list", suppliedName] = args.positionals;
   if (mode === "list") {

@@ -1,5 +1,6 @@
 import { DEV_OWNER, assertLifecycleToken, peerLabel, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import {
+  brokerAddressForDisplay,
   brokerUrlKey,
   codeSpan,
   CommandFailure,
@@ -578,9 +579,14 @@ function noApplicationHere(): boolean {
   try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
 }
 
+function psRerun(v: FlagValues<typeof psFlags>, slots = false): string {
+  if (v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server) return "the same command";
+  const words = [...(slots ? ["--slots"] : []), ...(v.on === undefined ? [] : ["--on", v.on]), ...(v.wide ? ["--wide"] : []), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
+  return codeSpan(onRerun("cotal ps", v, words));
+}
+
 function liveSeatsRemedy(v: FlagValues<typeof psFlags>): string {
-  const words = [...(v.on === undefined ? [] : ["--on", v.on]), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
-  return `run ${codeSpan(onRerun("cotal ps", v, words))} without --slots to list live agents`;
+  return `run ${psRerun(v)} without --slots to list live agents`;
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
@@ -860,7 +866,7 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
     const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
     if (stackManagerStarting(t.root, t.space))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: "run `cotal ps` again once `cotal up` reports the manager started" });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: `run ${psRerun(v, command === "slots")} again once \`cotal up\` reports the manager started` });
     if (stackManagerAbsent(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: startStackManagerRemedy(t.space, t.server) });
   }

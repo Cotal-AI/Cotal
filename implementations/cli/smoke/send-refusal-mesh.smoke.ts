@@ -126,7 +126,7 @@ try {
     const r = run([...args, "--json"]);
     check(`${args.slice(0, 2).join(" ")}${args.includes("--space") ? " --space" : ""} --server <closed>: refused TARGET_UNAVAILABLE, exit 2, naming that address and the space's recorded broker`,
       r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && r.envelope.error.message === unanswered
-        && r.envelope.error.remedy === `check that address, or drop --server to reach "${space}" at ${servers}, where it is recorded`, shown(r));
+        && r.envelope.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${servers}`, shown(r));
   }
   const empty = mkdtempSync(join(dir, "empty-"));
   const bare = run(["send", "-c", "general", "x", "--server", closed, "--json"], empty);

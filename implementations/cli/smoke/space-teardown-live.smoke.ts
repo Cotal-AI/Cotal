@@ -664,7 +664,7 @@ try {
       check("an open space with an overriding auth broker names both addresses and dropping --server, never up here",
         mismatch.status === 2 && mismatch.env?.error?.code === "AUTH_REQUIRED"
           && mismatch.env.error.message.includes(authServer) && mismatch.env.error.message.includes(`"${space}" is recorded as an open mesh at ${server}`)
-          && mismatch.env.error.remedy === `check that address, or drop --server to reach "${space}" at ${server}, where it is recorded`
+          && mismatch.env.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${server}`
           && !mismatch.env.error.remedy.includes("cotal up"), shown(mismatch));
     }
     const openDown = cli(root, "down", "--yes", "--json");
