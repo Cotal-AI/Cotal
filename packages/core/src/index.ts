@@ -116,7 +116,7 @@ export * from "./launch-material.js";
 export * from "./control-exchange.js";
 export * from "./launch-artifacts.js";
 export * from "./connector-config.js";
-export * from "./kv-scan.js";
+export { IncompleteKvScan, liveKvEntries, walkKvEntries, walkKvLatest, lastKvEntries, liveKvValues, type LiveKvEntriesOptions } from "./kv-scan.js";
 export * from "./jetstream-missing.js";
 export * from "./endpoint.js";
 export * from "./spaces.js";

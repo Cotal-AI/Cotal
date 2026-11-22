@@ -153,6 +153,16 @@ export async function liveKvEntries(
     opts = options;
   }
 
+  return (await scanLatestKvEntries(kv, filter, opts)).filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
+}
+
+/** All latest entries in a complete pass, including delete markers needed by revision-based views. */
+export async function scanLatestKvEntries(
+  kv: KV,
+  filter?: string | string[],
+  opts?: LiveKvEntriesOptions,
+  startRevision?: number,
+): Promise<KvEntry[]> {
   if (opts?.signal?.aborted) {
     throw opts.signal.reason ?? new Error("scan aborted");
   }
@@ -175,6 +185,7 @@ export async function liveKvEntries(
     );
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  if (startRevision !== undefined) cc.opt_start_seq = startRevision;
   // Only this temporary scan's cursor is volatile. The backing KV records keep their storage;
   // an interrupted pass still has to prove completeness or throw before returning any result.
   cc.mem_storage = true;
@@ -291,9 +302,7 @@ export async function liveKvEntries(
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
-  const out: KvEntry[] = [];
-  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
-  return out;
+  return [...latest.values()];
 }
 
 /**

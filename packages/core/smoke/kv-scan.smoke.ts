@@ -29,6 +29,7 @@ import { jetstreamManager, type ConsumerAPI, type ConsumerMessages, type PushCon
 import { Kvm, type KV } from "@nats-io/kv";
 import type { Bucket } from "@nats-io/kv/internal";
 import { IncompleteKvScan, isReachable, liveKvEntries, liveKvValues, walkKvEntries } from "../src/index.js";
+import { KvRevisionView } from "../src/kv-revision-view.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
@@ -67,6 +68,38 @@ const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { st
 // The `finally` below stays and still does the work on every normal exit; ownership only covers the
 // path where this process is killed and the `finally` never unwinds.
 const releaseBroker = teardownOnSignal(srv, store);
+
+async function revisionViewCases(kvm: Kvm, nc: Awaited<ReturnType<typeof connect>>): Promise<void> {
+  const kv = await kvm.create("revision_view", { history: 1 });
+  const jsm = await jetstreamManager(nc);
+  const rows = new Map<string, string>();
+  const view = new KvRevisionView(kv, (key, entry) => {
+    if (entry) rows.set(key, new TextDecoder().decode(entry.value));
+    else rows.delete(key);
+  });
+  const enc = new TextEncoder();
+  const old = await kv.put("old", enc.encode("to remove"));
+  await view.refresh();
+  const before = nc.stats().inMsgs;
+  await view.refresh();
+  check("an unchanged revision view takes only one broker response", nc.stats().inMsgs - before === 1);
+
+  await jsm.streams.deleteMessage("KV_revision_view", old, false);
+  await kv.put("new", enc.encode("replacement"));
+  await view.refresh();
+  check("native erasure plus an insertion does not retain a phantom key", rows.size === 1 && rows.get("new") === "replacement");
+
+  await jsm.streams.delete("KV_revision_view");
+  const rebuilt = await kvm.create("revision_view", { history: 2 });
+  await rebuilt.put("restored", enc.encode("first"));
+  const latest = await rebuilt.put("restored", enc.encode("second"));
+  await view.refresh();
+  check("recreating the stream replaces all projected keys", rows.size === 1 && rows.get("restored") === "second");
+  await jsm.streams.deleteMessage("KV_revision_view", latest, false);
+  await view.refresh();
+  check("deleting the latest revision in deeper history reveals the previous value", rows.get("restored") === "first");
+}
+
 try {
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -75,6 +108,8 @@ try {
   const nc = await connect({ servers: SERVER });
   const kvm = new Kvm(nc);
   const enc = (s: string) => new TextEncoder().encode(s);
+
+  await revisionViewCases(kvm, nc);
 
   // ── 1. ROUND-TRIP SHAPE ────────────────────────────────────────────────────────────────────────
   // Count the client's OUTBOUND messages across the read. The old shape issued one STREAM.MSG.GET

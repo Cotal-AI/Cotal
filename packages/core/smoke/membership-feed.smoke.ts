@@ -37,11 +37,14 @@ import {
   startMembershipFeed,
   openMembersRegistry,
   commitMember,
+  deleteMember,
+  idFromCreds,
   chatSubject,
   chatWildcard,
   spacePrefix,
   channelFromChatSubscription,
   membershipBucket,
+  membersBucket,
   membershipKey,
   principalKey,
   DEV_OWNER,
@@ -49,6 +52,7 @@ import {
 } from "../src/index.js";
 import type { ChannelMembership, MembershipRecord } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { kvCreateCounter } from "./_kv-create-counter.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
@@ -106,7 +110,7 @@ try {
   conns.push(seedNc);
   const members = await openMembersRegistry(seedNc, space);
   const rec = (channel: string, owner: string): MembershipRecord => ({ channel, owner, lifecycleUid: mintLifecycleUid(), state: "durable-active", joinCursor: 0, activated: true, generation: 1, writerIdentity: "smoke", updatedAt: Date.now() });
-  await commitMember(members, rec("deploys", pkey(bob.id)));
+  const bobRow = await commitMember(members, rec("deploys", pkey(bob.id)));
   await commitMember(members, rec("general", pkey(alice.id))); // alice is ALSO a durable member of #general (live ∪ durable union)
 
   // --- a god-view tap (the web dashboard / a core tap) — must be EXCLUDED from membership ---
@@ -144,7 +148,7 @@ try {
   await dnc.flush();
 
   // --- run the feed and force a reconcile ---
-  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds, intervalMs: 60_000 });
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds, intervalMs: 60_000, debounceMs: 60_000 });
   await feed.poll();
   await wait(400);
 
@@ -177,6 +181,28 @@ try {
   check("a broad-read agent (allowSubscribe '>') SURFACES as a `>` reader, not dropped", !!daveRec && daveRec.live.includes(">"), daveRec);
   check("only the three real agents have records (infra conns contribute nothing)", out.size === 3, [...out.keys()]);
   check("feed freshness heartbeat is stamped", typeof asOf === "number");
+
+  const rwId = idFromCreds(rwCreds);
+  const counter = await kvCreateCounter(SERVERS, auth, rwId, [membersBucket(space), membershipBucket(space)]);
+  conns.push(counter.conn);
+  await feed.poll();
+  const feedScans = await counter.count();
+  check("a warm feed poll after a connection opens binds no registry scan", feedScans === 0, feedScans);
+
+  const feedWriter = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(rwCreds)), inboxPrefix: `_INBOX_${rwId}` });
+  conns.push(feedWriter);
+  const derived = await new Kvm(feedWriter).open(membershipBucket(space));
+  const bobKey = membershipKey(pkey(bob.id));
+  await derived.put(bobKey, enc("corrupt"));
+  await feed.poll();
+  check("a feed row changed outside the running feed is repaired", eq((await readFeed()).out.get(bobKey)?.durable, ["deploys"]));
+  check("the feed's repair reads the changed row through one delta scan", await counter.count() === feedScans + 1);
+  await deleteMember(members, bobRow.channel, bobRow.owner, bobRow.lifecycleUid);
+  await feed.poll();
+  check("a durable KV purge removes the offline member from the feed", !(await readFeed()).out.has(bobKey));
+  await commitMember(members, bobRow);
+  await feed.poll();
+  ({ out, asOf } = await readFeed());
 
   // --- the shipped snapshot read (#4123): paged batched Direct Gets on an admin endpoint bind no
   // consumer on the feed's stream, and a credential minted without the Direct Get row is refused with

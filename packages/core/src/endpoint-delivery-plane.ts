@@ -869,8 +869,8 @@ export class EndpointDeliveryPlane {
   /** Route ONE chat message to eligible owners' mixed inboxes. `durable` channel → its `durable-active`
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  On either class, a mention of an agent whose read ACL excludes the channel is reported to the
-   *  sender with a mention notice. Members KV is scanned FRESH per message (no cache — red-team
-   *  BLOCKER-1 catch-up correctness). */
+   *  sender with a mention notice. Each durable post checks the members KV head before reading its
+   *  channel and family rows, so a join committed past the catch-up fence cannot be missed. */
   private async fanOutMessage(m: JsMsg): Promise<void> {
     // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
     // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard

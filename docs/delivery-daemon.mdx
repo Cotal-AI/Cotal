@@ -21,9 +21,10 @@ Other deployments can provide the same guarantee with a different backstop, subj
 The daemon separates the work of retaining messages, checking access, and recording membership.
 
 - The fan-out writer copies each `durable` channel post into the private store of each eligible
-  member. On a `live` channel, it also retains a copy for each mentioned peer whose read ACL covers
-  the channel. That peer need not be joined when the mention arrives. Routing a copy does not
-  authorize its release.
+  member. It checks the broker's membership revision before each post and looks up the channel and
+  its covering families in an index. On a `live` channel, it also retains a copy for each mentioned
+  peer whose read ACL covers the channel. That peer need not be joined when the mention arrives.
+  Routing a copy does not authorize its release.
 - The trusted reader checks each stored entry before handing the authorized copy to the member's
   `dlv_<owner>-<actor>-<uid>` DELIVER consumer. The copy does not use the reply inbox. The member acknowledges the copy after surfacing or handling it. A crash before
   that acknowledgement causes redelivery.
@@ -87,6 +88,10 @@ Open development mode has no delivery daemon or durable channel backstop. Durabl
 delivery requires an authenticated mesh with a running delivery service.
 
 A daemon process can host one isolated lane per space from a manifest. Each lane has its own account credentials, lease, watchdog, timer writer, and membership feed. A failed lane closes and reopens independently.
+
+The membership feed polls broker connections to discover live subscriptions. It reuses its durable
+membership and feed snapshots when the broker reports no change, and reads new revisions as those
+stores change. A store replacement or a deletion without a KV marker requires a fresh snapshot.
 
 The reference still serves agent membership operations on `ctl.delivery` and administration on `ctl.delivery-admin`. These are implementation residue despite the hard cut in [SPEC §13.11](../SPEC.md#1311-the-hard-cut). The [delivery service reference](delivery-service-reference.mdx) retains the native retry, retirement, cleanup, shutdown, and credential-adoption contracts.
 

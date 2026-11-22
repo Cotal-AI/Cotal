@@ -55,6 +55,7 @@ import {
   chatStream,
   dlvStream,
   dlvSubject,
+  membersBucket,
   PLANE3_MAX_MSGS_PER_SUBJECT,
   DEV_OWNER,
   type MembershipRecord,
@@ -62,6 +63,7 @@ import {
   type Delivery,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { kvCreateCounter } from "./_kv-create-counter.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
@@ -197,8 +199,19 @@ try {
   check("a review.> row alone stores a post on review.a (fan-out routes the family row, the reader accepts it)",
     await until(() => got.includes("family-only")), got);
 
+  const counter = await kvCreateCounter(SERVERS, auth, dlvId.id, [membersBucket(space)]);
+  try {
+    await post("warm-family", "review.deep.leaf");
+    check("an ancestor family covers a deep descendant on a warm index", await until(() => got.includes("warm-family")), got);
+    const scans = await counter.count();
+    check("a durable post on a warm registry binds no members consumer", scans === 0, scans);
+    await commitMember(kv, row("review.a", 2));
+    await post("changed-members", "review.a");
+    check("the next post sees a changed registry through one delta scan",
+      await until(() => got.includes("changed-members")) && await counter.count() === scans + 1);
+  } finally { await counter.conn.close(); }
+
   // ───────────── (2) one copy for two covering rows ─────────────
-  await commitMember(kv, row("review.a", 2));
   await post("two-rows", "review.a");
   await post("two-rows-marker", "review.b");
   await until(() => got.includes("two-rows-marker"));

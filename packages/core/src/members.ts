@@ -13,9 +13,10 @@
  * **sequence** (`joinCursor`/`leaveCursor`), never wall-clock.
  */
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
-import { membersBucket, memberKey, parseMemberKey, isConcreteChannel, isChannelFamily, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
+import { membersBucket, memberKey, parseMemberKey, isConcreteChannel, isChannelFamily, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
+import { indexedMembers } from "./member-index.js";
 
 /** Thrown when a write would regress membership generation — a stale/late control reply. Callers
  *  treat this as "a newer membership change already won", not an error to retry. */
@@ -194,42 +195,20 @@ export async function deleteMember(kv: KV, channel: string, owner: string, lifec
 }
 
 /**
- * Scan the registry, yielding every live (non-deleted) record matching the filter. `channel` →
+ * Read every live (non-deleted) record matching the filter. `channel` →
  * the rows on exactly that channel or family; `covering` → the rows that cover a concrete channel,
  * its own and every family above it (fan-out's per-post list); `owner` → that owner's memberships.
  * With no filter, every record. Tombstones (with `leaveCursor`) ARE yielded — a caller that wants only
  * currently-open memberships filters on `leaveCursor === undefined`.
  *
- * ONE pass. This was a `keys()` scan plus a sequential per-key `get()`, which cost one round trip
- * per surviving key; a filtered caller paid for the keys that matched, an unfiltered one paid for
- * all of them. The filtering is still done in code (the registry stays the single canonical source;
- * a derived channel→members index remains a separate, deferred decision), but the READ is now
- * independent of record count.
+ * Each read checks the broker's stream head. The process-local index reads revisions since its
+ * last verified head and selects matching rows without visiting unrelated memberships.
  */
 export async function listMembers(
   kv: KV,
   filter: { channel?: string; covering?: string; owner?: string } = {},
 ): Promise<MembershipRecord[]> {
-  const out: MembershipRecord[] = [];
-  for (const e of await liveKvEntries(kv)) {
-    const parsed = parseMemberKey(e.key);
-    if (!parsed) continue;
-    // `parsed.principal` is the member's owner+actor dot-form (membership is per-agent); the
-    // members.ts API calls this identity token `owner` throughout — under the owner+actor grammar an
-    // "owner" here IS the full principal `<owner>.<actor>`, so `filter.owner` compares to it directly.
-    if (filter.channel !== undefined && parsed.channel !== filter.channel) continue;
-    if (filter.covering !== undefined && parsed.channel !== filter.covering &&
-      !(isChannelFamily(parsed.channel) && subjectMatches(parsed.channel, filter.covering))) continue;
-    if (filter.owner !== undefined && parsed.principal !== filter.owner) continue;
-    // Same decode + skip-garbled behaviour readMember applies; the DEL/PURGE half is already handled
-    // by the collapse in liveKvEntries.
-    try {
-      out.push(e.json<MembershipRecord>());
-    } catch {
-      /* skip undecodable */
-    }
-  }
-  return out;
+  return indexedMembers(kv, filter);
 }
 
 /** True if a record makes the owner an **eligible durable recipient** for a CHAT message at `seq`:
