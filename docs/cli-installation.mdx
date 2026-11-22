@@ -571,9 +571,10 @@ and names `chmod g-w <path>` as the next step.
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
 a future follow-up. When `update --self` cannot reach the registry before selecting a release,
-it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
-custody. It does not create an update recovery record. From 0.167.1, losing registry connectivity during release checks, extension-dependency
-checks or target staging also reports that nothing changed and exits 0 before replacement.
+it exits 0 without reconciling packages, inspecting Manager custody or creating an update recovery
+record. If self-update already restored write access to an installation directory, it reports that
+no installed packages were replaced. Losing registry connectivity during release checks,
+extension-dependency checks or target staging also exits 0 before replacement.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
 and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
