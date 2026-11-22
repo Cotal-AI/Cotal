@@ -1,5 +1,8 @@
 // The plane-3 delivery region of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to it. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { CredentialState } from "./endpoint-credential-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { aclRetired, readAcl } from "./acls.js";
 import { ANYCAST_CANCEL_OP, ANYCAST_STATUS_OP, ANYCAST_TAKES_OP } from "./anycast-requests.js";
@@ -11,16 +14,16 @@ import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-options.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
-import { issuedPermitsSubject, type IssuedSubjectPermission } from "./issued-authority.js";
+import { issuedPermitsSubject } from "./issued-authority.js";
 import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, readMember } from "./members.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
 import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
-import { JetStreamApiCodes, type ConsumerConfig, type ConsumerMessages, type JetStreamClient, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
+import { JetStreamApiCodes, type ConsumerConfig, type ConsumerMessages, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { headers, type NatsConnection, type Subscription } from "@nats-io/transport-node";
+import { headers, type Subscription } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -100,14 +103,8 @@ function isMessagePart(value: unknown): boolean {
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointDeliveryPlaneDeps {
   anycastUnavailable: () => string | undefined;
-  js: () => JetStreamClient | undefined;
-  jsm: () => JetStreamManager | undefined;
-  nc: () => NatsConnection | undefined;
-  residentSwap: () => Promise<void> | undefined;
-  stopped: () => boolean;
   streamMsgs: () => ConsumerMessages[];
   subs: () => Subscription[];
-  watchDeletePermissions: () => WeakMap<object, () => IssuedSubjectPermission | undefined>;
   maxPayload: () => number;
   aclForAlias: CotalEndpoint["aclForAlias"];
   channelHistory: CotalEndpoint["channelHistory"];
@@ -221,7 +218,7 @@ export class EndpointDeliveryPlane {
   private readonly sendMentionNotice: EndpointDeliveryPlaneDeps["sendMentionNotice"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointDeliveryPlaneDeps) {
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly deps: EndpointDeliveryPlaneDeps) {
     this.aclForAlias = deps.aclForAlias;
     this.channelHistory = deps.channelHistory;
     this.deliveryClassFresh = deps.deliveryClassFresh;
@@ -249,14 +246,8 @@ export class EndpointDeliveryPlane {
   }
 
   private get anycastUnavailable() { return this.deps.anycastUnavailable(); }
-  private get js() { return this.deps.js(); }
-  private get jsm() { return this.deps.jsm(); }
-  private get nc() { return this.deps.nc(); }
-  private get residentSwap() { return this.deps.residentSwap(); }
-  private get stopped() { return this.deps.stopped(); }
   private get streamMsgs() { return this.deps.streamMsgs(); }
   private get subs() { return this.deps.subs(); }
-  private get watchDeletePermissions() { return this.deps.watchDeletePermissions(); }
   private get maxPayload() { return this.deps.maxPayload(); }
 
   /** Start the Plane-3 fan-out writer + trusted reader on THIS (privileged, server-side delivery-daemon)
@@ -270,7 +261,7 @@ export class EndpointDeliveryPlane {
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
     opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
     await this.armPlane3();
   }
@@ -608,12 +599,12 @@ export class EndpointDeliveryPlane {
    *  the loops while `durableJoinFor` kept reporting `durable:true` (the impl-review's BLOCKER-1). No-op
    *  unless this endpoint hosts Plane-3 (`this.plane3` set). */
   async armPlane3(): Promise<void> {
-    if (!this.plane3 || !this.js) return;
+    if (!this.plane3 || !this.conn.js) return;
     // A quiesced endpoint must not be re-armed by a RECONNECT: the reconnect path calls this too,
     // and silently resuming there would restore exactly the double-serving this guards against
     // while the ownership question is still open.
     if (this.plane3Quiesced) return;
-    await this.manager(); // the manager runs consume:false, so this.jsm is lazy — ensure it
+    await this.manager(); // the manager runs consume:false, so this.conn.jsm is lazy — ensure it
     this.armDeliveryControl();
     await this.armAnycastRequests();
     await this.runFanout();
@@ -662,7 +653,7 @@ export class EndpointDeliveryPlane {
     // A reload's resident swap reconnects the connection every reply here rides. A caller's next
     // request, such as a manager's eviction right after its reload, is answered once that
     // connection is back, not while it is down.
-    await this.residentSwap;
+    await this.cred.residentSwap;
     // FENCE: same reason as the runtime rail above.
     if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {
@@ -844,26 +835,26 @@ export class EndpointDeliveryPlane {
    *  restore recreated it, starting after its recorded ACK floor ({@link isRestoredConsumer}); every
    *  other failure propagates. */
   private async addPlane3Durable(stream: string, config: Partial<ConsumerConfig>): Promise<void> {
-    try { await this.jsm!.consumers.add(stream, config); }
+    try { await this.conn.jsm!.consumers.add(stream, config); }
     catch (e) {
-      if (!isConsumerAlreadyExists(e) || !isRestoredConsumer(this.identity.space, stream, await this.jsm!.consumers.info(stream, config.durable_name!), config)) throw e;
+      if (!isConsumerAlreadyExists(e) || !isRestoredConsumer(this.identity.space, stream, await this.conn.jsm!.consumers.info(stream, config.durable_name!), config)) throw e;
     }
   }
 
   /** Fan-out loop: bind the privileged `fanout` durable on CHAT and route each message (routing only —
    *  the trusted reader is the auth gate). */
   private async runFanout(): Promise<void> {
-    if (!this.js || !this.jsm) return;
+    if (!this.conn.js || !this.conn.jsm) return;
     await this.addPlane3Durable(chatStream(this.identity.space), fanoutDurableConfig(this.identity.space, { ackWaitMs: this.identity.ackWaitMs }));
-    const consumer = await this.js.consumers.get(chatStream(this.identity.space), FANOUT_DURABLE);
+    const consumer = await this.conn.js.consumers.get(chatStream(this.identity.space), FANOUT_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
         try { await this.fanOutMessage(m); }
-        catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
+        catch (e) { if (!this.lifecycle.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
-    })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+    })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
 
   /** Route ONE chat message to eligible owners' mixed inboxes. `durable` channel → its `durable-active`
@@ -951,7 +942,7 @@ export class EndpointDeliveryPlane {
   private async deliveryLimitStamp(): Promise<string> {
     const at = Date.now();
     if (this.deliveryLimitRead && at - this.deliveryLimitRead.at < DELIVERY_LIMIT_READ_MS) return this.deliveryLimitRead.stamp;
-    const count = (await this.jsm!.streams.info(dlvStream(this.identity.space))).config.max_msgs_per_subject;
+    const count = (await this.conn.jsm!.streams.info(dlvStream(this.identity.space))).config.max_msgs_per_subject;
     const stamp = count === HISTORY_NO_COUNT || count < 1 ? "none" : String(count);
     this.deliveryLimitRead = { at, stamp };
     return stamp;
@@ -960,17 +951,17 @@ export class EndpointDeliveryPlane {
   /** Trusted-reader loop: bind the single privileged `reader` durable over `dinbox.>` and re-authorize
    *  + transfer each entry. */
   private async runReader(): Promise<void> {
-    if (!this.js || !this.jsm) return;
+    if (!this.conn.js || !this.conn.jsm) return;
     await this.addPlane3Durable(inboxStream(this.identity.space), inboxReaderConfig(this.identity.space, { ackWaitMs: this.identity.ackWaitMs }));
-    const consumer = await this.js.consumers.get(inboxStream(this.identity.space), INBOX_READER_DURABLE);
+    const consumer = await this.conn.js.consumers.get(inboxStream(this.identity.space), INBOX_READER_DURABLE);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
         try { await this.readerHandle(m); }
-        catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
+        catch (e) { if (!this.lifecycle.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
-    })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+    })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
 
   /** Whether one of the lifecycle's rows covering concrete `channel`, the channel's own or a family
@@ -1027,7 +1018,7 @@ export class EndpointDeliveryPlane {
         // stays pending and retries, bounded by the same ceiling; an entry the stream no longer holds
         // is already removed (the broker answers a delete of a missing sequence with 10043).
         let failure: Error | undefined;
-        try { await this.jsm!.streams.deleteMessage(inboxStream(this.identity.space), m.seq, false); }
+        try { await this.conn.jsm!.streams.deleteMessage(inboxStream(this.identity.space), m.seq, false); }
         catch (e) { if (!isJetStreamMissing(e, 10043)) failure = e instanceof Error ? e : new Error(String(e)); }
         // FENCE AFTER THE DELETE, which is broker I/O. A daemon that stopped serving while it was in
         // flight leaves the entry to the holder: a term here would move the shared durable past an entry
@@ -1094,7 +1085,7 @@ export class EndpointDeliveryPlane {
       // Lifecycle-keyed subject + msgID (ours): the DLV consumer filters on the lifecycle-scoped
       // subject (streams.ts filter_subject), and a predecessor's transferred copy must never suppress
       // a successor's under the same alias (disjoint lifecycles, stream-wide dedupe).
-      await this.js!.publish(dlvSubject(this.identity.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(frame), {
+      await this.conn.js!.publish(dlvSubject(this.identity.space, pr.owner, pr.actor, pr.lifecycleUid), JSON.stringify(frame), {
         ...this.plane3MsgId(entry, `${owner}:${pr.lifecycleUid}`),
         headers: frameHeaders,
       });
@@ -1125,25 +1116,25 @@ export class EndpointDeliveryPlane {
    *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). A read
    *  list declared on a credential that cannot fetch the durable refuses. */
   async pumpDlv(): Promise<void> {
-    if (!this.js) return;
+    if (!this.conn.js) return;
     if (!this.identity.ownLifecycleUid) return; // no lifecycle uid — never provisioned for Plane-3 (its durable is lifecycle-keyed)
     if (this.identity.allowSubscribe?.length === 0) return; // known channel-less grant: no DLV durable or bind rows exist
     const durable = dlvDurable(this.identity.owner, this.identity.actor, this.identity.ownLifecycleUid);
-    if (this.identity.allowSubscribe === undefined && !this.identity.userMode && this.nc) {
+    if (this.identity.allowSubscribe === undefined && !this.identity.userMode && this.conn.nc) {
       // Native credential-only clients have no separate ACL option. Use the publish permissions
       // captured when THIS connection authenticated; a callout sentinel does not carry the grant.
-      const permission = this.watchDeletePermissions.get(this.nc)?.();
+      const permission = this.conn.watchDeletePermissions.get(this.conn.nc)?.();
       // Only an absent allow selects no binding. A declared bind with a deny still reaches the
       // broker and fails, so a refusal cannot masquerade as a channel-less credential.
       if (permission && !issuedPermitsSubject({ ...permission, deny: [] }, `$JS.API.CONSUMER.INFO.${dlvStream(this.identity.space)}.${durable}`)) return;
     }
     let consumer;
-    try { consumer = await this.js.consumers.get(dlvStream(this.identity.space), durable); }
+    try { consumer = await this.conn.js.consumers.get(dlvStream(this.identity.space), durable); }
     catch (e) {
       if (isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound)) {
         // A channel-less credential may ask about its durable but holds no fetch row for it. A read
         // list declared on such a credential disagrees with the grant, so the start refuses.
-        const issued = this.nc && this.watchDeletePermissions.get(this.nc)?.();
+        const issued = this.conn.nc && this.conn.watchDeletePermissions.get(this.conn.nc)?.();
         if ((this.identity.allowSubscribe?.length ?? 0) > 0 && issued
           && !issuedPermitsSubject({ ...issued, deny: [] }, `$JS.API.CONSUMER.MSG.NEXT.${dlvStream(this.identity.space)}.${durable}`))
           throw new Error(`this connection declared a read list, but its credential cannot fetch delivery durable "${durable}" for space "${this.identity.space}"; the read list and the credential disagree`);
@@ -1188,6 +1179,6 @@ export class EndpointDeliveryPlane {
         if (msg.from?.id === this.identity.card.id) { m.ack(); continue; } // own echo (defensive)
         this.emit("message", msg, durableDelivery(m, ackWaitMs), { historical: false, kind: "channel" } satisfies MessageMeta);
       }
-    })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+    })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
 }

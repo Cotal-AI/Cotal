@@ -78,7 +78,7 @@ export function namesCapacityDeps(m: Manager): NamesCapacityDeps {
     predecessor: (name) => m["retirement"].predecessor(name),
     hasRetirementHold: (name) => m["retirement"].hasHold(name),
     holdRetirement: (name, hold) => m["retirement"].hold(name, hold),
-    endSessionsForTarget: (...args) => { m["sessionPlane"]?.endForTarget(...args); },
+    endSessionsForTarget: (...args) => { m["servePlane"].sessionPlane?.endForTarget(...args); },
     logSeatReaped: (...args) => m["logSeatReaped"](...args),
     recordContinuityAtStop: (...args) => m["recordContinuityAtStop"](...args),
     releasedSeatPending: (...args) => m["releasedSeatPending"](...args),

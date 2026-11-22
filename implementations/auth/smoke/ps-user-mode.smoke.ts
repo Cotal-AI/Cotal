@@ -526,13 +526,13 @@ try {
       const firstPage = await held.channelHistoryPage("general");
       check("the predecessor connection can read before retirement",
         firstPage.items.some((m) => m.parts.some((p) => p.kind === "text" && p.text === historyText)));
-      const internals = held as unknown as { nc: import("@nats-io/transport-node").NatsConnection; js: import("@nats-io/jetstream").JetStreamClient };
-      const predecessor = internals.nc;
-      const get = internals.js.consumers.get.bind(internals.js.consumers);
+      const internals = held as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection; js: import("@nats-io/jetstream").JetStreamClient } };
+      const predecessor = internals.conn.nc;
+      const get = internals.conn.js.consumers.get.bind(internals.conn.js.consumers);
       let enteredPull!: () => void;
       const entered = new Promise<void>((resolve) => { enteredPull = resolve; });
       const release = new Promise<void>((resolve) => { releasePull = resolve; });
-      internals.js.consumers.get = async (...args) => {
+      internals.conn.js.consumers.get = async (...args) => {
         const consumer = await get(...args);
         enteredPull();
         await release;
@@ -578,7 +578,7 @@ try {
       await busy.start();
       const { jetstreamManager } = await import("@nats-io/jetstream");
       const { chatStream, chatHistDurable, chatSubject } = await import("@cotal-ai/core");
-      const api = await jetstreamManager((busy as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc);
+      const api = await jetstreamManager((busy as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc);
       const name = chatHistDurable(current.epCaller!.owner, current.epCaller!.actor, current.epCaller!.uid);
       try {
         await api.consumers.add(chatStream(SPACE), { name, description: "fixture-busy-owner",

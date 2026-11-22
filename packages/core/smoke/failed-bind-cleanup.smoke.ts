@@ -89,12 +89,12 @@ type Handles = {
 };
 const snapshot = (endpoint: CotalEndpoint): Handles => {
   const e = endpoint as unknown as {
-    nc?: unknown;
+    conn: { nc?: unknown };
     deliveryPlane: { deliveryServeSub?: unknown; deliveryAdminServeSub?: unknown };
     subs?: unknown[];
   };
   return {
-    nc: e.nc !== undefined,
+    nc: e.conn.nc !== undefined,
     deliveryServeSub: e.deliveryPlane.deliveryServeSub !== undefined,
     deliveryAdminServeSub: e.deliveryPlane.deliveryAdminServeSub !== undefined,
     subsLen: Array.isArray(e.subs) ? e.subs.length : 0,
@@ -231,7 +231,7 @@ try {
     endpoint.on("error", () => {});
     const bindMsg = "fixture close-throws bind failure";
     (endpoint as unknown as { startPresenceWatch: () => Promise<void> }).startPresenceWatch = async () => {
-      const nc = (endpoint as unknown as { nc?: { close: () => Promise<void> } }).nc;
+      const nc = (endpoint as unknown as { conn: { nc?: { close: () => Promise<void> } } }).conn.nc;
       if (!nc) throw new Error("expected live nc before presence watch");
       nc.close = async () => {
         throw new Error("injected close failure");

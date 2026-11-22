@@ -10,18 +10,9 @@
 import { progressSignal, PROGRESS_STALL_MS } from "../src/progress.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-function check(name: string, cond: boolean, extra?: unknown): void {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 const now = 1_700_000_000_000;
 
@@ -130,7 +121,8 @@ check(
 );
 
 const EXPECTED = 24;
-check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
+check(`every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 
-console.log(`PRESENCE-PROGRESS SMOKE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`PRESENCE-PROGRESS SMOKE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

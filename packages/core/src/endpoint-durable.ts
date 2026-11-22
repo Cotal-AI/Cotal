@@ -3,12 +3,14 @@
 // out, check a lifecycle's ACL row and copy the catch-up window for a privileged join. Moved verbatim from
 // endpoint.ts; the component owns its pending leaves, reads the endpoint's identity and remaining shared
 // fields through its dependencies, and the endpoint forwards to it. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { readAcl } from "./acls.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
 import { membershipInAllow, chatSubject, isChannelFamily, parsePrincipalKey, lifecycleNameKey, token, chatStream, parseSubject } from "./subjects.js";
 import type { DeliveryClass, Plane3Entry, ControlReply, CotalMessage } from "./types.js";
-import { type JetStreamClient, type JetStreamManager, AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { nanos } from "@nats-io/transport-node";
 
@@ -16,9 +18,6 @@ import { nanos } from "@nats-io/transport-node";
  *  copied, and every method is looked up on the endpoint at call time, so a member a caller replaced on
  *  the endpoint is the one that runs. */
 export interface EndpointDurableDeps {
-  js: () => JetStreamClient | undefined;
-  jsm: () => JetStreamManager | undefined;
-  stopped: () => boolean;
   plane3Channels: () => Map<string, number>;
   aclRegistry: () => Promise<KV>;
   deliveryClassFresh: (channel: string) => Promise<DeliveryClass>;
@@ -39,11 +38,8 @@ export class EndpointDurable {
    *  absence). Persists across reconnect; cleared on tombstone success or full stop. */
   private readonly pendingDurableLeave = new Map<string, number>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointDurableDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointDurableDeps) {}
 
-  private get js() { return this.deps.js(); }
-  private get jsm() { return this.deps.jsm(); }
-  private get stopped() { return this.deps.stopped(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
   private aclRegistry(): Promise<KV> { return this.deps.aclRegistry(); }
   private deliveryClassFresh(channel: string): Promise<DeliveryClass> { return this.deps.deliveryClassFresh(channel); }
@@ -75,7 +71,7 @@ export class EndpointDurable {
   async catchupCopy(
     owner: string, lifecycleUid: string, channel: string, fromSeqExcl: number, toSeqIncl: number, generation: number,
   ): Promise<number> {
-    if (!this.js || !this.jsm || toSeqIncl <= fromSeqExcl) return 0;
+    if (!this.conn.js || !this.conn.jsm || toSeqIncl <= fromSeqExcl) return 0;
     const subject = chatSubject(this.identity.space, "*", "*", channel);
     const family = isChannelFamily(channel);
     const durableClass = new Map<string, Promise<boolean>>();
@@ -95,13 +91,13 @@ export class EndpointDurable {
     const name = `cu_${cuP ? lifecycleNameKey(cuP.owner, cuP.actor, lifecycleUid) : `${token(owner)}-${lifecycleUid}`}_${generation}`;
     // A failed read throws, leaving the pending row to retry over the same window.
     await this.deleteConsumerIfPresent(chatStream(this.identity.space), name);
-    await this.jsm.consumers.add(chatStream(this.identity.space), {
+    await this.conn.jsm.consumers.add(chatStream(this.identity.space), {
       name, filter_subject: subject, ack_policy: AckPolicy.None, mem_storage: true,
       inactive_threshold: nanos(30_000), deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: fromSeqExcl + 1,
     });
     let copied = 0;
     try {
-      const consumer = await this.js.consumers.get(chatStream(this.identity.space), name);
+      const consumer = await this.conn.js.consumers.get(chatStream(this.identity.space), name);
       let pending = (await consumer.info()).num_pending;
       while (pending > 0) {
         const want = Math.min(pending, 256);
@@ -157,7 +153,7 @@ export class EndpointDurable {
   async closeRefusedMembership(channel: string, generation: number): Promise<void> {
     this.pendingDurableLeave.set(channel, generation);
     for (let attempt = 0; ; attempt++) {
-      if (this.stopped) return;
+      if (this.lifecycle.stopped) return;
       try {
         await this.durableLeaveChannel(channel, generation);
         this.plane3Channels.delete(channel);

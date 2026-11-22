@@ -277,7 +277,8 @@ the agent page show. The dashboard shows only data the observer can read.
 ## Check visibility limits
 
 The service uses the space's `web.creds` or the protected credential file you supplied, and its grants.
-It does not mint a replacement admin credential. A chat-only file hides DM views.
+It does not mint a replacement admin credential. The default `web.creds` includes live channel traffic, not live direct messages or role messages.
+A chat-only file hides DM views.
 A restricted read is not an empty mesh and does not prove that a hidden DM is absent.
 
 See [Identity](identity-and-auth.mdx) for credential scopes and [MeshView](mesh-view.mdx) for the terminal observer API.

@@ -1098,7 +1098,7 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
 
 /**
  * Resolve the mesh target by precedence (first match wins):
- *  1. `--space` — registry lookup, or this project's matching retained static space for file-only signing.
+ *  1. `--space` selects a registered space or identifies this project's matching stopped space.
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The `current` selected by `cotal use`, except inside a project whose root has one RUNNING space
  *     other than it, where step 4 applies. A space this folder prepared and never started, and one
@@ -1127,11 +1127,11 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       const root = findCotalRoot(cwd);
       if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
-        if (retained && !retained.open && !legacyStackOtherHome(root)) {
-          const { spaces } = rootInventory(root);
+        if (retained && !legacyStackOtherHome(root)) {
+          const spaces = retained.open ? [retainedOpenSpace(root)] : rootInventory(root).spaces;
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
-            if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
-            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space, ...(userAuthSpacesOnDisk(authDir(root)).includes(flags.space) ? { restartUserAuth: true } : {}) });
+            if (flags.allowStoppedLocal && !retained.open) return localTarget(root, retained.server, "local-space", flags.readOnly);
+            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space, ...(!retained.open && userAuthSpacesOnDisk(authDir(root)).includes(flags.space) ? { restartUserAuth: true } : {}) });
           }
         }
       }

@@ -10,6 +10,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 /** The delivery-admin `reloadCreds` request bound — STRICTLY GREATER than the daemon's internal
  * per-component preflight bound (4s each, run in parallel) so a slow or refused proof returns the
@@ -80,9 +81,6 @@ export interface CredentialRenewalDeps {
   remoteAuthority: () => Manager["remoteAuthority"];
   runHosting: () => Manager["runHosting"];
   serviceServe: () => Manager["serviceServe"];
-  sessionLedgerConn: () => Manager["sessionLedgerConn"];
-  sessionLedgerCreds: () => Manager["sessionLedgerCreds"];
-  setSessionLedgerCreds: (value: Manager["sessionLedgerCreds"]) => void;
   userMode: () => Manager["userMode"];
   deliveryShard: () => (typeof Manager)["DELIVERY_SHARD"];
   beginLifecycle: (...args: Parameters<Manager["beginLifecycle"]>) => ReturnType<Manager["beginLifecycle"]>;
@@ -112,9 +110,6 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
     remoteAuthority: () => m["remoteAuthority"],
     runHosting: () => m["runHosting"],
     serviceServe: () => m["serviceServe"],
-    sessionLedgerConn: () => m["sessionLedgerConn"],
-    sessionLedgerCreds: () => m["sessionLedgerCreds"],
-    setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
     userMode: () => m["userMode"],
     deliveryShard: () => (m.constructor as typeof Manager).DELIVERY_SHARD,
     beginLifecycle: (...args) => m["beginLifecycle"](...args),
@@ -133,7 +128,7 @@ export function credentialRenewalDeps(m: Manager): CredentialRenewalDeps {
 /** Renewal of the manager's own standing credentials: the delivery daemon's reload, the remote
  *  standing bundle, and the pushes of renewed credentials to the live connections. */
 export class CredentialRenewal {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CredentialRenewalDeps, private readonly parts: Pick<ManagerParts, "servePlane">) {}
 
   /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
    *  Set at construction for an injected store; the workspace store is named on first challenge. */
@@ -178,9 +173,6 @@ export class CredentialRenewal {
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get runHosting() { return this.deps.runHosting(); }
   private get serviceServe() { return this.deps.serviceServe(); }
-  private get sessionLedgerConn() { return this.deps.sessionLedgerConn(); }
-  private get sessionLedgerCreds() { return this.deps.sessionLedgerCreds(); }
-  private set sessionLedgerCreds(value: Manager["sessionLedgerCreds"]) { this.deps.setSessionLedgerCreds(value); }
   private get userMode() { return this.deps.userMode(); }
   private beginLifecycle(...args: Parameters<Manager["beginLifecycle"]>): ReturnType<Manager["beginLifecycle"]> { return this.deps.beginLifecycle(...args); }
   private dialRemoteStanding(...args: Parameters<Manager["dialRemoteStanding"]>): ReturnType<Manager["dialRemoteStanding"]> { return this.deps.dialRemoteStanding(...args); }
@@ -607,12 +599,12 @@ export class CredentialRenewal {
       // SPEC 14.6: every hosted drive's per-run `run-driver` credential is the manager's to renew
       // for the same nkey; a run parked in a pause for days must not die at the credential's TTL.
       await this.runHosting?.renew();
-      if (this.sessionLedgerConn && this.sessionLedgerCreds && this.auth) {
-        const sw = this.sessionLedgerConn;
+      if (this.parts.servePlane.sessionLedgerConn && this.parts.servePlane.sessionLedgerCreds && this.auth) {
+        const sw = this.parts.servePlane.sessionLedgerConn;
         try {
-          if (inspectCredHealth(this.sessionLedgerCreds).state !== "healthy") {
+          if (inspectCredHealth(this.parts.servePlane.sessionLedgerCreds).state !== "healthy") {
             const fresh = await this.withEndpointServeExecutor(({ authKv }) => this.mintAndStageSessionLedger(authKv));
-            this.sessionLedgerCreds = fresh;
+            this.parts.servePlane.sessionLedgerCreds = fresh;
             sw.creds = fresh;
             await this.pushRenewedCreds(sw.nc);
           }
@@ -674,7 +666,7 @@ export class CredentialRenewal {
     const remote = this.remoteAuthority;
     if (!remote?.renewStandingBundle || !this.serviceServe) return;
     const current = [this.remoteSupervisorCreds, this.remoteExecutorCreds, this.serviceServe.creds,
-      this.goalWriterCreds, this.sessionLedgerCreds];
+      this.goalWriterCreds, this.parts.servePlane.sessionLedgerCreds];
     if (!force && current.every((cred) => cred && inspectCredHealth(cred).state === "healthy")) {
       await Promise.all([
         ...[...this.pendingCredentialPushes].map((nc) => this.pushRenewedCreds(nc)),
@@ -725,9 +717,9 @@ export class CredentialRenewal {
       this.serviceServe.creds = candidate.serve;
       adopted = true;
       this.goalWriterCreds = candidate.goalWriter;
-      this.sessionLedgerCreds = candidate.sessionLedger;
+      this.parts.servePlane.sessionLedgerCreds = candidate.sessionLedger;
       if (this.goalWriter) this.goalWriter.creds = candidate.goalWriter;
-      if (this.sessionLedgerConn) this.sessionLedgerConn.creds = candidate.sessionLedger;
+      if (this.parts.servePlane.sessionLedgerConn) this.parts.servePlane.sessionLedgerConn.creds = candidate.sessionLedger;
       // Adoption is committed above; a connection that cannot come back yet is a push failure the
       // endpoint's own reconnect loop retries with the adopted credential, not unadopted debt.
       this.remoteRenewalDebt = undefined;
@@ -748,7 +740,7 @@ export class CredentialRenewal {
           }
         })().catch((e) => console.error(`! remote manager retired serve drainage after renewal: ${rejectionText(e)}`)),
         ...(this.goalWriter ? [this.pushRenewedCreds(this.goalWriter.nc)] : []),
-        ...(this.sessionLedgerConn ? [this.pushRenewedCreds(this.sessionLedgerConn.nc)] : []),
+        ...(this.parts.servePlane.sessionLedgerConn ? [this.pushRenewedCreds(this.parts.servePlane.sessionLedgerConn.nc)] : []),
       ]), remoteStandingTimeLeft(deadline), "remote manager standing reconnect exceeded its 10000ms aggregate budget; adopted transports keep their native reconnect ownership");
     } catch (e) {
       if (replacement) {

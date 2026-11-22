@@ -1,6 +1,6 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, parse, resolve } from "node:path";
+import { delimiter, isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -542,7 +542,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, parsed);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -570,7 +570,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest);
+        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, canonical);
     }
   }
   return canonical;
@@ -592,11 +592,13 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
   if (cmd.name === "update") {
     // Global maintenance must not inherit an unrelated disposable working folder. Keep the
-    // project's root when one exists and resolve a relative credential before changing folders.
+    // project's root when one exists and preserve relative credentials and tool paths.
     const removed = workingFolderRemoved();
     const root = removed ? undefined : findCotalRoot();
     if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
       parsed.values.creds = resolve(parsed.values.creds);
+    if (!removed && process.env.PATH !== undefined)
+      process.env.PATH = process.env.PATH.split(delimiter).map(dir => dir && !isAbsolute(dir) ? resolve(dir) : dir).join(delimiter);
     process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
     return;
   }
