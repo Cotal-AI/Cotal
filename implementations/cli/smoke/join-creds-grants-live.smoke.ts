@@ -113,6 +113,10 @@ try {
     ["missing", join(dir, "absent.creds"), 2, "TARGET_NOT_FOUND", "creds file not found:", "check the path"],
     ["truncated", truncated, 1, "SCHEMA_INVALID", "no complete NATS user JWT block", "pass the complete credential file as it was issued"],
   ] as const) {
+    const invalid = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "general,review.code");
+    check(`${label} file with a comma list refuses the channel without suggesting a mint`, await invalid.exited === 1 &&
+      /Code: +USAGE_INVALID/.test(invalid.output()) && invalid.output().includes("one valid channel name or pattern") &&
+      !invalid.output().includes("auth mint"), invalid.output());
     const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "review.code");
     check(`${label} file keeps its refusal and explains how to pair the replacement`, await attempt.exited === exit &&
       new RegExp(`Code: +${refusal}`).test(attempt.output()) && attempt.output().includes(detail) && attempt.output().includes(advice) &&

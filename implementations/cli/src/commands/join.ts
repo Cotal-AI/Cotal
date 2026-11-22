@@ -7,6 +7,7 @@ import {
   AmbiguousPeerError,
   mintLifecycleUid,
   assertLifecycleToken,
+  assertValidChannel,
   newIdentity,
   mintCreds,
   provisionAgent,
@@ -168,6 +169,12 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
+  try { assertValidChannel(channel); }
+  catch (cause) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "join needs one valid channel name or pattern", {
+      remedy: "pass one valid channel with --channel, such as general or 'team.>', rather than a comma-separated list", cause, selfContained: true,
+    });
+  }
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
