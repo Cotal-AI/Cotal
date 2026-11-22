@@ -92,6 +92,10 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ## Adding a service [#adding-a-service]
 
+In a script, `service add` needs a definition name with each source: `--exec`, `--preset` or `--file`.
+If you supplied a source but no name, insert the name after `add` in your original command.
+Keep the source and its options, including any `--space`, `--json` or `--plain` flags.
+
 In a new project, prepare the space first, then pass `--space` to save the definition there. A
 prepared project folder does not override the current space selection. Neither command starts a
 broker or the service.
@@ -294,7 +298,7 @@ a submitted or unknown step may have changed the original unit even if its insta
 is absent. A legacy PID record is not adopted into the new instance controller. Unreadable
 component records make the inventory partial. Reads do not start, repair or install a service.
 
-`service add [name] --file <definition.json>` imports the version-1 service object described under
+`service add <name> --file <definition.json>` imports the version-1 service object described under
 [Adding a service](#adding-a-service). A declared preset uses
 `service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
 and file import. Defaulted options show the same default description as their flag help. Enter

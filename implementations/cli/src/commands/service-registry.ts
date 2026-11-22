@@ -66,7 +66,13 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (mode === "uninstall" && args.values["dry-run"] && args.values.yes) throw new CommandFailure("refused", "USAGE_INVALID", "--yes cannot confirm a read-only native uninstall inspection");
   if ((args.values.tail !== undefined || args.values.follow !== undefined) && mode !== "logs") throw new CommandFailure("refused", "USAGE_INVALID", "--tail and --follow belong to service logs");
   if (args.values.tail !== undefined && (!/^[1-9][0-9]*$/.test(String(args.values.tail)) || Number(args.values.tail) > 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--tail needs an integer from 1 to 1000");
-  if (mode === "add" && (!name || args.values.file === undefined && args.values.preset === undefined && args.values.exec === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"`, remedyIsCommand: true });
+  if (mode === "add" && (!canPrompt() || args.values.json)) {
+    const hasSource = args.values.file !== undefined || args.values.preset !== undefined || args.values.exec !== undefined;
+    if (!name && hasSource) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a definition name", {
+      remedy: "insert your definition name immediately after `add` in the original command, keeping all flags and values unchanged",
+    });
+    if (!hasSource) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"`, remedyIsCommand: true });
+  }
 }
 
 /** Whether a start or restart of `name` would launch a manager: its saved definition, or the preset
