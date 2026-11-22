@@ -217,7 +217,8 @@ const sameUtcDay = (a: string, b: Date): boolean => a.slice(0, 10) === b.toISOSt
 /** The bodies to send: at `regular`, the day's install event first when none was sent today. */
 function eventsAtExit(registry: Registry, p: Pending, code: number, now: Date): string[] {
   const bodies: string[] = [];
-  if (p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
+  // Bundled docs never open the extension inventory. Leave the install event due for another command.
+  if (p.command !== "docs" && p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
     try {
       const body = JSON.stringify(installEvent(registry, p, now));
       markTelemetryInstallEvent(now);

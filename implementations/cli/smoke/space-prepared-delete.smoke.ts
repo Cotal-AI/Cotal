@@ -69,6 +69,22 @@ check("doctor auth --space for an unknown space gives preparation guidance inste
 const created = run(["space", "create", "b4b", "--root", root]);
 check("rig: the space is prepared and not started", created.status === 0, shown(created));
 
+for (const verb of ["describe", "invoke"]) {
+  const operation = [verb, "manager", ...(verb === "invoke" ? ["status", "--args", "{}"] : []), "--space", "b4b"];
+  const plain = run(["ep", ...operation, "--plain"]);
+  const message = '"b4b" is prepared but not started';
+  const remedy = `start it with \`cotal up\` in ${realpathSync(root)}`;
+  check(`ep ${verb} in a prepared space names the project and startup step`, plain.status === 2 && plain.stdout === "" &&
+    /Code:\s+TARGET_UNAVAILABLE/.test(plain.stderr) && plain.stderr.includes(message) && plain.stderr.includes(`Next\n  ${remedy}`), shown(plain));
+  for (const prefix of [["endpoint"], []]) {
+    const json = run([...prefix, ...operation, "--json"], home);
+    const report = json.envelope;
+    check(`${[...prefix, verb].join(" ")} refuses before requesting a contract and names the prepared target`, json.status === 2 && json.stderr === "" &&
+      report?.outcome === "refused" && report.error?.code === "TARGET_UNAVAILABLE" && report.error.message === message &&
+      report.error.remedy === remedy && report.target?.space === "b4b" && report.target.root === realpathSync(root), shown(json));
+  }
+}
+
 const server = "nats://127.0.0.1:43842";
 const beforeMint = readdirSync(join(root, ".cotal")).sort();
 const out = join(home, "alice.creds");

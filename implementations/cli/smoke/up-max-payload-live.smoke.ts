@@ -67,7 +67,7 @@ const sandboxEnv = (() => {
 })();
 
 const kids: ChildProcess[] = [];
-async function run(args: string[]): Promise<{ status: number | null; out: string }> {
+async function run(args: string[], timeoutMs?: number): Promise<{ status: number | null; out: string }> {
   const options = { cwd: root, env: sandboxEnv, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
   assertSmokeSandboxDown(sandbox, args, options);
   const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
@@ -75,7 +75,8 @@ async function run(args: string[]): Promise<{ status: number | null; out: string
   let out = "";
   cp.stdout?.on("data", (b: Buffer) => { out += b.toString(); });
   cp.stderr?.on("data", (b: Buffer) => { out += b.toString(); });
-  await once(cp, "exit");
+  const timeout = timeoutMs === undefined ? undefined : setTimeout(() => cp.kill("SIGTERM"), timeoutMs);
+  try { await once(cp, "close"); } finally { clearTimeout(timeout); }
   return { status: cp.exitCode, out };
 }
 
@@ -237,6 +238,7 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
       ok("the low-payload broker stops", clean.status === 0, clean.out);
     }
     if (mode === "open-controller") await checkStoppedBrokerOnly(space, port);
+    else await checkStoppedOpenForeground(server, port);
     const wide = await run(["up", "--open", "--no-manager", "--space", space, "--server", server, "--max-payload", "1048576"]);
     try {
       ok("a broker-only start accepts and serves 1048576 bytes", wide.status === 0 && await servedMaxPayload(port) === 1048576, wide.out);
@@ -249,6 +251,20 @@ async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Prom
       const clean = await run(["down", "--yes"]);
       ok("the sufficient-payload broker stops", clean.status === 0, clean.out);
     }
+  }
+}
+
+async function checkStoppedOpenForeground(server: string, port: number): Promise<void> {
+  const before = confText();
+  const restart = await run(["up", "--foreground", "--server", server], 15_000);
+  try {
+    ok("a cold legacy open foreground start with the recorded low limit refuses before launch",
+      restart.status === 1 && restart.out.includes("--max-payload 8192 is below 263168 bytes") &&
+      restart.out.includes("pass --no-manager") && !restart.out.includes("Starting nats-server"), restart.out);
+    ok("the refused start leaves the open config and policy unchanged and no listener", confText() === before &&
+      recordedPayload() === 8192 && await servedMaxPayload(port) === undefined, restart.out);
+  } finally {
+    if (await servedMaxPayload(port) !== undefined) await run(["down", "--yes"]);
   }
 }
 

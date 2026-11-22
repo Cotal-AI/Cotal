@@ -167,6 +167,23 @@ const QUESTION = "Which one?";
   recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
   const ambiguous = run(["whoami", "--server", A, "--json"]);
   check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  for (const [serverFlags, format] of [[["--server", A], "--plain"], [[`--server=${A}/`], "-j"]] as const) {
+    const args = ["who", ...serverFlags, format, "--all"];
+    const refused = run(args);
+    const error = envelope(refused)?.error;
+    const remedy: unknown = error?.remedy;
+    const next = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    const expected = format === "-j" ? `who '--server=${A}/' -j --all` : `who --server ${A} --plain --all`;
+    check(`who ${format} on a shared broker refuses and keeps the broker and flags in each exact choice`,
+      refused.status === 2 && (format === "-j" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      commands.length === 2 && ["alpha", "shared"].every((space, index) => commands[index]?.endsWith(` ${expected} --space ${space}`)), shown(refused));
+    for (const space of ["alpha", "shared"]) {
+      const picked = run([...args, "--space", space]);
+      check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
+        (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
   const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
   check("equivalent URL does not turn unchecked mode into checked", unchecked.status === 4 && envelope(unchecked)?.result?.modeChecked === false, shown(unchecked));
   removeMesh("shared");

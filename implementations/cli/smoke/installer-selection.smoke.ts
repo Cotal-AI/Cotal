@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { runNpm, runNpmAsync } from "../src/commands/update-process.js";
 
 // Exercise the real POSIX installer main/launcher/PATH/next-step path. Only runtime discovery
 // and npm installation are fixtures; this suite does not qualify a downloaded package.
@@ -155,6 +156,45 @@ fi
   const launched = spawnSync(npmLauncher, ["--entry"], { env: { ...npmEnv, PATH: dirname(npmLauncher) }, encoding: "utf8", timeout: 10_000 });
   assert.equal(launched.status, 0, output(launched));
   assert.equal(realpathSync(launched.stdout.trim()), bootstrap, "the shell launcher runs the stable JavaScript entry");
+  const oldLauncher = launcherText.replace(/^node_supported\(\) \{[\s\S]*?^\}; then/m, "if command -v node >/dev/null 2>&1; then");
+  assert.notEqual(oldLauncher, launcherText);
+  writeFileSync(npmLauncher, oldLauncher);
+  const refresh = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+  assert.equal(refresh.status, 0, output(refresh));
+  assert.equal(readlinkSync(npmLauncher), npmLink);
+  assert.equal(readFileSync(npmLauncher, "utf8"), launcherText, "refresh writes the same launcher as a fresh install");
+  const wrapper = realpathSync(npmLauncher);
+  for (const [contents, mode] of [
+    [oldLauncher, 0o775],
+    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755],
+    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755],
+  ] as const) {
+    writeFileSync(wrapper, contents);
+    chmodSync(wrapper, mode);
+    const skipped = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(skipped.status, 0, output(skipped));
+    assert.equal(readFileSync(wrapper, "utf8"), contents);
+    const version = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(process.execPath) }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(version.status, 0, output(version));
+    assert.equal(version.stdout.trim(), "cotal-ai 0.0.0");
+  }
+  writeFileSync(wrapper, launcherText);
+  const npmTools = mkdirSync(join(npmHome, "npm-tools"), { recursive: true })!;
+  const projectNpm = join(npmTools, "npm");
+  writeFileSync(join(npmTools, "node"), "#!/bin/sh\nexit 18\n", { mode: 0o755 });
+  writeFileSync(projectNpm, '#!/usr/bin/env node\nconsole.log(process.execPath)\n', { mode: 0o755 });
+  const path = process.env.PATH;
+  try {
+    process.env.PATH = `${npmTools}:${path ?? ""}`;
+    for (const npm of [runNpm([]), await runNpmAsync([])]) {
+      assert.equal(npm.status, 0, npm.stderr);
+      assert.equal(npm.stdout.trim(), process.execPath, "npm selected by PATH runs under Cotal's Node");
+    }
+    assert.equal(process.env.PATH, `${npmTools}:${path ?? ""}`);
+  } finally {
+    if (path === undefined) delete process.env.PATH;
+    else process.env.PATH = path;
+  }
   if (process.platform === "linux") {
     const split = 'COTAL_NPM_PWD=${PWD} PWD=/proc/self/cwd /bin/sh';
     const probe = spawnSync("/usr/bin/env", ["-S", split, "-c", '[ "$PWD" = /proc/self/cwd ] && [ . -ef . ] && exit 0'], {

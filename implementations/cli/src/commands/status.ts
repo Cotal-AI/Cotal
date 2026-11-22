@@ -253,7 +253,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   if (values.components && (presentation !== "rich" || values.all))
     throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
-      remedy: `run \`${displayCmd()} status --components\` on its own`,
+      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
     });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
@@ -1278,7 +1278,7 @@ async function readSelected(selected: Selected, responder: { state: DeliveryResp
       return { resolved: false, code: "unregistered-root", message };
     }
     if (!isWorkspaceTargetError(e)) throw e;
-    if (!all && e.code === "ambiguous-target" && e.details.spaces && !isGenuineSpace(folder.root)) {
+    if (!all && e.code === "ambiguous-target" && e.details.server === undefined && e.details.spaces && !isGenuineSpace(folder.root)) {
       hints.push(`check the registered spaces with \`${cmd} status --all\``);
       return { resolved: false, code: e.code, message: `multiple spaces are registered but unchecked: ${(e.details.available ?? []).join(", ")}` };
     }

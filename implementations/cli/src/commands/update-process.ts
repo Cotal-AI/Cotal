@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
+import { basename, delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken, resolveOnPath } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { compareSemver } from "../seed/reconcile.js";
 
@@ -73,13 +73,25 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   return entry;
 }
 
+function npmInvocation(env: NodeJS.ProcessEnv) {
+  const cwd = parse(homedir()).root;
+  if (process.platform === "win32" || env.PATH === undefined) return { file: "npm", env, cwd };
+  const lookup = { PATH: env.PATH.split(delimiter).map(dir => resolve(cwd, dir)).join(delimiter) };
+  const file = resolveOnPath("npm", lookup);
+  if (!file) return { file: "npm", env, cwd };
+  const node = resolveOnPath("node", lookup);
+  if (node && realpathSync(node) === realpathSync(process.execPath)) return { file: "npm", env, cwd };
+  return { file, env: { ...env, PATH: `${dirname(process.execPath)}${delimiter}${env.PATH}` }, cwd };
+}
+
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+    const npm = npmInvocation(process.env);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
-      cwd: parse(homedir()).root, windowsVerbatimArguments, windowsHide: true,
+      cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, windowsHide: true,
       ...(gated ? { detached: true, stdio: ["ignore", "pipe", "pipe", "pipe"] } : {}),
     });
     let stdout = "", stderr = "", error: string | undefined;
@@ -106,9 +118,10 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
 
 export function runNpm(args: string[], inherit = false): CommandResult {
   try {
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+    const npm = npmInvocation(process.env);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
     const result = spawnSync(file, spawnArgs, {
-      cwd: parse(homedir()).root, windowsVerbatimArguments,
+      cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
     });
     return {
@@ -154,6 +167,8 @@ export async function runGlobalProcess(
   let idle: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<void> | undefined;
   try {
+    const npm = operation === "install" && file === "npm" ? npmInvocation(env) : undefined;
+    file = npm?.file ?? file;
     cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
     const recordCache = gated && staging !== undefined;
     if (recordCache) {
@@ -176,7 +191,7 @@ export async function runGlobalProcess(
     const child = withInstallUmask(() => spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-update", file, ...args] : args, {
       // Corepack searches ancestors for a package manager. Keep only npm at the filesystem root.
       ...(operation === "install" ? { cwd: parse(homedir()).root } : {}),
-      env: { ...env, npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
+      env: { ...(npm?.env ?? env), npm_config_cache: cache, npm_config_logs_max: "0", npm_config_update_notifier: "false" },
       // A separate process group keeps terminal interrupts out of npm's live replacement.
       // Keep the ChildProcess referenced and await close; this is not a background update.
       detached: true,

@@ -12,15 +12,16 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
- * A broker crash releases a controller foreground hold with a failed exit so the next foreground
- * `up` can repair the recorded stack.
+ * A broker crash releases a controller foreground hold with a failed exit and prints a repair
+ * command that keeps a broker-only stack broker-only.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
  * An external `down --yes` stops a named or folder-named legacy stack without a crash diagnostic.
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
@@ -681,10 +682,37 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" = "takeover"): Promise<void> {
+async function checkRecordedAddressWait(mesh: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
+  const listener = createServer((socket) => socket.resetAndDestroy());
+  listener.listen(port, "127.0.0.1");
+  await once(listener, "listening");
+  try {
+    const refusal = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager"], 15_000);
+    assert.ok(refusal.code === 2 && refusal.err.includes("address already in use") && !refusal.err.includes("Waiting up to a minute"), refusal.out + refusal.err); passed++;
+  } finally { await new Promise<void>((done) => listener.close(() => done())); }
+
+  // A Linux TCP connection to its own address leaves a TIME-WAIT socket without SO_REUSEADDR.
+  const socket = spawnSync("python3", ["-c", `
+import socket, sys
+address = ('127.0.0.1', int(sys.argv[1]))
+with socket.socket() as connection:
+    connection.bind(address)
+    connection.settimeout(3)
+    connection.connect(address)
+    connection.shutdown(socket.SHUT_WR)
+    assert connection.recv(1) == b''
+`, String(port)], { encoding: "utf8", timeout: 5000 });
+  assert.equal(socket.status, 0, `${socket.error ?? ""}${socket.stderr}`);
+  const address = `0100007F:${port.toString(16).toUpperCase().padStart(4, "0")}`;
+  const rows = readFileSync("/proc/net/tcp", "utf8").split("\n").map((row) => row.trim().split(/\s+/)).filter(([, local]) => local === address);
+  assert.ok(rows.some(([, , peer, state]) => peer === address && state === "06") && rows.every(([, , , state]) => state === "06"), JSON.stringify(rows)); passed++;
+}
+
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
+  const brokerOnly = kind === "broker-only-crash" || kind === "time-wait";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
-  const root = join(base, name), home = join(root, "home"), mesh = join(root, "mesh");
+  const root = join(base, name), home = join(root, "home"), mesh = join(root, brokerOnly ? "broker only" : "mesh");
   const machine = join(home, otherHome ? "launching home's machine" : "machine");
   for (const p of [root, home, mesh, join(home, "xdg"), machine]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: machine, xdgConfigHome: join(home, "xdg") });
@@ -700,7 +728,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     child.stderr?.on("data", (b: Buffer) => { io.err += b.toString(); });
     return { child, io, state: observeOwnedChild(child) };
   };
-  const holder = foreground(["--server", `nats://127.0.0.1:${port}`]);
+  const holder = foreground(["--server", `nats://127.0.0.1:${port}`, ...(brokerOnly ? ["--open", "--no-manager", "--max-payload", "131072"] : [])]);
   let taker: ReturnType<typeof foreground> | undefined;
   let brokerKilled = false;
   try {
@@ -710,7 +738,27 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       return holder.io.out.includes("Controller stack started");
     }, 120_000, () => holder.io.err.slice(-3000));
     assert.ok(holder.child.pid);
-    if (kind === "broker-crash") {
+    if (kind === "time-wait") {
+      assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+      const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
+      assert.equal(down.code, 0, down.out + down.err);
+      await until(() => holder.state.closed, 10_000, () => holder.io.err);
+      assert.equal(holder.state.code, 0, holder.io.err);
+      await checkRecordedAddressWait(mesh, env, port);
+      taker = foreground(["--no-manager"]);
+      await until(() => {
+        if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
+        return taker!.io.err.includes(`Waiting up to a minute for TIME-WAIT to clear on the stack's broker address 127.0.0.1:${port}`);
+      }, 15_000, () => taker!.io.out + taker!.io.err);
+      await until(() => {
+        if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
+        return /Operation: +up completed/.test(taker!.io.out);
+      }, 85_000, () => taker!.io.out + taker!.io.err);
+      assert.ok(await portOpen(port), "the foreground restart binds the recorded port"); passed++;
+      console.log(`PASS foreground-up-signals ${name}`);
+      return;
+    }
+    if (kind === "broker-crash" || brokerOnly) {
       const broker = controllerBroker(space, machine);
       assert.ok(broker?.process && observeServiceProcess(broker) === "running", "the isolated stack owns this broker process");
       process.kill(broker.process.pid, "SIGKILL");
@@ -722,13 +770,19 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false, "the failed launcher releases its hold"); passed++;
       const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"]);
       assert.ok(status.code === 0 && status.out.includes(`nats://127.0.0.1:${port}`) && /Connection:.*unreachable/.test(status.out), status.out + status.err); passed++;
-      taker = foreground(["--root", mesh]);
+      const repairArgs = [...(brokerOnly ? ["--no-manager"] : []), "--root", mesh];
+      assert.ok(holder.io.err.includes(`up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(mesh)}\` to repair the stack.`), holder.io.err); passed++;
+      taker = foreground(repairArgs);
       await until(() => {
         if (taker!.state.error) throw taker!.state.error;
         if (taker!.state.exited) throw new Error(`the repair exited: ${taker!.io.err}`);
         return /Operation: +up completed/.test(taker!.io.out);
       }, 120_000, () => taker!.io.err.slice(-3000));
       assert.equal(await portOpen(port), true, "the next foreground up repairs the recorded listener"); passed++;
+      if (brokerOnly) {
+        const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--json"]);
+        assert.ok(who.code === 0 && who.out.includes('"managers":"none-present"'), who.out + who.err); passed++;
+      }
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
       assert.equal(down.code, 0, down.out + down.err);
@@ -779,7 +833,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
     try {
       for (const run of [holder, taker]) if (run && !run.state.exited && run.child.pid) process.kill(-run.child.pid, "SIGKILL");
       // A failed cell still stops what its start left, through the product's own down.
-      if (brokerKilled && !(await portOpen(port))) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
+      if (brokerKilled && !brokerOnly && !(await portOpen(port))) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"], 120_000);
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);
     } finally {
@@ -821,5 +875,7 @@ await controllerSighupCell();
 await controllerHoldCell();
 await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
+await controllerHoldCell("broker-only-crash");
+if (process.platform === "linux") await controllerHoldCell("time-wait");
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

@@ -929,8 +929,11 @@ cotal docs --search <query> [--json | --plain]
 | `--plain` | off | Text without color. A page has a source and version line followed by Markdown. |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
-`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`,
-`Project`, the order of the docs index), each with its title; `result.pages` holds each page's slug,
+`cotal_docs`. The command does not read or repair the installed extension inventory, so you can
+consult it while fixing that inventory.
+
+Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`, `Project`,
+the order of the docs index), each with its title; `result.pages` holds each page's slug,
 title, kind (its classification line, such as `Concept (informative)`), category (the heading it
 lists under) and summary, in that order, and
 `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,

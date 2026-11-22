@@ -77,6 +77,9 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 never shown an empty roster.
 A mesh where nobody is present is a complete roster: `who` without `--waiting` says so and exits 0.
 With `--waiting`, an empty report says that no rows match the filter, not that nobody is present.
+If `--server` matches several registered spaces, `who` refuses with `TARGET_AMBIGUOUS` (exit 2).
+Its Next section gives a roster command for each space with the same broker and output flags.
+Run one to read that space without changing the saved selection.
 
 
 ### Watch consumer lifetime
@@ -134,8 +137,10 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
-In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` refuses with no space
-selected. The report names the folder and does not assume `main`.
+In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` reports the space
+named by `--space` or, if none is named, the saved selection. If neither names a space, it refuses
+with `TARGET_NOT_FOUND`, names the folder and does not assume `main`. See
+[target resolution](cli-selection.mdx#target-resolution) for the selection order.
 `--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
 its permissions name, the profile it was minted with, its principal, the agent lifecycle its
 delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
@@ -394,6 +399,10 @@ endpoint's schemas - this is the same trust chain every built-in control command
 auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
 rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
 reach needs the `admin` scope). An open mesh has no service registry.
+
+If the selected space is prepared but not started, both `endpoint describe` and `endpoint invoke`
+refuse with `TARGET_UNAVAILABLE` (exit 2) before reading a contract. Run `cotal up` in the named
+project folder, then retry. The top-level `describe` and `invoke` forms report the same refusal.
 
 
 ### Static caller authority

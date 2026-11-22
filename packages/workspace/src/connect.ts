@@ -928,7 +928,7 @@ export function readCredsFile(path: string, options?: { malformedRemedy?: string
   }
   const problem = credsProblem(text);
   if (problem) throw refuse(`${path} cannot be used: ${problem.message}`, "SCHEMA_INVALID", problem.code === "crlf"
-    ? `save it with LF line endings, for example with \`dos2unix ${path}\``
+    ? `save it with LF line endings, for example with \`dos2unix ${shellPath(path)}\``
     : options?.malformedRemedy ?? "pass the complete credential file as it was issued; `cotal auth mint <label> --out <file>` writes a new one");
   const exposure = credentialFileExposure(path, stat);
   if (exposure) console.error(c.yellow(`! creds file ${path} ${exposure.reason}; ${exposure.remedy}`));

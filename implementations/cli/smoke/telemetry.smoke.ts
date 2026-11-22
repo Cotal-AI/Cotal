@@ -119,6 +119,21 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("a stale lastInstallEventAt sends the install event again", nextDay.sent.length === 2 && nextDay.sent[0]!.event === "install", nextDay.sent.map((b) => b.event));
 }
 
+{
+  const s = sandbox();
+  const docs = await s.run(["docs", "--json"]);
+  await settled();
+  check("bundled docs sends command telemetry without collecting the install inventory",
+    docs.status === 0 && docs.stderr === "" && docs.envelope?.outcome === "ok" && docs.sent.length === 1 &&
+    docs.sent[0]?.event === "command" && docs.sent[0]?.command === "docs" && s.settings().lastInstallEventAt === undefined,
+    { ...shown(docs), events: docs.sent.map((event) => event.event) });
+  const version = await s.run(["version"]);
+  await settled();
+  check("another command still sends the deferred install event",
+    version.status === 0 && version.sent.length === 2 && version.sent[0]?.event === "install" &&
+    version.sent[1]?.event === "command", version.sent.map((event) => event.event));
+}
+
 for (const level of ["regular", "minimal"]) {
   const s = sandbox();
   const replay = await s.run(["ext", "__update-add", "expected-package", "actual-package"], { COTAL_TELEMETRY: level });

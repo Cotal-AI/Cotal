@@ -182,7 +182,7 @@ function tableAddress(hex: string): { address: string; family: "ipv4" | "ipv6" }
  *  it names another process. Only sockets on the host's own addresses or a wildcard can hold a
  *  specific host, so a connection elsewhere on the machine that shares the port number is not
  *  counted; any local address can hold a wildcard host. */
-export async function addressHolder(what: string, host: string, port: number): Promise<{ says: string; frees: string }> {
+export async function addressHolder(what: string, host: string, port: number): Promise<{ says: string; frees: string; timeWait?: true }> {
   const bare = host.startsWith("[") ? host.slice(1, -1) : host;
   const holding = new BlockList();
   holding.addAddress("0.0.0.0", "ipv4");
@@ -207,7 +207,7 @@ export async function addressHolder(what: string, host: string, port: number): P
   // 0A is LISTEN and 06 is TIME_WAIT in the kernel's table.
   if (!states.length || states.includes("0A")) return { says: `another process holds ${address}`, frees: `stop the process listening on ${host}:${port}` };
   return states.every((state) => state === "06")
-    ? { says: `nothing listens at ${address}, but a closed connection in TIME-WAIT still holds its port`, frees: "wait up to a minute for the TIME-WAIT to clear" }
+    ? { says: `nothing listens at ${address}, but a closed connection in TIME-WAIT still holds its port`, frees: "wait up to a minute for the TIME-WAIT to clear", timeWait: true }
     : { says: `nothing listens at ${address}, but an open connection's local end holds its port`, frees: `close the connection that holds ${host}:${port}` };
 }
 

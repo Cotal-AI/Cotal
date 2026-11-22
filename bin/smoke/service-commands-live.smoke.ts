@@ -371,11 +371,12 @@ try {
     if (isManagerLog(goneLog)) rmSync(goneLog);
     const gone = upCotal(["manager", "logs"]);
     const goneJson = envelope(upCotal(["manager", "logs", "--json"])) as LogsEnvelope & { target?: { path?: string }; error?: { code?: string; message?: string; remedy?: string } };
+    const restart = `start the stack again with \`cotal up --root ${upProject} --space ${UP_SPACE}\``;
     check("cotal manager logs with that log removed says the log is gone and names only cotal up",
       goneJson.outcome === "refused" && goneJson.error?.code === "TARGET_NOT_FOUND" && goneJson.error.message === `the manager log at ${goneLog} is no longer there; nothing was read`
-        && goneJson.error.remedy === "start the stack again with `cotal up`" && goneJson.target?.path === goneLog, goneJson);
+        && goneJson.error.remedy === restart && goneJson.target?.path === goneLog, goneJson);
     check("  and its text says so, with no cotal manager start and no claim that none was started",
-      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && /Next\s+start the stack again with `cotal up`\s*$/.test(out(gone))
+      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && out(gone).trimEnd().endsWith(restart)
         && !out(gone).includes("cotal manager start") && !out(gone).includes("no manager has been started"), out(gone));
 
     // ---- A preset broker stops even when its log file was moved away -----------------------------

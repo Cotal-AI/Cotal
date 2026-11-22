@@ -54,7 +54,7 @@ import { readManagedLaunch, requestManagedLaunch, type ManagedLaunchResult } fro
 import { c, stderrLine } from "../ui.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { runningStackManagerPid, stackManagerAbsent, stackManagerStarting } from "../lib/stack-journal.js";
-import { cliControl, failIfNotOk } from "../lib/control.js";
+import { cliControl, failIfNotOk, onRerun } from "../lib/control.js";
 import { askManagerFolder, managerPin, managerSelection, managersWithPersona, rerunOn, rerunWithCwd, type FolderCheck } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { callerHarness, missingConnector, spawnPersona } from "../lib/spawn-defaults.js";
@@ -437,7 +437,7 @@ async function reportStarting(start: { name: string; managerInstanceId: string; 
  *  command that does. */
 export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
   const where = running.manager;
-  const attach = where ? `${displayCmd()} attach ${shellWord(running.agent)} --on ${shellWord(where.selector)}` : null;
+  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space }, [running.agent])} --on ${shellWord(where.selector)}` : null;
   const presentation = presentationOf(values);
   const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
   const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";
