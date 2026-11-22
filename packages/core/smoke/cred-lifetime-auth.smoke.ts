@@ -64,7 +64,7 @@ if (process.argv[2] === "long-expiry-child") {
   });
   await ep.start();
   await wait(500);
-  const nc = (ep as unknown as { nc?: NatsConnection }).nc;
+  const nc = (ep as unknown as { conn: { nc?: NatsConnection } }).conn.nc;
   const reconnect = (nc as unknown as { protocol?: { options?: { reconnect?: boolean } } } | undefined)?.protocol?.options?.reconnect;
   await ep.stop();
   console.log(`LONG_EXPIRY_CHILD ${JSON.stringify({ reconnect })}`);
@@ -90,7 +90,7 @@ if (process.argv[2] === "expiry-child") {
   const warnings: string[] = [];
   ep.on("warning", (err: Error) => warnings.push(err.message));
   await ep.start();
-  const nc = (ep as unknown as { nc?: NatsConnection }).nc;
+  const nc = (ep as unknown as { conn: { nc?: NatsConnection } }).conn.nc;
   if (!nc) throw new Error("expiry child started without a NATS connection");
   const binding = ep as unknown as { stopped: boolean; connectAndBind(): Promise<void> };
   const connectAndBind = binding.connectAndBind.bind(ep);

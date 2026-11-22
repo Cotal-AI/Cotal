@@ -1,5 +1,16 @@
 # Upgrading a running deployment
 
+## A person's control of their own agents
+
+On a space where people sign in, a person can now stop, attach to, type into and interrupt every
+agent under their own owner, whatever their scope, and read those agents' event channels. The auth
+callout issues these permissions. Update and restart every member of the callout queue, the full auth
+service and each `--callout-only` replica, then reconnect each person's clients. A connect that an
+old member answers still gets the old permissions.
+
+The Manager cluster advances to revision 53 with the targeted `interrupt` command. An older Manager
+does not serve it, so update Managers before a client interrupts a turn through them.
+
 ## Tool permissions on the agent endpoint
 
 A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its

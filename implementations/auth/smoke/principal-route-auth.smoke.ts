@@ -157,6 +157,23 @@ async function bearer(w: Who): Promise<string> {
     .sign(privateKey as CryptoKey);
 }
 
+// ---- a person's manager view controls their own agents, from the row kind (SPEC 13.21) ----------
+{
+  const PERSON = mintLifecycleUid(), AGENT = mintLifecycleUid(), INSTANCE = mintLifecycleUid();
+  const kinds = new Map<string, "interactive" | "managed-agent">([[PERSON, "interactive"], [AGENT, "managed-agent"]]);
+  const mintView = calloutPermissions((t) => ({ allowSubscribe: [], allowPublish: [], lifecycleUid: t.act.lifecycleUid!, scope: ["spawn"], kind: kinds.get(t.act.lifecycleUid!) }), async () => {});
+  const view = async (actor: string, uid: string) => ((await mintView({
+    owner: A, space, scope: ["spawn"], ver: USER_TOKEN_VER, exp: Math.floor(Date.now() / 1000) + 600,
+    act: { owner: A, actor, scope: ["spawn"], lifecycleUid: uid, view: "manager-caller", managerInstanceId: INSTANCE },
+  } as ValidatedUserToken, `ibx${hex(16)}`, `rdr${hex(8)}`)) as Perm).pub?.allow ?? [];
+  const seat = (rows: string[], cmd: string) => rows.some((r) => r.includes(`.manager.${INSTANCE}.${cmd}.owner.${A}.`));
+  const person = await view("cli", PERSON), agent = await view("helper", AGENT);
+  check("the callout mints a person's manager view with owner-mode input, interrupt, despawn and attach on their own agents",
+    ["input", "interrupt", "despawn", "attach"].every((cmd) => seat(person, cmd)), person.filter((r) => r.includes(`.manager.${INSTANCE}.`)));
+  check("the callout mints an agent's manager view with no input or interrupt row, at the same scope",
+    !seat(agent, "input") && !seat(agent, "interrupt") && seat(agent, "despawn"));
+}
+
 // ---- raw connections, for the forged publishes and subscriptions ----------------------------
 interface Seat { label: string; nc: NatsConnection; refused: { operation: string; subject: string }[] }
 const raws: NatsConnection[] = [];
@@ -522,7 +539,7 @@ try {
     check("control: the same request with deadlineMs 30000 is answered ok", atCap !== "none" && atCap.ok, atCap);
 
     // cell 41: the caller refuses the same deadline before it publishes anything.
-    const webNc = (webEp as unknown as { nc: NatsConnection }).nc;
+    const webNc = (webEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const publish = webNc.publish.bind(webNc);
     let published = 0;
     webNc.publish = (subject, ...rest) => { if (subject.startsWith(`${P}.ep.prin.`)) published++; return publish(subject, ...rest); };
@@ -874,7 +891,7 @@ try {
   {
     deaf.add(W.deaf.uid);
     const deafEp = await userEndpoint(W.deaf);
-    const nc = (deafEp as unknown as { nc: NatsConnection }).nc;
+    const nc = (deafEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const flush = nc.flush.bind(nc);
     nc.flush = () => new Promise<void>(() => {});
     const r = await settle(call(deafEp, coderAt, "prompts", "owner", {}, 1500));
@@ -1023,7 +1040,7 @@ try {
     check("on the new connection presence carried no prompts field until the broker accepted the new subscription, then the field again",
       shown.includes(undefined) && shown.lastIndexOf(coder.seq) > shown.indexOf(undefined) && webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, shown);
     // The library reconnects in place and re-subscribes on a connection the broker authorized again.
-    const raw = (coderEp as unknown as { nc: NatsConnection }).nc;
+    const raw = (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     await raw.reconnect();
     let inPlace = false;
     for (let i = 0; i < 50 && !inPlace; i++) {
@@ -1031,7 +1048,7 @@ try {
       inPlace = r.ok && r.value.ok;
       if (!inPlace) await wait(100);
     }
-    check("an in-place reconnect re-runs the check and keeps serving", inPlace && (coderEp as unknown as { nc: NatsConnection }).nc === raw);
+    check("an in-place reconnect re-runs the check and keeps serving", inPlace && (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc === raw);
     // The next credential predates the rows: the check fails, the serve ends, the field goes.
     stripped.add(W.coder.uid);
     await raw.reconnect();

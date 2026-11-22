@@ -105,7 +105,7 @@
     {
       "name": "M11 omit notification of a replaced connection",
       "file": "packages/core/src/endpoint-connection.ts",
-      "find": "        follower.reconnected(this.nc);",
+      "find": "        follower.reconnected(this.conn.nc);",
       "replace": "        void follower;",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "expectRed": "GAP-WIRE: recovery settles promptly after renewal",

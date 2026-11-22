@@ -240,7 +240,7 @@ export function seatMissRefusal(
 
 /** The scope a user-mode manager-caller view needs on the actor grant for each manager read. */
 const MANAGER_READ_SCOPE = {
-  ps: "the `spawn` or `admin` scope on your actor grant",
+  ps: "a person's own sign-in, or the `spawn` or `admin` scope on an agent's actor grant",
   slots: "the `admin` scope on your actor grant; `spawn` alone does not carry it",
 } as const;
 

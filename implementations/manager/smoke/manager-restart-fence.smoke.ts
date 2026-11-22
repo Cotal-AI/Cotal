@@ -144,7 +144,7 @@ try {
   // Recovery drops the full handle and resolves only the command being retried.
   const commandCache = (client as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const boundFor = (command: string) => (cache.get(MANAGER_ENDPOINT) ?? commandCache.get(MANAGER_ENDPOINT)?.get(command))?.responder;
-  const pubs = (): number => (client as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const pubs = (): number => (client as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
   await client.describeService(MANAGER_ENDPOINT);
   const warm = await client.invokeService(MANAGER_ENDPOINT, "ps");
   check("a long-lived client is bound to incarnation 1 before the restart",
@@ -162,7 +162,7 @@ try {
   const readerCache = (reader as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
   const readerCommandCache = (reader as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const readerBound = () => (readerCache.get(MANAGER_ENDPOINT) ?? readerCommandCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder;
-  const readerPubs = (): number => (reader as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const readerPubs = (): number => (reader as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
   await reader.describeService(MANAGER_ENDPOINT);
   const readerWarm = await reader.invokeService(MANAGER_ENDPOINT, "ps");
   check("...and so is a second client, kept for the read arm",
