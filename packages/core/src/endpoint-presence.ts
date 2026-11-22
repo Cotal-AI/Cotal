@@ -1,3 +1,4 @@
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
@@ -17,9 +18,6 @@ type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 export interface EndpointPresenceDeps {
   /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
   prompts: () => PresencePrompts | undefined;
-  stopped: () => boolean;
-  reconnecting: () => boolean;
-  epoch: () => number;
   notLiveMsg: () => string;
   bindWatch: (kv: KV) => Promise<{ iter: PresenceWatch; info: ConsumerInfo } | undefined>;
   retireWatch: (iter: PresenceWatch) => void;
@@ -157,11 +155,8 @@ export class EndpointPresence {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointPresenceDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointPresenceDeps) {}
 
-  private get stopped() { return this.deps.stopped(); }
-  private get reconnecting() { return this.deps.reconnecting(); }
-  private get presenceEpoch() { return this.deps.epoch(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private bindKvWatch(kv: KV) { return this.deps.bindWatch(kv); }
   private retireKvWatch(iter: PresenceWatch) { this.deps.retireWatch(iter); }
@@ -418,7 +413,7 @@ export class EndpointPresence {
     // its caller but no longer writes presence-refusal state belonging to a later connection. Without
     // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
     // refusal on the connection that just published successfully.
-    const epoch = this.presenceEpoch;
+    const epoch = this.lifecycle.presenceEpoch;
     const conditionRevision = this.conditionRevision;
     // #1461: snapshot the put's generation BEFORE the put. A settle (success or rejection) is the
     // latest evidence on its epoch only while no put that started after it has ALREADY settled -
@@ -439,7 +434,7 @@ export class EndpointPresence {
       // does.
       const superseded = (this.presencePutSettled ?? 0) > generation;
       this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
-      if (epoch === this.presenceEpoch && !this.stopped && !superseded) {
+      if (epoch === this.lifecycle.presenceEpoch && !this.lifecycle.stopped && !superseded) {
         this.presenceWriteFailingSince ??= Date.now();
         this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
         this.presenceWriteFailures++;
@@ -464,7 +459,7 @@ export class EndpointPresence {
     // so the overlap is routine rather than a corner).
     const superseded = (this.presencePutSettled ?? 0) > generation;
     this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
-    if (epoch !== this.presenceEpoch || this.stopped || superseded) return;
+    if (epoch !== this.lifecycle.presenceEpoch || this.lifecycle.stopped || superseded) return;
     // Presence writes may overlap. If this put carried an older condition, repair the KV with the
     // latest local state before returning so a late failure publish cannot resurrect after a new
     // turn cleared it. The revision is condition-specific; unrelated heartbeat overlap is unchanged.
@@ -608,11 +603,11 @@ export class EndpointPresence {
    * the view stays stale.
    */
   private rebindStalePresenceWatch(now: number): void {
-    if (this.stopped || this.reconnecting || !this.conn.kv || !this.conn.nc || this.conn.nc.isClosed()) return;
+    if (this.lifecycle.stopped || this.lifecycle.reconnecting || !this.conn.kv || !this.conn.nc || this.conn.nc.isClosed()) return;
     if (this.presenceRebind || now - this.presenceRebindAt < this.identity.ttlMs) return;
     this.presenceRebindAt = now;
     const old = this.presenceWatchIter;
-    const epoch = this.presenceEpoch;
+    const epoch = this.lifecycle.presenceEpoch;
     this.presenceRebind = (async () => {
       try {
         const silentMs = now - this.lastPresenceWatchAt;
@@ -639,11 +634,11 @@ export class EndpointPresence {
       } catch (e) {
         // A bind the epoch swap itself rejected (connection drained under it) is not a fault of
         // the epoch that replaced it; only a refusal on a still-current epoch is reported.
-        if (epoch === this.presenceEpoch) this.emit("error", e as Error);
+        if (epoch === this.lifecycle.presenceEpoch) this.emit("error", e as Error);
       } finally {
         // An epoch swap already disowned this flight (and may own a successor's by now); only
         // a flight still in its own epoch clears the slot. Within one epoch there is one flight.
-        if (epoch === this.presenceEpoch) this.presenceRebind = undefined;
+        if (epoch === this.lifecycle.presenceEpoch) this.presenceRebind = undefined;
       }
     })();
   }

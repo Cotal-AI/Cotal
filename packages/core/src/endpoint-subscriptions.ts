@@ -1,6 +1,8 @@
 // The dynamic subscription region of CotalEndpoint (join, leave, channel listing and the membership
 // feed watches), as an internal component. Moved verbatim from endpoint.ts; the endpoint keeps the
 // public methods and forwards to them. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { ClosedConnectionError, TimeoutError } from "@nats-io/transport-node";
@@ -15,7 +17,7 @@ import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { listMembers } from "./members.js";
 import { chatStream, dmStream, isChannelFamily, isConcreteChannel, isPrincipalOwnerToken, membershipBucket, MEMBERSHIP_FEED_KEY, parseSubject, subjectMatches } from "./subjects.js";
-import type { ChannelConfig, ChannelDefaults, ChannelMembership, DeliveryClass, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
+import type { ChannelConfig, ChannelMembership, DeliveryClass, MembershipChange, MembershipEntry, MembershipSnapshot, Presence } from "./types.js";
 
 /** One feed entry, decoded the way {@link CotalEndpoint.readMembership} decodes it: the reserved
  *  heartbeat key carries `asOf`, every other key is one agent's record, and an undecodable record
@@ -43,7 +45,6 @@ export type MembershipFeedWatch = {
   consumer?: PushConsumer;
   consumerStream?: string;
   consumerName?: string;
-  stopped: boolean;
   arm: Promise<void>;
   stopPromise?: Promise<void>;
   resolveStop?: () => void;
@@ -55,8 +56,6 @@ export type MembershipFeedWatch = {
 export interface EndpointSubscriptionsDeps {
   stopped: () => boolean;
   authed: () => boolean;
-  channelConfigs: () => Map<string, ChannelConfig>;
-  channelDefaults: () => ChannelDefaults;
   chatSubDenied: () => Set<string>;
   plane3Channels: () => Map<string, number>;
   readsChannelsOnDemand: () => boolean;
@@ -83,12 +82,9 @@ export interface EndpointSubscriptionsDeps {
  *  listings, and the membership feed's snapshot read and watches with their consumer cleanup.
  *  Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointSubscriptions {
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointSubscriptionsDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: Readonly<LifecycleState>, private readonly channelRegistry: Readonly<ChannelRegistryState>, private readonly deps: EndpointSubscriptionsDeps) {}
 
-  private get stopped() { return this.deps.stopped(); }
   private get authed() { return this.deps.authed(); }
-  private get channelConfigs() { return this.deps.channelConfigs(); }
-  private get channelDefaults() { return this.deps.channelDefaults(); }
   private get chatSubDenied() { return this.deps.chatSubDenied(); }
   private get plane3Channels() { return this.deps.plane3Channels(); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
@@ -167,7 +163,7 @@ export class EndpointSubscriptions {
     const family = isChannelFamily(channel);
     if (!family && !isConcreteChannel(channel))
       reason = "a pattern with * or the root > has no stored copies; follow a concrete channel or a family such as review.>";
-    else if (family || effectiveDeliveryClass(this.channelConfigs.get(channel), this.channelDefaults) === "durable") {
+    else if (family || effectiveDeliveryClass(this.channelRegistry.channelConfigs.get(channel), this.channelRegistry.channelDefaults) === "durable") {
       try {
         const r = await this.durableJoinChannel(channel);
         if (r.durable) {
@@ -302,12 +298,12 @@ export class EndpointSubscriptions {
       // and must stay loud rather than returning a valid-looking registry-only subset.
       if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
     }
-    const channels = new Set<string>([...counts.keys(), ...this.channelConfigs.keys()]);
+    const channels = new Set<string>([...counts.keys(), ...this.channelRegistry.channelConfigs.keys()]);
     return [...channels]
       .map((channel) => ({
         channel,
         messages: counts.get(channel) ?? 0,
-        config: this.channelConfigs.get(channel),
+        config: this.channelRegistry.channelConfigs.get(channel),
       }))
       .sort((a, b) => a.channel.localeCompare(b.channel));
   }
@@ -424,7 +420,7 @@ export class EndpointSubscriptions {
    *  a known-ungranted delete leaves it to native inactivity reclamation. A feed the cred can't read
    *  (or absent) surfaces as an `error` event and the dashboard keeps its last snapshot. */
   async watchMembership(onChange: (change: MembershipChange) => void, onClosed?: (err: Error) => void): Promise<{ stop(): Promise<void> }> {
-    if (this.stopped) throw new Error("endpoint stopped - cannot watch membership");
+    if (this.lifecycle.stopped) throw new Error("endpoint stopped - cannot watch membership");
     const watch: MembershipFeedWatch = { onChange, onClosed, stopped: false, arm: Promise.resolve() };
     this.conn.membershipFeedWatches.add(watch);
     watch.arm = watch.arm.catch(() => {}).then(() => this.armMembershipWatch(watch));

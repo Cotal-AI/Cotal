@@ -153,8 +153,8 @@
     {
       "name": "a stale status iterator rejection is surfaced after its epoch was replaced",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      if (!this.stopped && this.conn.nc === nc) this.emit(\"error\", e as Error);",
-      "replace": "      if (!this.stopped) this.emit(\"error\", e as Error);",
+      "find": "      if (!this.lifecycle.stopped && this.conn.nc === nc) this.emit(\"error\", e as Error);",
+      "replace": "      if (!this.lifecycle.stopped) this.emit(\"error\", e as Error);",
       "expectRed": "a controlled stale status iterator THROW is ignored after the replacement epoch is current",
       "cell": "a controlled stale status iterator THROW is ignored after the replacement epoch is current",
       "afterRestore": "pnpm --filter @cotal-ai/core build"

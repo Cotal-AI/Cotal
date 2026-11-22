@@ -56,7 +56,6 @@ import { type KV } from "@nats-io/kv";
 import type {
   AgentCard,
   ChannelConfig,
-  ChannelDefaults,
   ControlReply,
   ControlRequest,
   ControlRequestInit,
@@ -104,6 +103,9 @@ import {
 import { isCasLoss } from "./endpoint-records.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { newConnectionState, type ConnectionState } from "./endpoint-connection-state.js";
+import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
+import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
+import { newChannelRegistryState, type ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { AnycastStatus } from "./anycast-requests.js";
 import {
   assertValidRole,
@@ -187,27 +189,6 @@ export class CotalEndpoint extends EventEmitter {
   readonly space: string;
   readonly channels: string[];
 
-  /** The freshest creds — what every (re)connect attempt presents. Static callers set it once. */
-  private currentCreds?: string;
-  /** The freshest bearer — what every (re)connect attempt presents. */
-  private currentBearer?: string;
-  /** The expiry, in seconds, of the credential the latest connect attempt presented. The issuer
-   *  keys a listing generation on it (SPEC 13.15), so a listing reads the row bound to the
-   *  credential the broker admitted, never one adopted since. */
-  private presentedExp?: number;
-  /** Cancels the armed bearer renewal or retry. */
-  private cancelBearerRenewal?: () => void;
-  /** Consecutive failed bearer renewals: the retry's step, and whether this run of failures has
-   *  already been surfaced. */
-  private bearerRenewalFailures = 0;
-  /** When the held bearer was adopted: its lifetime's start when it carries no `iat`. */
-  private bearerAdoptedAtMs = 0;
-  /** Arms against the credential authenticated on the current wire. nats-core 3.4.0 discards the
-   *  promise returned by its async transport-close continuation; if that continuation enters the
-   *  reconnect dial loop with an expired JWT, its terminal auth error becomes an unhandled rejection.
-   *  Cotal knows the JWT expiry, so it disables the library reconnect before the broker closes the
-   *  transport. The endpoint's observed `closed()` supervisor remains responsible for rebuilding. */
-  private authExpiryReconnectTimer?: NodeJS.Timeout;
   /** The DM-only handler now running, if any; stop awaits it. */
   private dmOnlyInFlight?: Promise<void>;
 
@@ -226,12 +207,16 @@ export class CotalEndpoint extends EventEmitter {
   /** The connection and every handle opened on it. The connection part writes it, the rebuild writes it
    *  back, and the parts hold it by reference and read a field when they use it. */
   private readonly conn: ConnectionState = newConnectionState();
+  /** Start, stop and rebuild state. The parts hold it by reference and read a field when they use it. */
+  private readonly lifecycle: LifecycleState = newLifecycleState();
+  /** The presented credential and its renewal. The parts hold it by reference and read a field when they use it. */
+  private readonly cred: CredentialState = newCredentialState();
+  /** The channel registry this endpoint has read. The parts hold it by reference and read a field when they use it. */
+  private readonly channelRegistry: ChannelRegistryState = newChannelRegistryState();
   /** The plane-3 delivery daemon side of this endpoint (fan-out writer, trusted reader, control
    *  responders) and the agent's DELIVER pump. Every dependency is read when it is used. */
-  private readonly deliveryPlane: EndpointDeliveryPlane = new EndpointDeliveryPlane(this.identity, this.conn, {
+  private readonly deliveryPlane: EndpointDeliveryPlane = new EndpointDeliveryPlane(this.identity, this.conn, this.lifecycle, this.cred, {
     anycastUnavailable: () => this.anycastUnavailable,
-    residentSwap: () => this.residentSwap,
-    stopped: () => this.stopped,
     streamMsgs: () => this.streamMsgs,
     subs: () => this.subs,
     maxPayload: () => this.maxPayload,
@@ -262,15 +247,6 @@ export class CotalEndpoint extends EventEmitter {
   });
   /** Why the records are not open, when this daemon's credential cannot open them. */
   private anycastUnavailable?: string;
-  /** Local cache of the channel registry (key = channel token), kept by a KV watch or, on an
-   *  endpoint that reads it on demand, by {@link readChannels}. */
-  private readonly channelConfigs = new Map<string, ChannelConfig>();
-  private channelDefaults: ChannelDefaults = {};
-  /** The {@link readChannels} in flight; calls made before it settles share it. */
-  private channelRead?: Promise<void>;
-  /** Orders {@link readChannels} results: a read that settles after a newer one was applied is dropped. */
-  private channelReadGeneration = 0;
-  private channelReadApplied = 0;
   private readonly history = new EndpointHistory(this.identity, this.conn, {
     notLiveMsg: () => this.notLiveMsg(),
     requireLifecycleUid: (operation) => this.requireLifecycleUid(operation),
@@ -311,18 +287,14 @@ export class CotalEndpoint extends EventEmitter {
    *  the backstop survives a reconnect on its own; the agent can't re-read the privileged members KV,
    *  so this in-memory mirror is kept, not rebuilt. Cleared only on full stop. */
   private readonly plane3Channels = new Map<string, number>();
-  private readonly deliveryLease = new EndpointDeliveryLease(this.identity, this.conn, {
-    epoch: () => this.presenceEpoch,
+  private readonly deliveryLease = new EndpointDeliveryLease(this.identity, this.conn, this.lifecycle, {
     notLiveMsg: () => this.notLiveMsg(),
     deleteWatchConsumer: (iter) => this.deleteOwnConsumer(kvWatchConsumer(iter)),
     recoverable: (error) => this.emitRecoverable(error),
     emit: (event, error) => this.emit(event, error),
   });
-  private readonly presence = new EndpointPresence(this.identity, this.conn, {
+  private readonly presence = new EndpointPresence(this.identity, this.conn, this.lifecycle, {
     prompts: () => this.servedPrompts(),
-    stopped: () => this.stopped,
-    reconnecting: () => this.reconnecting,
-    epoch: () => this.presenceEpoch,
     notLiveMsg: () => this.notLiveMsg(),
     bindWatch: (kv) => this.bindKvWatch(kv),
     retireWatch: (iter) => this.retireKvWatch(iter),
@@ -330,27 +302,7 @@ export class CotalEndpoint extends EventEmitter {
     recoverable: (error) => this.emitRecoverable(error),
     isPublishPermissionDenied,
   });
-  /** Bumped by every connection-scoped teardown and by {@link stop}. A presence or lease-watch bind
-   *  that was awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
-   *  iterator it got and installs nothing (see {@link startPresenceWatch} and
-   *  {@link EndpointDeliveryLease.bindDeliveryLeaseWatch}). */
-  private presenceEpoch = 0;
-  private stopped = false;
   private stopPromise?: Promise<void>;
-  private startPromise?: Promise<void>;
-  /** Credential transactions running now. Each one opens a disposable connection for its proof. */
-  private credsTxnsRunning = 0;
-  /** In-flight rebuild (drain+rebind) — serializes manual reconnect, the supervisor's
-   *  closed(), and reestablishLoop so only ONE rebuild runs at a time (a second trigger
-   *  coalesces onto the shared promise, never starts a parallel connectAndBind). */
-  private rebuildPromise?: Promise<void>;
-  /** True only during the null window of a rebuild (this.nc unset) — user-facing ops then
-   *  throw a "reconnecting" message instead of the misleading "endpoint not started". */
-  private reconnecting = false;
-  /** One reestablishLoop at a time; concurrent triggers coalesce via rebuild(). */
-  private reestablishing = false;
-  /** Wakes for the membership retry loops' pauses (see {@link EndpointReconnect.membershipPause}); stop() runs them all. */
-  private readonly membershipPauses = new Set<() => void>();
 
   /** True when {@link actor} was SELF-MINTED at construction — a fresh random token, because the
    *  card declared no actor and no id and no creds named one. Such a principal differs on every
@@ -433,7 +385,7 @@ export class CotalEndpoint extends EventEmitter {
           throw new Error(`card.actor ${opts.card.actor} != bearer actor ${claims.actor}`);
         this.identity.owner = claims.owner;
         this.identity.actor = claims.actor;
-        this.currentBearer = opts.bearer;
+        this.cred.currentBearer = opts.bearer;
       }
       this.identity.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
       this.identity.sentinelCreds = opts.sentinelCreds;
@@ -459,7 +411,7 @@ export class CotalEndpoint extends EventEmitter {
         const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
         if (opts.card.id && credId && opts.card.id !== credId)
           throw new Error(`card.id ${opts.card.id} != creds identity ${credId} - they must be the same nkey`);
-        this.currentCreds = opts.creds;
+        this.cred.currentCreds = opts.creds;
         selfMintedConnId = opts.card.id === undefined && credId === undefined;
         this.identity.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
       }
@@ -561,15 +513,15 @@ export class CotalEndpoint extends EventEmitter {
    *  branch keys on: authed endpoints OPEN pre-created streams/KVs and BIND pre-provisioned
    *  durables (creates are denied to agents); only the open dev broker lazy-creates. */
   private get authed(): boolean {
-    return Boolean(this.currentCreds || this.identity.credsSource) || this.identity.userMode;
+    return Boolean(this.cred.currentCreds || this.identity.credsSource) || this.identity.userMode;
   }
 
   start(): Promise<void> {
-    if (this.startPromise) return this.startPromise;
+    if (this.lifecycle.startPromise) return this.lifecycle.startPromise;
     const flight = this.startOnce().finally(() => {
-      if (this.startPromise === flight) this.startPromise = undefined;
+      if (this.lifecycle.startPromise === flight) this.lifecycle.startPromise = undefined;
     });
-    this.startPromise = flight;
+    this.lifecycle.startPromise = flight;
     return flight;
   }
 
@@ -578,7 +530,7 @@ export class CotalEndpoint extends EventEmitter {
     try {
       await this.connectAndBind();
     } catch (error) {
-      if (!this.stopped) throw error;
+      if (!this.lifecycle.stopped) throw error;
     }
     // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
     // rebuild path already closes that race; initial start needs the same fence or the late bind
@@ -600,34 +552,11 @@ export class CotalEndpoint extends EventEmitter {
     this.emit("warning", err);
   }
 
-  /** The resident swap a reload scheduled, until its connection is back or the gate's bound ends. */
-  private residentSwap?: Promise<void>;
 
 
   /** The bearer and credential renewal of this endpoint. Every dependency is read when it is used, so
    *  a field assigned after construction is seen. */
-  private readonly credentials = new EndpointCredentials(this.identity, this.conn, {
-    currentBearer: () => this.currentBearer,
-    setCurrentBearer: (value) => { this.currentBearer = value; },
-    bearerAdoptedAtMs: () => this.bearerAdoptedAtMs,
-    setBearerAdoptedAtMs: (value) => { this.bearerAdoptedAtMs = value; },
-    bearerRenewalFailures: () => this.bearerRenewalFailures,
-    setBearerRenewalFailures: (value) => { this.bearerRenewalFailures = value; },
-    cancelBearerRenewal: () => this.cancelBearerRenewal,
-    setCancelBearerRenewal: (value) => { this.cancelBearerRenewal = value; },
-    stopped: () => this.stopped,
-    presentedExp: () => this.presentedExp,
-    setPresentedExp: (value) => { this.presentedExp = value; },
-    currentCreds: () => this.currentCreds,
-    setCurrentCreds: (value) => { this.currentCreds = value; },
-    authExpiryReconnectTimer: () => this.authExpiryReconnectTimer,
-    setAuthExpiryReconnectTimer: (value) => { this.authExpiryReconnectTimer = value; },
-    credsTxnsRunning: () => this.credsTxnsRunning,
-    setCredsTxnsRunning: (value) => { this.credsTxnsRunning = value; },
-    reconnecting: () => this.reconnecting,
-    reestablishing: () => this.reestablishing,
-    residentSwap: () => this.residentSwap,
-    setResidentSwap: (value) => { this.residentSwap = value; },
+  private readonly credentials = new EndpointCredentials(this.identity, this.conn, this.lifecycle, this.cred, {
     emitRecoverable: (err) => this.emitRecoverable(err),
     kickBackoff: () => this.kickBackoff(),
     reconnect: () => this.reconnect(),
@@ -701,46 +630,20 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The connection bind and teardown of this endpoint. Every dependency is read when it is used, so a
    *  field assigned after construction is seen. */
-  private readonly connection: EndpointConnection = new EndpointConnection(this.identity, this.conn, {
-    currentBearer: () => this.currentBearer,
-    bearerRenewalFailures: () => this.bearerRenewalFailures,
-    bearerAdoptedAtMs: () => this.bearerAdoptedAtMs,
-    currentCreds: () => this.currentCreds,
-    stopped: () => this.stopped,
-    setStopped: (value) => { this.stopped = value; },
+  private readonly connection: EndpointConnection = new EndpointConnection(this.identity, this.conn, this.lifecycle, this.cred, this.channelRegistry, {
     authed: () => this.authed,
     readsChannelsOnDemand: () => this.readsChannelsOnDemand,
     deliveryLease: () => this.deliveryLease,
     livenessResponders: () => this.livenessResponders,
     activeGoalFollowers: () => this.activeGoalFollowers,
-    authExpiryReconnectTimer: () => this.authExpiryReconnectTimer,
-    setAuthExpiryReconnectTimer: (value) => { this.authExpiryReconnectTimer = value; },
     streamMsgs: () => this.streamMsgs,
-    presenceEpoch: () => this.presenceEpoch,
-    setPresenceEpoch: (value) => { this.presenceEpoch = value; },
     presence: () => this.presence,
     chatSubs: () => this.chatSubs,
     chatSubDenied: () => this.chatSubDenied,
-    channelConfigs: () => this.channelConfigs,
-    channelDefaults: () => this.channelDefaults,
-    setChannelDefaults: (value) => { this.channelDefaults = value; },
-    channelRead: () => this.channelRead,
-    setChannelRead: (value) => { this.channelRead = value; },
-    channelReadGeneration: () => this.channelReadGeneration,
-    setChannelReadGeneration: (value) => { this.channelReadGeneration = value; },
-    channelReadApplied: () => this.channelReadApplied,
-    setChannelReadApplied: (value) => { this.channelReadApplied = value; },
     deliveryPlane: () => this.deliveryPlane,
     subs: () => this.subs,
     principalServes: () => this.principalServes,
-    membershipPauses: () => this.membershipPauses,
-    cancelBearerRenewal: () => this.cancelBearerRenewal,
     dmOnlyInFlight: () => this.dmOnlyInFlight,
-    rebuildPromise: () => this.rebuildPromise,
-    startPromise: () => this.startPromise,
-    reconnecting: () => this.reconnecting,
-    credsTxnsRunning: () => this.credsTxnsRunning,
-    residentSwap: () => this.residentSwap,
     refreshBearer: (initial) => this.refreshBearer(initial),
     refreshCreds: (initial) => this.credentials.refreshCreds(initial),
     cancelCredsRefresh: () => this.credentials.cancelCredsRefresh(),
@@ -806,7 +709,7 @@ export class CotalEndpoint extends EventEmitter {
     const nc = this.conn.nc;
     if (!nc) return;
     void nc.closed().then((err) => {
-      if (this.stopped) return;
+      if (this.lifecycle.stopped) return;
       if (this.conn.nc !== nc) return; // epoch-stale — a rebuild already swapped this connection
       // ORDER IS PART OF THE DIAGNOSTIC CONTRACT. MeshAgent retains endpoint errors only while it is
       // not bound, so readiness must turn false before the matching terminal-close error is emitted.
@@ -822,14 +725,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The rebuild and retry pacing of this endpoint. Every dependency is read when it is used, so a field
    *  assigned after construction is seen. */
-  private readonly reconnection = new EndpointReconnect(this.conn, {
-    rebuildPromise: () => this.rebuildPromise,
-    setRebuildPromise: (value) => { this.rebuildPromise = value; },
-    reconnecting: () => this.reconnecting,
-    setReconnecting: (value) => { this.reconnecting = value; },
+  private readonly reconnection = new EndpointReconnect(this.conn, this.lifecycle, {
     deliveryLease: () => this.deliveryLease,
-    stopped: () => this.stopped,
-    membershipPauses: () => this.membershipPauses,
     disableLibraryReconnect: (nc) => this.disableLibraryReconnect(nc),
     clearConnectionScoped: () => this.connection.clearConnectionScoped(),
     settleDeliveryLeaseWatches: () => this.settleDeliveryLeaseWatches(),
@@ -861,10 +758,10 @@ export class CotalEndpoint extends EventEmitter {
    *  awaiting the full delay. One loop at a time ({@link reestablishing}); concurrent
    *  triggers coalesce via {@link rebuild}. */
   private async reestablishLoop(): Promise<void> {
-    if (this.reestablishing) return;
-    this.reestablishing = true;
+    if (this.lifecycle.reestablishing) return;
+    this.lifecycle.reestablishing = true;
     try {
-      while (!this.stopped) {
+      while (!this.lifecycle.stopped) {
         try {
           await this.rebuild();
           this.reconnection.resetRetryDelay(); // reconnected — the next drop starts from retryMs again
@@ -873,18 +770,18 @@ export class CotalEndpoint extends EventEmitter {
           const delay = this.nextRetryDelayMs();
           // The broker never says why the auth callout refused a bearer, so a user-mode refusal is
           // named as one, with where the reason is, and paced like any other failure.
-          if (!this.stopped && !(e instanceof RepeatedRefusal))
+          if (!this.lifecycle.stopped && !(e instanceof RepeatedRefusal))
             this.emitRecoverable(this.identity.userMode && isAuthRejection(e)
               ? new Error(`the broker refused this endpoint's bearer for ${this.identity.owner}.${this.identity.actor} - retrying in ${Math.ceil(delay / 1000)}s; the space's auth service logs why`, { cause: e })
               : e as Error);
           // A warning listener may stop the endpoint. A backoff armed after that holds the process
           // open for the whole delay, because the stop has already kicked the backoff it saw.
-          if (this.stopped) return;
+          if (this.lifecycle.stopped) return;
           await this.reconnection.backoff(delay);
         }
       }
     } finally {
-      this.reestablishing = false;
+      this.lifecycle.reestablishing = false;
     }
   }
 
@@ -895,7 +792,7 @@ export class CotalEndpoint extends EventEmitter {
    *  a rebuild in flight is already the attempt, and a link nats.js is still reconnecting keeps
    *  its buffered publishes. */
   retryNow(): void {
-    if (!this.stopped && this.reestablishing && !this.rebuildPromise) this.kickBackoff();
+    if (!this.lifecycle.stopped && this.lifecycle.reestablishing && !this.lifecycle.rebuildPromise) this.kickBackoff();
   }
 
   /** Manual reconnect: tear down the current connection and rebuild, WITHOUT the permanent
@@ -905,7 +802,7 @@ export class CotalEndpoint extends EventEmitter {
    *  running in the background so the endpoint never stays dead, and rethrows so the caller
    *  can report it. */
   async reconnect(): Promise<void> {
-    if (this.stopped) throw new Error("endpoint stopped - cannot reconnect");
+    if (this.lifecycle.stopped) throw new Error("endpoint stopped - cannot reconnect");
     this.kickBackoff();
     try {
       await this.rebuild();
@@ -1156,11 +1053,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The control plane and the service-invocation client of this endpoint. Every dependency is
    *  read when it is used, so a field assigned after construction is seen. */
-  private readonly controlPlane = new EndpointControlPlane(this.identity, this.conn, {
-    stopped: () => this.stopped,
+  private readonly controlPlane = new EndpointControlPlane(this.identity, this.conn, this.lifecycle, this.cred, {
     authed: () => this.authed,
-    presentedExp: () => this.presentedExp,
-    rebuildPromise: () => this.rebuildPromise,
     subs: () => this.subs,
     activeGoalFollowers: () => this.activeGoalFollowers,
     notLiveMsg: () => this.notLiveMsg(),
@@ -1439,16 +1333,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The channel registry cache, its policy lookups and the registry watch that fills it, of this
    *  endpoint. Every dependency is read when it is used, so a field assigned after construction is seen. */
-  private readonly channelDiscovery = new EndpointChannelDiscovery(this.identity, this.conn, {
-    channelConfigs: () => this.channelConfigs,
-    channelDefaults: () => this.channelDefaults,
-    setChannelDefaults: (defaults) => { this.channelDefaults = defaults; },
-    channelRead: () => this.channelRead,
-    setChannelRead: (read) => { this.channelRead = read; },
-    channelReadGeneration: () => this.channelReadGeneration,
-    setChannelReadGeneration: (n) => { this.channelReadGeneration = n; },
-    channelReadApplied: () => this.channelReadApplied,
-    setChannelReadApplied: (n) => { this.channelReadApplied = n; },
+  private readonly channelDiscovery = new EndpointChannelDiscovery(this.identity, this.conn, this.channelRegistry, {
     notLiveMsg: () => this.notLiveMsg(),
     bindKvWatch: (kv) => this.bindKvWatch(kv),
     emitRecoverable: (err) => this.emitRecoverable(err),
@@ -1509,11 +1394,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Join, leave and channel listing, and the membership feed watches, of this endpoint. Every
    *  dependency is read when it is used, so a field assigned after construction is seen. */
-  private readonly subscriptions: EndpointSubscriptions = new EndpointSubscriptions(this.identity, this.conn, {
-    stopped: () => this.stopped,
+  private readonly subscriptions: EndpointSubscriptions = new EndpointSubscriptions(this.identity, this.conn, this.lifecycle, this.channelRegistry, {
     authed: () => this.authed,
-    channelConfigs: () => this.channelConfigs,
-    channelDefaults: () => this.channelDefaults,
     chatSubDenied: () => this.chatSubDenied,
     plane3Channels: () => this.plane3Channels,
     readsChannelsOnDemand: () => this.readsChannelsOnDemand,
@@ -1900,7 +1782,7 @@ export class CotalEndpoint extends EventEmitter {
       // broker loss/reconnect/terminal-close cycles on pinned nats.js 3.4.0: status iterators ended
       // normally and this catch never fired. Keep an old epoch from surfacing an error if a runtime or
       // future client version can reject here, but do not treat this as a currently reachable edge.
-      if (!this.stopped && this.conn.nc === nc) this.emit("error", e as Error);
+      if (!this.lifecycle.stopped && this.conn.nc === nc) this.emit("error", e as Error);
     });
     // The transport is already live when connect() returns, while the Cotal bind below is still in
     // progress. Seed this contract explicitly rather than requiring consumers to combine it with the
@@ -1910,7 +1792,7 @@ export class CotalEndpoint extends EventEmitter {
     // FIRST: connectAndBind calls watchStatus right after the dial, so a stop() landing while the
     // dial is still pending has this seed fire on an endpoint that is already stopped. Measured
     // through a real pending dial, a stopped endpoint announced a live transport it never had.
-    if (this.stopped) return;
+    if (this.lifecycle.stopped) return;
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
   }
 
@@ -1967,7 +1849,7 @@ export class CotalEndpoint extends EventEmitter {
    *  reason, not "not started" — `reestablishing` spans the whole retry loop incl. backoff),
    *  else "endpoint not started" (genuine pre-start). */
   private notLiveMsg(): string {
-    return this.reconnecting || this.reestablishing
+    return this.lifecycle.reconnecting || this.lifecycle.reestablishing
       ? "reconnecting - try again shortly"
       : "endpoint not started";
   }
@@ -2248,15 +2130,15 @@ export class CotalEndpoint extends EventEmitter {
    *  replaced it binds its own through {@link connectAndBind}. A stopped endpoint binds nothing,
    *  because its teardown may already have settled the flights it waits for. */
   private bindKvWatch(kv: KV): Promise<{ iter: Awaited<ReturnType<KV["watch"]>>; info: ConsumerInfo } | undefined> {
-    if (this.stopped) return Promise.resolve(undefined);
-    const epoch = this.presenceEpoch;
+    if (this.lifecycle.stopped) return Promise.resolve(undefined);
+    const epoch = this.lifecycle.presenceEpoch;
     const binding = (async () => {
       const permission = this.conn.nc && this.conn.watchDeletePermissions.get(this.conn.nc);
       const iter = await kv.watch();
       const info = await kvWatchConsumer(iter).info(true);
       this.connection.recordOwnWatchConsumer(info);
       if (permission) this.conn.watchDeletePermissions.set(kvWatchConsumer(iter), permission);
-      if (epoch === this.presenceEpoch && !this.stopped) return { iter, info };
+      if (epoch === this.lifecycle.presenceEpoch && !this.lifecycle.stopped) return { iter, info };
       this.retireKvWatch(iter);
       return undefined;
     })();
@@ -2425,8 +2307,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The agent-side durable membership of this endpoint. Every dependency is read when it is used, so a
    *  field assigned after construction is seen. */
-  private readonly durable: EndpointDurable = new EndpointDurable(this.identity, this.conn, {
-    stopped: () => this.stopped,
+  private readonly durable: EndpointDurable = new EndpointDurable(this.identity, this.conn, this.lifecycle, {
     plane3Channels: () => this.plane3Channels,
     aclRegistry: () => this.aclRegistry(),
     deliveryClassFresh: (channel) => this.deliveryClassFresh(channel),
@@ -2813,9 +2694,8 @@ export class CotalEndpoint extends EventEmitter {
   /** The boot durable self-join and its reconcile, and the membership read the leave path uses, of
    *  this endpoint. Every dependency is read when it is used, and every endpoint method is looked up
    *  at call time, so a test that replaces one on the endpoint is seen here. */
-  private readonly bootMemberships = new EndpointBootMemberships(this.identity, {
+  private readonly bootMemberships = new EndpointBootMemberships(this.identity, this.lifecycle, {
     plane3Channels: () => this.plane3Channels,
-    stopped: () => this.stopped,
     requestDelivery: (op, args, timeoutMs) => this.requestDelivery(op, args, timeoutMs),
     requireLifecycleUid: (what) => this.requireLifecycleUid(what),
     deliveryClassFresh: (channel) => this.deliveryClassFresh(channel),
@@ -2842,10 +2722,9 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The durable consumers of this endpoint. Every dependency is read when it is used, so a field
    *  assigned after construction is seen. */
-  private readonly consumers: EndpointConsumers = new EndpointConsumers(this.identity, this.conn, {
+  private readonly consumers: EndpointConsumers = new EndpointConsumers(this.identity, this.conn, this.lifecycle, {
     authed: () => this.authed,
     streamMsgs: () => this.streamMsgs,
-    stopped: () => this.stopped,
     dmOnlyInFlight: () => this.dmOnlyInFlight,
     setDmOnlyInFlight: (value) => { this.dmOnlyInFlight = value; },
     chatSubs: () => this.chatSubs,

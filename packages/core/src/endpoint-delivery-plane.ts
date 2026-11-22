@@ -1,5 +1,7 @@
 // The plane-3 delivery region of CotalEndpoint, as an internal component. Moved verbatim from
 // endpoint.ts; the endpoint keeps the public methods and forwards to it. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { aclRetired, readAcl } from "./acls.js";
@@ -101,8 +103,6 @@ function isMessagePart(value: unknown): boolean {
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointDeliveryPlaneDeps {
   anycastUnavailable: () => string | undefined;
-  residentSwap: () => Promise<void> | undefined;
-  stopped: () => boolean;
   streamMsgs: () => ConsumerMessages[];
   subs: () => Subscription[];
   maxPayload: () => number;
@@ -218,7 +218,7 @@ export class EndpointDeliveryPlane {
   private readonly sendMentionNotice: EndpointDeliveryPlaneDeps["sendMentionNotice"];
   private readonly emit: EndpointDeliveryPlaneDeps["emit"];
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointDeliveryPlaneDeps) {
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly deps: EndpointDeliveryPlaneDeps) {
     this.aclForAlias = deps.aclForAlias;
     this.channelHistory = deps.channelHistory;
     this.deliveryClassFresh = deps.deliveryClassFresh;
@@ -246,8 +246,6 @@ export class EndpointDeliveryPlane {
   }
 
   private get anycastUnavailable() { return this.deps.anycastUnavailable(); }
-  private get residentSwap() { return this.deps.residentSwap(); }
-  private get stopped() { return this.deps.stopped(); }
   private get streamMsgs() { return this.deps.streamMsgs(); }
   private get subs() { return this.deps.subs(); }
   private get maxPayload() { return this.deps.maxPayload(); }
@@ -655,7 +653,7 @@ export class EndpointDeliveryPlane {
     // A reload's resident swap reconnects the connection every reply here rides. A caller's next
     // request, such as a manager's eviction right after its reload, is answered once that
     // connection is back, not while it is down.
-    await this.residentSwap;
+    await this.cred.residentSwap;
     // FENCE: same reason as the runtime rail above.
     if (!this.plane3MayAct()) return { ok: false, error: "delivery: this daemon is not serving this shard (it is re-checking ownership); retry" };
     if (req.op === "reloadCreds") {
@@ -854,9 +852,9 @@ export class EndpointDeliveryPlane {
     void (async () => {
       for await (const m of msgs) {
         try { await this.fanOutMessage(m); }
-        catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
+        catch (e) { if (!this.lifecycle.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
-    })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+    })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
 
   /** Route ONE chat message to eligible owners' mixed inboxes. `durable` channel → its `durable-active`
@@ -961,9 +959,9 @@ export class EndpointDeliveryPlane {
     void (async () => {
       for await (const m of msgs) {
         try { await this.readerHandle(m); }
-        catch (e) { if (!this.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
+        catch (e) { if (!this.lifecycle.stopped) this.emit("error", e as Error); try { m.nak(); } catch { /* draining */ } }
       }
-    })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+    })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
 
   /** Whether one of the lifecycle's rows covering concrete `channel`, the channel's own or a family
@@ -1181,6 +1179,6 @@ export class EndpointDeliveryPlane {
         if (msg.from?.id === this.identity.card.id) { m.ack(); continue; } // own echo (defensive)
         this.emit("message", msg, durableDelivery(m, ackWaitMs), { historical: false, kind: "channel" } satisfies MessageMeta);
       }
-    })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
+    })().catch((e) => { if (!this.lifecycle.stopped) this.emit("error", e as Error); });
   }
 }

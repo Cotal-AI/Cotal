@@ -3,6 +3,7 @@
 // Moved verbatim from endpoint.ts. It owns the retry attempt count and the backoff, and clears the endpoint's
 // ConnectionState around a rebuild; the endpoint keeps the
 // supervisor and the retry loop and forwards to these. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { TransportState } from "./endpoint-options.js";
@@ -12,13 +13,7 @@ import type { EndpointDeliveryLease } from "./endpoint-delivery-lease.js";
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointReconnectDeps {
-  rebuildPromise: () => Promise<void> | undefined;
-  setRebuildPromise: (value: Promise<void> | undefined) => void;
-  reconnecting: () => boolean;
-  setReconnecting: (value: boolean) => void;
   deliveryLease: () => EndpointDeliveryLease;
-  stopped: () => boolean;
-  membershipPauses: () => Set<() => void>;
   disableLibraryReconnect: (nc: NatsConnection) => void;
   clearConnectionScoped: () => void;
   settleDeliveryLeaseWatches: () => Promise<void>;
@@ -41,15 +36,9 @@ export class EndpointReconnect {
   private backoffResolve?: () => void;
   private backoffTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(private readonly conn: ConnectionState, private readonly deps: EndpointReconnectDeps) {}
+  constructor(private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly deps: EndpointReconnectDeps) {}
 
-  private get rebuildPromise() { return this.deps.rebuildPromise(); }
-  private set rebuildPromise(value: Promise<void> | undefined) { this.deps.setRebuildPromise(value); }
-  private get reconnecting() { return this.deps.reconnecting(); }
-  private set reconnecting(value: boolean) { this.deps.setReconnecting(value); }
   private get deliveryLease() { return this.deps.deliveryLease(); }
-  private get stopped() { return this.deps.stopped(); }
-  private get membershipPauses() { return this.deps.membershipPauses(); }
   private disableLibraryReconnect(nc: NatsConnection) { void this.deps.disableLibraryReconnect(nc); }
   private clearConnectionScoped() { void this.deps.clearConnectionScoped(); }
   private settleDeliveryLeaseWatches() { return this.deps.settleDeliveryLeaseWatches(); }
@@ -65,11 +54,11 @@ export class EndpointReconnect {
    *  retry loop) coalesce onto ONE in-flight rebuild instead of racing two connectAndBinds and
    *  leaking a connection. Returns the shared promise; a second caller gets the in-flight one. */
   rebuild(): Promise<void> {
-    if (this.rebuildPromise) return this.rebuildPromise;
+    if (this.lifecycle.rebuildPromise) return this.lifecycle.rebuildPromise;
     const p = this.doRebuild().finally(() => {
-      if (this.rebuildPromise === p) this.rebuildPromise = undefined;
+      if (this.lifecycle.rebuildPromise === p) this.lifecycle.rebuildPromise = undefined;
     });
-    this.rebuildPromise = p;
+    this.lifecycle.rebuildPromise = p;
     return p;
   }
 
@@ -80,7 +69,7 @@ export class EndpointReconnect {
   private async doRebuild(): Promise<void> {
     const oldNc = this.conn.nc;
     if (oldNc) this.disableLibraryReconnect(oldNc);
-    this.reconnecting = true;
+    this.lifecycle.reconnecting = true;
     try {
       this.clearConnectionScoped();
       // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
@@ -113,11 +102,11 @@ export class EndpointReconnect {
       // stop() can arrive while the old epoch closes. Do not start another authentication
       // handshake after it: a terminal credential may already have expired in that window.
       // Keep old-epoch and late-epoch close failures outside this dial-only catch.
-      if (this.stopped) return;
+      if (this.lifecycle.stopped) return;
       try {
         await this.connectAndBind();
       } catch (error) {
-        if (!this.stopped) throw error;
+        if (!this.lifecycle.stopped) throw error;
       }
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
@@ -126,7 +115,7 @@ export class EndpointReconnect {
       if (await this.tearDownIfStopped()) return;
       this.superviseConnection();
     } finally {
-      this.reconnecting = false;
+      this.lifecycle.reconnecting = false;
     }
   }
 
@@ -172,15 +161,15 @@ export class EndpointReconnect {
   /** Capped exponential pause between membership retries. stop() ends it early, so a loop waiting
    *  on an absent delivery daemon never holds a stopped endpoint's process open for the delay. */
   membershipPause(attempt: number): Promise<void> {
-    if (this.stopped) return Promise.resolve();
+    if (this.lifecycle.stopped) return Promise.resolve();
     return new Promise<void>((resolve) => {
       const wake = (): void => {
         clearTimeout(timer);
-        this.membershipPauses.delete(wake);
+        this.lifecycle.membershipPauses.delete(wake);
         resolve();
       };
       const timer = setTimeout(wake, Math.min(30_000, 1000 * 2 ** attempt));
-      this.membershipPauses.add(wake);
+      this.lifecycle.membershipPauses.add(wake);
     });
   }
 }
