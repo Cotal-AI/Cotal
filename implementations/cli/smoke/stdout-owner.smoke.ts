@@ -261,5 +261,14 @@ syncBuiltinESMExports();
     }
   }
 
+  console.log("7. a JSON refusal keeps its exit code when the reader closes early");
+  {
+    const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+    const closed = spawnSync("bash", ["-o", "pipefail", "-c", '"$@" | head -c 0', "bash", process.execPath, cli, "config", "get", "--json"],
+      { encoding: "utf8", timeout: 20_000 });
+    check("a closed reader leaves the refusal at exit 1 with both streams empty",
+      closed.status === 1 && closed.stdout === "" && closed.stderr === "", closed);
+  }
+
   finish();
 }
