@@ -119,6 +119,13 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("a stale lastInstallEventAt sends the install event again", nextDay.sent.length === 2 && nextDay.sent[0]!.event === "install", nextDay.sent.map((b) => b.event));
 }
 
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const replay = await s.run(["ext", "__update-add", "expected-package", "actual-package"], { COTAL_TELEMETRY: level });
+  check(`an internal extension replay at ${level} keeps its refusal local and creates no install id`,
+    replay.status === 1 && replay.stderr.includes("must be launched by its recorded parent") && replay.sent.length === 0 && !existsSync(s.settingsPath), shown(replay));
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
