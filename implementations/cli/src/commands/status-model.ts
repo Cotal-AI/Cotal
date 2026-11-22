@@ -197,6 +197,12 @@ export interface StatusResult {
   hints: string[];
 }
 
+/** The selected space when this folder's controller stack serves it. */
+export function servedStack(folder: StatusResult["folder"], s: { space?: string; root?: string }): { space: string; root: string } | undefined {
+  if (s.space === undefined || s.root === undefined) return undefined;
+  return folder.controllerStack && folder.root === s.root && folder.processSpace === s.space ? { space: s.space, root: s.root } : undefined;
+}
+
 export type SelectedResult =
   | {
       resolved: false;

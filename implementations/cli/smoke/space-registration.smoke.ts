@@ -1622,12 +1622,18 @@ if (process.platform === "linux") {
   const componentHealth = (out: string) => out.split("\nComponent Health\n")[1] ?? "";
   const absentTargetRow = /^  target +absent · not-started · "demo" is stopped/m;
   const restartAdvice = `start it again with \`${launcher} up --no-manager\` in ${fresh}`;
+  const checkBlockedComponents = async (label: string, repair: string) => {
+    const components = await componentStatus();
+    const [report, health = ""] = components.stdout.split("\nComponent Health\n");
+    const next = report?.split("\nNext\n")[1] ?? "";
+    check(`component health reports absence without a restart when ${label}`,
+      components.status === 1 && next.includes(repair) && absentTargetRow.test(health) && !/\bcotal up\b/.test(health), components);
+  };
   for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
     writeFileSync(defaultSeed, seed);
     const badUp = await json(["up", "--no-manager"], fresh);
     const status = await json(["status", "--space", "demo"], fresh);
     const statusText = await run(["status", "--space", "demo"], {}, fresh);
-    const components = await componentStatus();
     const ps = await json(["ps", "--space", "demo"], elsewhere);
     const diagnosis = `the channels file ${defaultSeed} ${problem}`;
     check(`up, status and ps agree on the stopped stack's seed ${problem}`,
@@ -1637,12 +1643,20 @@ if (process.platform === "linux") {
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
         refused(ps, 2, "TARGET_UNAVAILABLE") && ps.env?.error?.message?.includes(diagnosis) && ps.env.error.remedy === seedRemedy &&
         readFileSync(defaultSeed, "utf8") === seed, { up: shown(badUp), status: status.env?.result?.hints, text: shown(statusText), ps: shown(ps) });
-    const health = componentHealth(components.stdout);
-    check(`component health reports absence without a restart when the seed ${problem}`,
-      components.status === 1 && components.stdout.includes(`Restart blocked: ${diagnosis}`) && components.stdout.includes(seedRemedy)
-        && absentTargetRow.test(health) && !/\bcotal up\b/.test(health), components);
+    await checkBlockedComponents(`the seed ${problem}`, `Restart blocked: ${diagnosis}`);
   }
   writeFileSync(defaultSeed, "{}\n");
+  const instance = join(serviceInstanceStore("demo").directory()!, `${Buffer.from("broken").toString("hex")}.json`);
+  writeFileSync(instance, "{\n", { mode: 0o600, flag: "wx" });
+  try { await checkBlockedComponents("a service instance record is unreadable", `${instance}.old`); }
+  finally { unlinkSync(instance); }
+  if (process.getuid?.() !== 0) {
+    const store = join(readStackJournal(fresh)!.journal.broker!.storeDir, "jetstream");
+    const mode = statSync(store).mode & 0o777;
+    chmodSync(store, mode & ~0o200);
+    try { await checkBlockedComponents("the store is unwritable", `chmod -R u+w ${store}`); }
+    finally { chmodSync(store, mode); }
+  }
   const repairedPs = await json(["ps", "--space", "demo"], fresh);
   check("repairing the seed restores broker-only restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === restartAdvice, shown(repairedPs));
   const components = await componentStatus();
@@ -1663,6 +1677,7 @@ if (process.platform === "linux") {
   const occupier = createServer();
   const port = await listenOn(occupier, Number(new URL(server).port));
   try {
+    await checkBlockedComponents("another listener owns the address", `stop the process listening on 127.0.0.1:${port}`);
     const held = await json(["up", "--detach", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`], fresh);
     check("...and while another program holds that address, it names the address and that process, and says no command moves the stack",
       refused(held, 2, "CONFLICT") && new RegExp(`a recorded stack is not moved to another address, and another process holds that address 127\\.0\\.0\\.1:${port}, where process ${process.pid} \\(\\S+\\) of this account listens$`).test(held.env?.error?.message ?? "") &&

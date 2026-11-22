@@ -39,9 +39,7 @@ import {
   isCommandFailure,
   readMaintenanceJournal,
   recordsElsewhereError,
-  recordsElsewhereText,
   restoreRolledBackRuns,
-  targetErrorSpace,
   brokerAddressForDisplay,
   brokerCheck,
   brokerUrlKey,
@@ -131,8 +129,7 @@ import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, 
 import { brokerStoreWrite, storeFull, storeWriteRepair, type StoreWriteObservation } from "../lib/broker-store-health.js";
 import { chatStreamGone, stackState } from "../lib/space-streams.js";
 import { pidfileState, type PidfileState } from "./down.js";
-import { stoppedStackAddressProblem } from "./stack-up.js";
-import { legacyRestartAddressProblem } from "../lib/broker-service.js";
+import { readUnresolvedTarget } from "./status-target-refusal.js";
 import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -159,7 +156,6 @@ import {
   stackOperationBlock,
   stackRootGone,
   unfinishedStackOperation,
-  unusableStackJournal,
   type StackJournal,
   type StackOperationBlock,
   type StackRole,
@@ -184,6 +180,7 @@ import {
   type OwnedServiceStatus,
   type StatusResult,
   type SelectedResult,
+  servedStack,
   Gaps,
   displayStatusBroker,
   type ManagerObservation,
@@ -321,7 +318,9 @@ export async function status(args: ParsedArgs): Promise<void> {
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [];
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
+  const [target, refusal] = selected.ok
+    ? [await readSelected(selected.target, responder, folder, gaps, selectedHints, preflight), undefined] as const
+    : await readUnresolvedTarget(selected.error, folder, gaps, selectedHints, Boolean(values.all));
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -395,7 +394,13 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target);
+  if (values.components) {
+    if (refusal) {
+      section("Component Health");
+      printComponent(refusal);
+      process.exitCode = COMPONENT_EXIT[refusal.verdict];
+    } else if (selected.ok) await printComponentHealth(selected.target, store, target);
+  }
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -1243,87 +1248,8 @@ function readStackStoreWarnings(root: string, gaps: Gaps, hints: string[], space
   }
 }
 
-/** The refusal of `space`'s service instance records when one is a record no command can use, as
- *  `up` and `down` refuse it. Undefined when they read. */
-function unusableServiceInstances(space: string): CommandFailure | undefined {
-  try { serviceInstances(space); return undefined; }
-  catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
-}
-
-async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean): Promise<SelectedResult> {
+async function readSelected(target: MeshTarget, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight): Promise<SelectedResult> {
   const cmd = displayCmd();
-  if (!selected.ok) {
-    const e = selected.error;
-    if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
-      gaps.add(e.code, e.message, e.target);
-      if (e.remedy) hints.push(e.remedy);
-      return { resolved: false, code: e.code, message: e.message };
-    }
-    // Resolution reads the whole registry and refuses a directory or record it cannot use. The meshes
-    // reader has already named it, so this is the same gap, and the selection is unresolved.
-    if (isMeshRegistryError(e)) {
-      gaps.add("MESH_REGISTRY_UNREADABLE", e.message, { file: e.file });
-      hints.push(e.message);
-      return { resolved: false, code: "registry-unreadable", message: e.message };
-    }
-    // `up` and `down` refuse a root whose `.cotal` is a link, so the step that would start it there is
-    // the one their refusal names.
-    const unstarted = e instanceof UnregisteredRoot ? e.root : isWorkspaceTargetError(e) && (e.code === "not-started" || e.code === "no-meshes") ? e.details.root : undefined;
-    const link = unstarted === undefined ? undefined : cotalDirLink(unstarted);
-    if (unstarted !== undefined && link !== undefined) {
-      hints.push(linkedCotalRemedy(unstarted, link));
-      return { resolved: false, code: e instanceof UnregisteredRoot ? "unregistered-root" : "not-started", message: `${join(unstarted, ".cotal")} is a link to ${link}, and a stack runs only from a folder whose .cotal is its own directory, so \`${cmd} up\` and \`${cmd} down\` refuse it there` };
-    }
-    if (e instanceof UnregisteredRoot) {
-      const message = `no space is registered or prepared here for ${e.root}`;
-      hints.push(`run \`${cmd} up\` in ${e.root} to start one, or select a space with \`${cmd} use <name>\``);
-      return { resolved: false, code: "unregistered-root", message };
-    }
-    if (!isWorkspaceTargetError(e)) throw e;
-    if (!all && e.code === "ambiguous-target" && e.details.server === undefined && e.details.spaces && !isGenuineSpace(folder.root)) {
-      hints.push(`check the registered spaces with \`${cmd} status --all\``);
-      return { resolved: false, code: e.code, message: `multiple spaces are registered but unchecked: ${(e.details.available ?? []).join(", ")}` };
-    }
-    // The section states the selection, and Next gives the repair for the specific refusal.
-    const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "target", error: e });
-    const d = e.details;
-    // A copy or a moved folder is reported under the space its records name, as the commands run here
-    // refuse under it, and says what the folder holds; Next gives the step they name.
-    const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
-    const held = e.code === "not-started" && d.stopped && !d.unsettled && d.root && d.space ? await stoppedStackAddressProblem(d.root, d.space) : undefined;
-    const result: SelectedResult = {
-      resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
-      ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
-      ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
-    };
-    // An unwritable store blocks a restart from this root.
-    const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
-    const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
-    // So does a service instance record of its space that no command can read, which is also a warning.
-    const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
-    if (instances) gaps.add("SERVICE_INSTANCES_UNAVAILABLE", instances.remedy ? `${instances.message}; ${instances.remedy}` : instances.message, { space: d.space, ...(instances.target as object | null) });
-    // This folder's stack cut off with no recorded outcome is named under the selected space, and
-    // Next names the step that finishes or settles it. One that neither blocks nor stays part way
-    // settles from its members' processes when it starts.
-    if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
-    else if (instances) hints.push(instances.remedy ?? instances.message);
-    else if (store) hints.push(`${store.message}; ${store.remedy}`);
-    else if (restartRoot !== undefined) {
-      const block = channelSeedRestartBlock(restartRoot);
-      if (block) {
-        Object.assign(result, { channelSeedBlocksRestart: true, root: restartRoot });
-        hints.push(`Restart blocked: ${block.message}. ${block.remedy}`);
-      } else {
-        const legacy = d.lastRun ? await legacyRestartAddressProblem(d.server, `${cmd} up`) : undefined;
-        if (legacy) result.message += `; ${legacy.message}`;
-        hints.push(legacy?.remedy ?? held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
-      }
-    } else if (!d.unsettled || !servedStack(folder, result)) {
-      hints.push(held?.remedy ?? (remedy === undefined ? message : displayRemedy(remedy, cmd)));
-    } else if (!folder.stackBlock && !folder.stackUnfinished) hints.push(`start it with ${codeSpan(`${cmd} up`)} in ${d.root}`);
-    return result;
-  }
-  const target = selected.target;
   const base = {
     resolved: true as const,
     space: target.space,
@@ -1949,13 +1875,6 @@ function selectedOverview(r: StatusResult): Section | undefined {
   } else blocks.push({ kind: "lines", lines: [cell("Legacy process records not checked here · the selected space has a different or unresolved local process scope", "hint")] });
   if (r.folder.launches === false) blocks.push({ kind: "lines", lines: [cell(`This folder's personas are not used by the selected space. Spawn uses ${s.personas.root}.`, "waiting")] });
   return { title: `${title}  → ${s.space}`, blocks };
-}
-
-/** The selected space and its root when this folder's controller stack serves it: a resolved one, or
- *  a prepared one that is not started, as an `up` cut off before it registered the space leaves it. */
-function servedStack(folder: StatusResult["folder"], s: { space?: string; root?: string }): { space: string; root: string } | undefined {
-  if (s.space === undefined || s.root === undefined) return undefined;
-  return folder.controllerStack && folder.root === s.root && folder.processSpace === s.space ? { space: s.space, root: s.root } : undefined;
 }
 
 /** This folder's own controller stack when it does not serve the selected space. The note under the
@@ -2729,37 +2648,8 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, observed: SelectedResult): Promise<void> {
+async function printComponentHealth(target: MeshTarget, store: StoreWriteObservation | undefined, observed: SelectedResult): Promise<void> {
   section("Component Health");
-  if (!selected.ok) {
-    const error = selected.error;
-    const e = isWorkspaceTargetError(error) && error.code === "not-started" && error.details.root !== undefined && !error.details.rootMissing
-      ? unusableStackJournal(error.details.root) ?? error : error;
-    if (isCommandFailure(e) && (e.code === "SCHEMA_INVALID" || e.code === "PERMISSION_DENIED")) {
-      printComponent({ name: "target", verdict: "refused", facts: [e.code, e.message, ...(e.remedy ? [e.remedy] : [])] });
-      process.exitCode = COMPONENT_EXIT.refused;
-      return;
-    }
-    if (isMeshRegistryError(e)) {
-      printComponent({ name: "target", verdict: "refused", facts: ["SCHEMA_INVALID", e.message] });
-      process.exitCode = COMPONENT_EXIT.refused;
-      return;
-    }
-    if (isWorkspaceTargetError(e)) {
-      const verdict = e.code === "not-started" ? "absent" : "refused";
-      const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-      printComponent({ name: "target", verdict, facts: [e.code, remedy === undefined || observed.channelSeedBlocksRestart ? message : `${message} - ${displayRemedy(remedy)}`] });
-      process.exitCode = COMPONENT_EXIT[verdict];
-      return;
-    }
-    if (e instanceof UnregisteredRoot) {
-      printComponent({ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] });
-      process.exitCode = COMPONENT_EXIT.refused;
-      return;
-    }
-    throw e;
-  }
-  const target = selected.target;
   const context: LocalProcessContext = { root: target.root, space: target.space, userAuth: target.mode === "user" };
   // ONE credential read for the whole pass (user mode resolves the signed-in login once; the
   // static shape is just the target's own auth material), shared by the manager and delivery

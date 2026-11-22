@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Component health no longer suggests restarting a stopped stack when its channel seed is invalid. The status report still names the seed file and how to fix it.
+Component health omits unconditional restart advice when the status report finds a blocker for the stopped stack. Follow `Next` to repair the channel seed, store permissions, service instance records, or broker address before restarting.
