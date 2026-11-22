@@ -188,6 +188,7 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   advises aligning manager versions. The no-answer label means only that the instance is registered
   and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
   live one can be slow; if it is gone, deregister it.
+  The suggested one-manager read keeps any `--space`, `--server` and `--slots` from the request.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
   rather than falling through. On a static or open mesh a well-formed id that the registry lists for
   no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on`
