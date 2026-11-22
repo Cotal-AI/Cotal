@@ -2,10 +2,19 @@ import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, listSpaceAccounts } from "@cotal-ai/workspace";
+import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { cotalRoot } from "../lib/paths.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { checkSpaceName } from "./meshes-add.js";
+
+/** Port 0 asks the auth service to let the OS pick a free loopback port. */
+export function checkPublicExchangePort(raw: string | undefined): void {
+  if (raw === undefined) return;
+  const port = Number(raw);
+  if (!raw.trim() || !Number.isInteger(port) || port < 0 || port > 65535)
+    throw new FlagValueRefusal("--exchange-public-port must be a whole number from 0 to 65535; nothing was started or written", "pass a loopback port from 1 to 65535, or 0 to let the OS choose");
+}
 
 /** An explicit root is an existing local workspace, not a hint to find another ancestor or
  *  create trust in an arbitrary directory. Validation runs before the dispatcher seeds extensions. */

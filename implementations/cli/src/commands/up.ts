@@ -238,7 +238,7 @@ import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
 import { checkLocalSpace } from "./space-registration.js";
-import { checkNewUpSpace, preparedUpRoot } from "./up-target.js";
+import { checkNewUpSpace, checkPublicExchangePort, preparedUpRoot } from "./up-target.js";
 import { cleanedManifestStart, interruptedStartBroker, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
@@ -395,12 +395,12 @@ export const upFlags: FlagSpec[] = [
   { name: "open", type: "boolean", description: "unauthenticated dev mesh (no JWT/ACLs)" },
   { name: "user-auth", type: "boolean", description: "per-USER auth: login + bearer through the space's auth service" },
   { name: "idp", type: "string", value: "<url>", description: "with --user-auth: the IdP auth base URL to pin (first enable)" },
-  { name: "exchange-public-port", type: "string", value: "<n>", description: "with --user-auth: also serve the PUBLIC exchange face on this loopback port (TLS terminates at a reverse proxy)" },
-  { name: "exchange-public-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the advertised public base URL (the reverse proxy's address)" },
-  { name: "exchange-trusted-proxy", type: "boolean", description: "with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (opt-in; default: socket address)" },
-  { name: "advertised-server", type: "string", value: "<url>", description: "with --exchange-public-port: the broker address the public bundle advertises - what participants dial (default: --server)" },
+  { name: "exchange-public-port", type: "string", value: "<n>", description: "legacy user-auth startup only: public loopback port (0 to 65535) for an HTTPS reverse proxy" },
+  { name: "exchange-public-url", type: "string", value: "<https://…>", description: "legacy user-auth startup only, with --exchange-public-port: advertise the reverse proxy's HTTPS URL" },
+  { name: "exchange-trusted-proxy", type: "boolean", description: "legacy user-auth startup only, with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (default: socket address)" },
+  { name: "advertised-server", type: "string", value: "<url>", description: "legacy user-auth startup only, with --exchange-public-port: broker address to advertise (default: --server)" },
   { name: "service-endpoints", type: "boolean", description: "with --user-auth: the auth service also hosts service endpoints (the registration door and the owner-decision host route)" },
-  { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "with --exchange-public-port: the deployment's remote agent-provisioning endpoint the public bundle advertises" },
+  { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "legacy user-auth startup only, with --exchange-public-port: agent-provisioning endpoint to advertise" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "recreate-membership-store", type: "boolean", description: "replace a stopped space's legacy File-backed derived membership feed with the current Memory-backed store" },
   { name: "recreate-issued-stores", type: "string", value: "<backup-dir>", description: "back up this space's issued-authority stores created before 0.111.0 into a new <backup-dir>, delete them and create them again (needs a stopped stack and every other issuer of the space stopped)" },
@@ -457,7 +457,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   if (args.values.open === true) {
     publicExchangeArgs(args.values, false);
     serviceEndpointsArgs(args.values, false);
-  }
+  } else if (typeof args.values["exchange-public-port"] === "string") checkPublicExchangePort(args.values["exchange-public-port"]);
   if (args.values.idp !== undefined && args.values["user-auth"] !== true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
   if (args.values.restore !== undefined && args.values["no-manager"] === true)
