@@ -80,7 +80,7 @@
     },
     {
       "name": "W3 the reap stops asking whether the drain settled, so a log whose uncancelled drain may still be writing is removed under it",
-      "file": "extensions/connector-opencode/src/plugin.ts",
+      "file": "extensions/connector-opencode/src/plugin-io.ts",
       "find": "    if (!drained) {\n      log(`${WAL_KEPT} ${threadId}: its drain spent the bound, so it may still be writing`);\n      return;\n    }\n",
       "replace": "",
       "expectRed": "a retirement whose drain spent the bound KEEPS the predecessor's log",
@@ -89,7 +89,7 @@
     },
     {
       "name": "W4 the reap stops asking whether a frame is still pending, so a log holding a frame the broker never confirmed is deleted and the one thing a later start could have recovered is gone",
-      "file": "extensions/connector-opencode/src/plugin.ts",
+      "file": "extensions/connector-opencode/src/plugin-io.ts",
       "find": "      if (wal.pending !== null) {\n",
       "replace": "      if (false) {\n",
       "expectRed": "a frame the broker never confirmed keeps the log even though the drain settled",
