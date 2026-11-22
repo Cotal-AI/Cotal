@@ -31,7 +31,8 @@ export function collectUpdateCaches(parent: string): void {
     }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
   };
-  function sweep(directory: string): void {
+  function sweep(directory: string): boolean {
+    let collected = false;
     for (const name of readdirSync(directory)) {
       const staged = process.platform === "linux" && /^cotal-update-npm-[a-zA-Z0-9]{6}$/.test(name);
       if (!staged && !/^cotal-release-check-[a-zA-Z0-9]{6}$/.test(name)) continue;
@@ -45,16 +46,25 @@ export function collectUpdateCaches(parent: string): void {
         if (workers.every(worker => {
           const match = /^\.worker-([1-9]\d*)$/.exec(worker);
           return !!match && absentGroup(Number(match[1]));
-        })) rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+        })) {
+          rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+          collected ||= workers.length > 0;
+        }
       } catch { /* Unprovable or already collected scratch is left alone. */ }
     }
+    return collected;
   }
   try {
     sweep(parent);
     for (const name of readdirSync(parent)) {
       if (!/^cotal-update-[a-zA-Z0-9]{6}$/.test(name)) continue;
       const scratch = join(parent, name);
-      try { if (privateDirectory(scratch)) sweep(scratch); }
+      try {
+        if (!privateDirectory(scratch)) continue;
+        protectedLocalDirectory(scratch, "the update cache");
+        if (sweep(scratch) && readdirSync(scratch).every(name => name === "node-compile-cache"))
+          rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+      }
       catch { /* Another command can retire its scratch during the scan. */ }
     }
   } catch { /* Temporary storage cleanup is best effort. */ }
