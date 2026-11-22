@@ -267,6 +267,15 @@ try {
   check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
   const selected = cotal(["use", SPACE, "--json"]);
   check("the calling project has selected the other space", selected.status === 0, out(selected));
+  for (const verb of ["logs", "status"]) {
+    const missing = cotal(["service", verb, "absent-worker", "--space", PREPARED, "--json"]);
+    const { error, target } = JSON.parse(missing.stdout);
+    const inventory = /`cotal (service --space [^`]+)`/.exec(error?.remedy)?.[1];
+    const listed = inventory ? cotal([...inventory.split(" "), "--json"]) : undefined;
+    check(`a missing custom service ${verb} offers a read of the requested space's definitions`,
+      missing.status === 2 && error?.code === "TARGET_NOT_FOUND" && target.space === PREPARED && error.message.endsWith("nothing was read")
+        && listed?.status === 0 && JSON.parse(listed.stdout).target.space === PREPARED, { missing: out(missing), listed: listed && out(listed) });
+  }
   const missingLog = cotal(["service", "logs", "stack-manager", "--space", PREPARED, "--tail", "30", "--json"]);
   const logError = JSON.parse(missingLog.stdout).error;
   const managerStart = /`cotal (manager start [^`]+)`/.exec(logError.remedy)?.[1];
