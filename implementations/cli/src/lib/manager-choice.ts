@@ -1,6 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { BASELINE_LIFECYCLE_ENDPOINT, findCommand, invokeCommand, registry, resolveService, type Command, type Presence } from "@cotal-ai/core";
-import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth } from "@cotal-ai/workspace";
+import { CommandFailure, DEFAULT_MANAGER_NAME, codeSpan, instanceIdShaped, isCommandFailure, isConnectRefusal, renderReport, resolveMeshTarget, type Connection, resolveControlTarget, type ControlAuth, type MeshTarget } from "@cotal-ai/workspace";
 import { cliControl, onInstance, onInstanceId, onRetry, type ManagerRetry } from "./control.js";
 import { openEndpointConnection } from "./endpoint-client.js";
 import { commandWord } from "./leading-flags.js";
@@ -80,6 +80,18 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
   });
 }
 
+/** Names and hosts are selectors only on a user-auth mesh. This check does not look up a manager. */
+export function validateManagerPin(on: string, mode: MeshTarget["mode"] | undefined, verb: ManagerRetry): void {
+  if (mode === "user") return;
+  try { onInstanceId(on, verb); } catch (error) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
+      target: { on },
+      remedy: typeof verb === "object" && "remedy" in verb ? verb.remedy : `cotal ps prints each manager's instance id; rerun it as ${onRetry(verb)}`,
+      selfContained: true,
+    });
+  }
+}
+
 /**
  * `--on` as a manager instance id. A value with the shape of an instance id is used as it is. Any
  * other value is a manager's name or host: on a user-auth mesh it is matched against your live
@@ -91,17 +103,9 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
   const on = onInstance(values.on === undefined ? undefined : String(values.on), verb);
   if (on === undefined || instanceIdShaped(on)) return on;
   const flags = targetFlags(values);
-  let mode: string | undefined;
+  let mode: MeshTarget["mode"] | undefined;
   try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: only an instance id can pin */ }
-  if (mode !== "user") {
-    try { onInstanceId(on, verb); } catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
-        target: { on },
-        remedy: typeof verb === "object" && "remedy" in verb ? verb.remedy : `cotal ps prints each manager's instance id; rerun it as ${onRetry(verb)}`,
-        selfContained: true,
-      });
-    }
-  }
+  validateManagerPin(on, mode, verb);
   const managers = await yourLiveManagers(flags);
   const matched = managers.filter((m) => selects(m, on));
   if (matched.length === 1) return matched[0]!.instanceId;

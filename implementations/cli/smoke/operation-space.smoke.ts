@@ -367,7 +367,7 @@ for (const [modeLabel, flags] of [["foreground", ["--foreground"]], ["dry-run", 
 
 // A managed preview cannot validate the execution host. A direct preview knows its effective
 // harness and refuses an unknown name before reporting success, regardless of its source.
-interface Preview { requested?: { source?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
+interface Preview { requested?: { source?: string; instanceId?: string }; persona?: { source?: string }; harness?: string; model?: string | null; variant?: string | null; connectorArgumentValidation?: string }
 const managed = cotal("spawn", "-d", "nosuch", "--dry-run", "--json");
 const managedResult = (managed.envelope as unknown as { result?: Preview; completeness?: string } | undefined);
 check("a managed spawn --dry-run exits 0, not-checked, with the name's source as argument",
@@ -445,15 +445,41 @@ for (const [args, name] of [
 const userRoot = join(home, "user-project");
 mkdirSync(dirname(agentFilePath(userRoot, "minimal")), { recursive: true });
 writeFileSync(agentFilePath(userRoot, "minimal"), "---\nname: minimal\n---\n");
+const instanceOnlySpaces = [["preview-open", "open"], ["preview-static", "auth"]] as const;
 const priorHome = process.env.COTAL_HOME;
 try {
   process.env.COTAL_HOME = env.COTAL_HOME;
+  for (const [space, mode] of instanceOnlySpaces) {
+    const targetRoot = join(home, space);
+    mkdirSync(targetRoot);
+    recordMesh({ space, server: "nats://127.0.0.1:9", root: targetRoot, mode, origin: "manual", ts: new Date().toISOString() });
+  }
   recordMesh({ space: "preview-user", server: "nats://127.0.0.1:34300", root: userRoot, mode: "user", origin: "manual",
     userAuth: { provider: "cotal", idp: { url: "https://idp.example/api/auth", issuer: "https://idp.example", audience: "https://idp.example" } }, ts: new Date().toISOString() });
 } finally {
   if (priorHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = priorHome;
 }
+const previewPin = (space: string, on: string) => cotal("spawn", "minimal", "-d", "--space", space, "--on", on, "--dry-run", "--json");
+for (const [space, mode] of instanceOnlySpaces) {
+  const invalid = previewPin(space, "not-a-pin");
+  check(`the ${space} managed preview refuses a malformed pin and keeps --dry-run in the retry`,
+    invalid.status === 1 && invalid.stderr === "" && invalid.envelope?.outcome === "refused"
+      && invalid.envelope.target?.on === "not-a-pin" && invalid.envelope.error?.code === "USAGE_INVALID"
+      && invalid.envelope.error.message.includes('instanceId "not-a-pin" is not a valid lifecycle token')
+      && invalid.envelope.error.remedy?.includes(`cotal ps prints each manager's instance id; rerun it as \`cotal spawn minimal -d --space ${space} --json --dry-run --on <instance>\``), shown(invalid));
+  const pin = "a".repeat(26);
+  const valid = previewPin(space, pin);
+  const result = (valid.envelope as { result?: Preview } | undefined)?.result;
+  check(`the ${space} managed preview accepts a well-shaped pin without looking up a manager`,
+    valid.status === 0 && valid.envelope?.outcome === "ok" && valid.envelope.completeness === "not-checked"
+      && valid.envelope.target?.authMode === mode && result?.requested?.instanceId === pin, shown(valid));
+}
+const userSelector = previewPin("preview-user", "build-host");
+const userPreview = (userSelector.envelope as { result?: Preview } | undefined)?.result;
+check("a user-auth managed preview keeps a name or host selector without resolving it",
+  userSelector.status === 0 && userSelector.envelope?.outcome === "ok" && userSelector.envelope.completeness === "not-checked"
+    && userSelector.envelope.target?.authMode === "user" && userPreview?.requested?.instanceId === "build-host", shown(userSelector));
 for (const [name, accepted] of [["good_user_name", true], ["a".repeat(64), true], ["bad-hyphen", false], ["a".repeat(65), false]] as const) {
   const preview = cotal("spawn", "minimal", "--space", "preview-user", "--name", name, "--dry-run", "--json");
   check(`user-mode direct preview ${accepted ? "accepts" : "refuses"} ${name}`,
