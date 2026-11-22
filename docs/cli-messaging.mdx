@@ -508,6 +508,8 @@ Each value with no per-channel override is marked `inherited`, whether it comes 
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
+The suggested membership and history commands name the space inspected and keep any explicit
+`--server` and `--creds` options. A membership report's suggested follow command does the same.
 
 `channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
 saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or
@@ -542,13 +544,16 @@ record and the current census follow once the feed answers again, so a follow ou
 restart. A credential that can no longer connect ends the follow with the refusal a one-shot
 command with that credential gets, as [`history --follow`](#history) does. The delivery service
 writes that feed, and an open mesh runs none, so `members` refuses an open mesh with `UNSUPPORTED`.
+The refusal suggests `cotal who` for the same space and keeps an explicit broker address. The
+roster shows who is present in the space, not who belongs to the channel.
 On an open mesh, `channel show` explains that membership is unavailable and still suggests reading
 retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
 is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
-naming the registered spelling when only the case differs. Removing a channel that has retained
+naming the registered spelling when only the case differs. In that case the suggested command
+inspects the registered channel without removing it. Removing a channel that has retained
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
 channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. When the chat stream is not on the broker, that

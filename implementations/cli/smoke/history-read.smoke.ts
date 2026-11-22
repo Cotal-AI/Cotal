@@ -804,9 +804,9 @@ try {
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const word = card.stdout.match(/^\s+cotal history '(#[\w.-]+)'\s+Read retained messages within your grant$/m)?.[1];
+      const [, word, targetSpace] = card.stdout.match(/^\s+cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
-      const read = word === `#${channel}` ? await run(["history", word, "--space", openSpace, "--json"]) : undefined;
+      const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
       const messages = read?.envelope?.result?.items;
       check(`channel show #${channel} recommends a history read for that channel only`,
         card.status === 0 && read?.status === 0 && messages?.length === 1
@@ -911,9 +911,27 @@ try {
     const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing it again is TARGET_NOT_FOUND, exit 2, listing the registered channels",
       again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND" && /#ops has no saved entry and no retained messages; registered channels: #general$/.test(again.envelope.error.message), shown(again));
-    const cased = await run(["channel", "remove", "General", "--purge", "--yes", "--space", space, "--json"]);
-    check("another case of a registered channel is refused before any purge, naming the registered spelling",
-      cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND" && /channel names are case-sensitive, and the registered one is #general$/.test(cased.envelope.error.message), shown(cased));
+    const upper = "reports.Daily", lower = "reports.daily";
+    for (const channel of [upper, lower]) {
+      const saved = await run(["channel", "set", channel, "--desc", channel, "--space", openSpace]);
+      const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
+      if (saved.status !== 0 || posted.status !== 0) throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+    }
+    const purge = ["channel", "remove", lower, "--purge", "--yes", "--space", openSpace, "--json"];
+    const purged = await run(purge);
+    const cased = await run(purge);
+    const remedy = cased.envelope?.error?.remedy;
+    const inspect = remedy === `inspect the registered spelling: \`cotal channel show ${upper} --space ${openSpace}\``
+      ? await run(["channel", "show", upper, "--space", openSpace, "--plain"]) : undefined;
+    const kept = await run(["history", `#${upper}`, "--space", openSpace, "--json"]);
+    check("repeating a confirmed purge suggests inspecting the differently cased channel and preserves its message",
+      purged.status === 0 && (purged.envelope?.result as { purged?: number } | null)?.purged === 1
+        && cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND"
+        && cased.envelope.error.message.includes(`#${lower} has no saved entry and no retained messages`)
+        && inspect?.status === 0 && inspect.stdout.includes(`Channel - #${upper}`) && kept.status === 0 && texts(kept).join() === `retained in ${upper}`,
+      { purged: shown(purged), refused: shown(cased), inspect: inspect && shown(inspect), history: shown(kept) });
+    const removedReports = await run(["channel", "remove", upper, "--purge", "--yes", "--space", openSpace]);
+    check("the remaining case can be purged with its own exact confirmation", removedReports.status === 0, shown(removedReports));
     // A channel with retained messages and no saved entry is one the space has, so its remove is a no-op.
     const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
     const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
@@ -1098,9 +1116,17 @@ try {
     const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
     check("channel show still suggests membership on the auth mesh",
       authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
-    const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
-    const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
-    check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
+    const selectedRoster = await run(["who", "--json"]);
+    check("the default roster targets the selected static-auth space", selectedRoster.status === 0 && spaceOf(selectedRoster) === space, shown(selectedRoster));
+    for (const serverFlags of [[], ["--server", openServers]]) {
+      const members = await run(["channel", "members", "general", "--space", openSpace, ...serverFlags, "--json"]);
+      const argv = ["who", "--space", openSpace, ...serverFlags];
+      const roster = members.envelope?.error?.remedy?.startsWith(`\`cotal ${argv.join(" ")}\` lists who is present`)
+        ? await run([...argv, "--json"]) : undefined;
+      check(`an open membership refusal keeps the space${serverFlags.length ? " and explicit broker" : ""} in the roster command`,
+        members.status === 2 && members.envelope?.outcome === "refused" && members.envelope.error?.code === "UNSUPPORTED"
+          && roster?.status === 0 && spaceOf(roster) === openSpace, { refused: shown(members), roster: roster && shown(roster) });
+    }
     await checkMembershipSetupRefusal(openSpace, "general", "UNSUPPORTED");
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
