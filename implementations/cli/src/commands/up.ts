@@ -540,6 +540,7 @@ export function validateUpArguments(args: ParsedArgs): void {
   const restoreOnly = args.values["restore-only"];
   if (restoreOnly !== undefined && restoreOnly !== "registry") throw new CommandFailure("refused", "USAGE_INVALID", `--restore-only takes registry (got ${JSON.stringify(restoreOnly)})`);
   if (!args.values.restore && (restoreOnly !== undefined || args.values["accept-missing-source"] === true)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore-only and --accept-missing-source require --restore <dir>");
+  if (args.values.file !== undefined && args.values["accept-stale-checkpoint"] === true) throw new FlagValueRefusal("--accept-stale-checkpoint cannot be combined with --file/-f: a manifest starts a fresh mesh, not a preserved stack", "drop --accept-stale-checkpoint for a fresh start, or omit --file/-f to resume a preserved stack");
   if (args.values.restore && (args.values.file !== undefined || args.values.channels !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --file/-f or --channels");
   if (args.values.restore && args.values["rotate-sys"] === true) throw new CommandFailure("refused", "USAGE_INVALID", "--restore cannot be combined with --rotate-sys", { remedy: "restore the space and verify it first, then rotate: `cotal down`, then `cotal up --rotate-sys`" });
   if (args.values["recreate-issued-stores"] !== undefined) {
@@ -1478,7 +1479,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       // address never reaches the later pin in startMeshDetached, so the catch used to discard it.
       let prepared: ReturnType<typeof loadManifest> | undefined;
       try {
-        prepared = loadManifest(resolve(values.file));
+        prepared = loadManifest(resolve(values.file), logFile);
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
@@ -1622,7 +1623,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const path = resolve(values.file);
     // Structured and plain manifest refusals report file errors before checking startup support.
     if (values.json || values.plain) {
-      try { loadManifest(path); } catch (e) { throw manifestFileRefusal(e, path); }
+      try { loadManifest(path, logFile); } catch (e) { throw manifestFileRefusal(e, path); }
     }
     // A manifest start takes the legacy launcher, which never runs beside a controller stack, running
     // or stopped, so a dry run refuses as the start would.
@@ -3641,7 +3642,7 @@ function manifestFileRefusal(e: unknown, path: string): CommandFailure {
 async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   let prepared: PreparedManifest;
   try {
-    prepared = loadManifest(resolve(file));
+    prepared = loadManifest(resolve(file), opts.logFile);
   } catch (e) {
     if (opts.freshTeamBoot) throw new CommandFailure("refused", "SCHEMA_INVALID", "the fresh boot manifest changed or could not be resolved before startup; no broker was started", { target: { path: resolve(file), space: opts.space } });
     failManifest(e);
@@ -3720,9 +3721,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     assertFreshTeamBootOwnership(cotalRoot(), m.space, open ? "open" : userAuth ? "user" : "auth");
     await assertFreshTeamBindAvailable(server, host, m.space);
   }
-  // A manifest's agents are booted BY the manager `up -f` starts with the mesh, so `--no-manager`
-  // against a manifest declaring agents asks for a boot that cannot deliver its own plan. Refused
-  // before the dry-run print and before anything boots.
+  // A manifest needs its manager to boot declared agents.
   if (opts.noManager && eff.agents.length)
     throw new FlagValueRefusal(`--no-manager cannot launch this manifest: it declares ${eff.agents.length} agent(s), and a manifest's agents are booted by its manager (which --no-manager omits)`, "drop --no-manager, or use a broker-only manifest with no agents");
   const effectiveNoManager = Boolean(opts.noManager);
@@ -3739,8 +3738,8 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (userAuth) await preflightUserStack(cotalRoot(), m.space, userAuth.idpUrl);
   checkStartStore(opts.storeDir, m.space);
 
-  // Preview and apply resolve and probe the same runtime before showing a plan or starting a broker.
-  try { await preflightRuntime(runtime); }
+  // Preview and apply only probe a runtime when starting a manager.
+  try { if (!effectiveNoManager) await preflightRuntime(runtime); }
   catch (error) {
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the requested runtime did not pass preflight; ${opts.freshTeamBoot ? "no fresh boot intent or broker was started" : "no broker was started"}`, { target: { space: m.space, runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" });
   }

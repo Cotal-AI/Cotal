@@ -33,10 +33,10 @@ export function readManifestSource(abs: string): string {
 /** Read + fully resolve a manifest file (absolute path recommended). Throws {@link ManifestError}
  *  with located problems, an {@link UnusableFile} for a directory, or a filesystem error if the
  *  manifest itself cannot be read. */
-export function loadManifest(path: string): PreparedManifest {
+export function loadManifest(path: string, logFileOverride?: string): PreparedManifest {
   const abs = resolve(path);
   const src = readManifestSource(abs);
-  try { return preparePersonas(resolveManifest(src, abs)); }
+  try { return preparePersonas(resolveManifest(src, abs, logFileOverride)); }
   catch (e) {
     if (e instanceof ManifestError) throw new ManifestError(e.file, withMissingPersonas(e.issues, src, abs));
     throw e;
