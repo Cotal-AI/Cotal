@@ -524,6 +524,16 @@ async function awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readines
 /** A ManagerConfig the constructor may fill in. Only the Manager's constructor holds one. */
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
+/** The config members known before the Manager's constructor body runs. */
+type ManagerConfigSeed = Pick<ManagerConfig, "managerLifecycleUid" | "startedAtMs" | "shutdownReadiness" | "readinessTimeoutMs" | "staticReconcileRetryDelaysMs" | "goalAcceptanceRetentionMs">;
+
+/** The seed, typed as the whole config. The parts are built from field initializers that run before
+ *  the constructor body, so they receive the object while it holds only the seed; the constructor
+ *  assigns every other member before it returns, and no part reads one during construction. */
+function seededConfig(seed: ManagerConfigSeed): ManagerConfig {
+  return seed as ManagerConfig;
+}
+
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
  * It serves control requests on the "manager" service and spawns/kills agents
@@ -535,14 +545,14 @@ export class Manager {
   private readonly parts = {} as ManagerParts;
   /** The Manager's identity, operator settings and timing (see {@link ManagerConfig}). Declared ahead of
    *  the parts so each part built below receives this object; the constructor fills the rest in. */
-  protected readonly config = {
+  protected readonly config = seededConfig({
     managerLifecycleUid: mintLifecycleUid(),
     startedAtMs: Date.now(),
     shutdownReadiness: new AbortController(),
     readinessTimeoutMs: READINESS_TIMEOUT_MS,
     staticReconcileRetryDelaysMs: STATIC_RECONCILE_RETRY_DELAYS_MS,
     goalAcceptanceRetentionMs: TURN_ANSWER_RETENTION_MS,
-  } as ManagerConfig;
+  });
 
   /** Named identity of {@link ManagerConfig.secrets}: the same coordinate the delivery daemon must reload from.
    *  Set at construction for an injected store; the workspace store is named on first challenge. */
