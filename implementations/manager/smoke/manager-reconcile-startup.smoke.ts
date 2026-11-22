@@ -801,7 +801,7 @@ try {
     await sr1.start();
     const doors = sr1 as unknown as {
       renewDaemonCreds: () => Promise<void>;
-  credentialRenewal: { daemonRenewalOwner: boolean; };
+      credentialRenewal: { daemonRenewalOwner: boolean; };
     };
 
     // THE NON-HOLDER: same rail, no lease, names the MANAGER'S OWN store — the answer a bare

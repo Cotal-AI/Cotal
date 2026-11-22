@@ -80,8 +80,8 @@ type Internals = {
   renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void>;
   servePlane: {
     dialSessionLedgerConnection(sw: { nc: NatsConnection; creds?: string }, identity: Identity): Promise<void>;
-  credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
   };
+  credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
 };
 
 // The operator-visible reason each failed re-dial attempt logs.
