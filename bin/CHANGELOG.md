@@ -1,5 +1,30 @@
 # cotal-ai
 
+## 0.174.1
+
+### Patch Changes
+
+- 0d29594: Self-update no longer stops on an interrupted-update record from another config folder when the current config folder does not exist yet. It retains the unusable record and continues, as it does when the folder exists.
+- c7b409c: The npm launcher uses the supported Node.js recorded at installation when the Node.js on PATH is too old.
+- Updated dependencies [98e726c]
+- Updated dependencies [2e9777f]
+- Updated dependencies [8ec8bc4]
+- Updated dependencies [0d29594]
+- Updated dependencies [5b8eb17]
+- Updated dependencies [c7b409c]
+- Updated dependencies [d287713]
+- Updated dependencies [fc7ea92]
+  - @cotal-ai/cli@0.174.1
+  - @cotal-ai/connector-core@0.174.1
+  - @cotal-ai/workspace@0.174.1
+  - @cotal-ai/runtime@0.174.1
+  - @cotal-ai/auth@0.174.1
+  - @cotal-ai/manager@0.174.1
+  - @cotal-ai/delivery@0.174.1
+  - @cotal-ai/registry@0.174.1
+  - @cotal-ai/core@0.174.1
+  - @cotal-ai/seat@0.174.1
+
 ## 0.174.0
 
 ### Patch Changes

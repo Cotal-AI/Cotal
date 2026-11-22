@@ -1,5 +1,15 @@
 # @cotal-ai/runtime
 
+## 0.174.1
+
+### Patch Changes
+
+- d287713: The mesh handler's contract types and module-level helpers now live in their own module, with no change in behavior.
+- Updated dependencies [0d29594]
+  - @cotal-ai/workspace@0.174.1
+  - @cotal-ai/core@0.174.1
+  - @cotal-ai/lang@0.174.1
+
 ## 0.174.0
 
 ### Patch Changes
