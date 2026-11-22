@@ -195,8 +195,8 @@ for (const flags of [["--dry-run"], []]) {
   const deletion = run(["space", "delete", "damaged", ...flags, "--json"]);
   const error = deletion.envelope?.error;
   check(`delete ${flags.join(" ") || "apply"} names the damaged file and its recovery without contacting a broker`,
-    deletion.status === 1 && error?.code === "SCHEMA_INVALID" && error.message?.includes(record) && error.message.includes("no broker was contacted") &&
-    error.remedy?.includes("cotal space forget damaged") && readFileSync(record, "utf8") === "{", shown(deletion));
+    deletion.status === 1 && error?.code === "SCHEMA_INVALID" && error.message?.includes(record) === true && error.message.includes("no broker was contacted") &&
+    error.remedy?.includes("cotal space forget damaged") === true && readFileSync(record, "utf8") === "{", shown(deletion));
 }
 const forgetDamaged = run(["space", "forget", "damaged", "--json"]);
 check("the recovery command removes the damaged record", forgetDamaged.status === 0 && !existsSync(record), shown(forgetDamaged));
