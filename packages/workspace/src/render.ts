@@ -79,11 +79,11 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
         : parts(`no space named "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is registered here`, "see `cotal space`");
     case "ambiguous-target":
+      if (d.server !== undefined)
+        return parts(`multiple spaces recorded at ${brokerAddressForDisplay(d.server) ?? "an invalid broker address"}: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` alongside --server, or remove --server after selecting a default with `cotal use <name>`");
       if (d.spaces)
         return parts(err.message, `pick one with ${d.spaces.map((space) => codeSpan(`--space ${shellPath(space)}`)).join(" or ")}, or set a default with ${d.spaces.map((space) => codeSpan(`cotal use ${shellPath(space)}`)).join(" or ")}`);
-      return d.server !== undefined
-        ? parts(`multiple spaces recorded at ${brokerAddressForDisplay(d.server) ?? "an invalid broker address"}: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` alongside --server, or remove --server after selecting a default with `cotal use <name>`")
-        : parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
+      return parts(`multiple meshes running: ${(d.available ?? []).join(", ")}`, "pick one with `--space <name>` or set a default with `cotal use <name>`");
     case "server-host-mismatch":
       return parts(
         `no space is registered at ${d.server ?? "the requested broker address"}. Possible local registrations: ${(d.available ?? []).join(", ")}`,
