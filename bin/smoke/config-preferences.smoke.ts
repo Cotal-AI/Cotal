@@ -96,6 +96,21 @@ const ansi = /\x1b\[/;
   mkdirSync(join(home, "demo"), { recursive: true });
   const prepared = run(["space", "create", "demo", "--root", join(home, "demo"), "--json"]);
   check("setup: demo is prepared", prepared.status === 0 && prepared.envelope?.outcome === "ok", shown(prepared));
+  const grouped = run(["config", "get", "harness", "-js", "demo"]);
+  check("grouped -js selects JSON and reads the named space", grouped.status === 0 && grouped.stderr === "" && grouped.envelope?.outcome === "ok"
+    && (grouped.envelope.target as { space?: string } | null)?.space === "demo", shown(grouped));
+  for (const flags of [["-js"], ["-j", "-s"]]) {
+    const missing = run(["config", "get", "harness", ...flags]);
+    check(`${flags.join(" ")} keeps JSON when the space value is missing`, missing.status === 1 && missing.stderr === ""
+      && missing.envelope?.outcome === "refused" && missing.envelope.error?.code === "USAGE_INVALID"
+      && missing.envelope.error.message === "--space needs a value" && missing.envelope.error.remedy === "write --space <name>", shown(missing));
+  }
+  const attached = run(["config", "get", "harness", "-sj", "--bogus"]);
+  check("a j in an attached space value does not select JSON", attached.status === 1 && attached.stdout === ""
+    && attached.stderr.includes("Unknown option '--bogus'"), shown(attached));
+  const dashValue = run(["config", "get", "harness", "-js", "\u2014help"]);
+  check("a typographic help word after -js is a space value, not an option", dashValue.stderr === "" && dashValue.envelope?.outcome === "refused"
+    && dashValue.envelope.error?.message.includes("\u2014help") === true && !dashValue.envelope.error.message.includes("typographic dash"), shown(dashValue));
   const plainSet = run(["config", "set", "persona", "reviewer", "--space", "demo", "--plain"]);
   check("--space saves a personal value for one space", plainSet.status === 0 && /persona = reviewer in space demo/.test(plainSet.stdout) && saved().spaces.demo?.persona === "reviewer" && saved().revision === 2, shown(plainSet));
   run(["config", "set", "persona", "mine"]);

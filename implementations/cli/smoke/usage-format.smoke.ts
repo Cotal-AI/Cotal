@@ -149,6 +149,12 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+const shortHelp = run(["send", "-c", "general", "\u2013h"]);
+check("a typographic short help flag is refused with -h", usageShape(shortHelp, /starts with a typographic dash/)
+  && shortHelp.stderr.includes("type the option with hyphens: -h"), shown(shortHelp));
+const helpValue = run(["docs", "--search", "\u2014help", "--json"]);
+check("typographic help used as an option value stays literal", helpValue.status === 0 && helpValue.stderr === ""
+  && JSON.parse(helpValue.stdout).result.query === "\u2014help", shown(helpValue));
 const historyTypo = run(["history", "\u2013\u2013limit=10", "--json"]);
 check("the typographic history option correction retains the attached limit", historyTypo.status === 1 && historyTypo.stderr === ""
   && JSON.parse(historyTypo.stdout).error.remedy === "type the option with hyphens: --limit=10", shown(historyTypo));
