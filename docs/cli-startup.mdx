@@ -133,12 +133,11 @@ with `CONFLICT` and asks for `--space`. With no
 reserved by another registered space, including one whose broker is stopped. It saves the chosen
 address. A later `cotal up` of
 the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
-stays fail-loud on collision. An address that a space registered for another folder keeps while it
-is stopped refuses `CONFLICT`, exit 2, naming that space and folder, and nothing starts, unless this
-`up` takes that space's name over. `up -f` reads its address from the manifest's `broker.servers`
-and is refused there by the same rule, with the field to point at another address in place of the
-`--server` to pass. Each refusal also names `cotal space forget <space>`, which frees that address
-with the name. A second stack started on a held address answers for both registrations, which
+stays fail-loud on collision. An address registered for another folder's space refuses `CONFLICT`,
+exit 2, unless this `up` takes that space's name over. The refusal names the space and folder;
+registration alone does not say whether the broker is running. `up -f` checks the manifest's
+`broker.servers` or the explicit `--server` against the same registrations. To preview at another
+address, change `--server` and repeat the same `--dry-run`. The other registration stays in place. A second stack started on a held address answers for both registrations, which
 leaves the other space's `down` and its reads reaching this one. When the named space runs from another folder on this machine,
 `up --space` refuses `CONFLICT`, exit 2, naming that folder, with or without `--server`, `--json` or
 `--plain`, and writes nothing in the folder it ran from. If you run it from the renamed folder of a
