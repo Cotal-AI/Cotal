@@ -11,7 +11,7 @@
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
@@ -273,6 +273,32 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   const noResponder = unansweredHostFailure("run-start", "s", new EpEnvelopeError("unavailable", "no responder for manager.run-start (SPEC 13.5)",
     [{ kind: EP_UNANSWERED, endpoint: "manager", command: "run-start", rail: "ep.v1" }], "not-executed"));
   c("a start the broker saw no responder for was not executed and stays TARGET_UNAVAILABLE", noResponder.outcome === "refused" && noResponder.code === "TARGET_UNAVAILABLE", { outcome: noResponder.outcome, code: noResponder.code });
+}
+
+{
+  const example = (file: string, section: string, language: string) => {
+    const page = readFileSync(new URL(`../../../docs/${file}.mdx`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const fence = `\`\`\`${language}\n`;
+    const block = page.split(section)[1]?.split(fence)[1]?.split("\n```")[0];
+    if (!block) throw new Error(`Missing ${language} example in ${file}: ${section}`);
+    return block;
+  };
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-docs-"));
+  const program = join(dir, "workflow.cotal.js"), handler = join(dir, "results.json");
+  const chunks: string[] = [];
+  const write = process.stdout.write;
+  try {
+    writeFileSync(program, example("workflows", "## An example program", "js"));
+    writeFileSync(handler, example("cli-runs", "### Offline commands", "json"));
+    process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    await runWorkflow({ values: { handler, json: true }, positionals: ["simulate", program], raw: [] });
+  } finally {
+    process.stdout.write = write;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const output = JSON.parse(chunks.join(""));
+  c("the published results file completes the guide workflow without unused results",
+    output.result.outcome === "completed" && output.result.unusedScript.length === 0, output);
 }
 
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
