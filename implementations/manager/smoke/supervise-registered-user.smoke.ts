@@ -21,6 +21,7 @@ import { createSpaceAuth } from "@cotal-ai/core";
 import { hasUserAuthState, userAuthStateDir } from "@cotal-ai/workspace";
 import { persistRemoteUserEntry } from "../../cli/src/commands/meshes-add.js";
 import { bootBroker } from "./_boot-broker.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const repo = resolve(import.meta.dirname, "..", "..", "..");
 const cli = join(repo, "bin", "cotal.ts");
@@ -30,17 +31,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-supervise-registered-roo
 const space = `registered-user-${Math.random().toString(36).slice(2, 10)}`;
 const previousHome = process.env.COTAL_HOME;
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown): void => {
-  if (condition) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 // Do not let an ambient COTAL connection identity turn this subprocess into a test of another
 // mesh. PATH/XDG stay inherited so the local source tree and the caller's isolated config work.
@@ -173,5 +164,6 @@ try {
   else process.env.COTAL_HOME = previousHome;
 }
 
-console.log(`\nSUPERVISE REGISTERED USER REPRO ${fail === 0 ? "RED OBSERVED ✅" : "FAILED"} (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nSUPERVISE REGISTERED USER REPRO ${failed() === 0 ? "RED OBSERVED ✅" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

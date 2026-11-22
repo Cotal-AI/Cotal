@@ -12,12 +12,9 @@
 import { registry } from "@cotal-ai/core";
 import { isCommandFailure, type LocalProcess, type ServicePreset } from "@cotal-ai/workspace";
 import { resolveServicePreset, servicePresetDefinition, servicePresetFlags } from "../src/lib/service-presets.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 /** The refusal a call throws, as code, message and remedy, or undefined when it returns. */
 const refusal = (fn: () => unknown) => {
   try { fn(); return undefined; }
@@ -83,5 +80,6 @@ const neither = (() => { try { return servicePresetDefinition(managerPreset, "sp
 check("a manager add with neither launch flag still defines the service",
   !(neither instanceof Error) && (neither as { launch: { options: Record<string, unknown> } }).launch.options.launch === undefined, neither);
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\n${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);
