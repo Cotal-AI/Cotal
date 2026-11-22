@@ -311,7 +311,7 @@ const composed: Command = { ...command, async run(args) {
     const entry = logicalExecutionEntry();
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
     let hostedInstances = new Set<string | undefined>();
-    if (args.values.self !== true || hasUpdateDaemonLifetime()) {
+    if (hasUpdateDaemonLifetime()) {
       try {
         const daemon = await reconcileDaemonStatus(daemonPaths());
         if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
@@ -490,7 +490,7 @@ const composed: Command = { ...command, async run(args) {
       return "none";
     }
     const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
-    if (staged && (args.values.self === true || installedChild) && !hasUpdateDaemonLifetime())
+    if (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime())
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {
