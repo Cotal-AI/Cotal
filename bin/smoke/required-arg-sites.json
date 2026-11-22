@@ -73,7 +73,7 @@
   "implementations/cli/src/commands/history-clear.ts": 1,
   "implementations/cli/src/commands/history-limit.ts": 1,
   "implementations/cli/src/commands/space-delete.ts": 3,
-  "implementations/cli/src/commands/status.ts": 1,
+  "implementations/cli/src/commands/status-health.ts": 1,
   "implementations/cli/src/commands/up.ts": 7,
   "implementations/cli/src/exec-endpoint/registration.ts": 1,
   "implementations/cli/src/lib/controller-preserve.ts": 1,
