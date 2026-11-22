@@ -27,6 +27,7 @@ import {
   recordOperationSpace,
   resolveControlTarget,
   resolveMeshTarget,
+  retainedLegacyBroker,
   spaceRootTarget,
   stoppedStack,
   workspaceErrorParts,
@@ -610,9 +611,12 @@ export async function ps(args: ParsedArgs): Promise<void> {
     on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
     census = await readSeats(v, command, on);
   } catch (e) {
-    if (v.server === undefined && isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
-      const journal = unusableStackJournal(e.details.root);
-      if (journal) throw new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
+    if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
+      const saved = v.server === undefined ? undefined : e.details.server ?? retainedLegacyBroker(e.details.root)?.server;
+      if (v.server === undefined || (saved !== undefined && brokerUrlKey(v.server) === brokerUrlKey(saved))) {
+        const journal = unusableStackJournal(e.details.root);
+        if (journal) throw new CommandFailure("refused", journal.code, journal.message, { target: spaceRootTarget(e.details), remedy: journal.remedy });
+      }
     }
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
