@@ -154,7 +154,6 @@ check("control: a valid role token is created", roleOk.status === 0 && existsSyn
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
-  [["persona", "create", "h1", "--prompt", "x", "--on", "bad"], "cotal persona create h1 --on <instance>"],
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
@@ -173,6 +172,11 @@ for (const [argv, rerun] of [
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
+check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
+  createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
+  (createPin.envelope.error.remedy ?? "").includes("replace only the --on value in the original command") &&
+  !createPin.stdout.includes("cotal persona create h1 --on") && !createPin.stdout.includes("keep this definition private"), shown(createPin));
 // #7644: a principal id, an empty value and an endpoint's malformed --on are refused while the
 // arguments are read, with the command to rerun in the message. It keeps the command's words and
 // the --space it was given; it used to keep only the verb.
@@ -484,6 +488,15 @@ const builtInRuntime = previewRuntime("--runtime", "pty");
 check("the built-in pty is available here, with no warning",
   builtInRuntime.r.status === 0 && builtInRuntime.p?.result?.requested?.runtime === "pty" && builtInRuntime.p.result.runtimeCheck?.available === true
     && builtInRuntime.p.result.runtimeCheck.error === null && same(builtInRuntime.p.warnings, []), shown(builtInRuntime.r));
+const foregroundRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--json");
+check("foreground spawn refuses --runtime and offers compatible foreground and managed retries",
+  foregroundRuntime.status === 1 && foregroundRuntime.envelope?.error?.code === "USAGE_INVALID"
+    && foregroundRuntime.envelope.error.remedy === "omit --runtime, --json to launch in this terminal, or replace --foreground with -d (with --on <instance> to select a manager) to launch through a manager",
+  shown(foregroundRuntime));
+const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--json", "-d");
+check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
+  combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
+    && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

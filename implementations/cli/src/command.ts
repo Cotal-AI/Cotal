@@ -188,7 +188,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
-  // envelope cannot be written, and the exit status below stands either way.
+  // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
   else try {
     // Mint receipts identify the operation, not the auth namespace used by account reports.
@@ -201,8 +201,11 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeAllSync(1, Buffer.from(lines));
   } catch (error) {
-    reportLostOutput(error as NodeJS.ErrnoException);
-    try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
+    const writeError = error as NodeJS.ErrnoException;
+    if (writeError.code !== "EPIPE") {
+      reportLostOutput(writeError);
+      try { writeReport(); } catch { /* stderr failed too; the exit status still says so */ }
+    }
   }
   debugStacks(failure);
   process.exit(exitCode(failure.outcome, failure.code));

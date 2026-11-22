@@ -77,7 +77,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -214,6 +214,10 @@ try {
     const deleteStopped = cli(home, "space", "delete", space, "--yes", "--json");
     check("space delete after down refuses TARGET_UNAVAILABLE and names cotal reset store, not cotal up",
       deleteStopped.status === 2 && deleteStopped.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(deleteStopped.env.error.remedy?.includes(`cotal reset store ${space} --yes`)) && !deleteStopped.env.error.remedy?.includes("cotal up"), shown(deleteStopped));
+    const deletePreview = cli(home, "space", "delete", space, "--dry-run", "--json");
+    check("the stopped stack's deletion preview points only to a read-only store preview",
+      deletePreview.status === 2 && deletePreview.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        deletePreview.env.error.remedy === `inspect its stored streams with \`cotal reset store ${space} --dry-run\``, shown(deletePreview));
 
     // 4. Reset after a normal down (B4-02).
     const storeStopped = cli(root, "reset", "store", space, "--dry-run", "--json");
@@ -516,6 +520,17 @@ try {
       check(`reset ${kind} ${mode} refuses CONFLICT, naming the linked store path and the directory it points to`, reset.status === 2 && reset.env?.error?.code === "CONFLICT" && Boolean(reset.env.error.message.includes(`the recorded store path ${store} is a link to ${moved}`)) && Boolean(reset.env.error.remedy?.includes(`cotal reset ${kind} ${space} --dry-run`)), shown(reset));
     }
     check("nothing is removed through the link", existsSync(join(moved, "notes.txt")) && existsSync(join(moved, "jetstream")));
+    rmSync(store);
+    const missing = `${store}-missing`;
+    symlinkSync(missing, store);
+    for (const kind of ["store", "space"]) for (const mode of ["--dry-run", "--yes"]) {
+      const reset = cli(root, "reset", kind, space, mode, "--json");
+      check(`reset ${kind} ${mode} refuses a dangling store link`, reset.status === 2 && reset.env?.error?.code === "CONFLICT"
+        && reset.env.error.message.includes(`the recorded store path ${store} is a link to ${missing}`)
+        && reset.env.error.message.includes("nothing was removed"), shown(reset));
+    }
+    check("the dangling link and parked store remain", readlinkSync(store) === missing
+      && !existsSync(missing) && existsSync(join(moved, "jetstream")));
   }
 
   // 10. A stack whose folder is deleted stops from another folder, and its name starts again.

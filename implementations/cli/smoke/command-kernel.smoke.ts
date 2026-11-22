@@ -151,6 +151,16 @@ const noop = async (): Promise<void> => {};
     assert.match(diagnostic ?? "", /SCHEMA_INVALID/);
     assert.match(next?.replace(/\s+/g, " ") ?? "", /set checkpoints\.approve-plan\.status in \.\/bad-results\.json to "resolved" or "expired", then rerun the simulation/);
 
+    writeFileSync(join(root, "warning-fail.js"), 'if (false) {\n  await fanOut(["x", "y"], (x) => sleep("1s", { name: "nap" }), { name: "fo" });\n}\nthrow "boom";\n');
+    writeFileSync(join(root, "results.json"), "{}\n");
+    const failed = run(["run", "simulate", "warning-fail.js", "--handler", "results.json", "--json"]);
+    assert.equal(failed.status, 5, failed.stdout + failed.stderr);
+    assert.equal(failed.stderr, "");
+    const failedReceipt = JSON.parse(failed.stdout);
+    assert.equal(failedReceipt.outcome, "failed");
+    assert.equal(failedReceipt.error.code, "OPERATION_FAILED");
+    assert.deepEqual(failedReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
+
     for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
       writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));
       const invalid = run(["run", "simulate", "workflow.cotal.js", "--handler", "bad-clock.json", "--json"]);

@@ -64,7 +64,6 @@ export async function use(args: ParsedArgs): Promise<void> {
     });
   }
   const changed = name !== undefined && (previous !== name || readCurrentSelection()?.source !== "explicit");
-  if (changed) setCurrent(name);
   const cwd = process.cwd(), project = canonicalRoot(findCotalRoot(cwd));
   let moved: ReturnType<typeof journalRecordedElsewhere>;
   if (p && !existsSync(p.root) && cotalDirLink(project) === undefined) {
@@ -74,6 +73,7 @@ export async function use(args: ParsedArgs): Promise<void> {
     } catch { /* An unusable journal does not identify a moved project. */ }
   }
   const result: Selection = { kind: "selection", current, previous, currentRecorded: current === null || m !== undefined, server: m?.server ?? null, ...prepared(p, m, moved && project), folder: folderSpace(cwd) ?? folderSpaceHeld(cwd)?.space ?? null };
+  if (changed) setCurrent(name);
   const warnings: OutputWarning[] = current !== null && name === undefined && !m && !p
     ? [{ code: "SELECTION_NOT_REGISTERED", target: { space: current }, message: `the selected space "${current}" is not registered here - select another with \`cotal use <name>\`` }]
     : [];

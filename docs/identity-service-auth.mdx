@@ -12,7 +12,8 @@ audience: operators and implementers
 
 **One auth service per space** hosts both halves: the NATS auth callout and the token
 exchange. One process may host the services of several spaces, one lane each (below). Its default HTTP listener remains loopback-only and requires the per-start capability
-stored in the owner-only `auth-service.json` file. An operator may add a second listener with
+stored in the owner-only `auth-service.json` file. On the [legacy startup route](cli-startup.mdx#up),
+an operator may add a second listener with
 `cotal up --user-auth ... --exchange-public-port <port> --exchange-public-url https://auth.example`.
 That listener still binds `127.0.0.1`; put a reverse proxy in front of it and terminate TLS there.
 In-process TLS is deliberately not another deployment mode: it would duplicate certificate renewal

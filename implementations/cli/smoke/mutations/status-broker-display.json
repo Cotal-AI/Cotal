@@ -9,7 +9,7 @@
   "mutations": [
     {
       "name": "recorded status rows expose raw broker URLs",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-meshes.ts",
       "find": "server: displayStatusBroker(m.server, m.space, gaps),",
       "replace": "server: m.server,",
       "expectRed": "status redacts recorded broker address for password",
@@ -18,7 +18,7 @@
     },
     {
       "name": "selected status row exposes the raw broker URL",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-meshes.ts",
       "find": "server: displayStatusBroker(target.server, target.space, gaps),",
       "replace": "server: target.server,",
       "expectRed": "status redacts selected broker address for password",
@@ -27,7 +27,7 @@
     },
     {
       "name": "legacy component facts expose the raw broker URL",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "const address = brokerAddressForDisplay(target.server);",
       "replace": "const address = target.server;",
       "expectRed": "status component facts omit broker secrets for password",

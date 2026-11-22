@@ -50,12 +50,9 @@ import {
 } from "../src/local-process.js";
 import { resolveRuntimeSpace, resolveSpace } from "../src/space.js";
 import { RESERVED_COTAL_CHILDREN } from "../src/space-segmentation.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const rejects = (name: string, fn: () => unknown, mustInclude: string[]) => {
   try {
     fn();
@@ -262,5 +259,6 @@ try {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\n${fail === 0 ? "✓" : "✗"} segmented-runtime-namespace: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "✓" : "✗"} segmented-runtime-namespace: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

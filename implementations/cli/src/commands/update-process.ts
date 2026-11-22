@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken, resolveOnPath } from "@cotal-ai/workspace";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
+import { npmInvocation } from "../lib/npm-invocation.js";
 import { compareSemver } from "../seed/reconcile.js";
 
 export interface CommandResult {
@@ -71,17 +72,6 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
     throw new Error(`the installed cotal executable escapes its package: ${entry}`);
   return entry;
-}
-
-function npmInvocation(env: NodeJS.ProcessEnv) {
-  const cwd = parse(homedir()).root;
-  if (process.platform === "win32" || env.PATH === undefined) return { file: "npm", env, cwd };
-  const lookup = { PATH: env.PATH.split(delimiter).map(dir => resolve(cwd, dir)).join(delimiter) };
-  const file = resolveOnPath("npm", lookup);
-  if (!file) return { file: "npm", env, cwd };
-  const node = resolveOnPath("node", lookup);
-  if (node && realpathSync(node) === realpathSync(process.execPath)) return { file: "npm", env, cwd };
-  return { file, env: { ...env, PATH: `${dirname(process.execPath)}${delimiter}${env.PATH}` }, cwd };
 }
 
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {

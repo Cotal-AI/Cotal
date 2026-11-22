@@ -215,7 +215,7 @@ const cfg: AgentConfig = {
 
 type EndpointHarness = {
   nc?: FakeNc;
-  heartbeatTimer?: ReturnType<typeof setInterval>;
+  connection: { heartbeatTimer?: ReturnType<typeof setInterval> };
   watchStatus(): void;
   superviseConnection(): void;
   reestablishLoop(): Promise<void>;
@@ -429,7 +429,7 @@ startingEp.connectAndBind = async () => {
   await bindGate;
   bindFinished = true;
   startingEp.nc = freshNc;
-  startingEp.heartbeatTimer = setInterval(() => {}, 60_000);
+  startingEp.connection.heartbeatTimer = setInterval(() => {}, 60_000);
 };
 startingEp.superviseConnection = () => { supervised++; };
 const startingPromise = starting.start(1);
@@ -451,7 +451,7 @@ if (!stopResult.ok) throw stopResult.error;
 check(
   "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
   stoppedWhileBindParked && bindFinished && freshNc.closes === 1 && freshNc.drains === 0 && freshNc.closedFlag === true && startingEp.nc === undefined &&
-    startingEp.heartbeatTimer === undefined && supervised === 0 && polledAfterStop === 0,
+    startingEp.connection.heartbeatTimer === undefined && supervised === 0 && polledAfterStop === 0,
   {
     stoppedWhileBindParked,
     bindFinished,
@@ -459,7 +459,7 @@ check(
     drains: freshNc.drains,
     closed: freshNc.closedFlag,
     hasNc: startingEp.nc !== undefined,
-    hasHeartbeat: startingEp.heartbeatTimer !== undefined,
+    hasHeartbeat: startingEp.connection.heartbeatTimer !== undefined,
     supervised,
     polledAfterStop,
   },
@@ -467,7 +467,7 @@ check(
 // Test-harness cleanup only. Under the deliberate #975 mutation the product leaves this interval and
 // nc live, which is the named failure above. Clear/close them after observing so the suite reaches its
 // terminal marker and mutation-proof can grade the red instead of timing out on the leaked resource.
-if (startingEp.heartbeatTimer) clearInterval(startingEp.heartbeatTimer);
+if (startingEp.connection.heartbeatTimer) clearInterval(startingEp.connection.heartbeatTimer);
 if (!freshNc.closedFlag) await freshNc.close();
 
 const failing = new MeshAgent({ ...cfg, name: "failing-start-agent" });

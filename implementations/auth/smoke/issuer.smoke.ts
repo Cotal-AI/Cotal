@@ -22,12 +22,9 @@ import {
   pinnedJwksResolver,
   validateUserToken,
 } from "../src/index.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 async function rejects(name: string, fn: () => Promise<unknown> | unknown, needle?: string) {
   try { await fn(); check(`${name} (expected rejection)`, false); }
   catch (e) {
@@ -163,5 +160,6 @@ check("pinned resolver accepts loopback http (dev)", !!pinnedJwksResolver("http:
 try { pinnedJwksResolver("http://auth.cotal.test/jwks"); check("pinned resolver rejects non-loopback http", false); }
 catch { check("pinned resolver rejects non-loopback http", true); }
 
-console.log(`\nissuer smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail > 0 ? 1 : 0);
+console.log(`\nissuer smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() > 0 ? 1 : 0);

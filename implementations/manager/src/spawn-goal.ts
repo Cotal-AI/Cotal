@@ -3,6 +3,7 @@ import type { ControlReply, EpErrorCode, EpServeContext, GoalIndexEntry, GoalRef
 import type { Manager } from "./manager.js";
 import type { SpawnAcceptance, SpawnHooks } from "./seat-types.js";
 import { caughtEnvelope, goalKey } from "./turn-relay.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
  *  `commitGoalResult` refuses a payload that is not interchangeable JSON, and this terminal must commit
@@ -26,14 +27,11 @@ function failedTerminal(error: string, source: { details?: unknown } | undefined
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface SpawnGoalDeps {
   agentGoals: () => Manager["agentGoals"];
-  execution: () => Manager["execution"];
-  goalAcceptanceRetentionMs: () => Manager["goalAcceptanceRetentionMs"];
   goalAcceptances: () => Manager["goalAcceptances"];
   goalReconcileDone: () => Manager["goalReconcileDone"];
   goalWriter: () => Manager["goalWriter"];
   managerInstanceId: () => Manager["managerInstanceId"];
   onceWatched: () => Manager["onceWatched"];
-  readinessTimeoutMs: () => Manager["readinessTimeoutMs"];
   serviceServe: () => Manager["serviceServe"];
   userMode: () => Manager["userMode"];
   acceptOnceTurn: (...args: Parameters<Manager["acceptOnceTurn"]>) => ReturnType<Manager["acceptOnceTurn"]>;
@@ -49,14 +47,11 @@ export interface SpawnGoalDeps {
 export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
   return {
     agentGoals: () => m["agentGoals"],
-    execution: () => m["execution"],
-    goalAcceptanceRetentionMs: () => m["goalAcceptanceRetentionMs"],
     goalAcceptances: () => m["goalAcceptances"],
     goalReconcileDone: () => m["goalReconcileDone"],
     goalWriter: () => m["goalWriter"],
     managerInstanceId: () => m["managerInstanceId"],
     onceWatched: () => m["onceWatched"],
-    readinessTimeoutMs: () => m["readinessTimeoutMs"],
     serviceServe: () => m["serviceServe"],
     userMode: () => m["userMode"],
     acceptOnceTurn: (...args) => m["acceptOnceTurn"](...args),
@@ -70,20 +65,17 @@ export function spawnGoalDeps(m: Manager): SpawnGoalDeps {
 
 /** Serving `spawn` and `launch` as goals: acceptance, the cached acceptance a retry reads, and its expiry. */
 export class SpawnGoal {
-  constructor(private readonly deps: SpawnGoalDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SpawnGoalDeps) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agentGoals() { return this.deps.agentGoals(); }
-  private get execution() { return this.deps.execution(); }
-  private get goalAcceptanceRetentionMs() { return this.deps.goalAcceptanceRetentionMs(); }
   private get goalAcceptances() { return this.deps.goalAcceptances(); }
   private get goalReconcileDone() { return this.deps.goalReconcileDone(); }
   private get goalWriter() { return this.deps.goalWriter(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get onceWatched() { return this.deps.onceWatched(); }
-  private get readinessTimeoutMs() { return this.deps.readinessTimeoutMs(); }
   private get serviceServe() { return this.deps.serviceServe(); }
   private get userMode() { return this.deps.userMode(); }
   private acceptOnceTurn(...args: Parameters<Manager["acceptOnceTurn"]>): ReturnType<Manager["acceptOnceTurn"]> { return this.deps.acceptOnceTurn(...args); }
@@ -113,7 +105,7 @@ export class SpawnGoal {
    *  (the ALLOCATED identity). goalId = the request id (env.id). */
   async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
     // These four refuse before anything is accepted or allocated, so they state it (SPEC 13.3).
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
     const gw = this.goalWriter;
     if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)", undefined, "not-executed");
     // Refuse to accept until the boot reconcile of inherited goals completes, so a fresh
@@ -149,7 +141,7 @@ export class SpawnGoal {
     let rejectAccept!: (e: unknown) => void;
     const acceptP = new Promise<SpawnAcceptance>((res, rej) => { resolveAccept = res; rejectAccept = rej; });
     let acceptance: SpawnAcceptance | undefined;
-    let readinessTimeoutMs = this.readinessTimeoutMs;
+    let readinessTimeoutMs = this.config.readinessTimeoutMs;
     // H1: set the instant the terminal path is ENTERED, not when it succeeds — the post-accept
     // fallback below must fire only when `onOutcome` never ran at all, never as a second attempt
     // behind a commit that threw.
@@ -387,10 +379,10 @@ export class SpawnGoal {
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
   }
 
-  /** Drop a goal's acceptance {@link goalAcceptanceRetentionMs} after its terminal committed. A
+  /** Drop a goal's acceptance {@link ManagerConfig.goalAcceptanceRetentionMs} after its terminal committed. A
    *  retry after that reads the terminal, so only a goal that has one may be passed here. */
   expireGoalAcceptance(ref: GoalRef): void {
     const key = goalKey(ref);
-    setTimeout(() => this.goalAcceptances.delete(key), this.goalAcceptanceRetentionMs).unref?.();
+    setTimeout(() => this.goalAcceptances.delete(key), this.config.goalAcceptanceRetentionMs).unref?.();
   }
 }

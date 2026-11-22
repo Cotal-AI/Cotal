@@ -16,8 +16,7 @@ If the native launcher cannot finish registering a broker it just started, it st
 
 ```bash
 cotal up [--foreground|--detach] [--open] [--space <s>] [--root <prepared-dir>] [--server <url>] [--channels <path>] [--runtime <name>] [--manager-name <name>]
-cotal up --user-auth --idp <url> [--exchange-public-port <n> --exchange-public-url <https://…> [--exchange-trusted-proxy]]
-         [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
+cotal up --user-auth --idp <url> [--auth-timeout <seconds>]
 cotal up [--max-payload <bytes>]                      # broker message size limit; a manager needs 263168
 cotal up [--account-resolver memory|full]             # full: a host adds and retires accounts without a reload
 cotal up --log-file <path> [--logfile-size-limit <bytes> --logfile-max-num <count>]
@@ -49,11 +48,11 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs. A root whose first `up` recorded another mode refuses it |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger. A root whose first `up` recorded another mode refuses it. A stopped root whose space has user-auth state refuses a start without it, `--open` included, as `CONFLICT`, exit 2, before anything is written; add `--user-auth` to start it |
 | `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. A later run may omit it or pass any spelling that normalizes to the pinned URL, such as one with a trailing slash; a different IdP is refused. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
-| `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
-| `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
-| `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
-| `--advertised-server <url>` | `--server` | With `--exchange-public-port`: the broker address the public discovery bundle tells participants to dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
-| `--agent-provisioning-url <https://…>` | none | With `--exchange-public-port`: the deployment's agent-provisioning endpoint the public bundle advertises. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent; without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.mdx#remote-supervised-seats-by-enrollment)). HTTPS only |
+| `--exchange-public-port <n>` | none | Legacy user-auth startup only. Add a public loopback listener for an HTTPS reverse proxy. Pass a whole number from 0 to 65535. Port 0 lets the OS choose. An invalid port refuses `USAGE_INVALID`, exit 1, before startup or project writes |
+| `--exchange-public-url <https://…>` | none | Legacy user-auth startup only. With `--exchange-public-port`, advertise the reverse proxy's HTTPS URL in discovery |
+| `--exchange-trusted-proxy` | off | Legacy user-auth startup only. With `--exchange-public-port`, attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy. Otherwise it uses the socket address |
+| `--advertised-server <url>` | `--server` | Legacy user-auth startup only. With `--exchange-public-port`, advertise the broker address participants dial, such as a `wss://` address behind your proxy. Must be a `nats://`, `tls://`, `ws://` or `wss://` URL |
+| `--agent-provisioning-url <https://…>` | none | Legacy user-auth startup only. With `--exchange-public-port`, advertise the deployment's HTTPS agent-provisioning endpoint. A participant's `cotal spawn` on a remote user-auth mesh sends its login bearer there to provision the agent. Without one, that spawn needs a one-time enrollment ([Run a mesh](run-a-mesh.mdx#remote-supervised-seats-by-enrollment)) |
 | `--service-endpoints` | off | With `--user-auth`: the auth service also hosts service endpoints: the public registration door and the authenticated host route that `cotal service-endpoint` drives |
 | `--detach`, `-d` | on | Run in the background, which is also the no-flag default |
 | `--foreground` | off | Keep native stack lifetime in this terminal. Required when a systemd/launchd unit supervises `up` itself. Cannot combine with `--detach` |
@@ -63,7 +62,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--dry-run` | off | With `-f`: preflight the declared applications before printing the plan. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime. An empty value, as an unset variable gives, names no runtime and refuses `USAGE_INVALID` (exit 1) |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it. On a controller stack, a different ceiling refuses `LIFECYCLE_BLOCKED`, exit 2, naming the running value and leaving the saved definition unchanged. A matching ceiling or a bare refresh reuses the manager. Run `cotal down --yes` first, then `cotal up --max-sessions <n>` |
-| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this root's manager admits for one owner. The manager records the cap once it starts serving, so a bare `up` after `down`, a repair or a resume keeps it. A refused start leaves the saved cap unchanged. A running manager cannot change it: `cotal down` first, then `cotal up --seat-cap <n>`. Cannot be combined with `--restore`, `--file` or `--no-manager` |
+| `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this root's manager admits for one owner. The manager records an explicit cap once it starts serving, so a bare `up` after `down`, a repair or a resume keeps it. A refresh that names the running cap reuses the manager, including `--seat-cap unlimited` when there is no saved cap. To change a running manager's cap, run `cotal down` first, then `cotal up --seat-cap <n>`. A refused start leaves the saved cap unchanged. Cannot be combined with `--restore`, `--file` or `--no-manager` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
 | `--no-manager` | off | Broker-only boot: start the broker and, in auth mode, the delivery daemon, and no local manager. A refresh under the flag of a mesh whose manager is live refuses rather than keeping or stopping it. For a controller stack, use `cotal service stop stack-manager --space <s> --yes` first. A legacy stack has no command that stops only its manager: `cotal down` stops the whole stack, then `cotal up --no-manager --space <s>` starts it broker-only. Cannot be combined with `--runtime`, `--max-sessions`, or an agent-declaring manifest |
 | `--rotate-sys` | off | Rotate the space's system account and re-mint its two `$SYS` creds. Needs a stopped mesh; refused `USAGE_INVALID`, exit 1, with `--open` or a manifest that sets `broker.auth: false`. A controller stack takes it once every member is stopped, and a first start on a prepared root refuses it |
@@ -78,6 +77,12 @@ startup receipt from a controller-owned stack, use `--json` or `--plain` without
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
+
+A freshly prepared or controller-owned root refuses the public exchange flags as `UNSUPPORTED`,
+exit 2. To start a space with a public exchange, run `cotal up --user-auth` with the IdP, broker
+and [public exchange flags](remote-supervision.mdx#split-host-bind) from a new project folder.
+Use an unused space name and do not run `cotal space create` first. An existing legacy user-auth
+root can keep using these flags.
 
 If a separately started manager service at the same root blocks `up --no-manager`, the refusal
 names the command to stop that instance and the retry retains both `--space` and `--no-manager`.
@@ -724,7 +729,7 @@ address. On Linux, when nothing listens there and a connection's local end holds
 refusal says so in place of another process. Only a connection on the bind host's own address or a
 wildcard counts, so one elsewhere on the machine that shares the port number changes nothing. If
 only closed connections in TIME-WAIT hold a controller stack's recorded address, `up` retries the
-bind for up to a minute and starts the broker as soon as it can bind. If that wait expires, or the
+bind for up to 65 seconds and starts the broker as soon as it can bind. If that wait expires, or the
 address is not recorded by the controller, `up` refuses and names the step to take.
 When no member started, the refusal says the stack
 started no member. A text `up` prints one `Starting <definition>` line
@@ -762,8 +767,10 @@ refuses `USAGE_INVALID`, exit 1, and leaves no static signing authority behind.
 
 User-auth controller startup requires a plain loopback IP and an auth provider with read-only
 server preflight. A first enable checks the required IdP and its JWKS before creating maintenance
-state, a stack journal, trust or credentials. Missing or invalid inputs are usage refusals; an
-unavailable JWKS is a dependency refusal. The check follows no redirect: a `3xx` answer at
+state, a stack journal, trust or credentials. Missing or invalid inputs are usage refusals.
+If the IdP does not serve a usable public Ed25519 verification key, startup refuses
+`DEPENDENCY_UNAVAILABLE` before pinning it. The key set may include keys for other algorithms.
+The check follows no redirect: a `3xx` answer at
 `<idp>/jwks` is refused as an unavailable JWKS, and the place it points to gets no request.
 Malformed IdP inputs are not echoed. An explicit `--idp`
 is also compared with the recorded pin before maintenance state changes, even while the broker is

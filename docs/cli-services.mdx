@@ -92,12 +92,13 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ## Adding a service [#adding-a-service]
 
-Run `service add` from a prepared or registered space's project folder, or pass `--space <name>`.
-In a new project, prepare the space first. Neither command starts a broker or the service.
+In a new project, prepare the space first, then pass `--space` to save the definition there. A
+prepared project folder does not override the current space selection. Neither command starts a
+broker or the service.
 
 ```bash
 cotal space create reviews-dev --root .
-cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
+cotal service add reviews --space reviews-dev --exec "node /srv/reviews/server.mjs --port 8080"
 ```
 
 `--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
@@ -122,10 +123,11 @@ takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` sh
 of one that exists, and a relative one is refused. An option the service names in camelCase takes a
 dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
 takes it as `cotal up --log-file` does: a relative path is made absolute against the folder `add`
-runs in, and the file need not exist yet. A missing required option is refused with each one named,
-and the refusal prints the command line with them. That line also names each option whose default
-the space cannot fill yet, such as the broker's `--server <url>` in a space with no registered
-broker, and keeps an explicit `--space` so the retry saves in the same space.
+runs in, and the file need not exist yet. When a preset refuses because required options are missing,
+it names them and any defaults the space cannot fill, such as the broker's `--server <url>` in a
+space with no registered broker. If you supplied other options, add just the missing flags to your
+original command. Keep your supplied values, the selected `--space`, and flags such as `--json` or
+`--dry-run`. The refusal does not repeat the option values you entered.
 
 A preset's options describe the service and never choose its space. `add` saves into the space
 `--space` names, or else the selected space or the folder's, as other commands resolve it.

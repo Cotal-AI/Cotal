@@ -9,6 +9,7 @@ import type { TerminalInput } from "./terminal-input.js";
 import { listStaticSlotObservations, observeStaticSlot, renderStaticSlotObservation, STATIC_SLOT_READ_FAILED_DETAIL, StaticSlotReadError } from "./static-lifecycle.js";
 import type { TranscriptReceiveInput } from "./transcript-receive.js";
 import { measureManagerVitals } from "./vitals.js";
+import type { ManagerConfig } from "./manager-config.js";
 
 export function participantKey(owner: string, actor: string, uid: string): string {
   return `${owner}.${actor}.${uid}`;
@@ -19,17 +20,14 @@ export function participantKey(owner: string, actor: string, uid: string): strin
 export interface CommandDispatchDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  execution: () => Manager["execution"];
   goalWriter: () => Manager["goalWriter"];
   managerInstanceId: () => Manager["managerInstanceId"];
   participants: () => Manager["participants"];
   remoteAuthority: () => Manager["remoteAuthority"];
   resumeRequired: () => Manager["resumeRequired"];
   runHosting: () => Manager["runHosting"];
-  space: () => Manager["space"];
   transcripts: () => Manager["transcripts"];
   userMode: () => Manager["userMode"];
-  workspaceRoot: () => Manager["workspaceRoot"];
   attachAuthorized: (...args: Parameters<Manager["attachAuthorized"]>) => ReturnType<Manager["attachAuthorized"]>;
   authorizeNamed: (...args: Parameters<Manager["authorizeNamed"]>) => ReturnType<Manager["authorizeNamed"]>;
   authorizeRunAmend: (...args: Parameters<Manager["authorizeRunAmend"]>) => ReturnType<Manager["authorizeRunAmend"]>;
@@ -87,17 +85,14 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    execution: () => m["execution"],
     goalWriter: () => m["goalWriter"],
     managerInstanceId: () => m["managerInstanceId"],
     participants: () => m["participants"],
     remoteAuthority: () => m["remoteAuthority"],
     resumeRequired: () => m["resumeRequired"],
     runHosting: () => m["runHosting"],
-    space: () => m["space"],
     transcripts: () => m["transcripts"],
     userMode: () => m["userMode"],
-    workspaceRoot: () => m["workspaceRoot"],
     attachAuthorized: (...args) => m["attachAuthorized"](...args),
     authorizeNamed: (...args) => m["authorizeNamed"](...args),
     authorizeRunAmend: (...args) => m["authorizeRunAmend"](...args),
@@ -152,24 +147,21 @@ export function commandDispatchDeps(m: Manager): CommandDispatchDeps {
 
 /** The typed manager command table, the control admission both doors share, and the admin reach it reads. */
 export class CommandDispatch {
-  constructor(private readonly deps: CommandDispatchDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: CommandDispatchDeps) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get execution() { return this.deps.execution(); }
   private get goalWriter() { return this.deps.goalWriter(); }
   private get managerInstanceId() { return this.deps.managerInstanceId(); }
   private get participants() { return this.deps.participants(); }
   private get remoteAuthority() { return this.deps.remoteAuthority(); }
   private get resumeRequired() { return this.deps.resumeRequired(); }
   private get runHosting() { return this.deps.runHosting(); }
-  private get space() { return this.deps.space(); }
   private get transcripts() { return this.deps.transcripts(); }
   private get userMode() { return this.deps.userMode(); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
   private attachAuthorized(...args: Parameters<Manager["attachAuthorized"]>): ReturnType<Manager["attachAuthorized"]> { return this.deps.attachAuthorized(...args); }
   private authorizeNamed(...args: Parameters<Manager["authorizeNamed"]>): ReturnType<Manager["authorizeNamed"]> { return this.deps.authorizeNamed(...args); }
   private authorizeRunAmend(...args: Parameters<Manager["authorizeRunAmend"]>): ReturnType<Manager["authorizeRunAmend"]> { return this.deps.authorizeRunAmend(...args); }
@@ -266,7 +258,7 @@ export class CommandDispatch {
     }
     try {
       const scope = await resolveAuthProvider().actorScope({
-        dir: userAuthStateDir(this.workspaceRoot, this.space),
+        dir: userAuthStateDir(this.config.workspaceRoot, this.config.space),
         owner: caller.owner,
         actor: caller.actor,
       });
@@ -337,7 +329,7 @@ export class CommandDispatch {
       return fn();
     };
     const targetAgent = (ctx: EpServeContext): ManagedAgent => {
-      if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+      if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
       const t = ctx.request.target!; // targeted commands only: the serve boundary enforced body-target presence + fresh currency
       const a = this.findManagedByTarget(t);
       if (!a) throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} (lifecycle ${t.lifecycleUid}) is not a live managed agent of this manager`, undefined, "not-executed");
@@ -438,7 +430,7 @@ export class CommandDispatch {
       listDir: (ctx) => this.serveGated(ctx, () => this.listSpawnDirectory(args(ctx))),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
       resolveAgent: (ctx) => this.serveGated(ctx, async () => {
-        if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+        if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
         if ("error" in persona) throw new EpEnvelopeError(persona.code ?? (persona.error.startsWith("no persona") ? "not-found" : "failed-precondition"), persona.error);
         return { agent: persona.agent };
@@ -449,7 +441,7 @@ export class CommandDispatch {
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
       // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.space, ctx))))),
+      spawn: (ctx) => this.loggedSpawnRefusal(ctx, () => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller, servedRequestSubject(this.config.space, ctx))))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -576,7 +568,7 @@ export class CommandDispatch {
       commitPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("commitPreservation", args(ctx)))),
       abortPreservation: (ctx) => adminGated(ctx, async () => unwrap(await this.opPreservationCtl("abortPreservation", args(ctx)))),
       transcriptReceive: (ctx) => this.serveGated(ctx, () => adminGated(ctx, () => {
-        if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+        if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
         if (!this.transcripts)
           throw new EpEnvelopeError("failed-precondition", "transcript-receive: this manager does not receive carried transcripts (its remote authority issues no transfer reader)");
         return this.transcripts.receive(args(ctx) as unknown as TranscriptReceiveInput);
@@ -590,7 +582,7 @@ export class CommandDispatch {
    *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
    *  no match and get a loud error, not a silent no-op. */
   opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply | Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;

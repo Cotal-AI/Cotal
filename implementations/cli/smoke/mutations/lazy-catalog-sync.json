@@ -45,7 +45,7 @@
     },
     {
       "name": "the default status report drops the failed catalog account",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "stateCell(`Space catalog for ${account.account ?? account.idp} could not be refreshed: ${account.error}`",
       "replace": "stateCell(`Space catalog could not be refreshed: ${account.error}`",
       "expectRed": "status lists every catalog account including a dead sibling and exits zero",

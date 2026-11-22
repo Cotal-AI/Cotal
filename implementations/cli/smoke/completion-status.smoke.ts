@@ -430,23 +430,18 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   chmodSync(s.xdg, 0o700);
 }
 
-// ── install refuses before it writes ────────────────────────────────────────────────────────────────
+// Zsh startup folder creation and install refusals.
 {
   const s = sandbox("/bin/zsh");
   const stub = join(s.xdg, "cotal", "completion.zsh");
-  const nowhere = join(s.home, "nowhere");
-  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: nowhere });
-  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /TARGET_NOT_FOUND/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
-  check("the refusal names the folder and ZDOTDIR, with the mkdir that creates it", missingDir.stderr.includes(`the shell startup folder ${nowhere}, which ZDOTDIR names, does not exist; nothing was changed`) && missingDir.stderr.includes(`create it with (umask 077 && mkdir -p ${nowhere}), or unset ZDOTDIR to use ~/.zshrc`), shown(missingDir));
-  const missingJson = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: nowhere });
-  const missingEnv = JSON.parse(missingJson.stdout) as { target: { path?: string }; error: { remedy?: string } };
-  check("its JSON names the folder as the target and carries the remedy", missingEnv.target.path === nowhere && missingEnv.error.remedy?.includes(`mkdir -p ${nowhere}`) === true, missingEnv);
-  const spaced = join(s.home, "zsh missing dir's");
-  const quotedMissing = s.run(["completion", "install", "zsh", "--json"], { ZDOTDIR: spaced });
-  const mkdirCommand = JSON.parse(quotedMissing.stdout).error.remedy.match(/\(umask 077 && mkdir -p .+\)/)?.[0];
-  const created = spawnSync("/bin/sh", ["-c", mkdirCommand ?? "exit 99"], { cwd: s.home, encoding: "utf8" });
-  check("the printed mkdir remedy creates exactly the ZDOTDIR containing spaces and an apostrophe", created.status === 0 && existsSync(spaced) && !existsSync(join(s.home, "zsh")), { mkdirCommand, stderr: created.stderr });
+  const parent = join(s.home, "zsh missing dir's");
+  const spaced = join(parent, "nested");
+  const previousUmask = process.umask(0o000);
   const spacedInstall = s.run(["completion", "install", "zsh"], { ZDOTDIR: spaced });
+  process.umask(previousUmask);
+  check("install creates a missing absolute ZDOTDIR privately even under umask 000",
+    spacedInstall.status === 0 && [parent, spaced].every((path) => (statSync(path).mode & 0o777) === 0o700) &&
+      readFileSync(join(spaced, ".zshrc"), "utf8").includes(stub), shown(spacedInstall));
   const conflict = s.run(["completion", "uninstall", "zsh", "--json"]);
   const remedy = JSON.parse(conflict.stdout).error.remedy as string;
   const assignment = remedy.match(/`(ZDOTDIR=.+) cotal completion`/)?.[1];
@@ -457,6 +452,11 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   s.run(["completion", "uninstall", "zsh"], { ZDOTDIR: spaced });
   const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
   check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /relative ZDOTDIR/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
+  chmodSync(parent, 0o777);
+  const unsafeDir = join(parent, "not-created");
+  const unsafe = s.run(["completion", "install", "zsh"], { ZDOTDIR: unsafeDir });
+  chmodSync(parent, 0o700);
+  check("install does not create a missing ZDOTDIR below an unsafe ancestor", unsafe.status === 2 && /PERMISSION_DENIED/.test(unsafe.stderr) && !existsSync(unsafeDir) && !existsSync(stub), shown(unsafe));
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const rc = join(s.home, ".zshrc");
     writeFileSync(rc, "# mine\n");
@@ -467,8 +467,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const readOnly = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o600);
     // The line is the one the owned block would hold, single-quoted as the shell needs.
-    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && existsSync(stub) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
-    check("that failure lists the files it changed instead of a receipt count", /Confirmed changes\n {2}\S*completion\.zsh\n/.test(readOnly.stderr) && !readOnly.stderr.includes("change receipt(s)"), shown(readOnly));
+    check("an rc it can read but not extend reports partial installation, exit 4, naming the line to add", readOnly.status === 4 && /OPERATION_PARTIAL/.test(readOnly.stderr) && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source '${stub}'`) && readFileSync(rc, "utf8") === "# mine\n", shown(readOnly));
+    const record = `${stub}.ownership.json`;
+    check("the partial report lists both files written and does not list the startup file", existsSync(stub) && existsSync(record) && readOnly.stderr.includes(`Confirmed changes\n  ${stub}\n  ${record}\n\n`), shown(readOnly));
     const installed = s.run(["completion", "install", "zsh"]);
     chmodSync(rc, 0o400);
     const lockedOut = s.run(["completion", "uninstall", "zsh"]);

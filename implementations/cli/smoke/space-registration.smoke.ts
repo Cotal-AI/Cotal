@@ -1019,6 +1019,29 @@ if (process.platform === "linux") {
 
 // ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
 {
+  const parent = join(home, "new-project-parent");
+  const project = join(parent, "nested");
+  const missingAdoption = await json(["space", "create", "new-root", "--root", project, "--adopt"]);
+  check("--adopt refuses a missing root without creating it", refused(missingAdoption, 1, "USAGE_INVALID") && !existsSync(parent), shown(missingAdoption));
+  const previousUmask = process.umask(0o000);
+  const creating = json(["space", "create", "new-root", "--root", project]);
+  process.umask(previousUmask);
+  const created = await creating;
+  check("create prepares a missing explicit root and lists the folder it created",
+    created.status === 0 && findPreparedSpace("new-root")?.root === project &&
+    existsSync(join(project, ".cotal", "agents", "default.md")) &&
+    created.env?.result.written.some((w: { what: string; path: string }) => w.what === "project folder" && w.path === project), shown(created));
+  if (process.platform !== "win32") {
+    check("under umask 000, both new project directories are private", created.status === 0 && [parent, project].every((path) => (statSync(path).mode & 0o777) === 0o700));
+    chmodSync(parent, 0o777);
+    const unsafe = join(parent, "not-created");
+    const rejected = await json(["space", "create", "unsafe-root", "--root", unsafe]);
+    chmodSync(parent, 0o700);
+    check("create refuses a missing root below an unsafe ancestor without creating it", refused(rejected, 2, "PERMISSION_DENIED") && !existsSync(unsafe), shown(rejected));
+  }
+  removePreparedSpace("new-root");
+}
+{
   const project = projectRoot("retry-create");
   const agents = join(project, ".cotal", "agents");
   writeFileSync(agents, "obstacle");
@@ -1098,7 +1121,9 @@ if (process.platform === "linux") {
   check("an auth broker whose --root holds another space's trust is refused naming that space first",
     refused(heldElsewhere, 2, "DEPENDENCY_UNAVAILABLE") && (heldElsewhere.env?.error?.message ?? "").startsWith(`the broker at ${AUTH_LIVE} requires auth, and`) && (heldElsewhere.env?.error?.message ?? "").includes('holds the trust for "held", not "alias"'), shown(heldElsewhere));
   check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
-  check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
+  const rootFile = join(home, "plain-file-root");
+  writeFileSync(rootFile, "keep");
+  check("a --root that is a regular file is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", rootFile]), 1, "USAGE_INVALID") && readFileSync(rootFile, "utf8") === "keep");
   // A --root through a symlink keeps its refusal, and the Next names the physical path it resolves to.
   if (process.platform !== "win32") {
     const physicalRoot = join(home, "physical-root");

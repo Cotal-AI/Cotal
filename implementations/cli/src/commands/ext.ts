@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, parse, resolve, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -11,6 +10,7 @@ import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
+import { npmInvocation } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { connectorConfigDir, extensionEntry, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec } from "@cotal-ai/workspace";
@@ -59,7 +59,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
-  if (sub === "remove" && operand && !/^(?:@[a-z0-9-][a-z0-9._~-]*\/)?[a-z0-9-][a-z0-9._~-]*$/i.test(operand)) {
+  // npm accepts an initial underscore in the package part of a scoped name.
+  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
@@ -127,16 +128,17 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // The prefix verifier requires every host-compatible dependency, including native optional
   // packages. CLI inclusion wins over an ambient omit=optional, also when npm removes a sibling.
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
+  const npm = npmInvocation(env);
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
   try {
-    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: parse(homedir()).root, env, windowsVerbatimArguments, detached: seedGroup }));
+    const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, detached: seedGroup }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
       const forward = (signal: NodeJS.Signals) => {

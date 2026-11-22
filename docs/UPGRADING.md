@@ -1110,7 +1110,7 @@ nothing on a running mesh changes.
 
 - If a script read the refusal from stderr, change it to read `error.message` and `error.remedy` from
   the envelope.
-- When the envelope cannot be written to stdout, the text report still goes to stderr.
+- When the envelope cannot be written to stdout, the text report goes to stderr unless the reader closed the pipe early.
 
 ## Endpoint caller files after 0.99.0
 

@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { CotalEndpoint, isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { recordMesh } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { ConsoleSession, clean, wait } from "./_console-pty.js";
+import { ConsoleSession, clean, screen, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
@@ -84,7 +84,7 @@ try {
   const s = session;
 
   console.log("1. unread badges");
-  check("console paints", await s.waitFor(`${space} · #`, 40_000), clean(s.out).slice(-300));
+  check("console paints", await s.waitFor(`${space} · all`, 40_000), clean(s.out).slice(-300));
   check("channel tab visible", await s.waitFor("#kept", 15_000));
   await wait(1500); // let the first channel poll land and the baseline settle
   check("no fake unread at startup", !clean(s.out).includes("+1") && !clean(s.out).includes("+2"));
@@ -146,16 +146,29 @@ try {
   const strips = clean(s.out.slice(dm)).match(/1: all[^\n]*/g) ?? [];
   check("delchan: the deleted channel's tab is gone on the next poll", strips.length > 0 && !strips[strips.length - 1].includes("#doomed"), strips.at(-1));
   check("delchan: the tab never carried a badge on the way out", !/#doomed \d+ \+\d/.test(clean(s.out.slice(dm))), clean(s.out.slice(dm)).match(/#doomed \d+ \+\d/)?.[0]);
+
+  console.log("4. the aggregate and the channel named all are separate tabs");
+  await poster.multicast("other-feed-marker", { channel: "kept" });
+  await poster.multicast("literal-all-marker", { channel: "all" });
+  check("the aggregate and #all have separate tab labels", await s.waitFor(/1: all\s+2: #all\b/, 15_000));
+  check("the aggregate shows both channels", await s.waitFor("other-feed-marker", 5_000) && await s.waitFor("literal-all-marker", 5_000));
+  const selectAll = s.mark();
+  s.write("2");
+  check("tab 2 selects the concrete #all channel", await s.waitFor("feed · #all", 5_000, selectAll));
+  const displayed = await screen(s.out, 140, 36);
+  check("the selected #all feed only shows posts from #all",
+    displayed.includes("literal-all-marker") && !displayed.includes("other-feed-marker"), displayed);
+  check("the two tabs have distinct React keys", !clean(s.out).includes("Encountered two children with the same key"));
   check("console quits cleanly", await s.quit(), s.exited);
 
-  console.log("4. color follows --no-color and NO_COLOR");
+  console.log("5. color follows --no-color and NO_COLOR");
   // An SGR sequence that sets a foreground or background color. Bold, dim and resets are not color.
   const colored = (raw: string) =>
     [...raw.matchAll(/\x1b\[([0-9;]*)m/g)].some((m) => m[1].split(";").some((p) => /^(3[0-8]|4[0-8]|9[0-7]|10[0-7])$/.test(p)));
   const paint = async (args: string[], env: Record<string, string>) => {
     const c = new ConsoleSession([...args, "--space", space, "--server", SERVERS], home, env, { cols: 140, rows: 36 });
     try {
-      const painted = await c.waitFor(`${space} · #`, 40_000);
+      const painted = await c.waitFor(`${space} · all`, 40_000);
       await wait(1500); // the roster and the channel strip paint after the frame
       return { painted, colored: colored(c.out), tail: clean(c.out).slice(-200) };
     } finally {

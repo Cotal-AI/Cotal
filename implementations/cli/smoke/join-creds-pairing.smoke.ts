@@ -25,12 +25,9 @@ import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mintLifecycleUid, newIdentity } from "@cotal-ai/core";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const root = fileURLToPath(new URL("../../../", import.meta.url)); // implementations/cli/smoke → repo root
 // The subprocess calls the SRC join command via the fixture entry (never built dist, so the gate
@@ -120,5 +117,6 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
-console.log(`\nJOIN-CREDS PAIRING ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-if (fail) process.exit(1);
+console.log(`\nJOIN-CREDS PAIRING ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+finish();
+if (failed()) process.exit(1);

@@ -99,7 +99,7 @@
     },
     {
       "name": "status snapshot loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-meshes.ts",
       "find": "  ep.on(\"warning\", ignoreSnapshotWarning);",
       "replace": "  void ignoreSnapshotWarning;",
       "cell": "status snapshot deliberately ignores recoverable side-channel warnings",
@@ -109,7 +109,7 @@
     },
     {
       "name": "status component probe loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "  ep.on(\"warning\", ignoreComponentWarning);",
       "replace": "  void ignoreComponentWarning;",
       "cell": "status component probe deliberately ignores recoverable side-channel warnings",
