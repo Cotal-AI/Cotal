@@ -730,7 +730,8 @@ async function checkRecordedAddressWait(mesh: string, env: NodeJS.ProcessEnv, po
   await once(listener, "listening");
   try {
     const refusal = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager"], 15_000);
-    assert.ok(refusal.code === 2 && refusal.err.includes("address already in use") && !refusal.err.includes("Waiting up to a minute"), refusal.out + refusal.err); passed++;
+    assert.ok(refusal.code === 2 && refusal.err.includes("address already in use"), refusal.out + refusal.err);
+    assert.doesNotMatch(refusal.err, /Waiting .* for TIME-WAIT to clear/); passed++;
   } finally { await new Promise<void>((done) => listener.close(() => done())); }
 
   // A Linux TCP connection to its own address leaves a TIME-WAIT socket without SO_REUSEADDR.
@@ -790,8 +791,9 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       taker = foreground(["--no-manager"]);
       await until(() => {
         if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
-        return taker!.io.err.includes(`Waiting up to a minute for TIME-WAIT to clear on the stack's broker address 127.0.0.1:${port}`);
+        return taker!.io.err.includes(`Waiting up to 65 seconds for TIME-WAIT to clear on the stack's broker address 127.0.0.1:${port}`);
       }, 15_000, () => taker!.io.out + taker!.io.err);
+      assert.doesNotMatch(taker.io.err, /Starting stack-broker/, "the controller waits before launching the broker"); passed++;
       await until(() => {
         if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
         return /Operation: +up completed/.test(taker!.io.out);
