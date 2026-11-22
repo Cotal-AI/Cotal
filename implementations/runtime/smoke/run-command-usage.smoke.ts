@@ -350,6 +350,32 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
       scriptRefusal(unknown, `unknown clock field 'cadence' in the simulation results script ${handler}`)
       && isCommandFailure(unknown) && (unknown.target as { file?: string })?.file === handler
       && unknown.remedy === `remove clock.cadence from ${handler}, then rerun the simulation`, unknown);
+    // A fault entry is matched only on `at`, so a misspelled field or an entry that names no
+    // step would simulate as if the fault were not there. Both are refused naming the entry
+    // and the results file, and a well-formed fault still raises at its step.
+    const typoFault = await simulate({ faults: [{ att: "/sleep#0", kind: "timeout" }] });
+    c("a fault entry with a misspelled field is refused naming the entry and the file",
+      scriptRefusal(typoFault, `invalid scripted fault faults[0] in ${handler}: unknown field 'att'`)
+      && isCommandFailure(typoFault) && (typoFault.target as { file?: string })?.file === handler
+      && typoFault.remedy === `correct faults[0] in ${handler}, then rerun the simulation`, typoFault);
+    const noStep = await simulate({ faults: [{ kind: "timeout" }] });
+    c("a fault entry that names no step is refused naming the entry and the file",
+      scriptRefusal(noStep, `invalid scripted fault faults[0] in ${handler}: at must name the step to fault`)
+      && isCommandFailure(noStep) && (noStep.target as { file?: string })?.file === handler
+      && noStep.remedy === `correct faults[0] in ${handler}, then rerun the simulation`, noStep);
+    {
+      const shown: string[] = [];
+      const write = process.stdout.write;
+      process.stdout.write = ((chunk: string | Uint8Array) => { shown.push(String(chunk)); return true; }) as typeof process.stdout.write;
+      let fired: unknown;
+      try {
+        writeFileSync(program, 'await sleep("1s");\n');
+        fired = await simulate({ faults: [{ at: "/sleep#0", kind: "timeout" }] }, { json: true });
+      } finally { process.stdout.write = write; }
+      const out = JSON.parse(shown.join("").trim());
+      c("a well-formed fault still raises at its step (L4002)", fired === undefined && out.result?.failure?.code === "L4002", { fired, out });
+      writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s", onExpiry: "proceed" });\n');
+    }
     writeFileSync(program, 'const answer = await checkpoint("approve", "Approve the example?", { timeout: "10m", onExpiry: "proceed" });\nlog(answer.status);\n');
     const timedOut: string[] = [];
     const timedWrite = process.stdout.write.bind(process.stdout);
