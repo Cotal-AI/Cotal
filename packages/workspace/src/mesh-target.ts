@@ -25,7 +25,7 @@ import {
 import { decodeLocalJson, ProtectedRecordStore, shellPath, unsearchableFolder } from "./protected-records.js";
 import { rootNamesNoSpace } from "./space.js";
 import { codeSpan } from "./text-wrap.js";
-import { tlsIntent } from "./broker-url.js";
+import { checkServer, tlsIntent } from "./broker-url.js";
 import { spaceFromKey } from "./auth-paths.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 
@@ -708,13 +708,17 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
 }
 
 /** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
-function renderedServer(path: string): string | undefined {
+function renderedServer(text: string): string | undefined {
+  const host = /^host:[ \t]*(\S+)[ \t]*\r?$/m.exec(text)?.[1], port = /^port:[ \t]*(\d+)[ \t]*\r?$/m.exec(text)?.[1];
+  if (!host || !port || Number(port) === 0 || host.includes(",")) return undefined;
+  const server = `nats://${host.includes(":") ? `[${host}]` : host}:${port}`;
+  return checkServer(server, "rendered broker configuration").ok ? server : undefined;
+}
+
+function renderedConfig(path: string): string | undefined {
   try {
-    const file = lstatSync(path);
-    if (!file.isFile() || file.size > 64 * 1024) return undefined;
-    const text = readFileSync(path, "utf8");
-    const host = /^host:\s*(\S+)\s*$/m.exec(text)?.[1], port = /^port:\s*(\d+)\s*$/m.exec(text)?.[1];
-    return host && port ? `nats://${host.includes(":") ? `[${host}]` : host}:${port}` : undefined;
+    if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined;
+    return readLocalRecordSource(path, 64 * 1024)?.toString("utf8");
   } catch { return undefined; }
 }
 
@@ -724,21 +728,27 @@ export function rootHoldsAccount(root: string): boolean {
   catch { return true; }
 }
 
+/** The address and identity in a single read of the rendered open config. Either may be missing. */
+export function retainedOpenConfig(root: string): { server: string | undefined; space: string | undefined } | undefined {
+  const text = renderedConfig(join(root, ".cotal", "server-open.conf"));
+  if (text === undefined) return undefined;
+  const key = /^# space key: ([0-9a-f]+)\r?$/m.exec(text)?.[1];
+  return { server: renderedServer(text), space: key === undefined ? undefined : spaceFromKey(key) };
+}
+
 /** The space identity recorded by an open broker's rendered configuration. */
 export function retainedOpenSpace(root: string): string | undefined {
-  try {
-    const key = /^# space key: ([0-9a-f]+)$/m.exec(readFileSync(join(root, ".cotal", "server-open.conf"), "utf8"))?.[1];
-    return key === undefined ? undefined : spaceFromKey(key);
-  } catch { return undefined; }
+  return retainedOpenConfig(root)?.space;
 }
 
 /** The broker address and mode retained in this root's rendered configuration. */
 export function retainedLegacyBroker(root: string): { server: string; open: boolean } | undefined {
   if (rootHoldsAccount(root)) {
-    const server = renderedServer(join(authDir(root), "server.conf"));
+    const text = renderedConfig(join(authDir(root), "server.conf"));
+    const server = text === undefined ? undefined : renderedServer(text);
     return server ? { server, open: false } : undefined;
   }
-  const server = renderedServer(join(root, ".cotal", "server-open.conf"));
+  const server = retainedOpenConfig(root)?.server;
   return server ? { server, open: true } : undefined;
 }
 

@@ -24,6 +24,7 @@ import {
   CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, writeResult,
   agentCredsDir,
   authDir,
+  brokerAuthPath,
   CONNECTION_EVICTOR_CREDS_KIND,
   DELIVERY_CREDS_KIND,
   findCotalRoot,
@@ -48,8 +49,7 @@ import {
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
-  retainedLegacyBroker,
-  retainedOpenSpace,
+  retainedOpenConfig,
   SHOWN_VALUE_MAX,
   spaceKey,
   spaceNameTooLong,
@@ -136,27 +136,48 @@ export function validateDoctorArguments(args: ParsedArgs): void {
 
 type OpenScope = { space: string; source: "recorded" | "unchecked-registration" | "broker-config" } | { remedy: string };
 
+function invalidAuthorityInventory(root: string, space: string | undefined, corrupt: string[]): CommandFailure {
+  const dir = authDir(root);
+  const files = corrupt.map((file) => join(dir, file)).join(", ");
+  return new CommandFailure("refused", "SCHEMA_INVALID", `the local authority inventory under ${dir} could not be validated${files ? ` (${files})` : ""}; no repair was attempted`, {
+    target: { root, space: space ?? null }, remedy: `restore ${files || "the trust records in that folder"} from backup; do not remove other account records, then re-run \`cotal up\``,
+  });
+}
+
 /** The legacy launcher leaves its rendered broker config when down removes the registration. */
 function retainedOpenScope(root: string, requested?: string): OpenScope | undefined {
   if (lstatSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() !== true || !isGenuineSpace(root)) return undefined;
   const config = join(root, ".cotal", "server-open.conf");
   const hasConfig = lstatSync(config, { throwIfNoEntry: false }) !== undefined;
-  if (!hasConfig && !existsSync(join(root, ".cotal", "stack-home.json"))) return undefined;
-  if (legacyStackOtherHome(root) !== undefined) return undefined;
+  const retained = hasConfig ? retainedOpenConfig(root) : undefined;
+  const space = retained?.space;
+  if (requested !== undefined && space !== undefined && requested !== space) return undefined;
+  if (space !== undefined && requested === undefined && findMesh(space)) return undefined;
   const prepared = preparedSpaceAt(root);
-  const retained = retainedLegacyBroker(root);
-  if (retained?.open === false || existsSync(join(authDir(root), "server.conf")) || userAuthSpacesOnDisk(authDir(root)).length) return undefined;
-  const space = retained ? retainedOpenSpace(root) : undefined;
-  if (!retained || space === undefined) {
-    if (prepared || (requested !== undefined && findPreparedSpace(requested))) return undefined;
-    if (retained) return { remedy: `restore the space key in ${config} from this stack's records, then retry` };
-    return { remedy: hasConfig
-      ? `restore the rendered broker address in ${config} from this stack's records, then retry`
-      : `restore ${config} if this stack ran open, or restore its local signing records in ${authDir(root)}, then retry` };
+  if (prepared && prepared.space !== space) return undefined;
+  const named = space ?? requested;
+  const namedPreparation = named === undefined ? undefined : findPreparedSpace(named);
+  if (namedPreparation && (space === undefined || canonicalRoot(namedPreparation.root) !== canonicalRoot(root))) return undefined;
+
+  const dir = authDir(root);
+  const stackHome = join(root, ".cotal", "stack-home.json");
+  const localStart = hasConfig || existsSync(stackHome);
+  if (!localStart && (requested === undefined || !hasUserAuthState(root, requested, { readOnly: true }))) return undefined;
+  const otherHome = legacyStackOtherHome(root);
+  if (otherHome !== undefined) return { remedy: `the stack-home record ${stackHome} names another Cotal home; run the diagnostic here with COTAL_HOME=${shellWord(otherHome)}` };
+  let inventory: ReturnType<typeof accountInventory>;
+  try { inventory = accountInventory(dir); } catch { throw invalidAuthorityInventory(root, named, []); }
+  if (inventory.corrupt.length) throw invalidAuthorityInventory(root, named, inventory.corrupt);
+  const userSpaces = userAuthSpacesOnDisk(dir);
+  if (userSpaces.length) return { remedy: `local user-auth records under ${dir} name ${userSpaces.map((name) => JSON.stringify(boundedValue(name, SHOWN_VALUE_MAX))).join(", ")}; inspect those records and restore the matching registration before retrying` };
+  const signingRecord = [brokerAuthPath(dir), join(dir, "server.conf")].find((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined);
+  if (inventory.spaces.length || signingRecord) {
+    return { remedy: `local signing trust was not established for this scope; inspect ${signingRecord ?? dir} and restore the matching account and broker trust records from backup before retrying` };
   }
-  if ((requested !== undefined ? requested !== space : findMesh(space) !== undefined) || (prepared && prepared.space !== space)) return undefined;
-  const named = findPreparedSpace(space);
-  if (named && canonicalRoot(named.root) !== canonicalRoot(root)) return undefined;
+  if (!hasConfig) return { remedy: `restore ${config} if this stack ran open, or restore its local signing records in ${dir}, then retry` };
+  if (!retained) return { remedy: `restore a readable regular broker configuration at ${config} from this stack's records, then retry` };
+  if (!retained.server) return { remedy: `restore the rendered broker address in ${config} from this stack's records, then retry` };
+  if (space === undefined) return { remedy: `restore the space key in ${config} from this stack's records, then retry` };
   return { space, source: "broker-config" };
 }
 
@@ -233,8 +254,8 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   catch (error) {
     if (isCommandFailure(error)) throw error;
     let files: string[] = [];
-    try { files = accountInventory(authDir(root)).corrupt.map((file) => join(authDir(root), file)); } catch { /* the trust folder itself could not be read */ }
-    throw new CommandFailure("refused", "SCHEMA_INVALID", `the local authority inventory under ${authDir(root)} could not be validated${files.length ? ` (${files.join(", ")})` : ""}; no repair was attempted`, { target: { root, space: values.space ?? null }, remedy: `restore ${files.length ? files.join(", ") : "the trust records in that folder"} from backup; do not remove other account records, then re-run \`cotal up\`` });
+    try { files = accountInventory(authDir(root)).corrupt; } catch { /* the trust folder itself could not be read */ }
+    throw invalidAuthorityInventory(root, values.space, files);
   }
   const open = recordedOpenSpace(root, values.space ?? auth?.space, auth !== undefined, values.fix === true);
   if (open && "space" in open && (!auth || auth.space === open.space)) {

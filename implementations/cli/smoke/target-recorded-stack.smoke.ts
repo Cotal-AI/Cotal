@@ -54,7 +54,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { resolveOnPath } from "@cotal-ai/workspace";
+import { authDir, resolveOnPath, spaceAccountPath, spaceSegment } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, assertSmokeSandboxLinkedDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -586,10 +586,45 @@ function checkDoctorOpenRecords(config: string, nameless: string, record: string
     foreignBare.status === 4 && foreignBare.envelope?.result?.credentialScope === "not-established", shown(foreignBare));
   rmSync(claim);
 
+  checkDoctorOpenRecordProblems(config, named, space, doctor);
+}
+
+function checkDoctorOpenRecordProblems(config: string, named: string, space: string, doctor: (...args: string[]) => ReturnType<typeof run>): void {
+  const addressRemedy = `broker address in ${config}`;
+  for (const port of ["0", "65536", "70000"]) {
+    writeFileSync(config, named.replace(/^port: .*$/m, `port: ${port}`), { mode: 0o600 });
+    const args = port === "70000" ? [] : ["--space", space, "--fix"];
+    const unusable = doctor(...args);
+    check(`retained port ${port} is refused in ${args.length ? "a named repair" : "a bare diagnosis"}`,
+      unusable.status === (args.length ? 2 : 4) && (unusable.envelope?.error?.remedy ?? "").includes(addressRemedy), shown(unusable));
+  }
+  writeFileSync(config, named.replace(/^port: .*$/m, "port: 65535"), { mode: 0o600 });
+  const maxPort = doctor("--space", space);
+  check("the highest TCP port is usable local address evidence", maxPort.status === 0 && maxPort.envelope?.result?.credentialScope === "open-space", shown(maxPort));
+
   writeFileSync(config, named.replace(/^port: .*\n/m, ""), { mode: 0o600 });
   const noAddress = doctor("--space", space);
   check("a space key cannot establish open mode without the rendered broker address",
-    noAddress.status === 2 && noAddress.envelope?.error?.code === "AUTH_REQUIRED" && (noAddress.envelope.error.remedy ?? "").includes(`broker address in ${config}`), shown(noAddress));
+    noAddress.status === 2 && noAddress.envelope?.error?.code === "AUTH_REQUIRED" && (noAddress.envelope.error.remedy ?? "").includes(addressRemedy), shown(noAddress));
+  const wrong = doctor("--space", "otheropen");
+  check("a missing address for one recorded name does not override guidance for another name",
+    wrong.status === 2 && wrong.envelope?.error?.code === "AUTH_REQUIRED" && (wrong.envelope.error.remedy ?? "").includes('Unknown space "otheropen"'), shown(wrong));
+
+  writeFileSync(config, named, { mode: 0o600 });
+  const dir = authDir(legacy), userDir = join(dir, spaceSegment(space));
+  mkdirSync(userDir, { mode: 0o700, recursive: true });
+  writeFileSync(join(userDir, "idp.json"), "{}", { mode: 0o600 });
+  const userAuth = doctor("--space", space, "--fix");
+  check("a user-auth marker blocks an open diagnosis and names the local conflict",
+    userAuth.status === 2 && userAuth.envelope?.error?.code === "AUTH_REQUIRED" && (userAuth.envelope.error.remedy ?? "").includes(`local user-auth records under ${dir} name "${space}"`), shown(userAuth));
+  rmSync(userDir, { recursive: true });
+  const account = spaceAccountPath(dir, "otheraccount");
+  writeFileSync(account, "{", { mode: 0o600 });
+  const corrupt = doctor("--space", space);
+  check("corrupt account inventory names the damaged record rather than the intact broker address",
+    corrupt.envelope?.error?.code === "SCHEMA_INVALID" && corrupt.status !== 0 && (corrupt.envelope.error.remedy ?? "").includes(account), shown(corrupt));
+  rmSync(account);
+
   rmSync(config);
   writeFileSync(join(legacy, ".cotal", "stack-home.json"), JSON.stringify({ home: env.COTAL_HOME }), { mode: 0o600 });
   const missing = doctor();
