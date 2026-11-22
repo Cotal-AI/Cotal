@@ -229,9 +229,9 @@ try {
     consume: false, watchPresence: false, watchChannels: false, registerPresence: false,
   });
   await client.start();
-  const clientPriv = client as unknown as { nc: NatsConnection };
+  const clientPriv = client as unknown as { conn: { nc: NatsConnection } };
   const cacheMeter = newMeter();
-  clientPriv.nc = meteredConnection(clientPriv.nc, cacheMeter, 0);
+  clientPriv.conn.nc = meteredConnection(clientPriv.conn.nc, cacheMeter, 0);
   const ps = await client.invokeService(MANAGER_ENDPOINT, "ps", undefined, { deadlineMs: 10_000 });
   const afterPs = cacheMeter.total;
   const status = await client.invokeService(MANAGER_ENDPOINT, "status", undefined, { deadlineMs: 10_000 });
