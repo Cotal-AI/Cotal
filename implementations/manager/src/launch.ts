@@ -3,7 +3,12 @@ import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, PERSONA_SOURCE_UNAVAILABLE_ENV, realDirNoSymlink, unlinkFileNoFollow, type LaunchSpec, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+
+/** Generated files can be valid launch input without proving a match to a catalog entry. */
+export function markManagedLaunch(spec: LaunchSpec, instance: string, materialized: boolean): void {
+  spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: instance, [PERSONA_SOURCE_UNAVAILABLE_ENV]: materialized ? "1" : "0" };
+}
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.

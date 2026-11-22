@@ -38,6 +38,7 @@ import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
 
 // Seat-env hygiene: nothing COTAL_* may leak in from the caller and steer resolution. #869 is
@@ -48,7 +49,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-869-home-"));
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
 
-const { parseCommandArgs, personaFileDigest, PERSONA_FILE_META_KEY, probeConnect, registry } = await import("@cotal-ai/core");
+const { loadAgentFileWithSource, parseCommandArgs, PERSONA_FILE_META_KEY, probeConnect, registry } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { spawnRequiredExtensions, runCli } = await import("@cotal-ai/cli");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps) into the registry
@@ -159,8 +160,8 @@ const runningList = () => run("personas", ["list", "--running", "--space", SPACE
 async function checkRunningOverlay(): Promise<void> {
   const dir = join(workspaceRoot, ".cotal", "agents");
   const file = (name: string) => join(dir, `${name}.md`);
-  writeFileSync(file("catalog-key"), `---\nname: display-name\n${PERSONA_FILE_META_KEY}: ${personaFileDigest(file("same-label"))}\n---\nThe launched definition.\n`);
   writeFileSync(file("same-label"), "---\nname: display-name\n---\nAnother definition.\n");
+  writeFileSync(file("catalog-key"), `---\nname: display-name\n${PERSONA_FILE_META_KEY}: ${loadAgentFileWithSource(file("same-label")).sourceDigest}\n---\nThe launched definition.\n`);
   writeFileSync(file("override"), "---\nname: another-label\n---\nThe unlaunched definition.\n");
   const env = { COTAL_SPACE: SPACE, COTAL_SERVERS: SERVER };
   const launched = new MeshAgent(configFromEnv({ ...env, COTAL_AGENT_FILE: file("catalog-key"), COTAL_NAME: "override" }), env);
@@ -191,6 +192,73 @@ async function checkRunningOverlay(): Promise<void> {
   }
   const stopped = await list();
   ok("offline presence does not mark a catalog file running or unknown", /^catalog-key\s+○ not running$/m.test(stopped), stopped);
+}
+
+async function checkLinkedPersona(): Promise<void> {
+  const dir = join(workspaceRoot, ".cotal", "agents");
+  const original = join(workspaceRoot, "original-persona.md");
+  const replacement = join(workspaceRoot, "replacement-persona.md");
+  const linked = join(dir, "linked.md");
+  const other = join(dir, "other-link.md");
+  const definition = "---\nname: linked-display\n---\nSame bytes in two distinct files.\n";
+  writeFileSync(original, definition);
+  writeFileSync(replacement, definition);
+  symlinkSync(original, linked);
+  symlinkSync(original, other);
+  const env = { COTAL_SPACE: SPACE, COTAL_SERVERS: SERVER, COTAL_AGENT_FILE: linked };
+  const agent = new MeshAgent(configFromEnv(env), env);
+  try {
+    await agent.start();
+    await agent.waitUntilConnected();
+    const launched = unstyled(await capture(runningList));
+    ok("only the launched alias reports running when two entries point to one source", /^linked\s+● running$/m.test(launched) && /^other-link\s+○ not running$/m.test(launched), launched);
+    const nextLink = join(dir, "linked.swap");
+    symlinkSync(replacement, nextLink);
+    renameSync(nextLink, linked);
+    const retargeted = unstyled(await capture(runningList));
+    ok("retargeting one entry to another file with identical bytes does not transfer running status", /^linked\s+○ not running$/m.test(retargeted) && /^other-link\s+○ not running$/m.test(retargeted), retargeted);
+    writeFileSync(replacement, "---\nname: linked-display\n---\nReplacement definition.\n");
+    const edited = unstyled(await capture(runningList));
+    ok("listing shows the replacement definition without attributing the old seat to it", edited.includes("Replacement definition.") && /^linked\s+○ not running$/m.test(edited), edited);
+  } finally {
+    await agent.stop();
+  }
+}
+
+async function checkSavedInlinePersona(manager: InstanceType<typeof Manager>): Promise<void> {
+  const connector = "inline-fixture";
+  const name = "saved-inline";
+  const entry = pathToFileURL(join(import.meta.dirname, "..", "..", "extensions", "connector-core", "dist", "index.js")).href;
+  const fixture: Connector = {
+    kind: "connector", name: connector,
+    buildLaunch: ({ configPath, id, lifecycleUid, name }) => {
+      if (!configPath || !id || !lifecycleUid) throw new Error("inline fixture needs the manager's file, identity and lifecycle");
+      return {
+        command: process.execPath,
+        args: ["--input-type=module", "-e", `
+        import { MeshAgent, configFromEnv } from ${JSON.stringify(entry)};
+        const agent = new MeshAgent(configFromEnv());
+        process.once('SIGTERM', () => { void agent.stop().then(() => process.exit(0)); });
+        await agent.start();
+        await agent.waitUntilConnected();
+        `],
+        env: { COTAL_SPACE: SPACE, COTAL_SERVERS: SERVER, COTAL_AGENT_FILE: configPath,
+          COTAL_ID: id, COTAL_LIFECYCLE_UID: lifecycleUid, COTAL_NAME: name },
+      };
+    },
+  };
+  registry.register(fixture);
+  try {
+    const started = await manager.startAgent({ name, agent: connector, events: false, persona: { prompt: "Saved inline definition.", save: true } });
+    ok("a real managed saved inline persona joins from its snapshot", started.ok, started);
+    if (!started.ok) return;
+    const out = unstyled(await capture(runningList));
+    ok("the saved inline catalog copy is unknown while the snapshot session is live", /^saved-inline\s+\? running status unknown$/m.test(out), out);
+    const stop = (manager as unknown as { opStop: (args: { name: string }, caller: string, admin: boolean) => Promise<{ ok: boolean }> }).opStop.bind(manager);
+    ok("the owned inline seat stops", (await stop({ name }, "smoke", true)).ok);
+  } finally {
+    registry.unregister("connector", connector);
+  }
 }
 
 async function checkChangedCatalog(dir: string): Promise<void> {
@@ -239,6 +307,8 @@ try {
   await mgr.start();
 
   await checkRunningOverlay();
+  await checkLinkedPersona();
+  await checkSavedInlinePersona(mgr);
 
   // A — the issue's exact shape: file pins `pin`, env points at `other`, no --agent, detached.
   process.env.COTAL_DEFAULT_AGENT = "other";

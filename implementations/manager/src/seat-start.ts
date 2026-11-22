@@ -5,7 +5,7 @@ import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, c
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
-import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
+import { markManagedLaunch, readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import { withTimeout } from "./manager-timeout.js";
@@ -913,7 +913,7 @@ export class SeatStart {
         }
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        markManagedLaunch(spec, this.managerInstanceId, opts.resolved !== undefined || inline !== undefined);
         handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)

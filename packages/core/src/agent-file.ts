@@ -25,7 +25,7 @@
  * session reads its own card from it. Part of the wire contract's onboarding
  * half, alongside the join link.
  */
-import { accessSync, constants, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -162,11 +162,10 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
  *  validates the effective role after applying its own overrides can defer role syntax checking. */
 export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  return readAgentFile(path, path, options);
+  return parseAgentFileBytes(readFileSync(path), path, options);
 }
 
-function readAgentFile(path: string, sourcePath: string, options?: { deferRoleValidation?: boolean }): AgentDef {
-  const bytes = readFileSync(sourcePath);
+function parseAgentFileBytes(bytes: Buffer, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const source = bytes.toString("utf8");
   const encoding = utf8Problem(bytes, source);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
@@ -519,15 +518,31 @@ export function personaDir(root: string): string {
 }
 
 export const PERSONA_FILE_META_KEY = "ai.cotal.persona.file";
+/** Set by launchers when their generated agent file cannot prove a catalog source. */
+export const PERSONA_SOURCE_UNAVAILABLE_ENV = "COTAL_PERSONA_SOURCE_UNAVAILABLE";
 
-/** Advisory presence correlation for a local persona file without publishing its path.
- * Keep the basename so separate catalog entries that link to one file stay distinct. */
-export function personaFileDigest(path: string): string {
-  return personaCoordinateDigest(realpathSync.native(dirname(path)), basename(path));
+/** Read the connector's definition and advisory source evidence from the same file descriptor. */
+export function loadAgentFileWithSource(path: string): { definition: AgentDef; sourceDigest: string } {
+  const read = readPersonaFile(realpathSync.native(dirname(path)), basename(path));
+  if (!read) throw new Error(`persona is not a regular file: ${path}`);
+  return { definition: parseAgentFileBytes(read.bytes, path), sourceDigest: read.sourceDigest };
 }
 
-function personaCoordinateDigest(directory: string, filename: string): string {
-  return rawDigest(JSON.stringify([hostname(), directory, filename]));
+function readPersonaFile(directory: string, filename: string): { bytes: Buffer; sourceDigest: string } | undefined {
+  const path = join(directory, filename);
+  if (!statSync(path).isFile()) return undefined;
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const file = fstatSync(fd, { bigint: true });
+    if (!file.isFile()) return undefined;
+    const bytes = readFileSync(fd);
+    // The directory and filename distinguish two aliases to one inode. The opened file and
+    // its bytes distinguish revisions and a link retargeted under the same catalog key.
+    const sourceDigest = rawDigest(JSON.stringify([hostname(), directory, filename, String(file.dev), String(file.ino), String(file.birthtimeNs), rawDigest(bytes)]));
+    return { bytes, sourceDigest };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on
@@ -547,7 +562,7 @@ export interface PersonaCatalogEntry {
   path: string;
   /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
-  /** Presence correlation for the source directory and filename read by this snapshot. */
+  /** Presence correlation for the catalog key and source file read by this snapshot. */
   sourceDigest?: string;
   /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
   error?: string;
@@ -603,17 +618,13 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
     const path = join(dir, f);
     const sourcePath = join(sourceDir, f);
     const link = personaLinkTarget(sourcePath);
+    let read: ReturnType<typeof readPersonaFile>;
     try {
-      // A FIFO or a device would block the read, so only a regular file is opened. A link is
-      // followed, as the read follows it.
-      if (!statSync(sourcePath).isFile()) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
-      return { name, path, def: readAgentFile(path, sourcePath), sourceDigest: personaCoordinateDigest(sourceDir, f), ...(link !== undefined ? { link } : {}) };
+      read = readPersonaFile(sourceDir, f);
+      if (!read) return { name, path, error: `persona is not a regular file: ${path}`, notRegular: true as const, ...(link !== undefined ? { link } : {}) };
+      return { name, path, def: parseAgentFileBytes(read.bytes, path), sourceDigest: read.sourceDigest, ...(link !== undefined ? { link } : {}) };
     } catch (e) {
-      let encoding: string | undefined;
-      try {
-        const bytes = readFileSync(sourcePath);
-        encoding = utf8Problem(bytes, bytes.toString("utf8"));
-      } catch { /* unreadable: `error` says so */ }
+      const encoding = read && utf8Problem(read.bytes, read.bytes.toString("utf8"));
       return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });

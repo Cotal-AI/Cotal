@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { sameStrings } from "./credential-renewal.js";
-import { launchSpecForRun } from "./launch.js";
+import { launchSpecForRun, markManagedLaunch } from "./launch.js";
 import type { Manager, FreeSlotCause, ManagerResumeAgent, ManagerResumeIdentity, ManagerResumeInventory, ManagerResumeResult, SupervisedRestart } from "./manager.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 import { requireRuntimeReap } from "./runtime/index.js";
@@ -1026,7 +1026,7 @@ export class PreservedResume {
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        markManagedLaunch(spec, this.managerInstanceId, entry.launch.source.kind !== "persona");
         const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };

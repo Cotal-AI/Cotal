@@ -7,7 +7,7 @@ import {
 import type { ControlEndpoint } from "@cotal-ai/core";
 import type { ForkProvenance, FreeSlotCause, ManagedAgent, ManagerResumeAgent } from "./manager.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
-import { writeContinuityAssignment } from "./launch.js";
+import { markManagedLaunch, writeContinuityAssignment } from "./launch.js";
 import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
@@ -320,7 +320,7 @@ export class SessionRecovery {
         const named = { ...restart.opts, displayName: a.displayName, resume: undefined, reopenSession: undefined, prompt: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
         const spec = connector.buildLaunch(opts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.deps.instanceId() };
+        markManagedLaunch(spec, this.deps.instanceId(), a.launch.source.kind !== "persona");
         const wanted = this.deps.managedPrincipal(a);
         const joinedAfter = this.deps.endpoint().getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)

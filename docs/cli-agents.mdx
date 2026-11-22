@@ -652,11 +652,12 @@ name no persona can have with the codes `persona show` uses. Only its explicit `
 connects to the mesh.
 That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
 It heads the list with the mesh it read. A persona is `running` when a live session reports the same
-local source file, even if its display name differs. The report uses an advisory fingerprint and
-does not publish the persona's file path. If no session reports a match and a live agent or
-connector session did not report its source, the status is `running status unknown`. Infrastructure
-endpoints such as the manager do not make the status unknown. Otherwise the persona is
-`not running` in that snapshot.
+catalog entry and file revision, even if its display name differs. The report uses an advisory
+fingerprint and does not publish the persona's file path. Retargeting one catalog link does not
+transfer its running status to the replacement file. If no session reports a match and a live agent
+or connector session cannot identify its source, the status is `running status unknown`. This
+includes sessions launched from generated manifest or inline files. Infrastructure endpoints such
+as the manager do not make the status unknown. Otherwise the persona is `not running` in that snapshot.
 
 
 ### Personas on an exact manager [#personas-on-an-exact-manager]

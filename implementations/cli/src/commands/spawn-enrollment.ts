@@ -1,5 +1,5 @@
 import { readFileSync, rmSync, statSync } from "node:fs";
-import { type LaunchSpec, type ManagedLifecycleHandoff, type SecretStore, attemptCleanup, type CleanupFailure } from "@cotal-ai/core";
+import { type LaunchSpec, type ManagedLifecycleHandoff, type SecretStore, attemptCleanup, type CleanupFailure, PERSONA_SOURCE_UNAVAILABLE_ENV } from "@cotal-ai/core";
 import { agentActorTokenKey, agentSentinelCredsKey, type Check, type SpaceMaterialComposition } from "@cotal-ai/workspace";
 import {
   checkDialPolicy,
@@ -62,7 +62,8 @@ export function applyHandoffManagerInstance(
   handoffManagerInstanceId: string | undefined,
 ): void {
   if (handoffManagerInstanceId !== undefined) {
-    spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: handoffManagerInstanceId };
+    // A managed handoff carries a generated local file, not the manager's catalog source.
+    spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: handoffManagerInstanceId, [PERSONA_SOURCE_UNAVAILABLE_ENV]: "1" };
   }
 }
 
