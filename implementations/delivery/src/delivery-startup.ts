@@ -75,7 +75,7 @@ export interface DeliveryLeaseDeps {
 }
 
 /** Acquire this shard's single-flight lease, refusing loudly when it cannot. Returns the owned revision. */
-export async function acquireShardLease(deps: DeliveryLeaseDeps): Promise<number | undefined> {
+export async function acquireShardLease(deps: DeliveryLeaseDeps): Promise<number> {
   const { ep, shard, space, log, held } = deps;
   // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
   // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
