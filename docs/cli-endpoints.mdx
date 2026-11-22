@@ -44,8 +44,8 @@ more live participants share is not an address, so each of those rows appends it
 brackets. A lone offline participant beside a live one of the same name does not, because a direct
 message by that name reaches the live one. `cotal_roster` marks the same rows, leaving out the
 session's own, since a direct message to its name reaches the other participant.
-Infrastructure
-endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
+The report says how many infrastructure endpoints it hid. To list them on the same target, repeat
+that command with `--all`, replacing `--waiting` if present. A `cotal chat`
 session is a participant a person drives, so it is listed with the agents and never counted as
 infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries
 `sessionKind: "chat"`. In a user-auth
