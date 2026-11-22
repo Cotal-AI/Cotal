@@ -234,7 +234,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // the delivery process row, and a live pid means nothing without it.
   const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
   const responder = await readResponderAxis(selected, preflight, gaps);
-  const folder = blocked ? unreadFolder(root, blocked) : await readFolder(root, selected, values, responder.state, gaps, hints);
+  const { folder, stackStarting } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false } : await readFolder(root, selected, values, responder.state, gaps, hints);
   if (selected.ok) {
     try {
       const renewal = readRenewalRecord(selected.target.root, selected.target.space);
@@ -253,7 +253,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [];
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all));
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all), stackStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -282,7 +282,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // that neither blocks nor stays part way settles from its members' processes when it starts.
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (!recovery && held && !folder.stackStarting && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && held && !stackStarting && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
@@ -324,10 +324,10 @@ export async function status(args: ParsedArgs): Promise<void> {
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
       seed,
-      recovery, stoppedForeignListener,
+      recovery, stoppedForeignListener, stackStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable", !target.resolved && folder.stackStarting && servedStack(folder, target) ? target.message : undefined);
+  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable", !target.resolved && stackStarting && servedStack(folder, target) ? target.message : undefined);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -625,7 +625,7 @@ async function readResponderAxis(selected: Selected, preflight: SelectedPrefligh
   }
 }
 
-async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<StatusResult["folder"]> {
+async function readFolder(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, responder: DeliveryResponderState, gaps: Gaps, hints: string[]): Promise<{ folder: StatusResult["folder"]; stackStarting: boolean }> {
   let stackJournal: NonNullable<StatusResult["folder"]["stackJournal"]>;
   try { stackJournal = lstatSync(stackJournalPath(root), { throwIfNoEntry: false }) === undefined ? "absent" : "present"; }
   catch { stackJournal = "unreadable"; }
@@ -643,10 +643,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     stackBlock,
     stackUnfinished,
   });
-  const unreadable = (error: string, hint: string): StatusResult["folder"] => {
+  const unreadable = (error: string, hint: string) => {
     gaps.add("AUTH_UNREADABLE", `this folder's trust material could not be read: ${error}`, { root });
     hints.push(hint);
-    return folder({ state: "unreadable", spaces: [], userAuth: false, error });
+    return { folder: folder({ state: "unreadable", spaces: [], userAuth: false, error }), stackStarting: false };
   };
   // The inventory READ itself can throw (an EACCES/ELOOP on `.cotal/auth`, not just a bad record):
   // `accountInventory` lets that propagate so the broker-wide guards fail CLOSED, but status is the
@@ -670,7 +670,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     );
   // A root holding several accounts has no single "this folder's space", and the process rows below
   // are keyed by one. Report the tenant list instead of letting the space-blind read throw.
-  if (spaces.length > 1) return folder({ state: "spaces", spaces, userAuth: false, error: null });
+  if (spaces.length > 1) return { folder: folder({ state: "spaces", spaces, userAuth: false, error: null }), stackStarting: false };
   // The inventory shape-check is necessary but not sufficient: a record can carry non-empty
   // account fields yet fail COMPOSITION (a malformed account JWT, or one signed by a foreign
   // operator - `composeSpaceAuth` throws on both). Status is the recovery command the broker-wide
@@ -693,7 +693,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined);
   } catch (e) {
     hints.push((e as Error).message);
-    return folder({ state: "none", spaces: [], userAuth: false, error: null });
+    return { folder: folder({ state: "none", spaces: [], userAuth: false, error: null }), stackStarting: false };
   }
   const context: LocalProcessContext = { root, space, userAuth: userDisk };
   const processes: ProcessRow[] = [];
@@ -781,7 +781,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (controllerStack && journal) try {
     heldServices = serviceHeldRecords(root, journal.space).map((row) => ({ definition: row.definition, instanceId: row.instanceId, record: row.record.name, pid: row.record.pid! }));
   } catch { heldServices = null; }
-  return { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), ...(stackStarting ? { stackStarting } : {}), managerService, heldServices };
+  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices }, stackStarting };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
