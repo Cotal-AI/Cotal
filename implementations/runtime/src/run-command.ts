@@ -790,9 +790,9 @@ function reportInterruptedStart(values: RunValues, space: string): () => void {
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
  *  {@link managerRefusal} classifies it. */
-async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved?: (space: string) => void): Promise<unknown> {
+async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined, resolved: (target: ControlTarget) => void): Promise<unknown> {
   const { target: t, seat } = await resolveRunControlTarget(values);
-  resolved?.(t.space);
+  resolved(t);
   const who = controlCaller(t.auth);
   // A raw --creds file carries no endpoint-caller triple, and this route cannot mint one. Without
   // --creds the CLI mints the one-shot caller from the space's trust or the signed-in login.
@@ -936,7 +936,8 @@ export function renderLangProblem(d: EpErrorDetail): string {
 
 async function hosted(values: RunValues, verb: string, a: string | undefined, b: string | undefined): Promise<void> {
   let space: string | undefined;
-  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (resolved) => { space = resolved; });
+  let open = false;
+  const ask = (command: string, args: Record<string, unknown> | undefined) => askHost(values, command, args, (target) => { space = target.space; open = target.mode === "open"; });
   const endpoint = values.endpoint !== undefined ? { endpoint: values.endpoint } : {};
   // A hosted drive is recorded under the manager's own endpoint; a caller cannot choose another,
   // so an `--endpoint` here is refused rather than dropped.
@@ -987,7 +988,7 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
     }
     const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
     const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
-    printRunList(space, rows, values, unmatched);
+    printRunList(space, rows, values, unmatched, open);
     return;
   }
   if (verb === "journal") {
