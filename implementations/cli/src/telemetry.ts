@@ -182,6 +182,9 @@ export function recordTelemetryError(error: unknown): void {
  */
 export function armTelemetry(registry: Registry, cmd: Command, words: readonly string[], startedAt: number): void {
   if (pending || silent(cmd)) return;
+  const raw = cmd.rawArgs === true;
+  const subcommand = raw || !cmd.subcommands?.length ? null : subcommandName(cmd, words);
+  if (subcommand?.startsWith("__")) return;
   const effective = effectiveTelemetry(process.env);
   if (effective.level === "off" || !effective.settings) return;
   const url = telemetryUrl();
@@ -190,13 +193,12 @@ export function armTelemetry(registry: Registry, cmd: Command, words: readonly s
     console.error(TELEMETRY_NOTICE);
     settings = markTelemetryNoticeShown();
   }
-  const raw = cmd.rawArgs === true;
   pending = {
     level: effective.level,
     settings,
     account: effective.level === "regular" ? accountHash() : null,
     command: cmd.name,
-    subcommand: raw ? null : subcommandName(cmd, words),
+    subcommand,
     flags: raw ? [] : flagNames(cmd, words),
     startedAt,
     version: cliVersion(),
