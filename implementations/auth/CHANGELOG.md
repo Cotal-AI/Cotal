@@ -1,5 +1,22 @@
 # @cotal-ai/auth
 
+## 0.175.2
+
+### Patch Changes
+
+- a4ed1cf: Retry Manager credential renewal promptly after a temporary authority failure, and tell callers when to retry a hosted workflow status read.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [8cf0871]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/lang@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes
