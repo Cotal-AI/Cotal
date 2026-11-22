@@ -1,5 +1,11 @@
 # @cotal-ai/connector-codex
 
+## 0.174.2
+
+### Patch Changes
+
+- ac20d1a: Cotal updates finish with the current Codex plugin left in place when its cache is read-only and tell you how to retry the plugin refresh.
+
 ## 0.174.1
 
 No changes in this release.

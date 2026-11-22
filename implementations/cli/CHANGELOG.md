@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.174.2
+
+### Patch Changes
+
+- 84d8218: Keep the roster on the requested target when following the `who` hint to show hidden infrastructure endpoints.
+- 744d0f8: Keep the explicit space, broker and slot view in the suggested one-manager read after a partial roster result.
+- 1e5fbb4: Keep the intended space in `ps` and live endpoint retry guidance, and name the unknown space and how to correct it when saved endpoint inventory refuses.
+- 175e6c6: Remove abandoned update scratch and its Node compile cache when a self-update can confirm the recorded updater and workers have exited.
+- 00ae5b5: Stop the shell installer before it makes changes when a file blocks the launcher directory.
+- 8da97da: `cotal setup` no longer fails the selected harness when another installed harness cannot refresh its optional Cotal skills. Setup finishes, refreshes the remaining harnesses, and reports the one it skipped as a warning.
+- Updated dependencies [7b7e60c]
+- Updated dependencies [1e5fbb4]
+  - @cotal-ai/core@0.174.2
+  - @cotal-ai/workspace@0.174.2
+
 ## 0.174.1
 
 ### Patch Changes
