@@ -242,6 +242,8 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--expect-owner <u_…>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the owner the handoff must carry |
 | `--expect-lifecycle-uid <uid>` | none | With `COTAL_MANAGED_HANDOFF_FILE` only, and required there: the lifecycle UID the handoff must carry |
 
+A direct `--dry-run` in a stopped local project can preview its recorded space and persona without
+restarting the stack. It does not check the binary, login or launch authority.
 A direct `--dry-run` refuses an unknown effective harness with `DEPENDENCY_UNAVAILABLE` (exit 2),
 whether it came from `--harness`, the persona or a preference. Harness names are case-sensitive.
 If the installed connector supports direct preview validation, it checks resume, prompt, variant and
@@ -256,7 +258,10 @@ With `-d --json`, an invalid agent name or a local resume that needs `--on` prod
 
 `spawn` refuses `--allow-stale` with "manifest deployment options belong to `cotal team deploy <file>`, not spawn".
 `--runtime` is a per-seat choice on a managed launch. Omitted, the seat uses the runtime that manager
-was started with. `auto` names a manager's own runtime, so it is refused for one seat. Any other
+was started with. To run in this terminal, omit `--runtime`. Omit `--json` or `--plain` too, unless
+you are previewing. To keep `--runtime`, replace `--foreground` with `-d`, or use `--on <instance>`
+without `--foreground` to attach. For a structured launch receipt with a manager pin, use both `-d`
+and `--on <instance>`. `auto` names a manager's own runtime, so it is refused for one seat. Any other
 runtime has to be installed and reachable on the host the manager runs on, and the CLI can check
 that only when that host is this machine. When the launch can reach only this root's own manager,
 because `--on` names it or it is the only manager running, the CLI resolves the runtime through the
