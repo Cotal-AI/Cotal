@@ -432,19 +432,23 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
 
   let read: HistoryItem[] = [];
   let olderRetained: boolean | null = null;
+  let previousSeq: number | undefined;
   const denied: string[] = [];
   if (!user && !reader) {
     let rows: { channel: string; seq: number; msg: CotalMessage }[];
     try {
-      rows = await ep.multiChannelHistory(channels, { limit: req.limit });
+      // One extra matching post locates the boundary even when other channels interleave.
+      const limit = req.since?.kind === "seq" ? Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER) : req.limit;
+      rows = await ep.multiChannelHistory(channels, { limit });
     } catch (e) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read ${req.channel ? `#${req.channel}` : "channel history"} in ${conn.space}: ${(e as Error).message}`, { target: req.target });
       if (/wildcard|not a valid channel|channel name/i.test((e as Error).message)) throw usage((e as Error).message);
       throw e;
     }
+    if (rows.length > req.limit) previousSeq = rows.shift()?.seq;
     read = rows.map((row) => itemOf(row.msg, { seq: row.seq, channel: row.channel }));
     const retained = listed ? listed.filter((row) => channels.includes(row.channel)).reduce((sum, row) => sum + row.messages, 0) : undefined;
-    olderRetained = retained === undefined ? null : retained > read.length;
+    olderRetained = previousSeq !== undefined ? true : retained === undefined ? null : retained > read.length;
     if (req.dms) {
       const dmLimit = Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER);
       const dms = await ep.dmHistory({ limit: dmLimit });
@@ -559,14 +563,15 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   }
   const replay: HistoryResult["replay"] = absent ? [] : policies.map(({ channel, replay, window }) => ({ channel, replay, window }));
 
-  // A mixed window is not ordered by sender time, so any retained row can reach a time cutoff.
   const oldest = read[0];
-  const before = (since: Since, item: HistoryItem) => (since.kind === "seq" ? item.seq !== null && item.seq <= since.seq + 1 : Date.parse(item.ts) <= since.ms);
   const since = req.since;
   const atOrPastEnd = since?.kind === "seq" && lastSeq !== undefined && since.seq >= lastSeq;
-  const reached = since !== undefined && (req.dms && since.kind === "time"
-    ? read.some((item) => before(since, item))
-    : oldest !== undefined && before(since, oldest));
+  const reached = since?.kind === "seq"
+    ? (previousSeq !== undefined && previousSeq <= since.seq) || (oldest?.seq != null && oldest.seq <= since.seq + 1)
+    // A mixed window is not ordered by sender time, so any retained row can reach a time cutoff.
+    : since?.kind === "time" && (req.dms
+      ? read.some((item) => Date.parse(item.ts) <= since.ms)
+      : oldest !== undefined && Date.parse(oldest.ts) <= since.ms);
   const reachesSince = since === undefined ? null : atOrPastEnd || olderRetained === false || reached ? true : olderRetained === null ? null : false;
   return {
     warnings,

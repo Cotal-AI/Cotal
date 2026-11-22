@@ -650,6 +650,8 @@ before connecting. When older retained messages are not shown, raise `--limit` t
 There is no 1000-message read cap. For example, `cotal history general --limit 2000`
 reads the newest 2000 retained messages before applying filters. `result.window` says how many messages were read, whether older retained
 messages exist that the window did not reach, and whether the window goes back to `--since`.
+For a sequence cutoff, posts on other channels do not leave a gap in a named channel's window.
+The window can reach the cutoff even when it leaves out retained posts at or before it.
 With `--dms`, channel posts keep their broker sequence order even when sender timestamps disagree.
 To fill the window, the command works from the newest end of each stream and compares sender
 timestamps across the two sources. A full window alone does not prove that it left out older messages.
