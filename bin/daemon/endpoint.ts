@@ -105,12 +105,14 @@ function host<T>(what: string, call: () => T): T {
 }
 
 function linuxDaemonRuntime(env: NodeJS.ProcessEnv): string {
-  if (env.XDG_RUNTIME_DIR) return env.XDG_RUNTIME_DIR;
-  const runtime = `/run/user/${euid()}`;
+  const runtime = env.XDG_RUNTIME_DIR || `/run/user/${euid()}`;
   try { checkDir(runtime); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    throw new EndpointRefusal("NO_RUNTIME_DIR", `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`);
+    const message = env.XDG_RUNTIME_DIR
+      ? `XDG_RUNTIME_DIR points to ${runtime}, which does not exist`
+      : `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`;
+    throw new EndpointRefusal("NO_RUNTIME_DIR", message);
   }
   return runtime;
 }

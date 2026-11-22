@@ -751,12 +751,16 @@ try {
           d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
         }
         for (const space of [missing, OFF]) {
+          const known = space === OFF;
+          const expectedState = known ? "not-requested" : "not-registered";
+          const expectedCode = known ? "NOT_REQUESTED" : "NOT_REGISTERED";
+          const expectedNext = known ? `cotal daemon register --space ${space}` : "`cotal space`";
           const socket = await statusS(space);
-          check(`C0 ${phase}: socket status for ${space} is not-requested`, stateOf(socket) === "not-requested", socket);
+          check(`C0 ${phase}: socket status for ${space} is ${expectedState}`, stateOf(socket) === expectedState, socket);
           const json = await cli(["service-status", "--space", space]);
-          check(`C0 ${phase}: JSON status for ${space} refuses NOT_REQUESTED`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === "NOT_REQUESTED", json.doc);
+          check(`C0 ${phase}: JSON status for ${space} refuses ${expectedCode}`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === expectedCode, json.doc);
           const plain = await cli(["service-status", "--space", space], "--plain");
-          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes(`cotal daemon register --space ${space}`), plain.err);
+          check(`C0 ${phase}: text status for ${space} shows ${expectedCode} and the next step`, plain.status === 2 && plain.err.includes(expectedCode) && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes(expectedNext), plain.err);
         }
       }
       check("C0 status and refused connect never contact the space", hits.length === beforeHits, { beforeHits, afterHits: hits.length });
