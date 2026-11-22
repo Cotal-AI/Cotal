@@ -395,7 +395,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target.resolved && target.connection === "unreachable");
+  if (values.components) await printComponentHealth(selected, store, target);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -2729,7 +2729,7 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
   }
 }
 
-async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, brokerUnreachable: boolean): Promise<void> {
+async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, observed: SelectedResult): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const error = selected.error;
@@ -2748,7 +2748,7 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
     if (isWorkspaceTargetError(e)) {
       const verdict = e.code === "not-started" ? "absent" : "refused";
       const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
-      printComponent({ name: "target", verdict, facts: [e.code, remedy === undefined ? message : `${message} - ${displayRemedy(remedy)}`] });
+      printComponent({ name: "target", verdict, facts: [e.code, remedy === undefined || observed.channelSeedBlocksRestart ? message : `${message} - ${displayRemedy(remedy)}`] });
       process.exitCode = COMPONENT_EXIT[verdict];
       return;
     }
@@ -2768,7 +2768,7 @@ async function printComponentHealth(selected: Selected, store: StoreWriteObserva
   const broker = await brokerHealth(target, store);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
-    deliveryHealth(target, context, credential, brokerUnreachable && broker.verdict === "absent"),
+    deliveryHealth(target, context, credential, observed.resolved && observed.connection === "unreachable" && broker.verdict === "absent"),
     webHealth(context),
     broker,
   ]);

@@ -1618,11 +1618,16 @@ if (process.platform === "linux") {
     refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
     stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
   const seedRemedy = `fix or remove ${defaultSeed}`;
+  const componentStatus = () => run(["status", "--space", "demo", "--components"], {}, fresh);
+  const componentHealth = (out: string) => out.split("\nComponent Health\n")[1] ?? "";
+  const absentTargetRow = /^  target +absent · not-started · "demo" is stopped/m;
+  const restartAdvice = `start it again with \`${launcher} up --no-manager\` in ${fresh}`;
   for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
     writeFileSync(defaultSeed, seed);
     const badUp = await json(["up", "--no-manager"], fresh);
     const status = await json(["status", "--space", "demo"], fresh);
     const statusText = await run(["status", "--space", "demo"], {}, fresh);
+    const components = await componentStatus();
     const ps = await json(["ps", "--space", "demo"], elsewhere);
     const diagnosis = `the channels file ${defaultSeed} ${problem}`;
     check(`up, status and ps agree on the stopped stack's seed ${problem}`,
@@ -1632,10 +1637,18 @@ if (process.platform === "linux") {
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
         refused(ps, 2, "TARGET_UNAVAILABLE") && ps.env?.error?.message?.includes(diagnosis) && ps.env.error.remedy === seedRemedy &&
         readFileSync(defaultSeed, "utf8") === seed, { up: shown(badUp), status: status.env?.result?.hints, text: shown(statusText), ps: shown(ps) });
+    const health = componentHealth(components.stdout);
+    check(`component health reports absence without a restart when the seed ${problem}`,
+      components.status === 1 && components.stdout.includes(`Restart blocked: ${diagnosis}`) && components.stdout.includes(seedRemedy)
+        && absentTargetRow.test(health) && !/\bcotal up\b/.test(health), components);
   }
   writeFileSync(defaultSeed, "{}\n");
   const repairedPs = await json(["ps", "--space", "demo"], fresh);
-  check("repairing the seed restores broker-only restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === `start it again with \`${launcher} up --no-manager\` in ${fresh}`, shown(repairedPs));
+  check("repairing the seed restores broker-only restart advice", refused(repairedPs, 2, "TARGET_UNAVAILABLE") && repairedPs.env?.error?.remedy === restartAdvice, shown(repairedPs));
+  const components = await componentStatus();
+  const health = componentHealth(components.stdout);
+  check("component health reports absence and restores broker-only restart advice after seed repair",
+    components.status === 1 && !components.stdout.includes("Restart blocked:") && absentTargetRow.test(health) && health.includes(restartAdvice), components);
   unlinkSync(defaultSeed);
   // The stopped stack keeps its recorded address and effective broker inputs. A different --server
   // or --host refuses before anything is written, naming the recorded value and the bare up
