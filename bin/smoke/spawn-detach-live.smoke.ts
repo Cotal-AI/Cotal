@@ -41,7 +41,7 @@ const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
 const { recordMesh, recordPreparedSpace, getCurrent, setCurrent, clearCurrent, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
@@ -537,6 +537,34 @@ try {
   // the sandbox either. Customers never see this state (the lockstep release publishes core +
   // connectors together).
   const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+
+  {
+    const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };
+    registry.register(retryConnector);
+    const file = join(workspaceRoot, "sample $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "-keep `text`\non another line";
+    writeFileSync(file, "---\nname: file-agent\nagent: e2e-exit\nrole: writer\n---\nExplicit persona.\n");
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    const instance = /instance:\s+([a-z0-9]{26,32})/.exec(ps)?.[1];
+    ok("ps names the live manager instance for a spawn retry", instance !== undefined, ps);
+    const refused = spawnSync(process.execPath, [cli, "--no-color", "spawn", "--file", file,
+      "--detach", "--no-events", "--harness", "retry-e2e", "--name", "retry-agent", `--prompt=${prompt}`,
+      "--subscribe", "", "--opt", "one=a b", "--opt", "two=c", "--on=not-a-pin", "--space", SPACE, "--server", SERVER],
+    { cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000 });
+    const retry = /rerun it as (`+)(cotal spawn [^\n]+)\1\r?$/m.exec(refused.stderr)?.[2];
+    ok("an invalid pin is refused with a single replaceable manager selector",
+      refused.status === 1 && retry?.match(/--on <instance>/g)?.length === 1 && !retry.includes("not-a-pin"), refused.stderr);
+    const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry!.replace("--on <instance>", `--on ${instance}`)}`], { encoding: "utf8" });
+    const [bin, verb, ...args] = shell.stdout.split("\0").slice(0, -1);
+    ok("the printed retry is a shell command", shell.status === 0 && bin === "cotal" && verb === "spawn", shell.stderr);
+    const launched = await capture(() => run("spawn", args));
+    ok("following the retry launches the explicit file, harness and seat with events off",
+      joinedAs(launched, "retry-agent") && /Application:\s+retry-e2e/.test(launched) && lastOpts?.role === "writer"
+      && lastOpts?.events === false && lastOpts?.prompt === prompt && JSON.stringify(lastOpts?.subscribe) === "[]"
+      && JSON.stringify(lastOpts?.launchOptions) === JSON.stringify({ one: "a b", two: "c" }), { launched, lastOpts });
+    await capture(() => run("stop", ["retry-agent", "--space", SPACE, "--on", instance!]));
+  }
 
   {
     const agents = join(workspaceRoot, ".cotal", "agents");

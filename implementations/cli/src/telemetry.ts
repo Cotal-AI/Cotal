@@ -79,8 +79,9 @@ interface ErrorText {
 }
 
 export function telemetryErrorText(command: string, error: unknown): ErrorText {
-  // A native spawn diagnostic can include terminal output. Neither it nor its stack is analytics data.
-  if (command === "spawn" && isCommandFailure(error) && error.native !== undefined) return { message: null, stack: null };
+  // A spawn diagnostic can include native terminal output or the original launch arguments.
+  if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
+      || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
