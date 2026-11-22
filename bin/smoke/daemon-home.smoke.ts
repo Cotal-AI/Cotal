@@ -277,6 +277,12 @@ try {
       if (mode.startsWith("service-")) check(`G2 stopped ${mode} still reports the missing daemon for a valid space`, result.doc.error?.code === "TARGET_UNAVAILABLE" && result.doc.error.cause?.code === "NOT_RUNNING", result.doc);
       if (mode === "connect-check" || mode === "service-connect") check(`G2 stopped ${mode} names the same quoted foreground start`, result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
     }
+    for (const mode of ["name", "spaces"]) {
+      const explicit = await cli([mode, "--daemon-home", managed, "--json"]);
+      check(`G2 stopped explicit ${mode} names the same quoted foreground start`, explicit.status === 2 && explicit.doc.error?.cause?.code === "NOT_RUNNING" && explicit.doc.error.remedy === expected, explicit.doc);
+      const bare = await cli([mode, "--json"]);
+      check(`G2 stopped default ${mode} keeps the bare foreground start`, bare.status === 2 && bare.doc.error?.cause?.code === "NOT_RUNNING" && bare.doc.error.remedy === "start it with `cotal daemon serve`", bare.doc);
+    }
     const plain = await cli(["connect-check", "--daemon-home", managed, "--space", "missing", "--plain"]);
     check("G2 stopped explicit connect-check prints the same Next in plain output", plain.status === 2 && plain.err.includes(expected), plain.err);
     const defaultCheck = await cli(["connect-check", "--space", "missing", "--json"]);
