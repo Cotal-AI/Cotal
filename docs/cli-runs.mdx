@@ -290,8 +290,8 @@ L1031 because the program has no statements. A lone `;` is an empty statement an
 start sends the program to the manager in one message, so a program over the broker's message limit
 (`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. On a static-auth mesh that caller is one actor derived from the OS login and host, so hosted run commands from that login and host record the same actor. Each command still mints a fresh short-lived credential and lifecycle. A signed-in user keeps that user's `cli` actor, and a managed seat keeps the seat's name. Local answers and
-amendments require `--by <who>`; a missing or empty value refuses `USAGE_INVALID` before contacting
-the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
+amendments require `--by <who>`. If the value is missing, empty or whitespace-only, the CLI refuses it with
+`USAGE_INVALID` before contacting the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
 replays the run's recorded journal
 against the edited program and prints whether the migration is admissible, and it files no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.
