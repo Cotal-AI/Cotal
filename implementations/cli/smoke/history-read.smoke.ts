@@ -154,8 +154,38 @@ async function checkHistoryFollowValidation(): Promise<void> {
         && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
         && records[1]?.data?.reason === "setup-failed",
       { stream: shown(stream), finite: shown(finite), connections });
+    await checkHistoryFollowParserRefusals(server, () => connections);
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
+  }
+}
+
+async function checkHistoryFollowParserRefusals(server: string, connections: () => number): Promise<void> {
+  const general = { space: null, channel: "general", dms: false };
+  const streams = [
+    { args: ["#general", "--follow", "--json", "--limit"], target: general, message: "--limit needs a value", remedy: "write --limit <n>" },
+    { args: ["general", "--limit", "--follow", "--json"], target: general, message: "--limit needs a value", remedy: "write --limit <n>" },
+    { args: ["general", "--follow", "-j", "--limit", "2", "--limit", "3"], target: general, message: "Option '--limit' cannot be repeated" },
+    { args: ["-jstest-space", "--dms", "--follow", "--unknown-option"], target: { space: "test-space", channel: null, dms: true }, message: "Unknown option '--unknown-option'" },
+    { args: ["--follow", "--json", "--unknown-option", "--", "--plain"], target: { ...general, channel: "--plain" }, message: "Unknown option '--unknown-option'" },
+  ];
+  for (const { args, target, message, remedy } of streams) {
+    const result = await run(["history", "--server", server, ...args]);
+    const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    check(`history ${args.join(" ")} writes error and setup-failed end without connecting`,
+      result.status === 1 && result.stderr === "" && connections() === 0
+        && records.map((r) => r.type).join() === "error,end"
+        && records.every((r) => r.schemaVersion === 1 && r.stream === "history"
+          && r.target?.space === target.space && r.target?.channel === target.channel && r.target?.dms === target.dms)
+        && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === message
+        && (remedy === undefined || records[0]?.data?.remedy === remedy) && records[1]?.data?.reason === "setup-failed", shown(result));
+  }
+  for (const args of [["general", "--limit"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"],
+    ["general", "--follow", "--plain", "--limit"], ["--limit", "--", "--follow"], ["--grep=--follow", "--limit"]]) {
+    const result = await run(["history", "--server", server, "--json", ...args]);
+    check(`history --json ${args.join(" ")} keeps one refusal receipt without connecting`,
+      result.status === 1 && result.stderr === "" && connections() === 0 && result.envelope?.command === "history"
+        && result.envelope.outcome === "refused" && result.envelope.error?.code === "USAGE_INVALID", shown(result));
   }
 }
 

@@ -28,7 +28,7 @@ export function validateWatchArguments(args: ParsedArgs): void {
   if (!watchViews.includes(filter as WatchFilter)) throw new CommandFailure("refused", "USAGE_INVALID", "watch --view takes feed, events, messages, roster, channels, waiting, dms or topology");
 }
 
-export function watchSetupFailureRecords(args: ParsedArgs, failure?: CommandFailure, space?: string) {
+export function watchSetupFailureRecords(args: Pick<ParsedArgs, "values">, failure?: CommandFailure, space?: string) {
   const target = { requestedSpace: args.values.space ?? null, ...(space === undefined ? {} : { space }) };
   const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
   return [
