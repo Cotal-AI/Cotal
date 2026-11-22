@@ -52,7 +52,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
@@ -228,7 +228,7 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const elsewhere = recordsElsewhereError(root);
   if (elsewhere) {
     const { message, remedy } = workspaceErrorParts({ kind: "target", error: elsewhere });
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy } : {}) });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; nothing was removed`, { target: { ...spaceRootTarget({ root, space: targetErrorSpace(elsewhere.details) }), recordedRoot: elsewhere.details.recordedRoot }, ...(remedy ? { remedy: displayRemedy(remedy) } : {}) });
   }
 
   // store | all: the JetStream store delete, plus (for `all`) the space identity. The broker-wide

@@ -39,6 +39,7 @@ import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 import { registryFailure } from "../lib/registry-errors.js";
+import { displayRemedy, hasMovedStackRemedy } from "../lib/self-exec.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
@@ -324,7 +325,9 @@ export async function history(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
     // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
-    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : isMeshRegistryError(error) ? registryFailure(error)
+    const failure = isCommandFailure(error) ? error
+      : isConnectRefusal(error) ? error.failure(hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
+      : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);
     for (const record of historySetupFailureRecords(args, failure)) writeStreamRecord(record);
