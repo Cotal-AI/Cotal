@@ -45,7 +45,7 @@ export function passedEnv(env: NodeJS.ProcessEnv = process.env): Record<string, 
   return out;
 }
 
-/** Why an entry's command no longer runs this Cotal, or undefined when it does. `here` is the Node
+/** Why an entry's command does not run this Cotal, or undefined when it does. `here` is the Node
  *  this process runs on. An entry whose executable is a launcher, as one a person added by hand may be,
  *  is checked only for being there. */
 export function staleCommand(command: unknown, args: unknown, here = process.execPath): string | undefined {

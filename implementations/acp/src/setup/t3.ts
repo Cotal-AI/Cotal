@@ -106,7 +106,7 @@ function refresh({ cotal }: ConnectorSetupInput): string {
   return changed ? `providers for ${spaces} now run this Cotal` : `providers for ${spaces} are current`;
 }
 
-/** One row: the spaces T3 reaches Cotal for, and any entry whose command no longer runs this Cotal. */
+/** One row: the spaces T3 reaches Cotal for, and any entry whose command does not run this Cotal. */
 function status(): ConnectorStatusRow[] {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow[] => [{ label: APP, state, text }];
   const path = t3SettingsPath();

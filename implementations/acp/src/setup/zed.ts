@@ -86,7 +86,7 @@ function refresh({ cotal }: ConnectorSetupInput): string {
   return changed ? `agents for ${spaces} now run this Cotal` : `agents for ${spaces} are current`;
 }
 
-/** One row: the spaces Zed reaches Cotal for, and any agent whose command no longer runs this Cotal. */
+/** One row: the spaces Zed reaches Cotal for, and any agent whose command does not run this Cotal. */
 function status(): ConnectorStatusRow[] {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow[] => [{ label: APP, state, text }];
   const path = zedSettingsPath();

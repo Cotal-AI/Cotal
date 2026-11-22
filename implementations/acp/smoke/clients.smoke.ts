@@ -188,8 +188,10 @@ if (process.platform !== "win32") {
   const tsx = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
   /** Run the launcher, writing each of `requests` once the reply before it arrived, then closing stdin. */
   const run = (path: string, args: string[], requests: object[] = []): Promise<{ code: number | null; stdout: string }> => new Promise((resolve) => {
-    // npm's global prefix is cleared so a Cotal installed on the machine running the smoke stays out of reach.
-    const child = spawn(tsx, [launcher, ...args], { env: { ...process.env, HOME: home, PATH: `${path}:${join(process.execPath, "..")}`, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
+    // The child gets no COTAL_ variable, since the session running the smoke may hold a live credential,
+    // and no npm global prefix, so a Cotal installed on this machine stays out of reach.
+    const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+    const child = spawn(tsx, [launcher, ...args], { env: { ...ambient, HOME: home, PATH: `${path}:${join(process.execPath, "..")}`, npm_config_global_prefix: "" }, stdio: ["pipe", "pipe", "ignore"] });
     let stdout = "";
     let sent = 0;
     const next = () => (sent < requests.length ? child.stdin.write(`${JSON.stringify(requests[sent++])}\n`) : child.stdin.end());
