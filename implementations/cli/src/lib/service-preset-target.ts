@@ -149,7 +149,7 @@ export function resolvePresetService(space: string, root: string, requested: str
   if (mode === "install") throw adapterInstallRefusal(space, requested, preset.adapter, {}, requested === "manager" ? "manager" : undefined, { space, name: requested });
   if (mode !== "start") throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
     target: { space, name: requested },
-    remedy: requested === "manager" ? "start it with `cotal manager start`" : `start it with \`cotal service start ${requested}\``,
+    remedy: requested === "manager" ? `start it with ${codeSpan(`cotal manager start --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`)}` : `start it with \`cotal service start ${requested}\``,
   });
   if (values["dry-run"]) return { requested, name: requested, preset: preset.name, saved: null };
   const definition: ServiceDefinitionInput = { ...servicePresetDefinition(preset, space, values, root, "start"), root };
