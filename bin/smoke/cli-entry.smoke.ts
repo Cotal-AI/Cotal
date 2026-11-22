@@ -267,15 +267,18 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const serviceAddHelp = cotal(["service", "add", "--help"]);
   check("service add help documents the preset name", serviceAddHelp.status === 0 && serviceAddHelp.stderr === ""
     && serviceAddHelp.stdout.startsWith("cotal service add\n") && serviceAddHelp.stdout.includes("--preset <name>"), shown(serviceAddHelp));
-  for (const [flags, message] of [
-    [["--preset"], "--preset needs one declared preset name"],
-    [["--preset="], "--preset needs one declared preset name"],
-    [["--preset", "manager", "--preset", "broker"], "--preset cannot be supplied more than once"],
+  for (const [words, message] of [
+    [["add", "widget", "--preset"], "--preset needs one declared preset name"],
+    [["add", "widget", "--preset="], "--preset needs one declared preset name"],
+    [["add", "widget", "--preset", "manager", "--preset", "broker"], "--preset cannot be supplied more than once"],
+    [["--runtime", "pty", "add", "widget", "--preset="], "--preset needs one declared preset name"],
   ] as const) {
-    const r = cotal(["service", "add", "widget", ...flags]);
-    check(`service add ${flags.join(" ")} refuses with the same help as --help`, r.status === 1 && r.stdout === ""
+    const r = cotal(["service", ...words]);
+    check(`service ${words.join(" ")} refuses with the same help as --help`, r.status === 1 && r.stdout === ""
       && r.stderr === `✗ ${message}\n${serviceAddHelp.stdout}` && r.wrote.length === 0, shown(r));
   }
+  const serviceHelpWithMissingPreset = cotal(["service", "--runtime", "pty", "add", "widget", "--preset=", "--help"]);
+  check("service --help keeps add scoped even before preset selection succeeds", same(serviceAddHelp, serviceHelpWithMissingPreset), shown(serviceHelpWithMissingPreset));
   refused("help of an unknown command is a usage error", cotal(["help", "nope"]), /unknown command: nope/);
   refused("help of an unknown subcommand is a usage error", cotal(["help", "ext", "nope"]), /cotal ext has no subcommand "nope"/);
   refused("help of a hidden internal subcommand is a usage error", cotal(["help", "ext", "__update-add"]), /cotal ext has no subcommand "__update-add"/);

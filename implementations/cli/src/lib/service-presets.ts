@@ -267,7 +267,8 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter: preset.adapter, options }, readiness: { type: "adapter", timeoutMs: preset.timeoutMs } };
 }
 
-function knownPresetFlags(): FlagSpec[] {
+/** Flags used to locate the verb before a preset has been selected. They do not authorize input. */
+export function serviceDiscoveryFlags(cmd: Command): FlagSpec[] {
   const byName = new Map<string, FlagSpec>();
   try {
     for (const { preset } of servicePresets()) {
@@ -276,13 +277,12 @@ function knownPresetFlags(): FlagSpec[] {
       } catch { /* resolved when selected */ }
     }
   } catch { /* resolved when selected */ }
-  return [...byName.values()];
+  return [...(cmd.flags ?? []), ...byName.values()];
 }
 
 /** The preset a service invocation names: `--preset <name>` on add, or the name a start gives when
  *  that name is a preset's, so `service start web --creds <file>` takes the web preset's flags. */
-function requestedPreset(cmd: Command, argv: readonly string[]): { name: string; verb: "add" | "start" } | undefined {
-  const flags = [...(cmd.flags ?? []), ...knownPresetFlags()];
+function requestedPreset(flags: readonly FlagSpec[], argv: readonly string[]): { name: string; verb: "add" | "start" } | undefined {
   const [mode, service] = metadataPositionals({ flags }, argv).positionals.map((item) => item.value);
   let name: string | undefined;
   let presetCount = 0;
@@ -311,9 +311,9 @@ function requestedPreset(cmd: Command, argv: readonly string[]): { name: string;
 
 /** The service command's selected preset contributes metadata-only flags before strict parsing.
  *  Library composition roots use their registered providers, never an implicit prefix install. */
-export function servicePresetCommand(cmd: Command, argv: readonly string[]): Command {
+export function servicePresetCommand(cmd: Command, argv: readonly string[], discoveryFlags?: readonly FlagSpec[]): Command {
   if (cmd.name !== "service") return cmd;
-  const requested = requestedPreset(cmd, argv);
+  const requested = requestedPreset(discoveryFlags ?? serviceDiscoveryFlags(cmd), argv);
   if (requested === undefined) return cmd;
   const { name, verb } = requested;
   const preset = resolveServicePreset(name), flags = servicePresetFlags(preset);

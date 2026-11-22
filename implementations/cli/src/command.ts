@@ -645,15 +645,20 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
  *  Preset details can enrich a duplicate refusal but cannot replace it. */
 async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
+  let discoveryFlags: Command["flags"];
   try {
-    const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
-    if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
+    const [{ serviceDiscoveryFlags, servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
+    if (found.name === "service") {
+      discoveryFlags = serviceDiscoveryFlags(found);
+      return { cmd: servicePresetCommand(found, words, discoveryFlags), rest: words };
+    }
     const lifecycle = managerServiceCommand(found, words, forRefusal);
     return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
   } catch (error) {
-    if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
+    const help = discoveryFlags ? { ...found, flags: discoveryFlags } : found;
+    if (forRefusal || asksForHelp(words)) return { cmd: help, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
+    return failureExit(help, failure, asksForJson(help, words), words.includes("--plain"), undefined, words);
   }
 }
 
