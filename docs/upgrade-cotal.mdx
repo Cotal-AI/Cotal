@@ -121,7 +121,8 @@ The package manifest and original dependencies stay as npm or pnpm installed the
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
 On Linux and macOS, self-update refreshes an existing npm launcher when it can safely preserve its recorded Node path. If the launcher cannot be refreshed, the update keeps it unchanged.
-Update subprocesses that invoke npm use the Node executable running Cotal without changing which npm the shell selects.
+On Linux and macOS, self-update uses the Node executable running Cotal for npm, including when it
+installs built-in connectors. It keeps the npm selected on `PATH` and does not change the caller's `PATH`.
 A timestamp-only change to the npm package manifest keeps the verified release in use.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and
 `cotal status --verbose` and `cotal status --json` report both (`npm lists <old>; in use <new>`).
