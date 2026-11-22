@@ -110,6 +110,12 @@ function scriptOf(file: string | undefined): SimScript {
     }
     throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, { target: { file } });
   }
+  for (const [index, fault] of ((script.faults ?? []) as unknown[]).entries()) {
+    const problem = faultProblem(fault);
+    if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted fault faults[${index}] in ${file}: ${problem}`, {
+      target: { file }, remedy: `correct faults[${index}] in ${file}, then rerun the simulation`,
+    });
+  }
   for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
     for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const problem = checkpointResultProblem(result);
@@ -132,6 +138,22 @@ function scriptOf(file: string | undefined): SimScript {
     }
   }
   return script as SimScript;
+}
+
+/** Why a scripted fault is not one the simulator can raise, or undefined. The simulator matches
+ *  only `at` and raises only `kind`, so an entry that names no step, or carries a field the
+ *  reader does not know, is refused here rather than simulated as if it were not there. */
+function faultProblem(fault: unknown): string | undefined {
+  if (!fault || typeof fault !== "object" || Array.isArray(fault)) return "a fault must be an object";
+  const fields = fault as Record<string, unknown>;
+  const known = new Set(["at", "kind", "code", "message"]);
+  const unknown = Object.keys(fields).find((key) => !known.has(key));
+  if (unknown !== undefined) return `unknown field '${unknown}'`;
+  if (typeof fields.at !== "string" || !fields.at.length) return "at must name the step to fault";
+  if (typeof fields.kind !== "string" || !fields.kind.length) return "kind must name the failure to raise";
+  if (fields.code !== undefined && typeof fields.code !== "string") return "code must be a string";
+  if (fields.message !== undefined && typeof fields.message !== "string") return "message must be a string";
+  return undefined;
 }
 
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The
