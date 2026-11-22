@@ -1,7 +1,7 @@
 /** Codex refresh must distinguish no installed plugin from an installed plugin it cannot update. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -193,7 +193,9 @@ if (args === "plugin list") {
       assert.ok(!status().text.includes(config));
       if (process.platform !== "win32") {
         chmodSync(cache(f.codex), 0o500);
-        await assert.rejects(async () => codexSetupProvider.refresh!.run(changed), /Cannot refresh the Cotal plugin cache/);
+        const protectedCache = await codexSetupProvider.refresh!.run(changed);
+        assert.ok(protectedCache.includes(cache(f.codex)));
+        assert.match(protectedCache, /read-only.*run `cotal update`/);
         assert.ok(existsSync(join(cache(f.codex), version, ".codex-plugin/plugin.json")));
       }
     } finally {
@@ -204,7 +206,7 @@ if (args === "plugin list") {
   if (process.platform !== "win32") {
     process.env.PATH = before.PATH;
     const codex = (...args: string[]) => spawnSync("codex", args, { encoding: "utf8", timeout: 60_000 });
-    if (codex("--version").status === 0) await check("native Codex lists the new digest with the same read-only config", async () => {
+    if (codex("--version").status === 0) await check("native Codex keeps a read-only cache and refreshes after write access returns", async () => {
       const f = fixture("native");
       const cotal = [process.execPath, join(ROOT, "cotal.js")];
       await codexSetupProvider.connector!.run({ cotal });
@@ -215,6 +217,22 @@ if (args === "plugin list") {
       const beforeRefresh = codex("plugin", "list");
       assert.equal(beforeRefresh.status, 0, beforeRefresh.stderr);
       const changed = [process.execPath, join(ROOT, "updated-cotal.js")];
+      const cacheDir = cache(f.codex);
+      const [oldVersion] = readdirSync(cacheDir);
+      assert.ok(oldVersion);
+      chmodSync(config, 0o600);
+      chmodSync(cacheDir, 0o500);
+      try {
+        const deferred = await codexSetupProvider.refresh!.run({ cotal: changed });
+        assert.ok(deferred.includes(`cotal@cotal-mesh remains at ${oldVersion}`), deferred);
+        assert.equal(statSync(cacheDir).mode & 0o777, 0o500);
+        assert.deepEqual(readdirSync(cacheDir), [oldVersion]);
+        assert.equal(codex("plugin", "list").stdout, beforeRefresh.stdout);
+        assert.deepEqual(readFileSync(config), original);
+      } finally {
+        chmodSync(cacheDir, 0o700);
+      }
+      chmodSync(config, 0o444);
       await codexSetupProvider.refresh!.run({ cotal: changed });
       const afterRefresh = codex("plugin", "list");
       assert.equal(afterRefresh.status, 0, afterRefresh.stderr);
