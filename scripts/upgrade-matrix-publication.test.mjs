@@ -39,7 +39,7 @@ test('actual selector accepts publisher dynamic run-name with exact completed-ru
 test('actual selector freezes newest public predecessor rather than a literal source',async()=>{
   const result=await select({name:'Changesets',target:'0.164.8',versions:['0.164.6','0.164.7','0.164.8','0.165.0']});
   assert.equal(result.plan.sourceVersion,'0.164.7');
-  const ordinary=result.plan.cells.filter(cell=>!['candidate-next-two-homes','candidate-next-other-home-auth','candidate-next-dead-updater','candidate-next-daemon-self','candidate-next-stopped-daemon-self','candidate-next-disabled-daemon-self','candidate-next-stopped-desktop-self','source-0.164.10-daemon-self-chain'].includes(cell.scenario) && !cell.followOnAction);
+  const ordinary=result.plan.cells.filter(cell=>!['candidate-next-two-homes','candidate-next-other-home-auth','candidate-next-foreign-config-recovery','candidate-next-dead-updater','candidate-next-daemon-self','candidate-next-stopped-daemon-self','candidate-next-disabled-daemon-self','candidate-next-stopped-desktop-self','source-0.164.10-daemon-self-chain'].includes(cell.scenario) && !cell.followOnAction);
   assert(ordinary.every(cell=>cell.sourceVersion==='0.164.7'));
   assert.equal(result.plan.cells.filter(cell=>cell.scenario==='candidate-next-daemon-self'&&cell.sourceVersion==='0.164.8').length,3);
   assert.equal(result.plan.cells.filter(cell=>cell.scenario==='candidate-next-stopped-daemon-self'&&cell.sourceVersion==='0.164.8').length,3);

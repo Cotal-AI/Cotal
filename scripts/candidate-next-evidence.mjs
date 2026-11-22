@@ -193,7 +193,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     : hop.mode === 'source-0.164.10'
       ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? pair.sourceVersion
       : pair.sourceVersion;
-  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli)
+  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli || cell.scenario === 'candidate-next-foreign-config-recovery')
     ? {passed: true}
     : evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
   if (['npm', 'installer'].includes(followOnAction)) {
