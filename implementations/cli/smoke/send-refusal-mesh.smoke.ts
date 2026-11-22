@@ -26,7 +26,7 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
+import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, removeMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -144,11 +144,14 @@ try {
   const listenerCreds = await provisionAgent(issuer, auth, listener, { lifecycleUid, role: "reviewer", subscribe: [], allowSubscribe: [], durableMembership: false });
   recipient = new CotalEndpoint({
     servers, space, creds: listenerCreds, lifecycleUid,
-    channels: [], consume: false, card: { name: "alice", role: "reviewer", kind: "agent", id: listener.id },
+    channels: [], consume: false, watchPresence: false, registerPresence: true,
+    card: { name: "alice", role: "reviewer", kind: "agent", id: listener.id },
   });
   await recipient.start();
   inspector = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(provisionerCreds)), inboxPrefix: `_INBOX_${provisioner.id}` });
   const jsm = await jetstreamManager(inspector);
+  const { consumer_count: presenceConsumers } = (await jsm.streams.info(`KV_${presenceBucket(space)}`)).state;
+  check("the recipient fixture does not bind a presence watch", presenceConsumers === 0, { presenceConsumers });
   const state = async (stream: string) => {
     const { messages, last_seq } = (await jsm.streams.info(stream)).state;
     return { messages, last_seq };
