@@ -60,7 +60,6 @@ import { type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
@@ -613,23 +612,6 @@ export class Manager {
    *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
   protected goalWriterIdentity?: Identity;
   protected goalWriterCreds?: string;
-  /** The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
-   *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
-   *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
-  protected sessionPlane?: ManagerSessionPlane;
-  /** The standing session-LEDGER connection + its mutable creds holder (the authenticator
-   *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
-   *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
-  protected sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  /** Renews the session signing key long before its window closes. A key that expires unattended
-   *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
-  protected sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
-  /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
-   *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
-   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
-   *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
-  protected sessionLedgerIdentity?: Identity;
-  protected sessionLedgerCreds?: string;
   /** The acceptance replied for each goal this incarnation accepted, by {@link goalKey}, so an
    *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
    *  without a second spawn. An entry lives while its goal is in flight and for
@@ -788,7 +770,7 @@ export class Manager {
   private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this));
 
   /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
-  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this));
+  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts);
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
   private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts);
@@ -819,7 +801,7 @@ export class Manager {
   private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this));
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
-  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this));
+  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts);
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
   private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts);
@@ -1285,7 +1267,7 @@ export class Manager {
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
     if (this.credentialRenewal.endpointServeRenewalTimer) clearTimeout(this.credentialRenewal.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
-    if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
+    if (this.servePlane.sessionKeyRenewTimer) clearInterval(this.servePlane.sessionKeyRenewTimer);
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
