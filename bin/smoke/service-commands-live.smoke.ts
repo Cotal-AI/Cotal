@@ -384,6 +384,16 @@ try {
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
+    const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];
+    const previewStart = cotal([...foregroundStart, "--dry-run"]);
+    const previewReceipt = JSON.parse(previewStart.stdout);
+    check("a foreground dry-run returns one JSON preview without allocating or signalling a process",
+      previewStart.status === 0 && previewReceipt.outcome === "ok" && previewReceipt.result?.kind === "service-operation-preview"
+        && previewReceipt.result.operation === "start" && previewReceipt.result.allocated === false && previewReceipt.result.signalled === false, out(previewStart));
+    const refusedStart = cotal(foregroundStart);
+    check("a live foreground start still refuses JSON", refusedStart.status === 1 && JSON.parse(refusedStart.stdout).error?.code === "USAGE_INVALID", out(refusedStart));
+    const afterPreview = cotal(["service", "status", "stack-broker", "--space", PRESET_SPACE, "--json"]);
+    check("the preview and refusal leave the service without an instance", afterPreview.status === 0 && JSON.parse(afterPreview.stdout).result?.instanceId === null, out(afterPreview));
     // #7642: an add that named its space suggests the start and show in that space.
     check("  and its Next starts and shows it with the same --space",
       new RegExp(`cotal svc start stack-broker --space ${PRESET_SPACE}\\s+Start it`).test(out(custom)) && new RegExp(`cotal svc show stack-broker --space ${PRESET_SPACE}\\s+Read`).test(out(custom)), out(custom));
