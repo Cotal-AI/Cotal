@@ -341,6 +341,7 @@ async function readHistory(v: FlagValues<typeof historyFlags>, channel: string |
     channels: [],
     consume: false,
     registerPresence: false,
+    omitFromLiveMembership: true,
     // A DM carries only its recipient's principal, so the roster names a recipient that sent nothing.
     watchPresence: Boolean(v.dms),
     card: { name: "history", kind: "endpoint" },

@@ -3,7 +3,7 @@
 // that lost a race with stop, stop the endpoint, and report its native connections. Moved verbatim from
 // endpoint.ts; the endpoint keeps connectAndBind, the supervisor and the retry loop and forwards to these.
 // Not re-exported by the index.
-import type { EndpointIdentity } from "./endpoint-identity.js";
+import { OBSERVER_CONN_NAME_PREFIX, type EndpointIdentity } from "./endpoint-identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
 import { openChannelRegistry } from "./channels.js";
 import { drainAndClose } from "./connection-cleanup.js";
@@ -328,8 +328,9 @@ export class EndpointConnection {
       // Keep native failures without eagerly capturing a request-origin stack on every operation.
       noAsyncTraces: true,
       // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
-      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
-      name: this.identity.userMode ? this.identity.connId : `cotal:${this.identity.card.name}`,
+      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer). Static observers carry a marker
+      // outside the display-name grammar so a participant named like an observer still counts.
+      name: this.identity.userMode ? this.identity.connId : `${this.identity.omitFromLiveMembership ? OBSERVER_CONN_NAME_PREFIX : "cotal:"}${this.identity.card.name}`,
       // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
       // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
       // callout the principal is unknown to the client pre-connect (owner is derived server-side) while

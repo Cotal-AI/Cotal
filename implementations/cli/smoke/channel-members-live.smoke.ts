@@ -79,6 +79,23 @@ const records = (out: string) => out.split("\n").filter((line) => line.startsWit
 /** What a change is: whether the feed has a census, and who it observed how. */
 const shape = (data: Census) => JSON.stringify([data.asOf !== null, data.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
 
+async function checkHistoryObserver(): Promise<void> {
+  const read = started("history", "general", "--follow", "--json");
+  try {
+    check("history follow starts on the joined channel", await until(() => records(read.out).some((r) => r.type === "snapshot"), 30_000), read.out);
+    const openedAt = Date.now();
+    check("a post is stored while history follows", cotal("send", "-c", "general", "history follow membership probe").status === 0);
+    check("the history observer receives the new post", await until(() => records(read.out).some((r) => r.type === "event" && JSON.stringify(r.data).includes("history follow membership probe")), 30_000), read.out);
+    let observed: Census | undefined;
+    const fresh = await until(() => ((observed = census("general"))?.asOf ?? 0) >= openedAt, 30_000);
+    check("a fresh census shows the real join and no history observer", fresh && observed?.members.length === 1
+      && observed.members[0]?.name === "anna" && observed.members[0]?.live === true, observed);
+  } finally {
+    read.child.kill("SIGINT");
+    await read.exited;
+  }
+}
+
 let up = false;
 try {
   const legacySpace = `${SPACE}-legacy`;
@@ -134,6 +151,7 @@ try {
   const general = cotal("channel", "members", "general");
   check("#general lists anna and offers to follow it",
     general.status === 0 && general.out.includes("anna") && general.out.includes("cotal ch members general --follow"), general.out.slice(-600));
+  await checkHistoryObserver();
 
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");

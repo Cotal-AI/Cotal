@@ -769,8 +769,9 @@ observer or admin credential reads across channels.
 A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.
 
-`--follow` prints the window and then each new message until interrupted. With a static agent
-credential and no channel named, the live feed follows the credential's read grant, including
+`--follow` prints the window and then each new message until interrupted. It does not join a channel
+or appear in its membership list. With a static agent credential and no channel named,
+the live feed follows the credential's read grant, including
 channel families. If the broker refuses that feed, name a channel the credential can read.
 With no channel read grant, the follow refuses with `PERMISSION_DENIED`. Each message is one line in the
 form `watch --plain` uses: `[<space>] <time>  <sender>  <destination>  <text>`, with a 24-hour local

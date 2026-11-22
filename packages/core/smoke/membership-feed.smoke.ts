@@ -138,7 +138,7 @@ try {
   // were a god-tap (review-general/socrates: shape-based exclusion wrongly erased exactly these). ---
   const dave = newIdentity();
   const daveCreds = await provisionAgent(noop, auth, dave, { subscribe: ["general"], allowSubscribe: [">"], lifecycleUid: mintLifecycleUid() });
-  const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:dave" });
+  const dnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(daveCreds)), name: "cotal:observer:history" });
   conns.push(dnc);
   dnc.subscribe(chatSubject(space, "*", "*", ">")); // chat.*.> — reads everything
   await dnc.flush();
