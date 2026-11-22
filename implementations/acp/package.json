@@ -11,6 +11,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "cotal-acp": "./dist/cotal-acp.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -20,16 +23,25 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/agent.smoke.ts && tsx smoke/frames.smoke.ts",
+    "test": "tsx smoke/agent.smoke.ts && tsx smoke/frames.smoke.ts && tsx smoke/clients.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "2.8.0",
+    "jsonc-parser": "3.3.1",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@cotal-ai/core": "*",
     "@cotal-ai/workspace": "*"
+  },
+  "peerDependenciesMeta": {
+    "@cotal-ai/core": {
+      "optional": true
+    },
+    "@cotal-ai/workspace": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",

@@ -13,7 +13,7 @@ for (const self of [true, false]) {
     ...updateRuntime, env: {}, version: () => "0.13.1",
     reportRunningManager: async () => "none",
     reconcile: async () => { effects.push("reconcile"); },
-    refreshConnectors: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    refreshConnectors: async () => [], refreshClients: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
     npm: args => {
       if (args[0] === "view" && args[1] === "cotal-ai@latest") return { status: 0, stdout: '"0.13.2"', stderr: "" };
       effects.push("registry or install");

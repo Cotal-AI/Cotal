@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { parseCommandArgs, registry, token, writePrivateRecord, type ClientSetupProvider, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
@@ -47,7 +47,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -711,6 +711,8 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (narrate) p.log.success(`Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`);
     for (const b of skills.backedUp) warnings.push({ code: "SKILL_BACKED_UP", target, message: `your edited ${b.name} skill was backed up to ${b.path} before it was refreshed` });
   }
+  const clients = await setUpClients(inputs.space, narrate, opts.interactive, log, wrote);
+  actions.ran.push(...clients.ran);
   const runtimes = await setUpRuntimes(plan.runtimes, inputs.runtimes, narrate, wrote);
   if (!isOnboarded()) {
     markOnboarded(ONBOARD_VERSION);
@@ -742,6 +744,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       : failed
         ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
         : []),
+    ...clients.problems,
     ...runtimes.problems,
   ];
   const partial = problems.length === 0
@@ -1163,7 +1166,7 @@ async function availableSetupProvider(connector: Connector): Promise<ConnectorSe
  * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
  * `I` from the action alone: inferring it from the input too widens it to accept a dropped
  * (`undefined`) input. */
-function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: ConnectorSetupProvider): Step {
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: Pick<ConnectorSetupProvider, "name" | "requires" | "available">): Step {
   return {
     name: setup.name,
     title: setup.title,
@@ -1245,6 +1248,62 @@ export async function refreshConnectorInstalls(): Promise<string[]> {
       lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
       console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
     }
+  }
+  return lines;
+}
+
+/**
+ * Connects every ACP client on this machine to the space. An official client whose package is not
+ * installed gets it added at this cotal's version when the application is found, the way an official
+ * runtime is. Then each available client provider runs its own setup for the space. Each runs on its
+ * own, so one that fails or does not load leaves the others set up and the result partial.
+ */
+async function setUpClients(space: string, narrate: boolean, interactive: boolean, log: SetupLog, wrote: (what: string, path: string) => void): Promise<{ ran: ActionRun[]; problems: Problem[] }> {
+  const ran: ActionRun[] = [];
+  const problems: Problem[] = [];
+  const installed = new Set(extensionNames("client-setup"));
+  const found = new Map<string, string[]>();
+  for (const [name, app] of Object.entries(OFFICIAL_CLIENT_APPS)) {
+    if (installed.has(name) || (!app.tools.some((tool) => resolveOnPath(tool)) && !app.dirs().some(isDir))) continue;
+    found.set(app.package, [...(found.get(app.package) ?? []), app.title]);
+  }
+  for (const [pkg, titles] of found) {
+    try {
+      // With --json or --plain, stdout carries the result alone.
+      await addExtension(`${pkg}@${cliVersion()}`, pkg, false, narrate ? console.log : (line) => console.error(line));
+    } catch (e) {
+      if (e instanceof ExtensionAddInterrupted) throw e;
+      problems.push({ message: `${titles.join(" and ")} ${titles.length === 1 ? "is" : "are"} on this computer, but ${pkg} did not install (${(e as Error).message.split("\n")[0]})`, remedy: `run \`cotal ext add ${pkg}\`, then run the same setup again` });
+      continue;
+    }
+    wrote(`${titles.join(" and ")} integration`, extensionPackageDir(pkg));
+  }
+  for (const name of extensionNames("client-setup")) {
+    let provider: ClientSetupProvider;
+    try {
+      provider = await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name });
+    } catch (e) {
+      problems.push({ message: `the ${name} client setup did not load (${(e as Error).message.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
+      continue;
+    }
+    if (!provider.connector || !setupProviderAvailable(provider)) continue;
+    const runner = actionRunner(narrate, interactive, log);
+    await runner.run(provider.name, actionStep(provider.connector, { cotal: selfArgv(), wrote, space }, provider));
+    ran.push(...runner.ran);
+    if (runner.failed) problems.push({ message: `${runner.failed.title} did not finish (${runner.failed.message})`, remedy: "fix it, then run the same setup again" });
+  }
+  return { ran, problems };
+}
+
+/** Run every installed client provider's refresh, so the entries an earlier setup wrote in each
+ *  application run this cotal. `cotal update` calls it once the operator extensions are current, since
+ *  a client provider ships in one. Returns one line per provider that declares a refresh; a refresh
+ *  that fails throws. */
+export async function refreshClientInstalls(): Promise<string[]> {
+  const lines: string[] = [];
+  for (const name of extensionNames("client-setup")) {
+    const refresh = (await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name })).refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
   }
   return lines;
 }

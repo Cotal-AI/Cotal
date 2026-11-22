@@ -251,6 +251,7 @@ function updateRuntime(opts: {
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
     refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
       events.push("report-running-manager");
@@ -1031,6 +1032,14 @@ async function completionOut(positionals: string[]): Promise<string> {
     events.indexOf("reconcile") < events.indexOf("refresh-connectors"),
     "update refreshes what connectors installed in their harnesses, after the connectors themselves",
   );
+  assert.ok(
+    events.findIndex((event) => event.startsWith("spawn:")) < events.indexOf("refresh-clients"),
+    "update refreshes client entries after the operator extensions that provide them are replayed",
+  );
+  assert.ok(
+    events.indexOf("release-mutation") < events.indexOf("refresh-clients"),
+    "update releases its extension pass before loading client providers, which take that lock",
+  );
 }
 
 // --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
@@ -1462,6 +1471,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   stopped.rt.reconcile = async () => { throw new Error("seed interrupted"); };
   assert.equal(await executeUpdate(false, stopped.rt), 1);
   assert.ok(!stopped.events.some((event) => event.startsWith("spawn:")), "seed failure blocks later prefix mutation");
+  assert.ok(!stopped.events.includes("refresh-clients"), "a failed update leaves the client entries alone");
+
+  const clientFails = updateRuntime({ extensions: [installed("@cotal-ai/orca")] });
+  clientFails.rt.refreshClients = async () => { throw new Error("T3 Code settings are not valid JSON"); };
+  assert.equal(await executeUpdate(false, clientFails.rt), 1, "a client entry Cotal cannot update fails the command");
 }
 
 // --- one mutation claim linearizes the whole operator pass through the default npm check ----------
