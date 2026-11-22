@@ -926,6 +926,9 @@ if (process.platform !== "win32") {
   const svcAddPresetBogusHelp = run(["service", "add", "x", "--preset", "bogus", "--help"]);
   const svcAddHelp = run(["service", "add", "--help"]);
   check("service add --help wins over missing or unknown --preset", svcAddPresetMissingHelp.status === 0 && svcAddPresetMissingHelp.stdout === svcAddHelp.stdout && svcAddPresetBogusHelp.status === 0 && svcAddPresetBogusHelp.stdout === svcAddHelp.stdout, { missing: shown(svcAddPresetMissingHelp), bogus: shown(svcAddPresetBogusHelp) });
+  const helpSvcAddBroker = run(["help", "service", "add", "broker", "--preset", "broker"]);
+  const svcAddBrokerHelp = run(["service", "add", "broker", "--preset", "broker", "--help"]);
+  check("help service add broker --preset broker prints the same preset-augmented help as service add broker --preset broker --help", helpSvcAddBroker.status === 0 && helpSvcAddBroker.stdout === svcAddBrokerHelp.stdout && /--config <file>/.test(helpSvcAddBroker.stdout) && /--binary <file>/.test(helpSvcAddBroker.stdout), shown(helpSvcAddBroker));
 
   for (const args of [
     ...["start", "show", "stop", "status", "logs", "remove"].map((mode) => ["service", mode, "myweb", "--preset", "web"]),
