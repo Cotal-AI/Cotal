@@ -253,7 +253,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   if (values.components && (presentation !== "rich" || values.all))
     throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
-      remedy: `run \`${displayCmd()} status --components\` on its own`,
+      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
     });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);

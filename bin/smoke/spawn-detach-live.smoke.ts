@@ -43,7 +43,7 @@ process.env.COTAL_HOME = home;
 
 const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
-const { recordMesh, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+const { recordMesh, recordPreparedSpace, getCurrent, setCurrent, clearCurrent, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { AgentHandle, Command, Connector, ControlReply, LaunchOpts, LaunchSpec, RuntimeProvider, SessionGrant } from "@cotal-ai/core";
@@ -632,6 +632,22 @@ try {
       const managerOwn = attachCalls - beforeDetached;
       const paneResult = (JSON.parse(fgJson) as { result: { runtime: string; streamsTerminal: boolean | null } }).result;
       ok("--json names the runtime and that it streams no terminal", paneResult.runtime === "e2e-nostream" && paneResult.streamsTerminal === false, paneResult);
+      const alternate = mkdtempSync(join(scratch, "alternate-"));
+      recordPreparedSpace({ space: "alternate", root: alternate, ts: new Date().toISOString() });
+      const selected = getCurrent();
+      setCurrent("alternate");
+      try {
+        const duplicate = plain(await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane2", "--on", on2])));
+        const words = /Attach to it: `[^`]*\battach ([^`]+)`/.exec(duplicate)?.[1]?.split(" ") ?? [];
+        ok("duplicate spawn is a no-op and prints an attach pinned to its space and manager", duplicate.includes("Already running")
+          && words.join(" ") === `pane2 --space ${SPACE} --on ${on2}`, duplicate);
+        let retry: unknown;
+        try { await run("attach", [...words, "--no-reconnect"]); } catch (error) { retry = error; }
+        ok("the printed attach reaches the existing seat's runtime in the requested space",
+          isCommandFailure(retry) && retry.code === "UNSUPPORTED" && retry.message.includes('runtime: watch this agent where it runs'), String(retry));
+      } finally {
+        if (selected === undefined) clearCurrent(); else setCurrent(selected);
+      }
       const before = attachCalls;
       // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
       const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));

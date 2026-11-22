@@ -796,11 +796,10 @@ export function recordsElsewhereError(root: string): MeshTargetError | undefined
 }
 
 /** The space a target failure concerns, which its report heads with `Mesh:` and its envelope carries
- *  as `target.space`: the space it names, or, in a folder holding the records of a stack that runs
- *  from another folder, the space those records name, as `up` and `down` there name it. That one is
- *  kept out of `details.space`, which callers read as a prepared space. */
+ *  as `target.space`. A retained last-run record or a journal from another folder can name the
+ *  space without putting it in `details.space`, which callers read as a prepared space. */
 export function targetErrorSpace(details: MeshTargetErrorDetails): string | undefined {
-  return details.space ?? (details.recordedRoot !== undefined && details.stackRemedy !== undefined && details.home === undefined ? details.stackSpace : undefined);
+  return details.space ?? (details.home === undefined && (details.lastRun || (details.recordedRoot !== undefined && details.stackRemedy !== undefined)) ? details.stackSpace : undefined);
 }
 
 /** What a folder holding the records of a stack that runs from another folder holds, for the reports

@@ -61,8 +61,8 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
     ["revoke --local --json", ["revoke", "run-1"], { local: true, by: "a", reason: "b", json: true }, "run revoke prints no --json output", "remove --json from the original command and rerun it"],
     ["revoke --local --plain", ["revoke", "run-1"], { local: true, by: "a", reason: "b", plain: true }, "run revoke prints no --plain output", "remove --plain from the original command and rerun it"],
     ["check --plain", ["check", "run-1", "p.cotal.js"], { plain: true }, "run check prints no --plain output", "run it without --plain: `cotal run check run-1 --file p.cotal.js`"],
-    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "drop --local to start it on the manager, which takes --json: `cotal run start <file> --json`"],
-    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "drop --local to resume it on the manager, which takes --json: `cotal run resume run-1 --json`"],
+    ["start --local --json", ["start", "p.cotal.js"], { local: true, "admit-read": "none", "admit-publish": "none", json: true }, "run start --local prints no --json output", "remove --json from the original command to keep driving it locally, or start it on the manager with `cotal run start --file p.cotal.js --json`"],
+    ["resume --local --json", ["resume", "run-1"], { local: true, json: true }, "run resume --local prints no --json output", "remove --json from the original command to keep driving it locally, or resume it on the manager with `cotal run resume run-1 --json`"],
   ];
   for (const [what, positionals, values, message, remedy] of cases) {
     const got = gate(positionals, values);

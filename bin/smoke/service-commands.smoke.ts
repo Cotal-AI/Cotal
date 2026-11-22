@@ -263,6 +263,13 @@ try {
   check("bare service offers the broker with --server <url> when the space has no registered broker", brokerRow === `cotal service start broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, brokerRow);
   const selected = cotal(["use", SPACE, "--json"]);
   check("the calling project has selected the other space", selected.status === 0, out(selected));
+  const missingLog = cotal(["service", "logs", "stack-manager", "--space", PREPARED, "--tail", "30", "--json"]);
+  const logError = JSON.parse(missingLog.stdout).error;
+  const managerStart = /`cotal (manager start [^`]+)`/.exec(logError.remedy)?.[1];
+  const managerPreview = managerStart ? cotal([...managerStart.split(" "), "--dry-run", "--json"]) : undefined;
+  check("the missing manager log names the stack root and previews starting the manager in the requested space",
+    missingLog.status === 2 && logError.code === "TARGET_NOT_FOUND" && logError.remedy.includes(`\`cotal up --root ${prepared} --space ${PREPARED}\``)
+      && managerPreview?.status === 0 && JSON.parse(managerPreview.stdout).target.space === PREPARED, { missingLog: out(missingLog), preview: managerPreview && out(managerPreview) });
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
   check("a broker add missing its options prints all three options and keeps the explicit space",
