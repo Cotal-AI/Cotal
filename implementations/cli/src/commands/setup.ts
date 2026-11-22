@@ -1210,7 +1210,7 @@ async function reconcileOtherConnectorSkills(
       spin?.stop(`${step.title}: skipped`);
       log.line(`${step.name}: skipped (${other.value}) · ${message}`);
       warnings.push({
-        code: "OPTIONAL_SKILLS_FAILED",
+        code: "DEPENDENCY_UNAVAILABLE",
         target: { ...target, connector: other.value },
         message: `optional skills refresh for ${other.value} did not finish (${message})`,
       });

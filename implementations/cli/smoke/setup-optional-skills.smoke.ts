@@ -173,7 +173,7 @@ try {
   assert.equal(claudeSkillsCalls, 1, "unrelated claude skills action was attempted");
   assert.equal(codexSkillsCalls, 1, "subsequent unrelated codex skills action still ran after claude failed");
   assert.ok(env.result.actions.some((a) => a.connector === "codex" && a.action === "codex-skills"), "codex skills success is recorded in actions");
-  const optWarning = env.warnings.find((w) => w.code === "OPTIONAL_SKILLS_FAILED");
+  const optWarning = env.warnings.find((w) => w.code === "DEPENDENCY_UNAVAILABLE");
   assert.ok(optWarning, "optional skills failure is emitted as a warning");
   assert.match(optWarning.message, /claude/i, "warning names the failing unrelated connector");
   assert.match(optWarning.message, /plugin marketplace list failed/, "warning includes the underlying failure message");
