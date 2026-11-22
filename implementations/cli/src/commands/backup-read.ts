@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, isCommandFailure, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
@@ -7,18 +8,22 @@ import { cotalRoot } from "../lib/paths.js";
 /** Integrity is a file observation, never evidence of a successful restore or authority continuity. */
 export function backupRead(args: ParsedArgs): void {
   const [mode, directory] = args.positionals;
+  const named = resolve(directory!);
+  let artifact: string | undefined;
   let result: ReturnType<typeof inspectBackupArtifact>;
-  try { result = inspectBackupArtifact(directory!, mode === "verify"); }
-  catch (error) {
+  try {
+    artifact = realpathSync.native(named);
+    result = inspectBackupArtifact(artifact, mode === "verify");
+  } catch (error) {
     if (isCommandFailure(error)) throw error;
-    const missing = missingBackupPath(resolve(directory!));
-    if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(resolve(directory!), missing)}; nothing was checked`, { target: { directory: resolve(directory!), folder: dirname(resolve(directory!)), missing }, remedy: "name an existing backup artifact folder" });
-    // A folder or file that holds nothing a backup create writes is not an artifact at all, so it is
-    // not told the story of an interrupted create, unless this root's claim names it as the
-    // destination of a create that was interrupted before it wrote a file.
-    const notArtifact = notAnArtifactRefusal(cotalRoot(), resolve(directory!), "nothing in it was checked");
-    if (notArtifact) throw notArtifact;
-    if (error instanceof ArtifactFileFault) throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: resolve(directory!), file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
+    const path = artifact ?? named;
+    if (artifact !== undefined && error instanceof ArtifactFileFault) throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; no file content or other manifest value was printed`, { target: { directory: artifact, file: error.file, fault: error.fault }, remedy: "this copy cannot be restored as it is: verify another copy of the same artifact, or create a new backup from a stopped preserved cut; this command did not restore, start a broker or write a staging directory" });
+    const missing = missingBackupPath(path);
+    if (missing) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${missingBackupPathText(path, missing)}; nothing was checked`, { target: { directory: path, folder: dirname(path), missing }, remedy: "name an existing backup artifact folder" });
+    if (artifact !== undefined) {
+      const notArtifact = notAnArtifactRefusal(cotalRoot(), artifact, "nothing in it was checked");
+      if (notArtifact) throw notArtifact;
+    }
     throw new CommandFailure("refused", "SCHEMA_INVALID", "the artifact is missing, unreadable, changed, or does not match its declared format/inventory/integrity; raw manifest values were not printed", { remedy: "inspect the original private artifact without editing it; this command did not restore, start a broker or write a staging directory" });
   }
   writeResult(presentationOf(args.values), { command: `backup ${mode}`, target: { space: result.space, directory: result.directory }, result }, (data): Report => ({ sections: [

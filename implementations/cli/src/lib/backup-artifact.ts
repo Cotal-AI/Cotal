@@ -379,11 +379,8 @@ export function isTrustBound(selection: string, mode: string): boolean {
 /** The receipt line for a trust-bound artifact. */
 export const TRUST_BOUND_TEXT = "only a root that still holds the trust state it was taken under, not another machine or a fresh root";
 
-/** Inspect manifest bytes, or hash every named file, without staging, starting a broker or restoring. */
-export function inspectBackupArtifact(artifactPath: string, verify: boolean) {
-  // A path through a linked folder names the artifact create published and restore stages, so it is
-  // read at its real path, as restore reads it.
-  const artifact = realpathSync.native(resolve(artifactPath));
+/** Read the artifact at its canonical path without staging, starting a broker or restoring. */
+export function inspectBackupArtifact(artifact: string, verify: boolean) {
   const volume = parse(artifact).root;
   if (!realDirNoSymlink(volume, ...artifact.slice(volume.length).split(sep).filter(Boolean))) throw new Error("backup artifact is not a physical directory");
   const before = lstatSync(artifact, { bigint: true });
