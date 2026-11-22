@@ -507,6 +507,8 @@ belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID`
 Persona names for create, edit and remove use letters, digits, `_` and `-`, up to 128 characters.
 A local `persona show` also accepts periods in a catalog name. For example, `cotal persona show review.md`
 reads `.cotal/agents/review.md.md` in the selected space, not `review.md` in the project root.
+If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
+The local show report uses that form in its follow-up commands.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
 `--from` (body file, or `-` for explicit stdin). Empty or whitespace-only `--file` and `--from`
 paths refuse with `USAGE_INVALID`, exit 1, before reading files or resolving the catalog.
