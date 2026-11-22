@@ -736,7 +736,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate;
+  // The removed start command only gives migration advice and needs no extension inventory.
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {

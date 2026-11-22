@@ -19,10 +19,10 @@ import { setupStartEntry } from "./commands/setup-start.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
+import { refuseRemovedStart } from "./commands/removed-start.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
-import { c } from "./ui.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
 import { persona, personaComplete, personaFlags, validatePersonaArguments } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
@@ -654,20 +654,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "start",
     group: "Agents",
-    // Tombstone (stage 2a): the verb is gone, the ability moved. Errors with the replacement —
-    // never a silent alias (no fallbacks). Hidden: not part of the surface, just a signpost.
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) `cotal start` was merged into `cotal spawn --detach`",
-    run: async () => {
-      console.error(
-        c.red(
-          "✗ `cotal start` was merged into `cotal spawn --detach` - one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
-        ),
-      );
-      process.exit(1);
-    },
+    summary: "(removed) launch through a manager with `cotal spawn --detach`",
+    validate: refuseRemovedStart,
+    run: async (args) => refuseRemovedStart(args),
   },
   {
     kind: "command",

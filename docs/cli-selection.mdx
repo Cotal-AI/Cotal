@@ -162,6 +162,7 @@ space under that name and drops the prepared record. It also writes the `default
 `<root>/.cotal/agents` when the root has none, as setup does, and leaves one you edited as it is.
 With an explicit `--root`, `space create` makes missing directories with private permissions under
 a protected, writable directory. `--adopt` requires an existing project folder.
+An invalid space name is refused before connector installation or project writes.
 `--json` lists the files it wrote under `result.written`. The project and its ancestors must be physical
 directories owned by you or root, with no symlinks. World write refuses. A Linux directory can be
 group-writable if an ancestor owned by you or root gives group and other accounts no search
