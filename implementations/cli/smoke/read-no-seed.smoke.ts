@@ -235,6 +235,13 @@ channels:
       text.status === 1 && text.stdout === "" && text.stderr.startsWith(`✗ ${message}\n`)
         && text.stderr.includes(`\ncotal ${parent}\n`) && text.stderr === help.stderr, { text: shown(text), help: shown(help) });
 
+    const literal = run([...args, "--", "--plain"], env);
+    check(`${args.join(" ")} treats --plain after -- as an operand`,
+      literal.status === 1 && literal.stdout === "" && literal.stderr === text.stderr, shown(literal));
+    const plain = run([...args, "--plain"], env);
+    check(`${args.join(" ")} honors --plain as a flag`,
+      plain.status === 1 && plain.stdout === "" && plain.stderr.startsWith("Request refused\n") && plain.stderr.includes(message), shown(plain));
+
     const json = run([...args, "--json"], env);
     const receipt = json.stdout ? JSON.parse(json.stdout) : undefined;
     check(`${args.join(" ")} --json returns one scoped usage refusal on stdout`,

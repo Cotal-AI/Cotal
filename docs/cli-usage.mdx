@@ -314,8 +314,9 @@ reports and error lines draw their marks and punctuation as plain does, and keep
 The entry screen also uses `...` in its send example under these locales. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 A usage refusal under `--plain` or such a locale prints the classified report that begins
-`Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
-control character in the text it quotes, such as a file's bytes or an argument, as an escape like
+`Request refused`, then the command's help. For an unknown subcommand, use `--plain` before
+`--` to select the plain report. Every refusal line, the `✗` line included, shows a control
+character in the text it quotes, such as a file's bytes or an argument, as an escape like
 \u001b, so that text cannot move the cursor or change the screen. A refusal of a value that names
 its own fix prints that line and its next step without the help: an `--on` value that is empty, a
 principal id or not an instance id, a `spawn --on` that needs a terminal or `-d`, `attach` with no

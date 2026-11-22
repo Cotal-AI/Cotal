@@ -535,7 +535,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     }
     throw e;
   }
-  const canonical = resolveSubcommands(cmd, parsed, json, plain);
+  const canonical = resolveSubcommands(cmd, parsed, json);
   const first = parsed.positionals[0];
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
@@ -605,7 +605,7 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
 }
 
 /** Validate the declared subcommand path and canonicalize aliases before passing on the operands. */
-function resolveSubcommands(cmd: Command, parsed: ParsedArgs, json: boolean, plain: boolean): ParsedArgs {
+function resolveSubcommands(cmd: Command, parsed: ParsedArgs, json: boolean): ParsedArgs {
   if (!cmd.subcommands?.length) return parsed;
   const positionals = [...parsed.positionals];
   let surface: Pick<Command, "subcommands"> = cmd;
@@ -618,7 +618,7 @@ function resolveSubcommands(cmd: Command, parsed: ParsedArgs, json: boolean, pla
       if (surface === cmd && cmd.name === "history") break;
       const path = positionals.slice(0, index);
       const at = [cmd.name, ...path].join(" ");
-      usageExit(unknownSubcommandMessage(at, surface, word), cmd, json, plain, json ? `run \`cotal help ${at}\`` : undefined, path);
+      usageExit(unknownSubcommandMessage(at, surface, word), cmd, json, parsed.values.plain === true, json ? `run \`cotal help ${at}\`` : undefined, path);
     }
     changed ||= sub.name !== word;
     positionals[index] = sub.name;
