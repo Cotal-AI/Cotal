@@ -77,8 +77,9 @@ cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>
 
 The fixed-profile forms use the existing native static credential profiles. No generic host
 profile is exposed.
-A space registered as open refuses `UNSUPPORTED`, since it authenticates no one and issues no
-credentials. Per-user-auth spaces also refuse `UNSUPPORTED`. A file-only mint from a local project
+A space recorded as open refuses `UNSUPPORTED`. A stopped prepared stack that last ran open
+also refuses, since an open space issues no credentials. Per-user-auth spaces also refuse
+`UNSUPPORTED`. A file-only mint from a local project
 that records per-user auth refuses even when the space is stopped. Use the space's login or
 enrollment path instead of minting a static credential. The resolved root supplies the persona
 ACL, signer and default storage together. With no space selected
@@ -701,7 +702,8 @@ The broker loads a revocation only when it starts, so the space must be stopped:
 `cotal down --yes`, then this command, then `cotal up`. On a running space it refuses
 `LIFECYCLE_BLOCKED` and names that route, quoting a path a shell would split or expand, and it
 refuses the same way while the root records a maintenance attempt. After that `down`, the command
-run in the folder revokes the space that folder holds even while another space is selected. A path
+run in the issuing project uses its stopped space even while another space is selected. An explicit
+`--space` matching the project's retained static-auth stack reaches the same confirmation. A path
 in that refusal, and in the Next after a revocation, is one shell word. A connection held with the credential ends at the `down` and is refused after
 the `up`. It asks before it revokes, or takes `--yes`; `--json` without `--yes` refuses. The
 confirmation retry keeps any explicit `--space`, `--json` or `--plain` flag. A key

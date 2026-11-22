@@ -14,7 +14,7 @@ import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, MANAGER_START_PAY
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
-  localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, stopReservationPath,
+  hasUserAuthState, localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, retainedLegacyBroker, stopReservationPath,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
@@ -270,8 +270,16 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
   const shown = agents ? [...warnings, { code: agents.code, target, message: `the real stop would refuse: ${agents.message}; ${agents.remedy}` }] : warnings;
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(shown.length ? { warnings: shown } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
-    ...(restart && !agents ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${restartWithoutManager ? " --no-manager" : ""}`, description: restartWithoutManager ? "Start the stack without a manager" : "Start it" }] }] }] : []),
+    ...(restart && !agents ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [stoppedRestart(target, restartWithoutManager, journal)] }] }] : []),
   ] }));
+}
+
+function stoppedRestart(target: { root: string; space?: string }, noManager: boolean, journal?: StackJournal) {
+  const { root, space } = target, up = `${displayCmd()} up`;
+  const retained = !journal && space && hasUserAuthState(root, space, { readOnly: true }) ? retainedLegacyBroker(root) : undefined;
+  if (retained && !retained.open && space)
+    return { command: `${up} --foreground --no-manager --user-auth --space ${shellWord(space)} --server ${shellWord(retained.server)}`, description: "Start it with user auth" };
+  return { command: `${up}${noManager ? " --no-manager" : ""}`, description: noManager ? "Start the stack without a manager" : "Start it" };
 }
 
 /** The registration `cotal up` wrote for this stack is how its members' stops reach it. An older
