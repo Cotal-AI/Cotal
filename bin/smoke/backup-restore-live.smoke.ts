@@ -456,6 +456,16 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       // The previous store holds the only copy of what the restore left out, so the preview warns and
       // both cleanup commands refuse to delete it without --discard-history.
       const previous = active.restore.previousSource!.identity.path;
+      const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
+      const journalBefore = readFileSync(journalPath, "utf8");
+      const otherStore = join(root, ".cotal", "not-the-fallback");
+      mkdirSync(otherStore, { mode: 0o700 });
+      writeFileSync(join(otherStore, "marker"), "kept");
+      const wrongStore = run("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force", "--discard-history", "--store-dir", "./.cotal/not-the-fallback");
+      assert.ok(wrongStore.status === 1 && wrongStore.stderr.includes("does not take --store-dir") && wrongStore.stderr.includes("Remove --store-dir and its value"), `${mode} cleanup refuses the store path\n${wrongStore.stdout}${wrongStore.stderr}`);
+      assert.ok(lstatSync(join(previous, "jetstream")).isDirectory());
+      assert.equal(readFileSync(journalPath, "utf8"), journalBefore);
+      assert.equal(readFileSync(join(otherStore, "marker"), "utf8"), "kept");
       const { run: runElsewhere } = sandboxRun(join(home, "other-project"), home);
       const wrongFolder = runElsewhere("clean", "restore-fallback", "--attempt", active.restore.attemptId, "--force");
       assert.equal(wrongFolder.status, 2, `${mode} cleanup from another project refuses\n${wrongFolder.stderr}`);
@@ -1153,6 +1163,9 @@ async function restoreClaimRaceScenario(): Promise<void> {
       },
     });
     releaseMaintenanceLock(lock);
+    const wrongStore = run("clean", "restore-attempt", "--attempt", "race-stale", "--force", "--store-dir", "./other-store");
+    assert.ok(wrongStore.status === 1 && wrongStore.stderr.includes("does not take --store-dir"), `rollback refuses the store path\n${wrongStore.stdout}${wrongStore.stderr}`);
+    assert.equal(readMaintenanceJournal(root)?.state, "restore-ready");
     const recovered = run("clean", "restore-attempt", "--attempt", "race-stale", "--force");
     assert.equal(recovered.status, 0, `stale attempt recovery\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
     assert.match(recovered.stdout, /retry with `cotal up --restore <dir>` \(replace <dir> with the backup directory/, "rollback names the required backup directory for a retry");
