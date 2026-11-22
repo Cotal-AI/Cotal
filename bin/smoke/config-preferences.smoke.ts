@@ -384,6 +384,10 @@ const ansi = /\x1b\[/;
   writeFileSync(join(catalog, "real.md"), "---\nname: real\n---\nhi\n");
   const real = run(["config", "set", "persona", "real", "--space", "cat", "--json"]);
   check("a name the catalog holds raises no warning", real.status === 0 && warned(real) === undefined, real.envelope);
+  writeFileSync(join(catalog, "review.md.md"), "---\nname: reviewer\n---\nReview changes.\n");
+  const dotted = run(["config", "set", "persona", "review.md", "--space", "cat", "--json"]);
+  check("a dotted catalog name can be saved without a missing file warning",
+    dotted.status === 0 && saved().spaces.cat?.persona === "review.md" && warned(dotted) === undefined, dotted.envelope);
   const path = run(["config", "set", "persona", "./nosuch.md", "--space", "cat", "--json"]);
   check("a persona file path that is missing names the file", path.status === 0 && warned(path)?.message.startsWith(`no persona file ${join(realpathSync(catProject), "nosuch.md")};`) === true, path.envelope);
   const broken = run(["config", "set", "persona", "bad name", "--space", "cat", "--json"]);

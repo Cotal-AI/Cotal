@@ -1,6 +1,6 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, parse, resolve } from "node:path";
+import { delimiter, isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -33,10 +33,12 @@ import {
   paintFor,
   preferencesFolderWarning,
   recordOperationWarning,
+  reportLostOutput,
   renderReport,
   renderWorkspaceError,
   runOperation,
   workspaceErrorParts,
+  writeAllSync,
   spaceRootTarget,
   targetErrorCode,
   targetErrorSpace,
@@ -72,7 +74,6 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy } from "./lib/self-exec.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
@@ -592,11 +593,13 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
   if (cmd.name === "update") {
     // Global maintenance must not inherit an unrelated disposable working folder. Keep the
-    // project's root when one exists and resolve a relative credential before changing folders.
+    // project's root when one exists and preserve relative credentials and tool paths.
     const removed = workingFolderRemoved();
     const root = removed ? undefined : findCotalRoot();
     if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
       parsed.values.creds = resolve(parsed.values.creds);
+    if (!removed && process.env.PATH !== undefined)
+      process.env.PATH = process.env.PATH.split(delimiter).map(dir => dir && !isAbsolute(dir) ? resolve(dir) : dir).join(delimiter);
     process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
     return;
   }
@@ -972,8 +975,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {
-          const { stoppedStackAddressProblem } = await import("./commands/stack-up.js");
-          const held = await stoppedStackAddressProblem(cause.details.root, cause.details.space);
+          const { stackStartAddressProblem } = await import("./commands/stack-up.js");
+          const held = await stackStartAddressProblem(cause.details.root, cause.details.space);
           if (held) failureExit(cmd, inOperationSpace(new CommandFailure("refused", failure.code, `${failure.message}; ${held.message}`, { remedy: held.remedy, target: failure.target }), scope.space), json, parsed.values.plain === true, scope, rest);
         }
         failureExit(cmd, inOperationSpace(await choice(failure), scope.space), json, parsed.values.plain === true, scope, rest);

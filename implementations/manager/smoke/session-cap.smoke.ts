@@ -106,19 +106,19 @@ try {
   const mgr = await bootManager(CAP);
   const M = mgr as unknown as {
     managerInstanceId: string;
-    sessionPlane: { liveSessions: number; maxSessions: number; endAll(r: string): void };
     establishConsoleSession(name: string): Promise<{ grant: { sessionId: string }; creds: string }>;
     agents: Map<string, unknown>;
     attachAuthorized(a: unknown, caller: { owner: string; actor: string; uid: string }): Promise<{ ok: boolean; data?: { grant: { sessionId: string } }; error?: string }>;
+    servePlane: { sessionPlane: { liveSessions: number; maxSessions: number; endAll(r: string): void }; };
   };
   /** End every live session and wait for the plane to actually drain (teardown is async). */
   const drained = async (): Promise<boolean> => {
-    M.sessionPlane.endAll("closed");
-    for (let i = 0; i < 100 && M.sessionPlane.liveSessions > 0; i++) await wait(50);
-    return M.sessionPlane.liveSessions === 0;
+    M.servePlane.sessionPlane.endAll("closed");
+    for (let i = 0; i < 100 && M.servePlane.sessionPlane.liveSessions > 0; i++) await wait(50);
+    return M.servePlane.sessionPlane.liveSessions === 0;
   };
   const iid = M.managerInstanceId;
-  check("fixture: the manager took the configured cap", M.sessionPlane.maxSessions === CAP, M.sessionPlane.maxSessions);
+  check("fixture: the manager took the configured cap", M.servePlane.sessionPlane.maxSessions === CAP, M.servePlane.sessionPlane.maxSessions);
 
   const spawned = await mgr.startAgent({ name: "worker", agent: "smoke-cap", events: false });
   check("fixture: an agent is running to attach to", spawned.ok === true, spawned);
@@ -142,7 +142,7 @@ try {
     check(`session ${i + 1}/${CAP} established`, typeof r.grant.sessionId === "string" && r.grant.sessionId.length > 0);
     check(`session ${i + 1}/${CAP} got a real caller credential`, typeof r.creds === "string" && r.creds.length > 0);
   }
-  check("the plane reports exactly the cap in live sessions", M.sessionPlane.liveSessions === CAP, M.sessionPlane.liveSessions);
+  check("the plane reports exactly the cap in live sessions", M.servePlane.sessionPlane.liveSessions === CAP, M.servePlane.sessionPlane.liveSessions);
   check("the sessions are DISTINCT (not one session counted twice)", new Set(ids).size === CAP, ids);
 
   console.log("B. the N+1th establish REFUSES, and creates nothing");
@@ -159,15 +159,15 @@ try {
   check("the message NAMES the cap and its operator flag (an operator learns the knob to raise)",
     refusal !== undefined && refusal.message.includes(String(CAP)) && refusal.message.includes("--max-sessions"), refusal?.message);
   check("liveSessions stays at N — the refused attempt left no half-registered session",
-    M.sessionPlane.liveSessions === CAP, M.sessionPlane.liveSessions);
+    M.servePlane.sessionPlane.liveSessions === CAP, M.servePlane.sessionPlane.liveSessions);
   check("NO caller JWT was returned (the establisher never reached its mintCreds)", leaked === undefined);
   check("NO new credential row was staged — no serving credential was minted either",
     (await familySize()) === familyBefore, { before: familyBefore, after: await familySize() });
 
   console.log("C. capacity is RECOVERABLE: ending a session frees a slot");
-  M.sessionPlane.endAll("closed");
-  for (let i = 0; i < 100 && M.sessionPlane.liveSessions > 0; i++) await wait(50);
-  check("the plane drains back to zero live sessions", M.sessionPlane.liveSessions === 0, M.sessionPlane.liveSessions);
+  M.servePlane.sessionPlane.endAll("closed");
+  for (let i = 0; i < 100 && M.servePlane.sessionPlane.liveSessions > 0; i++) await wait(50);
+  check("the plane drains back to zero live sessions", M.servePlane.sessionPlane.liveSessions === 0, M.servePlane.sessionPlane.liveSessions);
   const after = await M.establishConsoleSession("worker");
   check("an establish after the drain succeeds (the cap bounds concurrency, never total sessions)",
     typeof after.grant.sessionId === "string" && !ids.includes(after.grant.sessionId));
@@ -178,9 +178,9 @@ try {
     // the refusal is demonstrably a function of how many sessions are live rather than a call that
     // happens to fail the second time. (A second Manager cannot serve the same space from the same
     // workspace root, by design, so the causal proof is this cycle rather than a roomier twin.)
-    check("one slot is in use after the recovery establish", M.sessionPlane.liveSessions === 1, M.sessionPlane.liveSessions);
-    while (M.sessionPlane.liveSessions < CAP) await M.establishConsoleSession("worker");
-    check("refilled back to the cap", M.sessionPlane.liveSessions === CAP, M.sessionPlane.liveSessions);
+    check("one slot is in use after the recovery establish", M.servePlane.sessionPlane.liveSessions === 1, M.servePlane.sessionPlane.liveSessions);
+    while (M.servePlane.sessionPlane.liveSessions < CAP) await M.establishConsoleSession("worker");
+    check("refilled back to the cap", M.servePlane.sessionPlane.liveSessions === CAP, M.servePlane.sessionPlane.liveSessions);
     const familyAtCap = await familySize();
     let second: { code?: string } | undefined;
     try { await M.establishConsoleSession("worker"); } catch (e) { second = { code: (e as { code?: string }).code }; }
@@ -195,8 +195,8 @@ try {
     // `max - 1` all observe room, all mint seed-signed credentials, and all land. The HTTP face
     // already has that concurrency. Fire well past the cap AT ONCE from empty and assert the
     // ceiling held on all three observable quantities.
-    M.sessionPlane.endAll("closed");
-    for (let i = 0; i < 100 && M.sessionPlane.liveSessions > 0; i++) await wait(50);
+    M.servePlane.sessionPlane.endAll("closed");
+    for (let i = 0; i < 100 && M.servePlane.sessionPlane.liveSessions > 0; i++) await wait(50);
     const baseline = await familySize();
     const attempts = CAP + 6;
     const results = await Promise.allSettled(
@@ -206,7 +206,7 @@ try {
     const refused = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     // The CEILING is the security property: it must hold no matter how the losers lost.
     check(`at most ${CAP} of ${attempts} concurrent establishes succeeded (the ceiling held)`, ok.length <= CAP, { ok: ok.length, refused: refused.length });
-    check("liveSessions never exceeded the cap", M.sessionPlane.liveSessions <= CAP, M.sessionPlane.liveSessions);
+    check("liveSessions never exceeded the cap", M.servePlane.sessionPlane.liveSessions <= CAP, M.servePlane.sessionPlane.liveSessions);
     // And the cap must be the reason they lost. Every refusal is `resource-exhausted`: if a loser
     // failed for any other reason (gate contention, a lost CAS) the ceiling would be "holding" by
     // accident, and a fix to that unrelated failure would silently uncap the burst.
@@ -228,7 +228,7 @@ try {
     // EpEnvelopeError keeps its code on the wire while a soft `{ok:false, error}` would collapse into
     // a generic failure the caller cannot branch on. Drive the door itself, and count the target's
     // own `attach()` calls: this door used to attach the PTY first and discover the ceiling after.
-    check("fixture: the plane drained before the ep-door run", await drained(), M.sessionPlane.liveSessions);
+    check("fixture: the plane drained before the ep-door run", await drained(), M.servePlane.sessionPlane.liveSessions);
     const a = M.agents.get("worker");
     check("fixture: the managed agent is reachable as the ep door sees it", a !== undefined);
     const caller = { owner: DEV_OWNER, actor: "operator", uid: mintLifecycleUid() };
@@ -255,7 +255,7 @@ try {
     // REAL establisher (a stub would only prove the face maps whatever it is handed). Every failure
     // used to be 500 with a bare {error}, so a capacity refusal was indistinguishable from an
     // internal fault.
-    check("fixture: the plane drained before the console-face run", await drained(), M.sessionPlane.liveSessions);
+    check("fixture: the plane drained before the console-face run", await drained(), M.servePlane.sessionPlane.liveSessions);
     const url = new URL(mgr.consoleUrl);
     const token = url.hash.replace(/^#t=/, "");
     const post = (name: string) => fetch(`${url.origin}/session/${name}?t=${token}`, { method: "POST" });
@@ -272,11 +272,11 @@ try {
     check("an unrelated failure is still 500 with no code (the 429 did not swallow every error)",
       missing.status === 500 && missingBody.code === undefined && (missingBody.error ?? "").includes("no-such-agent"),
       { status: missing.status, body: missingBody });
-    while (M.sessionPlane.liveSessions < CAP) {
+    while (M.servePlane.sessionPlane.liveSessions < CAP) {
       const fill = await post("worker");
       if (fill.status !== 200) { check("fixture: filling to the cap over HTTP", false, fill.status); break; }
     }
-    check("fixture: the face filled the plane to the cap", M.sessionPlane.liveSessions === CAP, M.sessionPlane.liveSessions);
+    check("fixture: the face filled the plane to the cap", M.servePlane.sessionPlane.liveSessions === CAP, M.servePlane.sessionPlane.liveSessions);
     const attachesAtCap = attaches;
     const over = await post("worker");
     const body = (await over.json()) as { error?: string; code?: string };

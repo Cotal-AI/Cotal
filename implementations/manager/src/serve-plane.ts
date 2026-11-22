@@ -63,16 +63,6 @@ export interface ServePlaneDeps {
   leaseStopping(): boolean;
   serviceServe(): ServiceServe | undefined;
   setServiceServe(value: ServiceServe | undefined): void;
-  sessionLedgerIdentity(): Identity | undefined;
-  setSessionLedgerIdentity(value: Identity | undefined): void;
-  sessionLedgerCreds(): string | undefined;
-  setSessionLedgerCreds(value: string | undefined): void;
-  sessionLedgerConn(): SessionLedgerConnection | undefined;
-  setSessionLedgerConn(value: SessionLedgerConnection | undefined): void;
-  sessionPlane(): ManagerSessionPlane | undefined;
-  setSessionPlane(value: ManagerSessionPlane | undefined): void;
-  sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined;
-  setSessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined): void;
   userMode(): boolean;
   setGoalWriterIdentity(value: Identity): void;
   setGoalWriterCreds(value: string | undefined): void;
@@ -110,16 +100,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     leaseStopping: () => m["leaseStopping"],
     serviceServe: () => m["serviceServe"],
     setServiceServe: (value) => { m["serviceServe"] = value; },
-    sessionLedgerIdentity: () => m["sessionLedgerIdentity"],
-    setSessionLedgerIdentity: (value) => { m["sessionLedgerIdentity"] = value; },
-    sessionLedgerCreds: () => m["sessionLedgerCreds"],
-    setSessionLedgerCreds: (value) => { m["sessionLedgerCreds"] = value; },
-    sessionLedgerConn: () => m["sessionLedgerConn"],
-    setSessionLedgerConn: (value) => { m["sessionLedgerConn"] = value; },
-    sessionPlane: () => m["sessionPlane"],
-    setSessionPlane: (value) => { m["sessionPlane"] = value; },
-    sessionKeyRenewTimer: () => m["sessionKeyRenewTimer"],
-    setSessionKeyRenewTimer: (value) => { m["sessionKeyRenewTimer"] = value; },
     userMode: () => m["userMode"],
     setGoalWriterIdentity: (value) => { m["goalWriterIdentity"] = value; },
     setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
@@ -155,6 +135,24 @@ export class ServePlane {
    *  revoke; a session that never staged drops its entry when the manager exits. */
   private readonly sessionServingKeys = new Map<string, string>();
 
+  /** The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
+   *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
+   *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
+  sessionPlane?: ManagerSessionPlane;
+  /** The standing session-LEDGER connection + its mutable creds holder (the authenticator
+   *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
+   *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
+  sessionLedgerConn?: SessionLedgerConnection;
+  /** Renews the session signing key long before its window closes. A key that expires unattended
+   *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
+  sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
+  /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
+   *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
+   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
+   *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
+  sessionLedgerIdentity?: Identity;
+  sessionLedgerCreds?: string;
+
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal">) {}
 
   private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
@@ -164,16 +162,6 @@ export class ServePlane {
   private get leaseStopping(): boolean { return this.deps.leaseStopping(); }
   private get serviceServe(): ServiceServe | undefined { return this.deps.serviceServe(); }
   private set serviceServe(value: ServiceServe | undefined) { this.deps.setServiceServe(value); }
-  private get sessionLedgerIdentity(): Identity | undefined { return this.deps.sessionLedgerIdentity(); }
-  private set sessionLedgerIdentity(value: Identity | undefined) { this.deps.setSessionLedgerIdentity(value); }
-  private get sessionLedgerCreds(): string | undefined { return this.deps.sessionLedgerCreds(); }
-  private set sessionLedgerCreds(value: string | undefined) { this.deps.setSessionLedgerCreds(value); }
-  private get sessionLedgerConn(): SessionLedgerConnection | undefined { return this.deps.sessionLedgerConn(); }
-  private set sessionLedgerConn(value: SessionLedgerConnection | undefined) { this.deps.setSessionLedgerConn(value); }
-  private get sessionPlane(): ManagerSessionPlane | undefined { return this.deps.sessionPlane(); }
-  private set sessionPlane(value: ManagerSessionPlane | undefined) { this.deps.setSessionPlane(value); }
-  private get sessionKeyRenewTimer(): ReturnType<typeof setInterval> | undefined { return this.deps.sessionKeyRenewTimer(); }
-  private set sessionKeyRenewTimer(value: ReturnType<typeof setInterval> | undefined) { this.deps.setSessionKeyRenewTimer(value); }
   /** The connector rows a status read serves (see {@link servedConnectorStatuses}), after retrying the unavailable ones. */
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;

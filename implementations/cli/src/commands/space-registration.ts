@@ -625,11 +625,13 @@ export async function spaceForget(rest: readonly string[], presentation: Present
   const legacy = encodeURIComponent(name);
   const damaged = registry.unusable.filter((e) => e.file === meshFile(name)
     || !/^space\.[0-9a-f]+$/.test(legacy) && e.file === join(homeCotalDir(), "meshes", `${legacy}.json`));
+  const directory = damaged.find((e) => e.recordDirectory);
+  if (directory) throw refuse("SCHEMA_INVALID", `${directory.summary}; nothing was forgotten`, { ...target, file: directory.file }, directory.remedy);
   const unrelated = registry.unusable.filter((e) => !damaged.includes(e));
   // Only the recovery offered for an exact damaged registration bypasses other damaged records.
   if (damaged.length === 0 && unrelated[0]) throw unrelated[0];
   const damagedWarnings: OutputWarning[] = unrelated.map((error) =>
-    ({ code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${removeStep(error.file)}` }));
+    ({ code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${error.remedy ?? removeStep(error.file)}` }));
   const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
   const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
@@ -641,6 +643,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     } catch (e) {
       // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
+      if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
       removeDamaged();
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);

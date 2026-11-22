@@ -142,6 +142,12 @@ check("stop finds nothing to stop: a no-op, exit 0", stopped.status === 0 && sto
 const workerFile = join(home, "worker.json");
 writeFileSync(workerFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", ""], cwd: root }, readiness: { type: "process", timeoutMs: 5000 } }));
 const workerAdded = run(["service", "add", "worker", "--file", workerFile, "--space", "b1"]);
+const neverRestarted = run(["service", "restart", "worker", "--space", "b1", "--yes"]);
+check("restart with no recorded instance refuses and names the first start of this service in this space",
+  workerAdded.status === 0 && neverRestarted.status === 2 && neverRestarted.envelope?.outcome === "refused" && neverRestarted.envelope.error?.code === "TARGET_NOT_FOUND" && neverRestarted.envelope.error.remedy === "cotal service start worker --space b1", shown(neverRestarted));
+const firstPreview = run(["service", "start", "worker", "--space", "b1", "--foreground", "--dry-run"]);
+check("the advised start can allocate the first instance, and preview changes nothing",
+  firstPreview.status === 0 && firstPreview.envelope?.result?.newInstanceWouldBeAllocated === true && firstPreview.envelope.result.allocated === false && firstPreview.envelope.result.signalled === false, shown(firstPreview));
 const firstWorker = run(["service", "start", "worker", "--space", "b1"]);
 const secondWorker = run(["service", "start", "worker", "--new-instance", "--space", "b1"]);
 const [one, two] = [firstWorker, secondWorker].map((r) => r.envelope?.target?.instanceId);

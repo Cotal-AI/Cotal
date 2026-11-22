@@ -659,7 +659,8 @@ export async function ps(args: ParsedArgs): Promise<void> {
       const cause = isConnectRefusal(e) ? e.cause : e;
       const block = channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
         ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`) : undefined);
-      if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. Restart blocked: ${block.message}`, {
+      const first = isWorkspaceTargetError(cause) && cause.details.space !== undefined && cause.details.stopped === undefined;
+      if (block) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${parts.message}. ${first ? "First start" : "Restart"} blocked: ${block.message}`, {
         target: isConnectRefusal(e) ? e.target : isWorkspaceTargetError(e) ? spaceRootTarget(e.details) : undefined,
         native: isConnectRefusal(e) ? e.native : undefined,
         remedy: block.remedy,

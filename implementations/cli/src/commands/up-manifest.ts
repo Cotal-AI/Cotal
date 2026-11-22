@@ -264,9 +264,9 @@ export async function upManifest(file: string, opts: UpManifestFlags): Promise<v
   // stopped space keeps its registered address, and a second stack started there answers for both
   // registrations. A fresh team boot has its own refusal below, so this is the ordinary `up -f`.
   if (!opts.freshTeamBoot)
-    refuseRegisteredAddress(server, m.space, opts.server !== undefined
-      ? `start this one at another address with \`cotal up -f ${file} --server nats://${host}:<port>\``
-      : `point broker.servers in ${file} at another address`);
+    refuseRegisteredAddress(server, m.space, opts.dryRun
+      ? "choose another address for --server and repeat the same --dry-run"
+      : opts.server !== undefined ? "choose another address for --server and repeat the original command" : `point broker.servers in ${file} at another address`);
   if (opts.freshTeamBoot) {
     const other = loadMeshes().filter((row) => row.space !== m.space && row.server === server);
     if (other.length) throw new CommandFailure("refused", "CONFLICT", "another local registration names this exact broker address; fresh team boot did not create a listener over its recorded target", { target: { space: m.space, server: brokerAddressForDisplay(server) ?? "not displayable", otherSpaces: other.map((row) => row.space) }, remedy: "inspect both registrations and their native brokers; exact-address conflicts block creation, while no conflict does not prove exclusivity" });

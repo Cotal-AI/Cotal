@@ -69,12 +69,12 @@ type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: { identity: Identity; creds?: string }, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
   renewRemoteStandingBundle(force?: boolean): Promise<void>;
-  goalWriterCreds?: string; sessionLedgerCreds?: string;
+  goalWriterCreds?: string;
   serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   goalWriter?: { nc: NatsConnection; creds?: string };
-  sessionLedgerConn?: { nc: NatsConnection; creds?: string };
   ep: { refreshCredsRequestSafe(): Promise<void> };
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
+  servePlane: { sessionLedgerCreds?: string; sessionLedgerConn?: { nc: NatsConnection; creds?: string }; };
 };
 
 const conns: NatsConnection[] = [];
@@ -178,13 +178,13 @@ try {
   };
   // Manager.startServiceEndpoint seeds these two holders from the remote authority before dialing.
   m.goalWriterCreds = initial.goalWriter;
-  m.sessionLedgerCreds = initial.sessionLedger;
+  m.servePlane.sessionLedgerCreds = initial.sessionLedger;
   m.goalWriter = { nc: undefined as never, creds: initial.goalWriter };
   m.goalWriter.nc = await live(() => m.goalWriter!.creds!, held.goalWriter);
-  m.sessionLedgerConn = { nc: undefined as never, creds: initial.sessionLedger };
-  m.sessionLedgerConn.nc = await live(() => m.sessionLedgerConn!.creds!, held.sessionLedger);
+  m.servePlane.sessionLedgerConn = { nc: undefined as never, creds: initial.sessionLedger };
+  m.servePlane.sessionLedgerConn.nc = await live(() => m.servePlane.sessionLedgerConn!.creds!, held.sessionLedger);
   const holders = () => ({ supervisor: m.credentialRenewal.remoteSupervisorCreds, executor: m.credentialRenewal.remoteExecutorCreds, serve: m.serviceServe!.creds,
-    goalWriter: m.goalWriter!.creds, sessionLedger: m.sessionLedgerConn!.creds });
+    goalWriter: m.goalWriter!.creds, sessionLedger: m.servePlane.sessionLedgerConn!.creds });
   const flushAll = () => Promise.all(conns.map((nc) => Promise.race([nc.flush().then(() => true, () => false), wait(1500).then(() => false)])));
 
   await cell("five standing connections are live on the broker under the initial family", async () => {
