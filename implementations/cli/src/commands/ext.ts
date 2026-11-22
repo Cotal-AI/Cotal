@@ -59,7 +59,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
-  if (sub === "remove" && operand && !/^(?:@[a-z0-9-][a-z0-9._~-]*\/)?[a-z0-9-][a-z0-9._~-]*$/i.test(operand)) {
+  // npm accepts an initial underscore in the package part of a scoped name.
+  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");

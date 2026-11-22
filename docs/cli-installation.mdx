@@ -741,6 +741,7 @@ Give `add` a package name or a local package path such as `./example-extension`.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
+For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
