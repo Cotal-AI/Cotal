@@ -289,7 +289,8 @@ export function validateHistoryArguments(args: ParsedArgs): void {
 /** A JSON history follow that refused before writing its snapshot. */
 export function historySetupFailureRecords(args: Pick<ParsedArgs, "values" | "positionals">, failure: CommandFailure) {
   const first = args.positionals[0];
-  const target = failure.target ?? { space: args.values.space ?? null, channel: first === undefined ? null : channelOf(first), dms: Boolean(args.values.dms) };
+  const space = typeof args.values.space === "string" && args.values.space.trim() ? args.values.space : null;
+  const target = failure.target ?? { space, channel: first === undefined ? null : channelOf(first), dms: Boolean(args.values.dms) };
   return [
     streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
     streamRecord("history", "end", target, { reason: "setup-failed" }),

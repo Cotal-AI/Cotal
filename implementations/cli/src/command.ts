@@ -65,7 +65,7 @@ import { historySetupFailureRecords } from "./commands/history.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
-import { metadataPositionals } from "./lib/command-path.js";
+import { metadataPositionals, typographicOptionParts } from "./lib/command-path.js";
 import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
@@ -378,7 +378,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
   if (cmd && json) {
-    const metadata = cmd.name === "history" ? metadataPositionals(cmd, words) : undefined;
+    const metadata = cmd.name === "history" ? metadataPositionals(cmd, words, { refusalGlobalFlags: GLOBAL_FLAGS }) : undefined;
     const historyArgs = metadata && { values: metadata.values, positionals: metadata.positionals.map(({ value }) => value) };
     const failure = new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` });
     failureExit(cmd, failure, true, historyArgs?.values.plain === true, undefined, words, historyArgs);
@@ -393,10 +393,10 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
 function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []): { message: string; remedy?: string } | undefined {
-  const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
+  const typed = typographicOptionParts(word);
   if (!typed) return undefined;
-  const [, name, value] = typed;
-  const long = names.has(name!);
+  const { name, value } = typed;
+  const long = names.has(name);
   const flag = flags.find((flag) => long ? flag.name === name : flag.short === name);
   if (!long && !flag) return undefined;
   const message = `${word} starts with a typographic dash, so it is not an option`;
@@ -506,7 +506,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest);
+    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, parsed);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -534,7 +534,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest);
+        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, canonical);
     }
   }
   return canonical;

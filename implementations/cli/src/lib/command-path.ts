@@ -1,21 +1,27 @@
 import type { Command, FlagSpec, ParsedArgs } from "@cotal-ai/core";
 
+export function typographicOptionParts(word: string): { name: string; value?: string } | undefined {
+  const match = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
+  return match ? { name: match[1]!, value: match[2] } : undefined;
+}
+
 /** Read command words and declared options for help, completion and refusals, without validating an invocation. */
-export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean } = {}) {
+export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly string[], options: { completing?: boolean; refusalGlobalFlags?: readonly string[] } = {}) {
   const positionals: { value: string; index: number }[] = [];
   const values: ParsedArgs["values"] = Object.create(null);
   let valueFlag: FlagSpec | undefined;
   let optionsEnded = false;
-  const takeOption = (flag: FlagSpec, inline: string | undefined, index: number): number => {
+  const takeOption = (flag: FlagSpec, inline: string | undefined, index: number, validSpelling = true): number => {
     if (flag.type === "boolean") {
-      if (inline === undefined) values[flag.name] = true;
-    } else if (inline !== undefined) values[flag.name] = inline;
-    else {
+      if (validSpelling && inline === undefined) values[flag.name] = true;
+    } else if (inline !== undefined) {
+      if (validSpelling) values[flag.name] = inline;
+    } else {
       if (index >= argv.length - 2) valueFlag = flag;
       const next = argv[index + 1];
       // A missing value must not hide the next option or swallow the separator in a refusal.
       if (next !== undefined && (options.completing || !next.startsWith("-") || next === "-" || /^-\d/.test(next))) {
-        values[flag.name] = next;
+        if (validSpelling) values[flag.name] = next;
         return index + 1;
       }
     }
@@ -38,7 +44,13 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
         index = takeOption(flag, flag.type === "string" ? cluster.slice(offset + 1) || undefined : undefined, index);
         if (flag.type === "string") break;
       }
-    } else positionals.push({ value: word, index });
+    } else {
+      const typed = options.refusalGlobalFlags && !optionsEnded ? typographicOptionParts(word) : undefined;
+      const flag = typed && (cmd.flags?.find((item) => item.name === typed.name) ?? cmd.flags?.find((item) => item.short === typed.name));
+      // A misspelled option and its operand do not name the command's target or select its output.
+      if (typed && flag) index = takeOption(flag, typed.value, index, false);
+      else if (!typed || !options.refusalGlobalFlags?.includes(typed.name)) positionals.push({ value: word, index });
+    }
   }
   return { positionals, values, valueFlag, optionsEnded };
 }

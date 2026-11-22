@@ -782,12 +782,12 @@ A sequence cutoff applies only to the snapshot because live events have no `seq`
 An `error` record names a failure on the live feed, and a lost
 connection is one `TARGET_UNAVAILABLE` error. A
 `gap` record says the connection was re-established and messages sent while it was down are not
-shown. A JSON follow that refuses invalid read arguments, including missing option values or unknown
-options, does not connect and reports `USAGE_INVALID`. When setup fails for any of these reasons,
-or because the target cannot be opened or the snapshot cannot be read, the follow writes an `error`
-with the failure's code and any remedy, then an `end` with `reason: "setup-failed"`, without a
-snapshot. An `end` record closes the stream. The exit code is the snapshot's, the failure's when
-setup or the credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+shown. A JSON follow that refuses invalid read arguments does not connect and reports `USAGE_INVALID`.
+This includes missing option values, unknown options, an empty `--space` or an invalid `--server`.
+An argument refusal, a target that cannot be opened or a snapshot that cannot be read produces an
+`error` with the failure's code and any remedy, then an `end` with `reason: "setup-failed"`. No
+snapshot is written. An `end` record closes the stream. The exit code is the snapshot's, the
+failure's when setup or the credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 
 To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
 you processed at that timestamp. Restart with `--since` set to one millisecond before the saved

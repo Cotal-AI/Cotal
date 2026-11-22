@@ -148,9 +148,16 @@ async function checkHistoryFollowValidation(): Promise<void> {
       { words: ["--unknown-option", "--follow", "-jsread-space", "#general"], space: "read-space", channel: "general", message: "Unknown option '--unknown-option'" },
       { words: ["--dms", "--limit", "--follow", "-j"], dms: true, message: "--limit needs a value", remedy: "write --limit <n>" },
       { words: ["--follow", "-j", "--limit", "--", "general"], channel: "general", message: "--limit needs a value", remedy: "write --limit <n> before --" },
+      { words: ["#general", "--follow", "-j", "--space="], channel: "general", message: "--space/-s is empty; name one space" },
+      { words: ["--dms", "--follow", "-j", "-s", " "], dms: true, message: "--space/-s is empty; name one space" },
+      { words: ["#general", "--follow", "-j", "--space=read-space"], server: `${server}/path`, space: "read-space", channel: "general", message: "--server must be a bare broker URL - drop its path; the command did not run" },
+      { words: ["\u2013\u2013grep=alpha", "--follow", "--json", "#general"], channel: "general", message: "\u2013\u2013grep=alpha starts with a typographic dash, so it is not an option", remedy: "type the option with hyphens: --grep=alpha" },
+      { words: ["\u2013\u2013grep", "alpha", "--follow", "-j", "#general"], channel: "general", message: "\u2013\u2013grep starts with a typographic dash, so it is not an option" },
+      { words: ["\u2013\u2013no-input", "--follow", "-j", "#general"], channel: "general", message: "\u2013\u2013no-input starts with a typographic dash, so it is not an option" },
+      { words: ["--follow", "-j", "--unknown-option", "--", "\u2013\u2013dms"], channel: "\u2013\u2013dms", message: "Unknown option '--unknown-option'" },
     ];
-    for (const { words, label, message, remedy, channel, space: targetSpace, dms } of cases) {
-      const stream = await run(["history", "--server", server, ...words]);
+    for (const { words, label, message, remedy, channel, space: targetSpace, dms, server: address = server } of cases) {
+      const stream = await run(["history", "--server", address, ...words]);
       const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
         schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
         data?: { code?: string; message?: string; remedy?: string; reason?: string };
@@ -165,7 +172,9 @@ async function checkHistoryFollowValidation(): Promise<void> {
         { stream: shown(stream), connections });
     }
     for (const words of [["general", "--limit"], ["--grep=--follow", "--limit"], ["--limit", "--", "--follow"],
-      ["--follow", "--limit", "--plain"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"]]) {
+      ["--follow", "--limit", "--plain"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"],
+      ["#general", "--space="], ["clear", "--follow", "--space="], ["--follow", "\u2013\u2013dms", "clear"],
+      ["\u2013\u2013follow", "#general"]]) {
       const receipt = await run(["history", "--json", "--server", server, ...words]);
       check(`history ${words.join(" ")} still writes one USAGE_INVALID receipt, exit 1, without connecting`,
         receipt.status === 1 && receipt.stderr === "" && connections === 0 && receipt.envelope?.command === "history"
