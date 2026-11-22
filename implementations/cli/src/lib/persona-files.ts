@@ -152,7 +152,7 @@ function caseTwin(path: string): string | undefined {
 
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
  *  A new persona whose name differs from an existing one only in case is refused. */
-export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined): void {
+export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined, target = ""): void {
   const oversized = bytes && tooLarge(bytes, "shorten its instructions to 1 MiB or less");
   if (oversized) throw oversized;
   const dir = dirname(path);
@@ -168,8 +168,10 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     if (!sameSource(expected, current))
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
     const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
-    if (twin !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit ${twin}\`` });
+    if (twin !== undefined) {
+      const edit = twin.startsWith("-") ? `${target} -- ${shellWord(twin)}` : ` ${shellWord(twin)}${target}`;
+      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit${edit}\`` });
+    }
     if (bytes === undefined) unlinkSync(path);
     else {
       try { writeSecretFileAtomic(path, bytes); }
@@ -282,13 +284,14 @@ export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { acti
 /** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock.
  *  An interrupt that stops the edit saves nothing, removes an unchanged draft, names a changed one, and
  *  exits with the signal's code. */
-export async function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): Promise<PersonaEdit> {
+export async function editPersona(path: string, name: string, catalog: PersonaCatalog, target: string, json = false): Promise<PersonaEdit> {
   if (explicitNoInputFlag())
     throw new ConfirmationRequired("persona edit opens an editor, and --no-input forbids one", { remedy: "edit interactively without --no-input" });
   const source = requirePersonaSource(path);
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
+  const retry = `cotal persona edit${name.startsWith("-") ? `${target} -- ${name}` : ` ${name}${target}`}`;
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {
@@ -322,14 +325,14 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     }
     const edited = requirePersonaSource(draft).bytes;
     if (edited.equals(source.bytes)) return { action: "unchanged" };
-    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`);
+    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
     try { validatePersona(edited, draft); }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message} - not saved`, {
-        remedy: `your edit is kept in ${draft}; correct it, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`,
+        remedy: `your edit is kept in ${draft}; correct it, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`,
       });
     }
     try { commitPersona(path, source, edited); }
@@ -343,7 +346,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
         });
       }
       const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error), { cause: error });
-      const kept = `your edit is kept in ${draft}, so run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`;
+      const kept = `your edit is kept in ${draft}, so run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`;
       throw new CommandFailure(failure.outcome, failure.code, failure.message, {
         remedy: failure.remedy ? `${failure.remedy}; ${kept}` : kept, target: failure.target, changed: failure.changed, native: failure.native, cause: error,
       });

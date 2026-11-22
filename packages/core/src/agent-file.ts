@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -136,10 +136,12 @@ const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "su
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
 
-/** Refuse a whitespace-only `model` or `variant`. Launchers and connectors read these as set or
+/** Refuse a blank `agent`, `model` or `variant`. Launchers and connectors read these as set or
  *  absent, and a blank value is neither, so letting one through leaves each of them to drop, render
  *  or refuse it on its own. */
-function assertLaunchSelectors(def: Pick<AgentDef, "model" | "variant">, where: string): void {
+function assertLaunchSelectors(def: Pick<AgentDef, "agent" | "model" | "variant">, where: string): void {
+  if (def.agent !== undefined && !def.agent.trim())
+    throw new Error(`${where}: "agent" must not be empty. Omit "agent" to use the default connector, or name an installed connector`);
   for (const k of ["model", "variant"] as const) {
     const v = def[k];
     if (v !== undefined && !v.trim()) throw new Error(`${where}: "${k}" must not be empty`);
@@ -173,8 +175,9 @@ export function loadAgentFile(path: string, options?: { deferRoleValidation?: bo
 export function parseAgentFileSource(src: string, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const encoding = utf16Problem(src);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
-  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
-  if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
+  const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const m = AGENT_FILE_FENCE.exec(normalized);
+  if (!m) throw new Error(`agent file ${path}: ${normalized.startsWith("---\n") ? 'missing closing "---" frontmatter fence on its own line' : 'missing "---" frontmatter block'}`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
@@ -198,9 +201,10 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const name = str("name");
   if (!name) throw new Error(`agent file ${path}: "name" is required`);
   assertValidName(name);
+  const agent = str("agent");
   const model = str("model");
   const variant = str("variant");
-  assertLaunchSelectors({ model, variant }, `agent file ${path}`);
+  assertLaunchSelectors({ agent, model, variant }, `agent file ${path}`);
   const rawKind = str("kind");
   const kind = rawKind !== undefined ? assertValidKind(rawKind, `agent file ${path}`) : undefined;
 
@@ -292,7 +296,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     kind,
     description: str("description"),
     tags: list("tags"),
-    agent: str("agent"),
+    agent,
     subscribe,
     allowSubscribe,
     allowPublish,

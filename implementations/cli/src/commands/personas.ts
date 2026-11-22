@@ -220,7 +220,7 @@ async function edit(name: string | undefined, values: { space?: string; server?:
   if (!resolvePreference("editor", { preferences: cachedPreferences() }).value)
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const catalog = personaCatalog(values);
-  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog, targetWords(values));
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
   else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
   else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
@@ -279,7 +279,7 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   }
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
-  commitPersona(path, expected, bytes);
+  commitPersona(path, expected, bytes, targetWords(v));
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  \`cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}\``));
 }

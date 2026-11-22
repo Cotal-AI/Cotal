@@ -516,6 +516,7 @@ persona. Creation keeps their original bytes. An invalid encoding refuses with `
 names the source and asks you to save it as UTF-8. It writes nothing. A file that names another persona is
 refused with `SCHEMA_INVALID`, naming the file's own name. If that name can be used in the catalog,
 the refusal gives the `persona create` command that keeps it and quotes the file path for the shell.
+With `--file -`, pipe the definition into the retry again.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
 such as a missing frontmatter block, the renamed `channels` key or a `subscribe` channel outside
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.
@@ -541,6 +542,7 @@ manager applies to its input, and an edit keeps that draft and names it.
 Creation refuses an existing definition with `CONFLICT`. The suggested edit and removal commands
 keep any explicit `--space` or `--server` flags. A name that differs from an existing one only in
 case also refuses with `CONFLICT`, since a case-insensitive file system holds the two as one file.
+The suggested edit keeps the explicit target flags in this case too.
 Mutation receipts contain names and paths, not bodies.
 A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
 file it links to. `spawn` reads that file, but `persona show`, `edit` and `remove` refuse the link
@@ -562,7 +564,8 @@ and names the setting to fix. The draft's private folder is made in the temporar
 or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
 successful editor exit and valid definition are required before saving. A draft that fails
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
-so the edit is not lost. An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
+so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags.
+An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
 exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
 editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
 SIGHUP that reaches the CLI while the editor is open is passed to the editor, and the CLI waits for

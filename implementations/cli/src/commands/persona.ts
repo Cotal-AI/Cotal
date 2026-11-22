@@ -98,11 +98,11 @@ export async function persona(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit ${name}${target}\`, or remove it with \`cotal persona remove ${name}${target}\` first` });
     }
     const bytes = await createSource(name!, path, values);
-    commitPersona(path, expected, bytes);
+    commitPersona(path, expected, bytes, targetWords(values));
     return receipt(presentation, catalog, name!, path, "created");
   }
   if (sub === "edit") {
-    const edit = await editPersona(path, name!, catalog, presentation === "json");
+    const edit = await editPersona(path, name!, catalog, targetWords(values), presentation === "json");
     if (edit.action === "saved") return receipt(presentation, catalog, name!, path, "saved");
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
@@ -151,6 +151,7 @@ async function createSource(name: string, path: string, values: Values): Promise
         : `cotal persona create ${ownName} ${file}${targetWords(values)}`;
       const rename = `set its name to '${name}'`;
       const remedy = personaNameProblem(def.name) || reservedPersonaName(def.name) ? rename
+        : values.file === "-" ? `pipe the original definition into ${codeSpan(retry)} again, or ${rename} and pipe the corrected definition into the original command`
         : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });
     }
