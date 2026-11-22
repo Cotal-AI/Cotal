@@ -175,7 +175,7 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "install" || mode === "status" || mode === "logs");
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
   const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
@@ -331,6 +331,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   }
   const declaredStop = prepared?.adapter ?? (definition.record.value.launch.type === "adapter" ? resolveServiceAdapter(definition.record.value.launch.adapter, definition.record.value.launch.options, false) : undefined);
   if (values["with-agents"] && declaredStop?.declaration.stop !== "native") throw new CommandFailure("refused", "UNSUPPORTED", "--with-agents requires this selected adapter's native stop policy; generic descendant signals are not supported", { target });
+  if (mode === "stop" && !selected) {
+    const result = { kind: "service-stop", space, definition: name, instanceId: null, dryRun: values["dry-run"] === true };
+    writeResult(presentation, { command: commandName, target, result, noOp: true }, (): Report => ({ sections: [{ title: "Service was not running; nothing was stopped", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", "not recorded"]] }] }] }));
+    return;
+  }
   const launch = definition.record.value.launch;
   if (launch.type === "adapter" && launch.adapter === STACK_ADAPTER.manager && (mode === "restart" || mode === "start" && (!selected || observeServiceProcess(selected.record.value) !== "running")))
     assertManagerStartOptions(space, launch.options);

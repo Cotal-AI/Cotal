@@ -137,8 +137,9 @@ value the preset's schema refuses gives the preset's help as its Next:
 `broker` preset's `server`: `add` checks it against the address rules a start applies, and its
 refusal quotes the address unless it holds an `@`, which may be a credential.
 
-`--file` imports a version-1 definition. This one runs a program and treats it as ready once its
-loopback health URL answers 200:
+`--file` imports a version-1 definition. An empty or whitespace-only value refuses `USAGE_INVALID`
+(exit 1) before selecting a space and asks for `--file <definition.json>`.
+This definition runs a program and treats it as ready once its loopback health URL answers 200:
 
 ```json
 {
@@ -226,7 +227,10 @@ Ctrl-D or closed input at that question leaves the service unchanged and exits 0
 with `--space` and the `--instance` and `--with-agents` you gave, so that command acts on the same
 service. Without an
 installed unit, a `restart` whose process is already gone stops nothing, so it does not ask. A
-start or stop that finds nothing to do says so and reports `no-op`.
+start or stop that finds nothing to do says so and reports `no-op`. For a saved definition with no
+recorded instances, `stop` and `stop --dry-run` report `no-op` without asking for confirmation or
+allocating an instance. An explicit `--instance` that does not belong to the service still refuses
+with `TARGET_NOT_FOUND` (exit 2).
 
 `service status <name>` reports `not started` and exits 0 for a saved definition with no recorded
 instances. It does not allocate an instance or start a process. With `--json`, the result has
