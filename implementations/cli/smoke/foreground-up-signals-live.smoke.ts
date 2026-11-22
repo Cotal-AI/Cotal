@@ -72,6 +72,23 @@ function controllerBroker(space: string, machine: string) {
   finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
 }
 
+async function checkStoppedPreview(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number): Promise<void> {
+  const cleared = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["use", "--clear"]);
+  assert.equal(cleared.code, 0, cleared.out + cleared.err);
+  const preview = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["spawn", "--dry-run", "--json"]);
+  assert.equal(preview.code, 0, preview.out + preview.err);
+  const { target, result } = JSON.parse(preview.out);
+  assert.deepEqual(target, { space, broker: null, authMode: null });
+  assert.equal(result.kind, "direct-launch-preview");
+  assert.equal(result.persona.path, join(mesh, ".cotal", "agents", "default.md"));
+  assert.equal(result.persona.write, "none");
+  assert.equal(result.authorization, "not-checked");
+  assert.equal(result.connectorAvailability, "not-checked");
+  assert.equal(result.allocated, false);
+  assert.equal(result.launched, false);
+  assert.equal(await portOpen(port), false, "the offline preview kept the broker stopped"); passed++;
+}
+
 async function checkStoppedRestartAdvice(mesh: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
   const inspect = (command: string) => foregroundCliProbe(cliEntry, tsx, mesh, env, [command, "--plain"], 60_000);
   const check = async (diagnosis: string, remedy: string, alternative?: string) => {
@@ -125,7 +142,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -332,6 +349,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       return true;
     }
     if (options.refusal || options.externalDown) {
+      if (!options.auth) await until(() => /Press Ctrl-C to stop/.test(out), 60_000, () => err.slice(-3000));
       // Shipped bare down refuses --space/--server. Verify the one private registry record first.
       const registryPath = join(home, "machine", "meshes", `space.${spaceKey(space)}.json`);
       const registration = JSON.parse(readFileSync(registryPath, "utf8")) as { root?: string; space?: string; server?: string };
@@ -369,6 +387,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
           assert.match(spaces.out, /No spaces registered/); passed++;
           await checkStoppedRestartAdvice(mesh, env, port);
         }
+        if (!options.auth) await checkStoppedPreview(mesh, env, space, port);
         console.log(`PASS foreground-up-signals ${name}: clean external down and expected registration`);
         return true;
       }
@@ -937,6 +956,7 @@ console.log(`foreground-up-signals retained evidence: ${base}`);
 await userAuthRestartCell();
 await cell("external-named", { auth: true, ready: true, externalDown: "named" });
 await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });
+await cell("external-open", { externalDown: "named" });
 await checkInheritedPipeCleanup();
 passed += 10;
 await cell("group", {});

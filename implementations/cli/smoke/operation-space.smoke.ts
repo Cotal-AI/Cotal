@@ -484,6 +484,15 @@ const builtInRuntime = previewRuntime("--runtime", "pty");
 check("the built-in pty is available here, with no warning",
   builtInRuntime.r.status === 0 && builtInRuntime.p?.result?.requested?.runtime === "pty" && builtInRuntime.p.result.runtimeCheck?.available === true
     && builtInRuntime.p.result.runtimeCheck.error === null && same(builtInRuntime.p.warnings, []), shown(builtInRuntime.r));
+const foregroundRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--json");
+check("foreground spawn refuses --runtime and offers compatible foreground and managed retries",
+  foregroundRuntime.status === 1 && foregroundRuntime.envelope?.error?.code === "USAGE_INVALID"
+    && foregroundRuntime.envelope.error.remedy === "omit --runtime, --json to launch in this terminal, or replace --foreground with -d (with --on <instance> to select a manager) to launch through a manager",
+  shown(foregroundRuntime));
+const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--json", "-d");
+check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
+  combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
+    && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

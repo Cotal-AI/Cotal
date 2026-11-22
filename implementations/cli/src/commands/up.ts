@@ -77,7 +77,7 @@ import {
   assertManagerName,
   processStopped,
   readManagerName,
-  readManagerSeatCap,
+  readManagerSeatCap, DEFAULT_SEAT_CAP,
   recordManagerName,
   parseSeatCapFlag,
   seatCapText,
@@ -1504,7 +1504,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   const managerSeatCap = parseSeatCapFlag("--seat-cap", values["seat-cap"]);
   if (managerSeatCap !== undefined) {
     const capped = { root: cotalRoot(), space: values.space ?? folderSpace() };
-    if (readManagerSeatCap(capped) !== managerSeatCap && managerRecordState(capped.space, capped.root).state === "alive")
+    if ((readManagerSeatCap(capped) ?? DEFAULT_SEAT_CAP) !== managerSeatCap && managerRecordState(capped.space, capped.root).state === "alive")
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `a manager already runs for space ${capped.space}, and it keeps the seat cap it started with`, { target: { root: capped.root, space: capped.space }, remedy: `stop it with \`cotal down\`, then run \`cotal up --seat-cap ${seatCapText(managerSeatCap)}\`` });
   }
 
