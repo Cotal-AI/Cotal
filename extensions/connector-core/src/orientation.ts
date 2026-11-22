@@ -41,7 +41,7 @@ export const MESH_FIRST_STEER =
   "otherwise cotal_dm or cotal_anycast to reach one) so the work stays visible to the user and " +
   "addressable by peers rather than hidden inside a private subagent. Use a harness subagent only for " +
   "a self-contained job nobody else needs to follow. For a single task, cotal_spawn with once: true " +
-  "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.";
+  "starts a helper that is stopped when the task ends.";
 
 /** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
  *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is

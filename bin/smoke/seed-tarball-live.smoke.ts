@@ -4,7 +4,7 @@
  * prefix with no repo on the resolution path, and proves the PUBLISHED seed path:
  *
  *  - the `cotal-ai` tarball ships the `seeded-connectors/<name>` payloads (prepack) with concrete deps
- *  - a first command on the installed binary seeds all four built-ins from those bundled payloads
+ *  - explicit reconciliation on the installed binary seeds the built-ins from those bundled payloads
  *    (`shippedSourceDir` published branch), installing each from the durable store under the isolated
  *    config (never a repo path). Driven through the `.bin/cotal` SYMLINK npm publishes, the way a user
  *    reaches an installed binary: `process.argv[1]` is then the link, whose parents hold no
@@ -21,7 +21,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
+import { resolveOnPath } from "@cotal-ai/workspace";
 import { platformExcludesHost } from "../../implementations/cli/src/seed/verify.js";
 
 const REPO = join(import.meta.dirname, "..", "..");
@@ -36,6 +37,30 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
     console.log(`  ✗ FAIL: ${name}`, extra ?? "");
   }
 };
+
+function seedWithShadowedNode(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string) {
+  const tools = join(env.HOME!, "tools");
+  const invocations = join(tools, "npm-node");
+  const npm = resolveOnPath("npm", env);
+  if (!npm) throw new Error("the smoke needs npm on PATH");
+  mkdirSync(tools);
+  writeFileSync(join(tools, "node"), '#!/bin/sh\necho "unsupported project Node" >&2\nexit 89\n', { mode: 0o755 });
+  writeFileSync(join(tools, "npm"), `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+appendFileSync(${JSON.stringify(invocations)}, process.argv[2] + " " + process.execPath + "\\n");
+if (process.argv[2] === "view" && process.argv[3] === "cotal-ai@latest") console.log(${JSON.stringify(JSON.stringify(version))});
+else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { stdio: "inherit" }).status ?? 1);
+`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, [entry, "update", "--self"], {
+    cwd, encoding: "utf8", env: { ...env, PATH: `${tools}${delimiter}${env.PATH}` },
+  });
+  const calls = existsSync(invocations) ? readFileSync(invocations, "utf8").trim().split("\n") : [];
+  check("self-update uses the running Node with PATH's npm for both the version check and connector install",
+    calls.includes(`view ${process.execPath}`) && calls.includes(`install ${process.execPath}`), calls);
+  check("self-update reconciles the built-ins with an unsupported Node first on PATH",
+    result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
+}
 
 const base = mkdtempSync(join(tmpdir(), "cotal-tarball-smoke-"));
 const tgz = join(base, "tgz");
@@ -180,7 +205,7 @@ try {
   if (process.platform !== "win32") {
     check("npm installed cotal through a bin symlink", existsSync(npmBin) && lstatSync(npmBin).isSymbolicLink());
   }
-  // A read no longer seeds, so seed explicitly; the listing after it is a read.
+  // Seed explicitly before reading the installed inventory.
   const home = join(base, "home");
   mkdirSync(home, { recursive: true });
   mkdirSync(join(prefix, ".cotal"));
@@ -188,8 +213,12 @@ try {
   writeFileSync(npmrc, "omit=optional\n");
   const seedEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
     HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: cfg, npm_config_userconfig: npmrc };
-  const seed = spawnSync("node", [invokedBin, "ext", "seed"], { cwd: prefix, encoding: "utf8", env: seedEnv });
-  check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
+  if (process.platform === "win32") {
+    const seed = spawnSync("node", [invokedBin, "ext", "seed"], { cwd: prefix, encoding: "utf8", env: seedEnv });
+    check("ext seed from the published layout succeeded", seed.status === 0, `${seed.stdout}${seed.stderr}`.split("\n").slice(-12).join("\n"));
+  } else {
+    seedWithShadowedNode(invokedBin, prefix, seedEnv, umbrellaVersion);
+  }
   const list = spawnSync("node", [invokedBin, "ext", "list"], { cwd: prefix, encoding: "utf8", env: seedEnv });
   const out = list.stdout ?? "";
   for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {

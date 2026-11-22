@@ -4,7 +4,7 @@ import { type ChildProcess } from "node:child_process";
 import { openBrokerLog, prepareForegroundBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
 import { randomUUID } from "node:crypto";
-import { createConnection, createServer, isIP } from "node:net";
+import { createConnection, isIP } from "node:net";
 import { homedir, hostname } from "node:os";
 import {
   accessSync,
@@ -41,25 +41,11 @@ import {
   mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   newIdentity,
-  setupSpaceStreams,
-  removeIssuedStoresBeforeRetention,
-  IssuedStoreBeforeRetentionError,
-  IssuedStoreRecreateRefusal,
   reconcileSpaceMemoryBuckets,
-  recreateMembershipStore,
-  membershipStoreDefinition,
-  LEGACY_MEMBERSHIP_MAX_BYTES,
-  MEMBERSHIP_MAX_VALUE_SIZE,
-  ttlBuckets,
   standaloneConnectOpts,
   requireBrokerFloor,
   parseServerVersion,
   presenceBucket,
-  spaceDeletionStreams,
-  isJetStreamMissing,
-  seedChannelRegistry,
-  ensureDefaultDeliveryClass,
-  UndecodableRegistryEntry,
   LEASE_TTL_MS,
   EpEnvelopeError,
   mkSecretDir,
@@ -71,8 +57,7 @@ import {
   type FlagSpec,
   type CompletionResult,
 } from "@cotal-ai/core";
-import { JetStreamApiCodes, jetstreamManager, StorageType } from "@nats-io/jetstream";
-import { Kvm } from "@nats-io/kv";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 import {
   assertManagerName,
   processStopped,
@@ -337,6 +322,17 @@ import {
   refuseMissingNamedStore,
   checkStartStore,
 } from "./up-transport.js";
+import { WILDCARD_HOSTS, reconcileHostAndServer, assertFreshTeamBindAvailable } from "./up-host.js";
+import {
+  registeredAddressHolder,
+  refuseRegisteredAddress,
+  membershipConversionRefusal,
+  fileMembershipStore,
+  postStart,
+  recreateMemoryBuckets,
+  recreateAdoptedMemoryBuckets,
+  recreateDeletedStreams,
+} from "./up-stores.js";
 
 /** What a guarded restore returned, for `backup restore` to report as its own receipt. `up --restore`
  *  never sets a sink and prints its own startup receipt. Delivered only after the native activation wrote
@@ -4897,326 +4893,6 @@ function belowPresenceSafeBroker(version: string): boolean {
   if (p.major !== 2) return p.major < 2;
   if (p.minor !== 14) return p.minor < 14;
   return p.patch < 5;
-}
-
-/** Wildcard binds mean "every interface", so they are NOT an address a client can be told to dial:
- *  the probe/registry URL stays whatever it already is (loopback by default), which the wildcard
- *  bind necessarily covers. */
-const WILDCARD_HOSTS = new Set(["0.0.0.0", "::", "[::]"]);
-
-/** Establish that a bind-host value IS a host, BEFORE anything brackets it, and return the
- *  bracketed literal a URL can hold (#1697).
- *
- *  `--host` is the bind address; its sibling `--server` takes a URL, the registry stores and prints
- *  URLs, and every message in this area shows one — so an operator plausibly types the URL here
- *  (the manifest's `broker.host` carries the same ambiguity against `broker.servers`). Unrejected,
- *  the IPv6 bracketing wrapped it into `nats://[nats://127.0.0.1:4222]:4222`, which is not a URL at
- *  all. Nothing checked the derived string: the first code to look at it compared it with the
- *  space's registry record, failed for a reason unrelated to what was typed, and showed the
- *  operator the "registered by hand" refusal whose remedy de-registers a live mesh. Refused by name
- *  here instead — pointing at the URL-carrying sibling — and a value that still cannot serve as a
- *  URL host (a `host:port` spelling, say) is refused rather than reaching that comparison as a
- *  silently wrong server string. Never rewritten: a value this flag cannot use is an error, not a
- *  URL to derive from. */
-function assertBindableHost(host: string, source: string, urlSource: string): { literal: string; hostname: string } {
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) {
-    console.error(
-      c.red(
-        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,
-      ),
-    );
-    process.exit(1);
-  }
-  const literal = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  try {
-    // ONE parse, both consumers served from it: `literal` builds the derived URL (a URL host needs
-    // the brackets), `hostname` compares against the explicit server's (the URL API strips them).
-    return { literal, hostname: new URL(`nats://${literal}:1`).hostname };
-  } catch {
-    console.error(
-      c.red(
-        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,
-      ),
-    );
-    process.exit(1);
-  }
-}
-
-/**
- * Reconcile the bind address (`--host`, manifest `broker.host`) with the broker URL the readiness
- * probe, the mesh registry, and every later client use.
- *
- * They must name the same address. Left independent, `--host <non-loopback>` bound correctly and was
- * then probed at the loopback default: the probe found nothing, timed out, and the caller SIGTERM'd
- * a broker that had started perfectly, so `--host` alone could never succeed. With no explicit URL,
- * derive one from the host (keeping the implicit URL's port); with both, refuse a contradicting pair rather
- * than starting a broker that nothing can reach.
- */
-function reconcileHostAndServer(host: string, explicitServer: string | undefined, source = "--host", urlSource = "--server", implicitServer = DEFAULT_SERVER): string {
-  const url = new URL(explicitServer ?? implicitServer);
-  if (WILDCARD_HOSTS.has(host)) return explicitServer ?? implicitServer;
-  const { literal, hostname } = assertBindableHost(host, source, urlSource);
-  if (!explicitServer) return `nats://${literal}:${url.port || "4222"}`;
-  // NO parse on this path: `assertBindableHost` just parsed the identical literal above, so the
-  // mismatch check compares two parsed hostnames and can only ever print its diagnostic and exit 1
-  // — the "never throw a raw Invalid URL" requirement (#1697) holds by construction, not by a
-  // second guard that no input could reach.
-  if (url.hostname !== hostname) {
-    console.error(
-      c.red(
-        `✗ ${source} ${host} and ${urlSource} ${explicitServer} name different addresses - the broker would bind ${host} but be probed at ${url.hostname}. Pass one, or make them agree.`,
-      ),
-    );
-    process.exit(1);
-  }
-  return explicitServer;
-}
-
-/** Bind the manifest's exact listener address before any team-boot write. Releasing this
- *  socket is not a reservation: the real broker still owns the final bind verdict. */
-async function assertFreshTeamBindAvailable(server: string, host: string, space: string): Promise<void> {
-  const url = new URL(server), port = Number(url.port || "4222");
-  const displayServer = brokerAddressForDisplay(server) ?? "not displayable";
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new CommandFailure("refused", "USAGE_INVALID", "the fresh team broker needs a concrete TCP port before it can check its bind address", { target: { space } });
-  await new Promise<void>((resolve, reject) => {
-    const socket = createServer(), controller = new AbortController();
-    socket.unref();
-    let settled = false;
-    const finish = (error?: CommandFailure) => {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      if (error) reject(error); else resolve();
-    };
-    const timer = setTimeout(() => {
-      controller.abort();
-      finish(new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local broker bind inspection did not complete within its deadline; no absence or startup eligibility was inferred", { target: { space, server: displayServer } }));
-    }, 1500);
-    socket.once("error", () => finish(new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected broker address cannot be bound as a new local listener; no existing or remote broker was adopted", { target: { space, server: displayServer }, remedy: "inspect this local bind address and any process already listening there" })));
-    try {
-      socket.listen({ port, host, signal: controller.signal }, () => {
-        if (settled) return;
-        socket.close((error) => finish(error ? new CommandFailure("failed", "OPERATION_FAILED", "the temporary bind inspection did not confirm closure; no broker was started", { target: { space, server: displayServer } }) : undefined));
-      });
-    } catch {
-      controller.abort();
-      finish(new CommandFailure("refused", "TARGET_UNAVAILABLE", "the selected broker bind address was rejected before startup; no other listener was chosen", { target: { space, server: displayServer } }));
-    }
-  });
-}
-
-function registeredAddressHolder(server: string, space: string) {
-  const key = brokerAddressKey(server);
-  if (key === undefined) return undefined;
-  const root = canonicalRoot(cotalRoot());
-  return loadMeshes().find((m) => m.space !== space && canonicalRoot(m.root) !== root && brokerAddressKey(m.server) === key);
-}
-
-/** Refuse an address that a space registered for another folder keeps while its broker is stopped,
- *  as an occupied one is refused. Starting there would leave two registrations naming one broker:
- *  whichever stack runs answers for both, and the other one's `down` and reads reach it. Every
- *  start that names its own address asks this, a manifest's `broker.servers` included, and
- *  `elsewhere` names the way to move the one being started. A space this start takes the name of is
- *  left to the name rules. */
-function refuseRegisteredAddress(server: string, space: string, elsewhere: string): void {
-  const held = registeredAddressHolder(server, space);
-  if (!held) return;
-  throw new CommandFailure("refused", "CONFLICT", `${server} is the broker address of "${held.space}", registered for ${held.root} and stopped; nothing was started`, {
-    target: { root: cotalRoot(), server, space, heldSpace: held.space, heldBy: held.root },
-    remedy: `${elsewhere}, or free that one with \`cotal space forget ${held.space}\``,
-  });
-}
-
-function membershipConversionRefusal(space: string, remedy = "stop the stack with `cotal down --yes`, then run `cotal up --recreate-membership-store`"): CommandFailure {
-  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `space ${space} has a legacy File-backed membership store; it was not changed while its broker or membership services may be in use`, {
-    target: { space }, remedy,
-  });
-}
-
-async function fileMembershipStore(server: string, space: string, creds?: string, stockOnly = false): Promise<boolean> {
-  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
-  try {
-    requireBrokerFloor(nc);
-    const { config } = await (await jetstreamManager(nc)).streams.info(`KV_${membershipStoreDefinition(space).bucket}`);
-    if (config.storage !== StorageType.File) return false;
-    if (stockOnly && (![-1, LEGACY_MEMBERSHIP_MAX_BYTES].includes(config.max_bytes) || config.max_msgs_per_subject !== 1 || ![-1, MEMBERSHIP_MAX_VALUE_SIZE].includes(config.max_msg_size)))
-      throw membershipConversionRefusal(space);
-    return true;
-  } catch (error) {
-    if (isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) return false;
-    throw error;
-  } finally { await drainAndClose(nc); }
-}
-
-/** Create or verify space infrastructure before any services start on this broker.
- * Only a fresh owned local boot may automatically replace its derived legacy membership feed. */
-async function postStart(
-  server: string,
-  space: string,
-  setup?: { creds: string },
-  seedFile?: ChannelRegistryFile,
-  recreateIssuedStores?: string,
-  recreateMembershipStore?: boolean,
-  freshOwnedLocalBroker = false,
-): Promise<void> {
-  if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
-  const legacyMembership = await fileMembershipStore(server, space, setup?.creds, recreateMembershipStore !== true);
-  if (legacyMembership) {
-    const running = serviceInstances(space).filter((row) => row.record.value.definition !== STACK_DEFINITION.broker).some((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)));
-    if ((!freshOwnedLocalBroker && !recreateMembershipStore) || running) throw membershipConversionRefusal(space);
-  }
-  const convertMembership = legacyMembership && (freshOwnedLocalBroker || recreateMembershipStore === true);
-  let recreateCreds: string | undefined;
-  if (convertMembership && setup !== undefined) {
-    const auth = await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
-    if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}; its membership store was not touched`);
-    recreateCreds = await mintCreds(auth, newIdentity(), "membership-store-recreate");
-  }
-  try {
-    await setupSpaceStreams({
-      servers: server,
-      space,
-      creds: setup?.creds,
-      ...(convertMembership ? { recreateFileMembership: { creds: recreateCreds } } : {}),
-    });
-  } catch (error) {
-    // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
-    if (error instanceof IssuedStoreBeforeRetentionError)
-      throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the \`cotal up\` that starts it` });
-    throw error;
-  }
-  if (convertMembership) console.error(`Converted ${membershipStoreDefinition(space).bucket} from File to Memory; broker-sourced membership rebuilds on startup.`);
-  try {
-    if (seedFile) {
-      await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
-    }
-    // SPEC §4: `defaults.deliveryClass` MUST be written at space creation so the effective default is
-    // discoverable on the wire, never inferred from the `?? "durable"` resolution fallback. Auth mode
-    // (`setup` present ⇒ the delivery daemon is up) is local/self-hosted ⇒ `durable`; open mode has no
-    // daemon and is live-only ⇒ `live`. Runs after the seed so an explicit `channels.json` default wins.
-    // A key that does not decode is not replaced by either write.
-    await ensureDefaultDeliveryClass({
-      servers: server,
-      space,
-      creds: setup?.creds,
-      deliveryClass: setup ? "durable" : "live",
-    });
-  } catch (error) {
-    if (!(error instanceof UndecodableRegistryEntry)) throw error;
-    throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space }, remedy: "read the key and replace the value; the bytes were left as they are" });
-  }
-}
-
-/** `--recreate-issued-stores`: on the broker this boot just started, before any issuer or resolver
- *  of the space runs, back up and delete the space's issued-authority stores created before bounded
- *  retention, so the stream setup that follows creates them in the current shape. It runs the core
- *  step an embedder runs, on a one-shot `issued-store-recreate` credential minted from the root's
- *  trust; an open space uses its bare connection, as stream setup does. */
-async function recreateIssuedStoresBeforeSetup(server: string, space: string, authenticated: boolean, backupDir: string): Promise<void> {
-  let creds: string | undefined;
-  let inboxPrefix = "_INBOX";
-  if (authenticated) {
-    const auth = await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
-    if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}; its issued-authority stores were not touched`);
-    const identity = newIdentity();
-    creds = await mintCreds(auth, identity, "issued-store-recreate");
-    inboxPrefix = `_INBOX_${identity.id}`;
-  }
-  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix });
-  let removed;
-  try {
-    removed = await removeIssuedStoresBeforeRetention(nc, { space, backupDir, inboxPrefix });
-  } catch (error) {
-    if (error instanceof IssuedStoreRecreateRefusal)
-      throw new CommandFailure("refused", error.reason === "nothing-to-recreate" ? "CONFLICT" : "USAGE_INVALID", error.message, { target: { space, backupDir }, remedy: error.reason === "nothing-to-recreate" ? "start the space without --recreate-issued-stores" : "name a directory that does not exist yet, inside one that does" });
-    throw error;
-  } finally {
-    await drainAndClose(nc);
-  }
-  for (const store of removed) console.log(`→ backed up ${store.stream} (${store.messages} messages) to ${store.backup}, then deleted it`);
-  console.log(c.dim("• the issued-authority stores are created again in the current shape; every generation issued before the upgrade is refused from now on"));
-}
-
-/** A resume or restore skips `postStart` because the preserved store already holds every canonical
- *  stream. A memory-backed bucket is the exception: the broker stop that preserved the store emptied
- *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
- *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them.
- *  Only an ordinary resume that just started this listener may opt into replacing a File feed. */
-async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }, ownedResume?: { convertMembership: boolean }): Promise<void> {
-  const legacy = await fileMembershipStore(server, space, setup?.creds);
-  if (legacy) {
-    if (!ownedResume?.convertMembership) throw membershipConversionRefusal(space, ownedResume && "retry this preserved resume with `cotal up --recreate-membership-store`");
-    const running = serviceInstances(space).filter((row) => row.record.value.definition !== STACK_DEFINITION.broker).some((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)));
-    if (running) throw membershipConversionRefusal(space, "stop the remaining membership services, then retry the preserved resume with `cotal up --recreate-membership-store`");
-    try {
-      const auth = setup && await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
-      if (setup && !auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}`);
-      await recreateMembershipStore({
-        servers: server, space, provisionerCreds: setup?.creds,
-        recreateCreds: auth ? await mintCreds(auth, newIdentity(), "membership-store-recreate") : undefined,
-      });
-    } catch (error) {
-      throw new CommandFailure("failed", "OPERATION_FAILED", `could not convert the preserved membership store: ${(error as Error).message}`, {
-        target: { space }, remedy: "fix the reported cause, then retry this preserved resume with `cotal up --recreate-membership-store`",
-      });
-    }
-    console.error(`Converted ${membershipStoreDefinition(space).bucket} from File to Memory; broker-sourced membership rebuilds on startup.`);
-  }
-  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
-  try {
-    requireBrokerFloor(nc);
-    const kvm = new Kvm(nc);
-    for (const [bucket, ttl, storage] of ttlBuckets(space))
-      if (storage === StorageType.Memory) await kvm.create(bucket, { ttl, storage });
-    if (!legacy) {
-      const membership = membershipStoreDefinition(space);
-      await kvm.create(membership.bucket, membership.createOptions);
-    }
-  } finally {
-    await drainAndClose(nc);
-  }
-}
-
-/** An adopted listener may have been bound by an `up` that stopped before {@link recreateMemoryBuckets},
- *  so the memory buckets the daemons open can be missing on it. An existing bucket is left as it is. */
-async function recreateAdoptedMemoryBuckets(root: string, space: string, server: string, mode: "open" | "auth" | "user"): Promise<void> {
-  if (mode === "open") return recreateMemoryBuckets(server, space);
-  const auth = await getSpaceAuth(workspaceSecretStore(root), space);
-  if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(root)}; cannot recreate its memory buckets on the adopted listener`);
-  await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") });
-}
-
-/** `cotal space delete` removes a space's streams from a broker that keeps running. When a stack
- *  reuses that broker and every canonical stream of the space is gone, create them again, empty, as
- *  a broker start does, and return true. A broker that still holds any of them is left as it is. */
-async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; channels?: string; seed?: ChannelRegistryFile }): Promise<boolean> {
-  let setup: { creds: string } | undefined;
-  if (opts.mode !== "open") {
-    const auth = await getSpaceAuth(workspaceSecretStore(opts.root), opts.space);
-    if (!auth) throw new Error(`space "${opts.space}" has no trust material under ${authDir(opts.root)}; cannot read its streams on the running broker`);
-    setup = { creds: await mintCreds(auth, newIdentity(), "provisioner") };
-  }
-  if (await fileMembershipStore(opts.server, opts.space, setup?.creds)) throw membershipConversionRefusal(opts.space);
-  if (opts.mode === "user") return false; // User-auth running stacks retain their existing stream lifecycle.
-  const nc = await dialerFor(opts.server)({ servers: opts.server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
-  let held = false;
-  try {
-    requireBrokerFloor(nc);
-    const jsm = await jetstreamManager(nc);
-    for (const name of spaceDeletionStreams(opts.space)) {
-      try {
-        await jsm.streams.info(name);
-        held = true;
-        break;
-      } catch (error) {
-        if (!isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) throw error;
-      }
-    }
-  } finally {
-    await drainAndClose(nc);
-  }
-  if (held) return false;
-  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
-  return true;
 }
 
 /**

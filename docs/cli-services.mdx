@@ -92,12 +92,13 @@ the refusal is the stream's `error` record, which carries that step as `remedy`,
 
 ## Adding a service [#adding-a-service]
 
-Run `service add` from a prepared or registered space's project folder, or pass `--space <name>`.
-In a new project, prepare the space first. Neither command starts a broker or the service.
+In a new project, prepare the space first, then pass `--space` to save the definition there. A
+prepared project folder does not override the current space selection. Neither command starts a
+broker or the service.
 
 ```bash
 cotal space create reviews-dev --root .
-cotal service add reviews --exec "node /srv/reviews/server.mjs --port 8080"
+cotal service add reviews --space reviews-dev --exec "node /srv/reviews/server.mjs --port 8080"
 ```
 
 `--exec` splits its text into the program and its arguments as a shell quotes words, but runs no
