@@ -386,12 +386,18 @@ if (process.platform !== "win32") {
 
 // A confirmed scripted local setup creates its explicitly named project folder.
 {
-  const dir = join(home, "new-project");
-  const created = await json([...FULL("new-project", dir), "--yes"]);
+  const parent = join(home, "new-project");
+  const dir = join(parent, "nested");
+  const previousUmask = process.umask(0o000);
+  const creating = json([...FULL("new-project", dir), "--yes"]);
+  process.umask(previousUmask);
+  const created = await creating;
   check("--yes creates a missing local project and prepares its default persona",
     created.status === 0 && findPreparedSpace("new-project")?.root === dir &&
       existsSync(join(dir, ".cotal", "agents", "default.md")) &&
       created.env?.result?.written?.some((w: { what: string }) => w.what === "project folder"), shown(created));
+  if (process.platform !== "win32")
+    check("setup makes each missing project directory private under umask 000", created.status === 0 && [parent, dir].every((path) => (statSync(path).mode & 0o777) === 0o700));
   const file = join(home, "project-file");
   writeFileSync(file, "keep");
   const rejected = await json([...FULL("project-file", file), "--yes"]);

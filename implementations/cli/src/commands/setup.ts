@@ -71,6 +71,7 @@ import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
+import { mkdirPrivate } from "../lib/private-directory.js";
 
 const ONBOARD_VERSION = "2";
 
@@ -659,8 +660,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   } else if (plan.space.kind === "registered") {
     spaceState = "registered";
   } else {
-    if (inputs.createProject) {
-      mkdirSync(inputs.project, { recursive: true });
+    if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
     if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
