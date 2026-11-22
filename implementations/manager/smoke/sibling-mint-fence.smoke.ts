@@ -88,9 +88,9 @@ try {
   const M = mgr as unknown as {
     managerInstanceId: string;
     goalWriterIdentity?: { id: string };
-    sessionLedgerIdentity?: { id: string };
     mintAndStageGoalWriter(authKv: KV): Promise<string>;
     mintAndStageSessionLedger(authKv: KV): Promise<string>;
+    servePlane: { sessionLedgerIdentity?: { id: string }; };
   };
   const iid = M.managerInstanceId;
   const gateKey = epgateKey(MANAGER_ENDPOINT, iid);
@@ -166,7 +166,7 @@ try {
   };
 
   const gwPrincipal = principalKey(DEV_OWNER, M.goalWriterIdentity!.id).key;
-  const swPrincipal = principalKey(DEV_OWNER, M.sessionLedgerIdentity!.id).key;
+  const swPrincipal = principalKey(DEV_OWNER, M.servePlane.sessionLedgerIdentity!.id).key;
 
   // ── LEG 1 (FROZEN): a barrier froze the gate; a sibling mint must release NOTHING ──────────────
   console.log("A. FROZEN gate: the takeover barrier is mid-operation");

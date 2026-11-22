@@ -6,6 +6,7 @@ import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import type { Manager } from "./manager.js";
 import type { ManagedAgent } from "./seat-types.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 
 /** How much of an `input` text is written to a seat's pty at a time. Comfortably under the 4096-byte
  * kernel input buffer, so a slice is never re-split at a boundary the manager did not choose: the
@@ -33,7 +34,6 @@ export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal"
 export interface TerminalInputDeps {
   agents: () => Manager["agents"];
   auth: () => Manager["auth"];
-  sessionPlane: () => Manager["sessionPlane"];
   runtimeFor: (...args: Parameters<Manager["runtimeFor"]>) => ReturnType<Manager["runtimeFor"]>;
 }
 
@@ -43,21 +43,19 @@ export function terminalInputDeps(m: Manager): TerminalInputDeps {
   return {
     agents: () => m["agents"],
     auth: () => m["auth"],
-    sessionPlane: () => m["sessionPlane"],
     runtimeFor: (...args) => m["runtimeFor"](...args),
   };
 }
 
 /** Typing into a seat's terminal and opening an attach or console session on it, after authorization. */
 export class TerminalInput {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: TerminalInputDeps, private readonly parts: Pick<ManagerParts, "servePlane">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
   private get auth() { return this.deps.auth(); }
-  private get sessionPlane() { return this.deps.sessionPlane(); }
   private runtimeFor(...args: Parameters<Manager["runtimeFor"]>): ReturnType<Manager["runtimeFor"]> { return this.deps.runtimeFor(...args); }
 
   /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
@@ -193,7 +191,7 @@ export class TerminalInput {
    *  backends (pty/host) attach; an external runtime's attach() throws with per-runtime guidance. */
   async attachAuthorized(a: ManagedAgent, caller: { owner: string; actor: string; uid: string }): Promise<ControlReply> {
     // Every refusal before establishAttach below has opened no session, so it states that (SPEC 13.3).
-    if (!this.sessionPlane) throw new EpEnvelopeError("failed-precondition", "the manager session plane is not available (the manager is not fully started)", undefined, "not-executed");
+    if (!this.parts.servePlane.sessionPlane) throw new EpEnvelopeError("failed-precondition", "the manager session plane is not available (the manager is not fully started)", undefined, "not-executed");
     // A name is a reusable slot and the authorization above can await (user mode reads the ledger).
     // The ep target is incarnation-pinned, so `a` cannot BE a successor — but the slot it names can
     // have been stopped and refilled while we waited, and everything below must act on the
@@ -213,7 +211,7 @@ export class TerminalInput {
     // throw — so an attach nobody bridges is a garbage-collectible object, not a held resource, and
     // ordering alone suffices. A future runtime that DOES acquire something in `attach()` reopens
     // this: it would need a release on the failure paths, and `AttachSession` has no close today.
-    const slot = this.sessionPlane.claimSlot();
+    const slot = this.parts.servePlane.sessionPlane.claimSlot();
     let session;
     try {
       session = a.handle.attach();
@@ -233,7 +231,7 @@ export class TerminalInput {
       throw new EpEnvelopeError("failed-precondition", rejectionText(e), undefined, "not-executed");
     }
     // establishAttach releases the claim it was handed on every exit; nothing to unwind here.
-    const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
+    const { grant } = await this.parts.servePlane.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
     const carried = a.launch.resumed?.host;
     return { ok: true, data: { grant, ...(carried ? { resumedFrom: { host: carried, source: a.launch.resumed!.source } } : {}) } };
   }
@@ -246,14 +244,14 @@ export class TerminalInput {
    *  credential system so the browser connects bare), and the ws URL. NO 127.0.0.1 terminal transport
    *  — the terminal rides the mesh session. Injected only when a wsPort exists (see the constructor). */
   async establishConsoleSession(name: string): Promise<SessionEstablishment> {
-    if (!this.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
+    if (!this.parts.servePlane.sessionPlane) throw new Error("the manager session plane is not available (the manager is not fully started)");
     if (this.config.wsPort === undefined) throw new Error("the broker websocket port is not configured; the console cannot open a mesh session");
     // CLAIM the session slot here, before the PTY attach and before this establisher goes on to
     // mint a seed-signed `session-caller` credential: a capacity refusal must land before anything
     // with a side effect or a cost. The claim is carried INTO establishAttach, so the reservation
     // spans the whole establishment rather than being a check that a concurrent caller can race.
     // (See attachAuthorized for why the attach itself needs no unwind on any shipped runtime.)
-    const slot = this.sessionPlane.claimSlot();
+    const slot = this.parts.servePlane.sessionPlane.claimSlot();
     try {
       const a = this.agents.get(name);
       if (!a) throw new Error(`no managed agent "${name}"`);
@@ -261,7 +259,7 @@ export class TerminalInput {
       const session = a.handle.attach(); // throws for non-streamable runtimes — surfaced to the browser as a 500
       // The loopback operator is the console's holder (same-host trust boundary).
       const caller = { owner: DEV_OWNER, actor: "console", uid: this.config.managerLifecycleUid };
-      const { grant } = await this.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
+      const { grant } = await this.parts.servePlane.sessionPlane.establishAttach(caller, { name: a.name, lifecycleUid: a.lifecycleUid }, session, slot);
       // The caller credential is minted ONLY after a session is really live, so a refused or failed
       // establishment never yields a seed-signed JWT. (A failure HERE would leave a live session the
       // browser never reaches, holding its slot until the grant expires — unreachable in practice,
