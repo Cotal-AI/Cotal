@@ -873,13 +873,13 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   if (!scatter.ok && scatter.noLiveManager)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: startStackManagerRemedy(t.space, t.server) });
   if (!scatter.ok) throw readFailure(scatter, target);
-  return seatCensus(target, scatter.instances, command, t.mode);
+  return seatCensus(target, scatter.instances, command, t.mode, v);
 }
 
 /** A census from the slots of a scatter: each answered instance's rows as it returned them, every
  *  instance's answer, a warning for each one that did not return its rows, and the partial notice
  *  when any did not. */
-function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanceReply[], command: "ps" | "slots", mode: string | undefined): SeatCensus {
+function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanceReply[], command: "ps" | "slots", mode: string | undefined, flags: ConnectFlags): SeatCensus {
   // Stable ordering: reachable instances first, then by instance id.
   const instances = [...slots].sort(
     (a, b) => Number(b.reachable) - Number(a.reachable) || a.instanceId.localeCompare(b.instanceId),
@@ -927,7 +927,7 @@ function seatCensus(target: SeatCensus["target"], slots: readonly ScatterInstanc
           ? `Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`
           : target.scope === "your-managers" && silent.length
             ? silentManagersNext(silent, target.space)
-            : "retry, or read one manager with `cotal ps --on <instance>`",
+            : `retry, or read one manager with ${codeSpan(onRerun("cotal ps --on <instance>", flags, command === "slots" ? ["--slots"] : []))}`,
       }
     : undefined;
   return { target, items, managers, warnings, rowsOf, mode, ...(partial ? { partial } : {}) };
@@ -967,7 +967,7 @@ async function readYourManagers(v: ConnectFlags & FlagValues<typeof psFlags>, co
   if (space !== undefined) recordOperationSpace(space);
   if (space === undefined || !instances.some((i) => i.reachable))
     throw new NoManagerAnswered(new CommandFailure("refused", "TARGET_UNAVAILABLE", `none of the ${managers.length} managers the exchange counts live answered`, { target: { space: space ?? null, scope: "your-managers" } }));
-  return seatCensus({ space, scope: "your-managers" }, instances, command, mode);
+  return seatCensus({ space, scope: "your-managers" }, instances, command, mode, v);
 }
 
 /** The remedy for a seat whose runtime streams no terminal, naming what does reach it in this
