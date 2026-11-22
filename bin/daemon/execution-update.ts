@@ -5,7 +5,7 @@ import { logicalExecutionEntry, executionIdentity, cmdSpawnSpec } from "@cotal-a
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
-import { executionCopyModesEnv, executionInventory, executionSha256 } from "../cotal.js";
+import { executionCopyModesEnv, executionDescriptorPath, executionInventory, executionRecord, executionSha256, selectExecutionProgram, type ExecutionDescriptor } from "../cotal.js";
 import { daemonServeArgv } from "./install.js";
 import { observeUpdateDaemon, sameUpdateDaemon, assertUpdateDaemon } from "./update-lifetime.js";
 import { targetExecutionPreinstall, type ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
@@ -110,6 +110,13 @@ export function recoverExecutionUpdate(path: string): ExecutionReplacement {
     verify(version) {
       if (version !== previous) throw new Error("execution recovery previous version differs");
       verifySelected(installed, version);
+    },
+    verifyPublished(version) {
+      if (version !== record.target.version || selectExecutionProgram(installed).root !== record.target.root) return false;
+      const { generation } = executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor;
+      if (generation.id !== record.target.id || generation.inventorySha256 !== record.target.inventorySha256) return false;
+      verifySelected(installed, version);
+      return true;
     },
   };
 }

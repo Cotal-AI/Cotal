@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  MeshTargetError,
   authDir,
   brokerCheck,
   canonicalRoot,
@@ -14,11 +15,13 @@ import {
   folderSpaceHeld,
   folderSpaceOverSelection,
   getCurrent,
+  isGenuineSpace,
   isMeshRegistryError,
   jsonFlag,
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
+  meshesForRoot,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
@@ -26,6 +29,7 @@ import {
   presentationOf,
   readCurrentSelection,
   recordOperationSpaceNote,
+  spaceKey,
   stackElsewhereRemedy,
   stackJournalRoot,
   writeResult,
@@ -144,6 +148,14 @@ export function validateSpaceArguments(args: ParsedArgs): void {
   const [sub, name] = args.positionals;
   if ((sub === "show" || sub === "forget") && name !== undefined && !name.trim())
     throw usage(`space ${sub} takes a nonempty space name`);
+  if (sub === "forget" && name !== undefined) {
+    try { spaceKey(name); } catch {
+      throw new CommandFailure("refused", "USAGE_INVALID", `${JSON.stringify(name)} cannot name a space. Nothing was forgotten.`, {
+        remedy: "list the registered and prepared space names with `cotal space`",
+        selfContained: true,
+      });
+    }
+  }
   if ((sub === "add" || sub === "create") && values.root !== undefined && !values.root.trim())
     throw usage("--root cannot be empty");
   if (sub === "create" && (args.positionals.length !== 2 || !name?.trim()))
@@ -187,6 +199,20 @@ export async function space(args: ParsedArgs): Promise<void> {
   catch (e) { throw isMeshRegistryError(e) ? registryFailure(e) : e; }
 }
 
+function spaceShownAt(cwd: string): string | undefined {
+  if (!isGenuineSpace(cwd)) {
+    const matches = meshesForRoot(cwd);
+    if (matches.length > 1) {
+      const spaces = matches.map((m) => m.space);
+      throw new MeshTargetError("ambiguous-target", `this folder has ${spaces.length} registered spaces: ${spaces.join(", ")}`, {
+        available: matches.map((m) => `${m.space} (${m.root})`), spaces,
+      });
+    }
+    if (matches[0]) return matches[0].space;
+  }
+  return folderSpace(cwd, { refuseAmbiguous: true });
+}
+
 async function read(sub: "show" | undefined, rest: string[], presentation: Presentation): Promise<void> {
   if (sub === "show" && rest.length > 1) throw usage("usage: cotal space show [<name>]");
   const project = canonicalRoot(findCotalRoot(process.cwd()));
@@ -210,17 +236,12 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     // With no name it is about this folder: the space it has registered, or the one it holds
     // prepared or stopped, which `show` names even though every other command here targets the
     // selection. Then the selection.
-    const registered = rest[0] === undefined ? folderSpace(process.cwd()) : undefined;
+    const registered = rest[0] === undefined ? spaceShownAt(process.cwd()) : undefined;
     // A journal without a matching local record does not name a space to show.
     const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
     const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
     const folder = registered ?? recorded?.space;
     const explicit = folder !== undefined && current !== null && folder !== current && readCurrentSelection()?.source === "explicit";
-    if (explicit) {
-      recordOperationSpaceNote(folder, `this folder's space; the selected space "${current}" applies here to commands such as \`cotal who\`. Use --space ${shellWord(folder)} or \`cotal use --clear\` to target this folder's space`);
-    } else if (current !== null && recorded !== undefined && recorded.space !== current) {
-      noteFolderSpaceShown(recorded.space, recorded.state, current);
-    }
     let movedSpace: string | undefined;
     if (rest[0] === undefined && folder === undefined && moved !== undefined) {
       const { journal, recordedRoot } = moved;
@@ -238,6 +259,15 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
     }
     const m = findMesh(name);
+    const unmarked = registered !== undefined && m !== undefined && !isGenuineSpace(m.root);
+    if (unmarked) {
+      const selected = current !== null && current !== name ? `; the selected space "${current}" applies here to commands such as \`cotal who\`` : "";
+      recordOperationSpaceNote(name, `this folder's space${selected}`);
+    } else if (explicit) {
+      recordOperationSpaceNote(folder, `this folder's space; the selected space "${current}" applies here to commands such as \`cotal who\`. Use --space ${shellWord(folder)} or \`cotal use --clear\` to target this folder's space`);
+    } else if (current !== null && recorded !== undefined && recorded.space !== current) {
+      noteFolderSpaceShown(recorded.space, recorded.state, current);
+    }
     if (!m) {
       const p = findPreparedSpace(name);
       // No space has the name, so the refusal is not headed with it.
@@ -249,7 +279,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     }
     const check: Check = m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired);
     // A running registered folder takes precedence over an automatically adopted selection only.
-    if (!explicit && current !== null && registered !== undefined && registered !== current) {
+    if (!unmarked && !explicit && current !== null && registered !== undefined && registered !== current) {
       if (check !== "reachable" && check !== "not-checked") noteFolderSpaceShown(registered, "stopped", current);
       else noteFolderSpace(registered, current);
     }

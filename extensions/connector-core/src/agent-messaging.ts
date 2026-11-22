@@ -366,7 +366,7 @@ export class AgentMessaging {
    *  the target are listed for the caller to choose from; none of them is ever picked. */
   private noPeer(target: string): string {
     const want = target.trim().toLowerCase();
-    if (target === this.id || want === this.config.name.toLowerCase())
+    if (target === this.id || want === this.ep.card.name.toLowerCase())
       return `"${target}" is this session: a DM goes to another peer, so nothing was sent. cotal_roster lists who is present.`;
     const missing = `no peer "${target}" in space "${this.config.space}"`;
     if (!want) return missing;

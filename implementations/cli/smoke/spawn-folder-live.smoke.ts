@@ -179,6 +179,11 @@ try {
       && badDotEnv.error?.code === "USAGE_INVALID" && (badDotEnv.error.message ?? "").includes('unsafe name "bad.dot"'),
       { status: badDotRaw.status, stdout: badDotRaw.stdout, stderr: badDotRaw.stderr });
 
+    const badDotPreview = cli("spawn", "default", "-d", "--dry-run", "--json", "--name=bad.dot");
+    check("a managed preview gives the same local name refusal as the launch",
+      badDotPreview.status === 1 && badDotPreview.stderr === "" && badDotPreview.stdout === badDotRaw.stdout,
+      { status: badDotPreview.status, stdout: badDotPreview.stdout, stderr: badDotPreview.stderr });
+
     const plainName = cli("spawn", "default", "-d", "--plain", "--name=bad.dot");
     check("#7617: plain pre-send refusals include the typed code without color or an ad hoc error mark",
       plainName.status === 1 && plainName.stdout === "" && plainName.stderr.includes("USAGE_INVALID")

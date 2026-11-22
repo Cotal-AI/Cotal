@@ -28,6 +28,15 @@ export function validateWatchArguments(args: ParsedArgs): void {
   if (!watchViews.includes(filter as WatchFilter)) throw new CommandFailure("refused", "USAGE_INVALID", "watch --view takes feed, events, messages, roster, channels, waiting, dms or topology");
 }
 
+export function watchSetupFailureRecords(args: ParsedArgs, failure?: CommandFailure, space?: string) {
+  const target = { requestedSpace: args.values.space ?? null, ...(space === undefined ? {} : { space }) };
+  const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
+  return [
+    streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }),
+    streamRecord("watch", "end", target, { reason: "setup-failed" }),
+  ];
+}
+
 /** An invisible observer. Leaving this view never sends a control or stop request. */
 export async function watch(args: ParsedArgs): Promise<void> {
   validateWatchArguments(args);
@@ -44,10 +53,7 @@ export async function watch(args: ParsedArgs): Promise<void> {
     const failure = isCommandFailure(error) ? error : refusal?.failure();
     const refusedSpace = refusal?.target?.space;
     const space = resolved.space ?? (typeof refusedSpace === "string" ? refusedSpace : undefined);
-    const target = { requestedSpace: args.values.space ?? null, ...(space === undefined ? {} : { space }) };
-    const reason = failure ? { message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) } : { message: "The observer could not establish its authorized view; this is not an empty successful snapshot." };
-    writeStreamRecord(streamRecord("watch", "error", target, { code: failure ? failure.code : "OPERATION_FAILED", ...reason }));
-    writeStreamRecord(streamRecord("watch", "end", target, { reason: "setup-failed" }));
+    for (const record of watchSetupFailureRecords(args, failure, space)) writeStreamRecord(record);
     process.exitCode = failure ? exitCode(failure.outcome, failure.code) : 5;
   }
 }

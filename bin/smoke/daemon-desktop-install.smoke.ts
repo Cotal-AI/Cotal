@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
@@ -94,11 +94,10 @@ function checkInstallation(target: Isolated): void {
 // A real account-shell failure must remain actionable before any service operation: the refusal names the shell,
 // how it ended and its last error output, so the person can fix that startup file.
 const shellCases = [
-  { name: "shell-failure", profile: "exit 1\n", message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 1; no service was changed$/ },
+  { name: "shell-failure", profile: "exit 1\n", reason: "exited with status 1" },
   { name: "shell-error-output", profile: "printf '\\033[31mbrew: \"command\" isn'\\''t `found`\\033[0m\\n' >&2\nexit 127\n",
-    message: /^the account's application PATH could not be read: the login shell \/\S+ exited with status 127; its last error output was "brew: ’command’ isn’t ’found’"; no service was changed$/ },
-  { name: "shell-noisy-start", profile: "head -c 70000 /dev/zero | tr '\\0' x\n",
-    message: /^the account's application PATH could not be read: the login shell \/\S+ printed more than 64 KiB while starting; no service was changed$/ },
+    reason: "exited with status 127", lastLine: "brew: ’command’ isn’t ’found’" },
+  { name: "shell-noisy-start", profile: "head -c 70000 /dev/zero | tr '\\0' x\n", reason: "printed more than 64 KiB while starting" },
 ];
 for (const shellCase of shellCases) {
   const shellFailure = isolated(shellCase.name);
@@ -106,7 +105,13 @@ for (const shellCase of shellCases) {
   const refusedPath = await request(shellFailure, "install");
   assert.equal(refusedPath.ok, false);
   assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
-  assert.match(refusedPath.error?.message ?? "", shellCase.message);
+  const message = refusedPath.error?.message ?? "";
+  const prefix = `the account's application PATH could not be read: the login shell ${userInfo().shell} ${shellCase.reason}`;
+  assert.ok(message.startsWith(prefix), message);
+  // Bash can report its own job-control warnings before reading the profile when there is no terminal.
+  const tail = /^(?:; its last error output was "([^"'`\x00-\x1f\x7f]{1,300})")?; no service was changed$/.exec(message.slice(prefix.length));
+  assert.ok(tail, message);
+  if (shellCase.lastLine) assert.equal(tail[1]?.split(" / ").at(-1), shellCase.lastLine);
   assert.equal(refusedPath.error?.remedy, "check that your login shell starts successfully, then choose Check again");
   assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
   assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");

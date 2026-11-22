@@ -1,13 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
 import { acquireLock, processStartToken } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
 import { claimUpdateClosureAccess, liveUpdateClosureOwner } from "./update-closure.js";
-import { readUpdateRecovery } from "./updates.js";
+import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { readMeshRegistry } from "./mesh-registry.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
@@ -127,7 +127,7 @@ function pruneConnectorSets(id: { entry: string; version: string; path: string }
     for (const name of readdirSync(sets)) {
       if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
       const path = join(sets, name);
-      if (path === id.path || keep.has(name) || resolve(path) === rollbackSet) continue;
+      if (path === id.path || keep.has(name) || (rollbackSet && sameConfigPath(rollbackSet, path))) continue;
       try {
         ownedAncestors(path);
         // Repair leaves a private copy for the operator, not for the generation collector.
@@ -207,6 +207,18 @@ function ownedAncestors(path: string): void {
   }
 }
 
+// Only the config base may be an alias. Managed descendants keep their fixed path and no-link checks.
+function sameConfigPath(saved: string, expected: string): boolean {
+  if (saved === expected) return true;
+  const config = resolve(globalConfigDir());
+  if (expected !== config && !expected.startsWith(`${config}${sep}`)) return false;
+  const suffix = expected.slice(config.length);
+  if (!isAbsolute(saved) || !saved.endsWith(suffix)) return false;
+  const base = saved.slice(0, saved.length - suffix.length);
+  if (!base || resolve(base) !== base || !existsSync(base) || !existsSync(config)) return false;
+  return protectedResolvedDirectory(base, "the connector config folder") === protectedResolvedDirectory(config, "the connector config folder");
+}
+
 function previousConfig(id: { entry: string; path: string }, prepare?: (path: string) => void): string | undefined {
   const sets = dirname(id.path);
   const path = join(sets, "current.json");
@@ -214,15 +226,43 @@ function previousConfig(id: { entry: string; path: string }, prepare?: (path: st
   if (!bytes) return;
   ownedAncestors(sets);
   const record = parseSelection(bytes, path);
-  if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || dirname(record.root) !== join(sets, record.version) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("invalid previous connector retention selection");
+  const versionDir = join(sets, record.version);
+  if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || !sameConfigPath(dirname(record.root), versionDir) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("invalid previous connector retention selection");
   const { root } = record;
-  prepare?.(root);
-  ownedAncestors(root);
+  const expected = join(versionDir, basename(root));
+  prepare?.(expected);
+  ownedAncestors(expected);
   for (const name of ["seed", "extensions"]) {
     const path = join(root, name), stat = lstatSync(path, { throwIfNoEntry: false });
     if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`previous connector state is not a real directory: ${path}`);
   }
   return root;
+}
+
+/** Identify the snapshot's config root without following links inside a retained set. */
+export function updateSnapshotConfig(record: UpdateRecovery): string | undefined {
+  return snapshotConfig(record.snapshot, record.previous);
+}
+
+function snapshotConfig(path: string | undefined, previous?: string, selectedPath?: string): string | undefined {
+  if (!path || resolve(path) !== path || !basename(path).startsWith(".update-snapshot-")) return;
+  const config = dirname(path);
+  const base = resolve(globalConfigDir());
+  if (sameConfigPath(config, base)) return config;
+  const selected = selectedPath ?? identity()?.path;
+  const generation = dirname(config), version = basename(generation);
+  if (!selected || !sameConfigPath(dirname(generation), dirname(selected)) || (previous !== undefined && version !== previous) ||
+      !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(config))) return;
+  if (!lstatSync(base, { throwIfNoEntry: false })) return config;
+  protectedResolvedDirectory(base, "the connector config folder");
+  const expected = join(dirname(selected), version, basename(config));
+  let parent = base;
+  for (const part of relative(base, expected).split(sep)) {
+    parent = join(parent, part);
+    if (!lstatSync(parent, { throwIfNoEntry: false })) break;
+    ownedDirectory(parent);
+  }
+  return config;
 }
 
 function updateSnapshot(id: { entry: string; version: string; path: string }): string | undefined {
@@ -231,12 +271,11 @@ function updateSnapshot(id: { entry: string; version: string; path: string }): s
   if (process.env.COTAL_UPDATE_PARENT !== String(process.ppid)) return;
   const record = readUpdateRecovery();
   if (!record || record.phase !== "replacing" || record.target !== id.version || record.owner?.pid !== process.ppid || !liveUpdateClosureOwner(record) || !record.snapshot) return;
-  const snapshot = record.snapshot, source = dirname(snapshot);
-  const sets = dirname(id.path);
-  const retained = dirname(dirname(source));
-  if (!basename(snapshot).startsWith(".update-snapshot-") ||
-      (source !== globalConfigDir() && (retained !== sets || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(source))))) throw new Error("update connector snapshot does not belong to this installation");
-  if (source !== globalConfigDir()) ownedAncestors(source);
+  const snapshot = record.snapshot;
+  if (!snapshotConfig(snapshot, undefined, id.path)) {
+    if (record.reconcileWithoutSnapshot && record.execution) return;
+    throw new Error("update connector snapshot does not belong to this installation");
+  }
   ownedDirectory(snapshot);
   return snapshot;
 }
@@ -249,14 +288,14 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
     const snapshot = updateSnapshot(id);
     if (snapshot) return;
     const previous = previousConfig(id, prepare);
-    return previous && dirname(previous) === id.path ? previous : undefined;
+    return previous && sameConfigPath(dirname(previous), id.path) ? previous : undefined;
   }
   ownedAncestors(id.path);
   const record = parseSelection(bytes, path);
-  if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || dirname(record.root) !== id.path || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("connector retention selection differs from this installation");
+  if (record.v !== 1 || record.entry !== id.entry || record.version !== id.version || !sameConfigPath(dirname(record.root), id.path) || !/^cotal(?:-[a-f0-9]{16})?$/.test(basename(record.root))) throw new Error("connector retention selection differs from this installation");
   const snapshot = updateSnapshot(id);
   const { root } = record;
-  if (!snapshot || record.snapshot === snapshot) prepare?.(root);
+  if (!snapshot || record.snapshot === snapshot) prepare?.(join(id.path, basename(root)));
   ownedDirectory(root);
   for (const name of ["seed", "extensions"]) {
     const path = join(root, name);
@@ -509,7 +548,7 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, pre
         if (!hasRoot) renameSync(staging, root);
         else {
           // Keep a live seat's graph and the updater's rollback source at their original paths.
-          const pinned = snapshot && (dirname(snapshot) === root || setHasHolders(id.path));
+          const pinned = snapshot && (sameConfigPath(dirname(snapshot), root) || setHasHolders(id.path));
           if (pinned) {
             root = join(id.path, `cotal-${randomBytes(8).toString("hex")}`);
             renameSync(staging, root);

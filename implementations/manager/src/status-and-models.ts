@@ -273,7 +273,8 @@ export class StatusAndModels {
    *  `ownerFilter`: restrict to agents whose spawn-time stored `userOwner` equals it (the ps/status
    *  owner-domain bound); undefined = unbounded. {@link NO_OWNER_MATCHES} matches nothing. */
   list(ownerFilter?: string) {
-    const roster = new Map(this.ep.getRoster().map((p) => [p.card.name, p]));
+    const records = this.ep.getRoster();
+    const roster = new Map(records.map((p) => [p.card.name, p]));
     const observedAt = Date.now();
     // The roster is only evidence while THIS observer's presence watch is fresh. A stale view
     // (whole-bucket silence past TTL) or an unpopulated one (snapshot not yet replayed) cannot
@@ -293,14 +294,15 @@ export class StatusAndModels {
         : undefined;
       // The connector-reported provider from presence (#785): the live roster card's `meta.provider`,
       // when it is a non-empty string. Absent when the connector reported none — never fabricated.
-      const seen = roster.get(a.name);
+      // The seat's own record first: `set-name` may have given it another display name than its alias.
+      const seen = records.find((p) => this.isOwnPresence(a, p)) ?? roster.get(a.name);
       const presenceIdentityVerified = this.isOwnPresence(a, seen);
       const providerMeta = seen?.card.meta?.provider;
       const provider = typeof providerMeta === "string" && providerMeta ? providerMeta : undefined;
       // The harness-reported condition beside the mesh status (#618): a turn that died upstream reads
       // `waiting` with `rate_limit` here, not a bare `waiting`. Absent when the connector reported none.
       // Projected field by field like `provider`: a malformed peer row must not fail this reply's schema.
-      const reported = roster.get(a.name)?.condition;
+      const reported = seen?.condition;
       const condition =
         reported && typeof reported.code === "string" && reported.code
           ? {
@@ -312,11 +314,11 @@ export class StatusAndModels {
           : undefined;
       // The seat's last harness-reported work progress (#618). `ts` is only its heartbeat, so a turn
       // that stopped advancing reads as an old `activeAt` beside a live process. Absent when none was reported.
-      const activeAtReported = roster.get(a.name)?.activeAt;
+      const activeAtReported = seen?.activeAt;
       const activeAt = typeof activeAtReported === "number" && Number.isFinite(activeAtReported) ? activeAtReported : undefined;
       // How long an offline verdict has stood (#1208): the seat's last heartbeat before it went
       // offline. Only beside a verdict, since a stale or unpopulated view dates nothing, only from the
-      // seat's own record, since `seen` is matched by name and a same-named foreign peer or an older
+      // seat's own record, since `seen` falls back to a name match and a same-named foreign peer or an older
       // incarnation must not date this seat, and only when the seat's unvalidated `ts` fits the row
       // schema, so one odd record cannot fail the reply.
       const offlineSince = view.state === "current" && this.isOwnPresence(a, seen) && seen.status === "offline" && Number.isSafeInteger(seen.ts) && seen.ts >= 0

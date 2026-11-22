@@ -68,9 +68,9 @@ project folder and the space from the bundle:
 cotal setup --destination self-hosted --harness claude --project ~/research --space research --connection-file ./research.json --no-input
 ```
 
-A space name `cotal up` cannot
-start is refused with the name respelled in letters, digits, `-` and `_` as the remedy, and an
-unknown `--harness` with the known ones and `cotal ext add <npm-package>`.
+Setup refuses invalid local space names. A local name has at most 64 characters, starts with a
+letter, digit or `_`, and uses only letters, digits, `-` and `_`. Setup suggests a valid spelling
+when it can. For an unknown `--harness`, setup lists the known ones and points to `cotal ext add <npm-package>`.
 
 A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
 registered with `cotal space add` or a signed-in catalog, or one `--connection-file` registers. A
@@ -90,6 +90,12 @@ Otherwise, the result names the next command: `cotal up` in the project for a lo
 writes Cotal records. For Codex, this includes new or content-changed marketplace files, Codex
 configuration, and cached plugin files. The receipt does not inventory every write made by
 programs that setup calls.
+If the default persona cannot be written after setup saves the space, setup exits 4 with
+`OPERATION_PARTIAL`. The JSON envelope names the space in `target.space` and lists the confirmed
+writes in `changed`. If a file blocks `.cotal/agents`, move it aside and run the same setup again.
+If setup cannot open `.cotal/setup.log` after saving preparation, it also exits 4 with
+`OPERATION_PARTIAL`. The JSON envelope names the space and log path in `target` and lists the
+confirmed writes in `changed`. Check and repair that path, then run the same setup again.
 
 Setup needs an installed connector. When `--harness` names a built-in connector that is not
 installed, setup reports `DEPENDENCY_UNAVAILABLE`. The remedy names the `cotal ext add` command
@@ -249,6 +255,8 @@ recording the failed attempt. macOS and Windows retain their separate activation
 On Linux, rerun `cotal update --self` after an interruption. The update resumes when it can prove
 the previous updater died before its child was allowed to start, or that the recorded child and
 its process group are gone. A live writer or unreadable evidence leaves the record intact.
+A successful retry also removes private update scratch when it can confirm that the updater and
+its workers have exited.
 For an older record without child custody, manual repair still requires this account's other
 application processes to exit. It stops only this installation's service after confirming its
 hosted Managers have no seats, and starts the enabled service again after the attempt.
@@ -625,7 +633,7 @@ cotal join --link <url> | --token <t>
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh, and which credential |
 | `--name <n>` | none | Your presence name |
 | `--role <r>` | none | Your role |
-| `--channel <c>` | link's first channel, else `general` | Channel to join; a static credential needs a read grant for it |
+| `--channel <c>` | link's first channel, else `general` | Channel to join, with or without a leading `#`. A static credential needs a read grant for it |
 | `--kind <k>` | `agent` | Endpoint kind |
 | `--link <url>` | none | Join link (`cotal://…`) |
 | `--token <t>` | none | Join token |
@@ -640,6 +648,10 @@ on an incoming line, and on a DM you send. A `--link` supplies the where and the
 Enter `/quit` to leave the session, including when pasting it after another command, or press
 Ctrl-D at the terminal prompt. If `/dm`, `/anycast`, or `/me` is missing an argument, `join`
 prints its usage without posting the line to the channel.
+
+With terminal input and redirected stdout, `join` writes the transcript to stdout and keeps the
+prompt on stderr if stderr is a terminal. Without terminal input or a terminal output stream, it
+holds presence without reading stdin.
 
 A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
 channel. It establishes durable membership when the channel's delivery policy is durable, even
@@ -666,6 +678,9 @@ post confirms that nothing was sent and names the mint with `--allow-publish` fo
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
 The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
+If the file is incomplete, `join` refuses it before connecting. Pass the complete file as issued,
+or ask the space's owner to mint a replacement with `--provision`, `--allow-subscribe` for the
+landing channel, and `--out`. Use the lifecycle UID that the replacement mint reports.
 `--provision` alone grants no channel access. A missing read grant is refused with
 `PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
@@ -675,7 +690,8 @@ UID and a read grant, the refusal names that lifecycle and a mint with `--provis
 channel flag to keep its existing grants. Without a UID, `join`
 first refuses with the lifecycle-pairing requirement. An `observer` or `admin` credential cannot join as a participant and is refused with `PERMISSION_DENIED` before the lifecycle-pairing check, naming the `agent` mint command.
 
-On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
+On a registered user-auth space, `join` refuses expiry flags before asking you to sign in. For a
+join without expiry flags, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
 and DM resources must already be provisioned by the space operator. It never mints static
 credentials or widens your grants. A changed principal, lifecycle or connection trust refuses
@@ -687,8 +703,8 @@ refuses with a request for the operator's TLS-enabled broker address. It never r
 plaintext. A `ws://` address uses plaintext WebSocket. Use `wss://` for TLS.
 
 `join` has no `--json`. A refusal before the session starts prints on stderr with its code and
-exits 1 for `USAGE_INVALID` and 2 for any other refusal: `TARGET_NOT_FOUND` for a space not
-registered here, a creds file that does not exist, a lifecycle with no inbox or a space not
+exits 1 for `USAGE_INVALID` or `SCHEMA_INVALID` and 2 for any other refusal: `TARGET_NOT_FOUND` for
+a space not registered here, a creds file that does not exist, a lifecycle with no inbox or a space not
 provisioned for a console session, `PERMISSION_DENIED` for credentials the broker rejects,
 `TARGET_UNAVAILABLE` for a broker that does not answer, and `UNSUPPORTED` for a broker without the
 TLS the join requires.
@@ -778,8 +794,9 @@ without color. The other `ext` subcommands refuse `--json` and `--plain` with `U
 
 `ext list` checks package metadata without loading or repairing extensions. It keeps each recorded
 row and reports a missing package directory as not installed. A package with a missing or invalid
-`package.json`, including one with no `version`, is reported as corrupt. When metadata cannot be
-verified, the listing exits 4 with a partial report. The warnings name the package, the affected
+`package.json`, including one with no `version`, is reported as corrupt. If the installed version
+differs from the recorded pin, the warning names both versions and gives the reinstall step.
+Either a mismatch or unverifiable metadata makes the listing partial (exit 4). The warnings name the package, the affected
 path and a recovery step. JSON includes them in `warnings`, and the text report writes them to stderr.
 
 `add`, `remove` and each built-in seed relink the shared peers of every installed package after npm
@@ -921,8 +938,11 @@ cotal docs --search <query> [--json | --plain]
 | `--plain` | off | Text without color. A page has a source and version line followed by Markdown. |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
-`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`,
-`Project`, the order of the docs index), each with its title; `result.pages` holds each page's slug,
+`cotal_docs`. The command does not read or repair the installed extension inventory, so you can
+consult it while fixing that inventory.
+
+Bare `docs` lists the pages by category (`Start here`, `Guide`, `Concept`, `Reference`, `Project`,
+the order of the docs index), each with its title; `result.pages` holds each page's slug,
 title, kind (its classification line, such as `Concept (informative)`), category (the heading it
 lists under) and summary, in that order, and
 `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
@@ -977,7 +997,9 @@ With none of those it reads your defaults. `--user` reads your defaults alone.
 `set` and `unset` change your defaults, or your values for one space with `--space`.
 Both commands work without installing or refreshing connectors. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
-machine, and refuses any other name with `TARGET_NOT_FOUND` (exit 2) and the known spaces.
+machine. A valid name that does not match a space refuses with `TARGET_NOT_FOUND` (exit 2) and the
+known spaces. A name `space create` cannot use, such as one starting with `-`, refuses with
+`USAGE_INVALID` (exit 1) before any space lookup.
 A read and `unset --space` also take a space that still holds a saved value, so a value left for
 a space you removed can be read and removed, and refuse any other name the same way. A write that
 another value outranks in this shell is still saved, with a `PREFERENCE_SHADOWED` warning naming
@@ -1059,8 +1081,9 @@ cotal completion script fish | source
 cotal completion script powershell | Out-String | Invoke-Expression
 ```
 
-`completion script` writes raw shell code and takes no `--json` or `--plain`. Generation is
-offline. The stable hidden `__complete` entry reads registered command specifications, the spaces
+`completion script` writes raw shell code and takes one supported shell name, without `--json` or
+`--plain`. Remove an unknown option instead of passing it after `--`. Generation is offline.
+The stable hidden `__complete` entry reads registered command specifications, the spaces
 registered or prepared on this machine, the extension manifest, the bundled docs index and local
 persona files. It does not contact the mesh or refresh extensions. Every `--space` offers the spaces
 `cotal use` offers, and every `--creds` lets the shell complete a file name. `space show`, `forget`

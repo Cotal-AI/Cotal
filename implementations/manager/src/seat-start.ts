@@ -8,6 +8,7 @@ import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
 import { readContinuityAssignment, writeInlineSnapshot } from "./launch.js";
 import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
+import { withTimeout } from "./manager-timeout.js";
 import { enrolledAcl } from "./remote-authority.js";
 import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
@@ -20,6 +21,20 @@ import type { TranscriptClaim } from "./transcript-receive.js";
 import type { ProvisionedUserAgent } from "./user-provision.js";
 
 class LegacyEventCountPermissionError extends Error {}
+
+async function startupFailureDetail(a: ManagedAgent, outcome: "failed" | "exited"): Promise<string> {
+  const failure = outcome === "failed" ? "startup confirmation failed" : "the seat exited before startup confirmation completed";
+  try {
+    // The startup watch can report failure before the runtime records the diagnostic on exit.
+    if (a.handle.waitForExit)
+      await withTimeout(a.handle.waitForExit(), 10_000, "seat exit was not confirmed within 10000ms");
+    const diagnostic = a.handle.exitInfo?.()?.diagnostic?.replace(/\p{Cs}/gu, "\uFFFD");
+    if (diagnostic) return `${a.name}: ${diagnostic}`;
+  } catch (error) {
+    return `${a.name}: ${failure}; ${rejectionText(error).replace(/\p{Cs}/gu, "\uFFFD")}. See the manager log.`;
+  }
+  return `${a.name}: ${failure}. See the manager log.`;
+}
 
 /** The {@link SeatLaunch} methods {@link SeatStart.startActive} calls. Each is read at call time. */
 export interface SeatStartLaunch {
@@ -1057,12 +1072,17 @@ export class SeatStart {
           return { ok: false, error };
         }
       }
-      // A plain seat on such a connector starts whatever its startup showed. One whose watch opened the
-      // input screen without the prompt is not woken by mesh traffic, and the spawn says so instead of
-      // starting it silently without push (#5737).
+      // An input screen without the prompt allows a plain launch, but mesh traffic cannot wake it.
       if (!onceTask && connector.idleWakeNeedsConfirmed !== undefined && runtime.reportsStartupOutcome) {
         const startup = await this.awaitStartupOutcome(managed, launchedAt, readinessTimeoutMs);
         if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error: `${name} was stopped before its startup ended` }; }
+        if (startup === "failed" || startup === "exited") {
+          const error = await startupFailureDetail(managed, startup);
+          if (managed.terminalizing || this.leaseStopping) { hooks?.onTerminalDeferred?.(); return { ok: false, error }; }
+          this.watchExit(managed);
+          await hooks?.onOutcome?.({ kind: "failed", data: { error } });
+          return { ok: false, error };
+        }
         if (startup === "ready") {
           managed.startupNotice = connector.idleWakeNeedsConfirmed;
           console.error(`! ${name}: ${connector.idleWakeNeedsConfirmed}`);

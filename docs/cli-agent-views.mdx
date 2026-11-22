@@ -25,13 +25,16 @@ the literal `cotal team deploy <file>` remedy, before agent allocation.
 signs in to the broker, redeems enrollment, provisions or allocates an agent. A direct preview checks
 launch arguments if the installed connector supports validation without creating launch files. Where the launch reads
 whether the recorded brokers answer to choose its space, as in a folder whose registered space may
-be stopped, the preview reads the same without signing in, so it names the space the launch uses. The managed preview
-shows the request and exits 0 with `completeness` `not-checked`, because the manager resolves the
-persona, harness and working directory on its own host at launch. It does not substitute the
-caller's files. A named `--runtime` is checked on this machine only, through the lookup the launch
-uses: `result.requested.runtime` names it, and `result.runtimeCheck` gives the `host` it was checked
-on, whether it is `available` there, and the `error` when it is not. A runtime this machine cannot
-run is a `RUNTIME_UNAVAILABLE` warning, because a manager on another host checks its own.
+be stopped, the preview reads the same without signing in, so it names the space the launch uses.
+A managed preview checks an explicit `--name` with the launch's local name rule, including the
+actor-token rule for a selected user-auth space. An invalid name is refused with `USAGE_INVALID`
+(exit 1). A successful managed preview reports `completeness` as `not-checked`. The manager
+resolves the persona, any name it supplies, the harness and the working directory on its own host
+at launch. The preview does not substitute the caller's files. A named `--runtime` is checked on
+this machine only, through the lookup the launch uses: `result.requested.runtime` names it, and
+`result.runtimeCheck` gives the `host` it was checked on, whether it is `available` there, and the
+`error` when it is not. A runtime this machine cannot run is a `RUNTIME_UNAVAILABLE` warning,
+because a manager on another host checks its own.
 `--runtime auto` is refused as the launch refuses it. A direct preview resolves the local persona,
 harness precedence and physical working directory. It checks the effective name from `--name` or
 persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
@@ -152,6 +155,8 @@ It takes no `--all`, `--components`, `--wide` or `--verbose`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs
 no agent named `manager`, the refusal names the manager and points to `cotal status`.
 On an authenticated space it also points to `cotal endpoint describe manager`.
+Both reads keep the space and broker options you supplied. If the broker address cannot be shown,
+the refusal tells you to reuse those options without printing the address.
 Passing an answering manager's own instance ID gives the same guidance on static and open spaces.
 A requested model is not provider-confirmed. Connector-reported provider
 information is labeled exact or name-matched under the same proof. A new manager

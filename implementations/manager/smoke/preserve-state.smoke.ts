@@ -153,7 +153,7 @@ function managerWith(
     resumeAttemptId: opts.resumeAttemptId,
     resumeDurableCommitToken: opts.resumeDurableCommitToken,
   });
-  const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; userOwner?: string; lifecycleUid?: string }> }).agents;
+  const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; displayName?: string; userOwner?: string; lifecycleUid?: string }> }).agents;
   (manager as unknown as { runtime: unknown }).runtime = { kind: "fake", spawn: runtimeSpawn };
   (manager as unknown as { probeStaticCredential: () => Promise<{ ok: true }> }).probeStaticCredential = async () => ({ ok: true });
   (manager as unknown as { ep: unknown }).ep = {
@@ -161,8 +161,9 @@ function managerWith(
     // The real endpoint publishes the incarnation's lifecycleUid in presence whenever it has one
     // (endpoint.ts publishPresence); the readiness lifecycle fence matches on it, so the fake roster
     // must carry it too or a resumed agent (which now recovers its uid) never reports STARTED.
+    // A seat shows the display name its launch restored (COTAL_DISPLAY_NAME), as a real connector does.
     getRoster: () => [...agents.values()].map((a) => ({
-      card: { id: a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key, name: a.name },
+      card: { id: a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key, name: a.displayName ?? a.name },
       lifecycleUid: a.lifecycleUid,
       status: "idle",
     })),
@@ -1293,6 +1294,66 @@ let openInventory: ManagerResumeAgent;
   const cannotFinalize = await control(userCommitDriftManager, "admin", "finalizeResume", { attemptId: "user_commit_drift", durableCommitToken: "0".repeat(64) });
   check("a failed user authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["general"] };
+
+  // SPEC 13.22 `set-name`: the seat keeps the display name it shows in its own presence, the cut
+  // carries it beside the alias, and the relaunch starts with it under the same alias and actor.
+  {
+    type Seat = { id: string; name: string; displayName?: string; lifecycleUid: string };
+    const named: ManagerResumeAgent = { ...entry, displayName: "Ada Reviewer" };
+    const first = managerWith((name) => fakeHandle(name), { resumeAttemptId: "named_resume" });
+    (first as unknown as { userMode: boolean }).userMode = true;
+    resetCapturedLaunch();
+    const resumed = await control(first, "admin", "resumePreserved", { attemptId: "named_resume", inventory: inventoryOf(named) });
+    check("a resume whose inventory carries a display name launches under the alias and actor with that display name",
+      resumed.ok && capturedLaunch?.name === "worker" && capturedLaunch?.displayName === "Ada Reviewer" && capturedLaunch?.userAuth?.actor === "worker",
+      { name: capturedLaunch?.name, displayName: capturedLaunch?.displayName, actor: capturedLaunch?.userAuth?.actor });
+    const committed = await control(first, "admin", "commitResume", { attemptId: "named_resume" });
+    check("commit accepts the resumed incarnation while its presence shows the display name", committed.ok, committed.error);
+    const seat = (first as unknown as { agents: Map<string, Seat> }).agents.get("worker")!;
+    const ep = (first as unknown as { ep: { getRoster: () => unknown[] } }).ep;
+    const shows = (name: string): void => {
+      ep.getRoster = () => [{ card: { id: seat.id, name }, lifecycleUid: seat.lifecycleUid, status: "idle" }];
+      (first as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
+    };
+    shows("Grace Hopper");
+    check("the seat keeps the name its own presence shows after a rename", seat.displayName === "Grace Hopper", seat.displayName);
+    shows("x".repeat(200));
+    shows("a/b");
+    check("a name the shared rule refuses is not kept: the last good one stays", seat.displayName === "Grace Hopper", seat.displayName);
+    ep.getRoster = () => [
+      { card: { id: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb.worker", name: "worker" }, lifecycleUid: uidFor("foreign"), status: "idle" },
+      { card: { id: seat.id, name: "Grace Hopper" }, lifecycleUid: seat.lifecycleUid, status: "working" },
+    ];
+    // `ps` answers this list; the resume fence holds the door itself until the attempt finalizes.
+    const rows = (first as unknown as { list: () => { name: string; mesh: string; presenceIdentityVerified: boolean }[] }).list();
+    const row = rows.find((r) => r.name === "worker");
+    check("ps finds the renamed seat by its own record, not a same-named peer: mesh working, identity verified",
+      row?.mesh === "working" && row.presenceIdentityVerified === true, JSON.stringify(row ?? rows));
+    const names = (first as unknown as { namesCapacity: { liveRosterNames(): Set<string>; uniqueName(base: string): string } }).namesCapacity;
+    ep.getRoster = () => [{ card: { id: seat.id, name: "Grace Hopper" }, lifecycleUid: seat.lifecycleUid, status: "idle" }];
+    (first as unknown as { agents: Map<string, Seat> }).agents.delete("worker");
+    const live = names.liveRosterNames();
+    check("in user mode a live renamed agent holds both its display name and its actor against new spawns",
+      live.has("Grace Hopper") && live.has("worker") && names.uniqueName("worker") === "worker_2", [...live]);
+    (first as unknown as { agents: Map<string, Seat> }).agents.set("worker", seat);
+    shows("Grace Hopper");
+    const cut = await first.preserveState({ attemptId: "named_cut", persistInventory: async () => {} });
+    const carried = cut.inventory?.agents.find((a) => a.name === "worker");
+    check("the preservation cut carries the display name beside the alias and the actor",
+      cut.ok && carried?.displayName === "Grace Hopper" && carried.identity.mode === "user" && carried.identity.actor === "worker", { ok: cut.ok, carried: carried && { name: carried.name, displayName: carried.displayName } });
+    const second = managerWith((name) => fakeHandle(name));
+    (second as unknown as { userMode: boolean }).userMode = true;
+    resetCapturedLaunch();
+    const relaunched = cut.inventory ? await second.resumePreserved(cut.inventory) : { ok: false, error: "no inventory" };
+    check("a manager that resumes the cut relaunches the seat with the last name, the same alias and the same actor",
+      relaunched.ok && capturedLaunch?.displayName === "Grace Hopper" && capturedLaunch?.name === "worker" && capturedLaunch?.userAuth?.actor === "worker"
+      && (second as unknown as { agents: Map<string, Seat> }).agents.get("worker")?.displayName === "Grace Hopper",
+      { error: relaunched.error, displayName: capturedLaunch?.displayName, name: capturedLaunch?.name });
+    const back = (second as unknown as { agents: Map<string, Seat> }).agents.get("worker")!;
+    (second as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{ card: { id: back.id, name: "worker" }, lifecycleUid: back.lifecycleUid, status: "idle" }];
+    (second as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
+    check("renamed back to its alias, the seat keeps no display name", back.displayName === undefined, back.displayName);
+  }
 }
 
 // #964: active-mode stop spares by default; explicit withAgents retains the old teardown.

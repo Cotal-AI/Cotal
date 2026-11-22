@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmdirSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,6 +44,18 @@ for (const consistent of [false, true]) {
   assert.equal(await executeUpdate(true, offline), 0);
   assert.deepEqual(actions, []);
   assert.deepEqual(lines, ["The registry cannot be reached; nothing was changed."]);
+}
+for (const code of ["ENOTCACHED", "EAI_AGAIN", "E401"]) {
+  const lines: string[] = [], errors: string[] = [];
+  const plain: UpdateRuntime = { ...rt,
+    reportRunningManager: async () => "none", preflightReplacement: async () => {},
+    refreshConnectors: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    npm: () => ({ status: 1, stdout: JSON.stringify({ error: { code } }), stderr: `npm error ${code}` }),
+    out: line => { lines.push(line); }, err: line => { errors.push(line); },
+  };
+  assert.equal(await executeUpdate(false, plain), 0);
+  assert.match(lines.join("\n"), /Registry latest:\s+not established/);
+  assert.deepEqual(errors, []);
 }
 async function closedPort(): Promise<number> {
   const server = createServer();
@@ -115,22 +127,39 @@ if (process.platform !== "win32") {
   try {
     const gone = join(home, "gone");
     mkdirSync(gone);
+    const repoBin = join(import.meta.dirname, "../../../bin");
+    const entry = [process.execPath, join(repoBin, "dist/cotal.js")];
+    if (process.platform === "linux") {
+      const prefix = join(home, "prefix"), installed = join(prefix, "lib/node_modules/cotal-ai");
+      const launcher = join(prefix, "bin/cotal"), pinScript = "scripts/pin-npm-node.cjs";
+      for (const directory of [join(prefix, "bin"), join(installed, "dist"), join(installed, "scripts")]) {
+        mkdirSync(directory, { recursive: true });
+      }
+      copyFileSync(join(repoBin, "package.json"), join(installed, "package.json"));
+      copyFileSync(join(repoBin, pinScript), join(installed, pinScript));
+      symlinkSync(entry[1]!, join(installed, "dist/cotal.js"));
+      symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", launcher);
+      const pin = spawnSync(process.execPath, [join(installed, pinScript)], { cwd: home, encoding: "utf8" });
+      assert.equal(pin.status, 0, pin.stdout + pin.stderr);
+      assert.equal(readlinkSync(launcher), "../lib/node_modules/cotal-ai/dist/cotal-npm");
+      if (readFileSync(launcher, "utf8").startsWith("#!/usr/bin/env -S ")) entry.splice(0, entry.length, launcher);
+    }
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !key.toLowerCase().startsWith("npm_config_")));
     const result = spawnSync("/bin/sh", ["-c", 'cd "$1" && rmdir "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
-      process.execPath, join(import.meta.dirname, "../../../bin/dist/cotal.js")], {
+      ...entry], {
       cwd: home, encoding: "utf8", timeout: 180_000,
       env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
     });
     assert.equal(result.status, 0, `plain self-update and retry run from an already removed folder: ${result.stdout}\n${result.stderr}`);
-    assert.doesNotMatch(result.stdout + result.stderr, /this folder no longer exists|update preflight failed|registry cannot be reached/i,
+    assert.doesNotMatch(result.stdout + result.stderr, /getcwd\(\) failed|this folder no longer exists|update preflight failed|registry cannot be reached/i,
       "removed cwd does not refuse update or masquerade as unavailable registry metadata");
     assert.match(result.stdout, /Registry latest:/, "the actual updater completed its registry check");
     mkdirSync(join(home, ".cotal"));
     mkdirSync(gone);
     const during = await new Promise<{ status: number | null; output: string; removed: boolean }>((resolve, reject) => {
       const child = spawn("/bin/sh", ["-c", 'cd "$1" && shift && "$@" update --self && "$@" update --self', "sh", gone,
-        process.execPath, join(import.meta.dirname, "../../../bin/dist/cotal.js")], {
+        ...entry], {
         cwd: home, env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: join(home, "xdg"),
           COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_ALLOW_CHECKOUT_SEED: "1" },
       });
@@ -149,7 +178,7 @@ if (process.platform !== "win32") {
     });
     assert.equal(during.removed, true, `remove the original folder after plain update begins: ${during.output}`);
     assert.equal(during.status, 0, during.output);
-    assert.doesNotMatch(during.output, /this folder no longer exists|update preflight failed|registry cannot be reached/i);
+    assert.doesNotMatch(during.output, /getcwd\(\) failed|this folder no longer exists|update preflight failed|registry cannot be reached/i);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

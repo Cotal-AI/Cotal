@@ -358,6 +358,9 @@ importers:
 
   extensions/connector-codex:
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../../implementations/auth
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
@@ -379,6 +382,9 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.1
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       tsx:
         specifier: ^4.22.4
         version: 4.23.0
@@ -647,6 +653,9 @@ importers:
       '@nats-io/jetstream':
         specifier: 3.4.0
         version: 3.4.0
+      '@nats-io/jwt':
+        specifier: 0.0.10-5
+        version: 0.0.10-5
       '@nats-io/kv':
         specifier: 3.4.0
         version: 3.4.0
@@ -678,9 +687,6 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
-      '@nats-io/jwt':
-        specifier: 0.0.10-5
-        version: 0.0.10-5
       '@nats-io/nkeys':
         specifier: 2.0.3
         version: 2.0.3

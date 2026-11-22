@@ -1,5 +1,23 @@
 # @cotal-ai/web
 
+## 0.174.3
+
+### Patch Changes
+
+- b171623: Show the private session file when reusing a foreground dashboard and return `405` for unsupported methods on dashboard read endpoints.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+No changes in this release.
+
 ## 0.173.0
 
 No changes in this release.

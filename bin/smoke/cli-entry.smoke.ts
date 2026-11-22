@@ -115,6 +115,50 @@ function refused(name: string, r: Run, reason: RegExp): void {
 /** Skips the connector seed, for runs whose question is not whether they seed. */
 const noSeed = { COTAL_SKIP_CONNECTOR_SEED: "1" };
 
+function personaReadAcl(): void {
+  for (const [label, field, expected] of [
+    ["omitted", "", "general"],
+    ["empty", "allowSubscribe: []\n", "general"],
+    ["explicit", "allowSubscribe: [general, review]\n", "general, review"],
+  ]) {
+    const result = cotal(["persona", "show", "reader", "--plain"], home => {
+      const agents = join(home, "..", ".cotal", "agents");
+      mkdirSync(agents, { recursive: true });
+      writeFileSync(join(agents, "reader.md"), `---\nname: reader\nsubscribe: [general]\n${field}---\n`);
+    }, noSeed);
+    check(`persona show reports effective read channels with ${label} allowSubscribe`,
+      result.status === 0 && /^  Read: +(.+)$/m.exec(result.stdout)?.[1] === expected, shown(result));
+  }
+}
+
+function personaRepair(): void {
+  const original = "---\nname: broken\nrole: 42\n---\nBefore repair.\n";
+  const repaired = original.replace("role: 42", "role: check");
+  for (const [action, replacement, exit] of [["repair", repaired, 0], ["invalid", original.replace("role: 42", "role: 43"), 0], ["cancel", repaired, 1]] as const) {
+    let file = "", marker = "";
+    const result = cotal(["persona", "edit", "broken", "--json"], home => {
+      const agents = join(home, "..", ".cotal", "agents");
+      mkdirSync(agents, { recursive: true });
+      file = join(agents, "broken.md");
+      marker = join(home, "..", "opened-draft");
+      writeFileSync(file, original);
+      writeFileSync(join(home, "..", "editor.sh"), `#!/bin/sh\nset -eu\ncmp "$1" .cotal/agents/broken.md\nprintf '%s\\n' "$1" > opened-draft\nprintf '%s' '${replacement}' > "$1"\nexit ${exit}\n`, { mode: 0o755 });
+    }, { ...noSeed, VISUAL: "./editor.sh", EDITOR: "./editor.sh" });
+    const draft = existsSync(marker) ? readFileSync(marker, "utf8").trim() : undefined;
+    const privateDraft = draft !== undefined && draft !== file && dirname(draft).startsWith(join(tmpdir(), "cotal-persona-"));
+    if (privateDraft) cleanup.push(dirname(draft));
+    const draftHandled = privateDraft && (action === "repair" ? !existsSync(draft) : existsSync(draft) && readFileSync(draft, "utf8") === replacement);
+    const outcome = action === "repair" ? result.status === 0 && result.stdout.includes('"kind":"persona-written"') :
+      action === "invalid" ? result.status === 1 && result.stdout.includes('"code":"SCHEMA_INVALID"') :
+      result.status === 0 && result.stdout.includes('"code":"USER_CANCELLED"');
+    check(`persona edit can ${action === "invalid" ? "reject an invalid draft of" : action} a malformed definition`,
+      draftHandled && outcome && readFileSync(file, "utf8") === (action === "repair" ? repaired : original), shown(result));
+  }
+}
+
+personaReadAcl();
+personaRepair();
+
 const commands = registry.all<Command>("command");
 const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ alias, cmd })));
 
@@ -444,11 +488,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const extra = cotal(["version", "-j", "extra"]);
   refusedJson("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
-  // `--replay` takes no value, so `--replay off` used to be refused as a second channel name.
+  // `--replay` takes no value, so `off` is parsed as an extra word.
   const replayOff = cotal(["channel", "set", "general", "--replay", "off", "--json"]);
   check("`channel set <name> --replay off` names the stray value and points to --no-replay",
     envelopes(replayOff)[0]?.error?.code === "USAGE_INVALID" && envelopes(replayOff)[0]?.error?.message?.startsWith('--replay takes no value, so "off" was read as a channel name') === true
-      && envelopes(replayOff)[0]?.error?.remedy === "run `cotal channel set general --no-replay`", shown(replayOff));
+      && envelopes(replayOff)[0]?.error?.remedy === "run `cotal channel set general --no-replay --json`", shown(replayOff));
   const human = cotal(["version", "--bogus"]);
   refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
   check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /^Usage\n  cotal version /m.test(human.stderr), shown(human));
@@ -765,8 +809,8 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     }, noSeed);
     const left = readdirSync(dotCotal);
     chmodSync(dotCotal, 0o700);
-    check("up refuses a .cotal it cannot write with PERMISSION_DENIED, exit 2, naming it and chmod u+w, and writes nothing",
-      readOnly.status === 2 && readOnly.stderr.includes("PERMISSION_DENIED") && readOnly.stderr.includes(`${dotCotal} is not writable by this account`) && readOnly.stderr.includes(`chmod u+w ${dotCotal}`) && left.length === 0, { ...shown(readOnly), left });
+    check("up refuses a .cotal it cannot write with PERMISSION_DENIED, exit 2, naming it and chmod u+wx, and writes nothing",
+      readOnly.status === 2 && readOnly.stderr.includes("PERMISSION_DENIED") && readOnly.stderr.includes(`${dotCotal} does not grant this account both write and search access`) && readOnly.stderr.includes(`chmod u+wx ${dotCotal}`) && left.length === 0, { ...shown(readOnly), left });
   }
   // A catalog travels with a cloned repo, so the legacy list escapes the control characters it reads
   // from one, and the flags that write a persona refuse them.
@@ -859,7 +903,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     persona(home);
     writeFileSync(join(home, "..", ".cotal", "agents", "bad.md"), "---\nname: bad\nsubscribe: [\n---\nbody\n");
   };
-  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a.b", 1, "persona names use letters"]] as const) {
+  for (const [what, name, status, reason] of [["missing", "nosuch", 2, "TARGET_NOT_FOUND"], ["malformed", "bad", 1, "SCHEMA_INVALID"], ["badly named", "a b", 1, "persona names use letters"]] as const) {
     const legacy = cotal(["personas", "show", name], malformed, noSeed);
     const current = cotal(["persona", "show", name], malformed, noSeed);
     check(`personas show refuses a ${what} persona as persona show does`,

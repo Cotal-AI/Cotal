@@ -311,7 +311,7 @@ const composed: Command = { ...command, async run(args) {
     const entry = logicalExecutionEntry();
     if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
     let hostedInstances = new Set<string | undefined>();
-    if (args.values.self !== true || hasUpdateDaemonLifetime()) {
+    if (hasUpdateDaemonLifetime()) {
       try {
         const daemon = await reconcileDaemonStatus(daemonPaths());
         if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
@@ -489,7 +489,8 @@ const composed: Command = { ...command, async run(args) {
       console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");
       return "none";
     }
-    if (staged && args.values.self === true && !hasUpdateDaemonLifetime())
+    const installedChild = process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version();
+    if (staged && (args.values.self === true || installedChild || standaloneReconcile) && !reconcileDaemonObserved && !hasUpdateDaemonLifetime())
       return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     let managers;
     try {
@@ -602,6 +603,15 @@ const composed: Command = { ...command, async run(args) {
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
   if (!currentPackages) await collectConnectorSets();
+  if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
+    try {
+      const installed = executionInstallRoot();
+      if (existsSync(join(installed, "dist/cotal-npm"))) {
+        const selected = selectExecutionProgram(installed);
+        if (selected.retained) execFileSync(process.execPath, [join(selected.root, "scripts/pin-npm-node.cjs"), "--refresh", installed], { stdio: "ignore", timeout: 15_000, killSignal: "SIGKILL" });
+      }
+    } catch { /* Refresh is optional after successful reconciliation. */ }
+  }
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {

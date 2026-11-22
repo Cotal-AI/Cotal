@@ -277,7 +277,9 @@ try {
     assert.match(usage.message, /doctor auth/, "it names doctor auth");
     const unknown = await refusal({ space: "nope" }, ["auth"]);
     assert.equal(unknown.code, "AUTH_REQUIRED", "an unknown --space refuses");
-    assert.equal(unknown.remedy, "run `cotal doctor auth --space nope` in that space's root folder; `cotal space` lists each space's root", "and names a space's root, which cotal space lists");
+    assert.equal(unknown.remedy, 'Unknown space "nope". Run `cotal space` to check the name. For a new local space, run `cotal space create nope` in its project folder, then run `cotal up` there.');
+    const unusable = await refusal({ space: "not a token" }, ["auth"]);
+    assert.equal(unusable.remedy, 'Unknown space "not a token". Run `cotal space` to check the name.', "a name space create refuses is not put in a command");
     // A space registered at another root keeps its trust there: this root reads none of it, and the
     // step names the folder where the same command runs.
     const elsewhere = join(root, "elsewhere");

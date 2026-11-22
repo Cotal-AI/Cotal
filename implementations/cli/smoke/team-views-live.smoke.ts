@@ -67,7 +67,7 @@ const cotal = (cwd: string, ...args: string[]) => {
   const run = spawnSync(TSX, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, out: `${run.stdout}${run.stderr}` };
 };
-type Envelope = { outcome?: string; completeness?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
+type Envelope = { outcome?: string; completeness?: string; target?: Record<string, unknown>; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; target: Record<string, unknown>; message: string }[]; result?: Record<string, unknown> };
 const envelope = (stdout: string): Envelope | undefined => { try { return JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Envelope; } catch { return undefined; } };
 /** A read that completed: exit 0, outcome ok, completeness partial and no error. */
 const answered = (run: ReturnType<typeof cotal>) => { const e = envelope(run.stdout); return run.status === 0 && e?.outcome === "ok" && e.completeness === "partial" && e.error === undefined; };
@@ -300,6 +300,23 @@ try {
 
   console.log("\nJ. the stack that took a team deploy, after a clean down");
   const stoppedS = cotal(s, "down", "--yes");
+  const legacyPreview = ["up", "-f", "live.yaml", "--dry-run"];
+  const previewRemedy = `cotal team boot ${join(realpathSync(s), "live.yaml")} --dry-run`;
+  const blockedPreview = cotal(s, ...legacyPreview, "--json");
+  const previewError = envelope(blockedPreview.stdout)?.error;
+  check("up -f --dry-run --json on the stopped controller stack refuses CONFLICT and names the team boot preview",
+    stoppedS.status === 0 && blockedPreview.status === 2 && previewError?.code === "CONFLICT"
+      && previewError.message?.includes(`holds the controller stack of space ${SPACE}`) === true
+      && previewError.remedy?.includes(previewRemedy) === true && !previewError.remedy.includes("omit --json"), blockedPreview.out);
+  for (const flags of [[], ["--plain"]]) {
+    const refusedPreview = cotal(s, ...legacyPreview, ...flags);
+    check(`up -f --dry-run ${flags[0] ?? "in rich output"} names the same conflict and preview`,
+      refusedPreview.status === 2 && /Code:\s+CONFLICT/.test(refusedPreview.stderr)
+        && refusedPreview.stderr.includes(previewRemedy), refusedPreview.out);
+  }
+  const supportedPreview = cotal(s, "team", "boot", "live.yaml", "--dry-run", "--json");
+  check("the suggested team boot preview still works on the stopped controller root",
+    answered(supportedPreview) && envelope(supportedPreview.stdout)?.result?.effectAttempted === false, supportedPreview.out);
   const removeStopped = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
   check("team remove on the stopped stack refuses CONFLICT, naming cotal up in its root and then the remove again",
     stoppedS.status === 0 && removeStopped?.code === "CONFLICT" && removeStopped.remedy === `no registration names ${SPACE}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${realpathSync(s)}, which registers it, then run \`cotal team remove ${deployment}\` again`, { down: stoppedS.out.slice(-400), removeStopped });
@@ -346,6 +363,22 @@ try {
   const openPreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json");
   const openWarning = envelope(openPreview.stdout)?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
   check("open preview offers the same guidance", openPreview.status === 0 && openWarning?.message.endsWith(`${openRemedy}.`) === true, openPreview.out);
+
+  manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: durable\n" }, openOptions);
+  const durablePreview = cotal(c, "team", "deploy", "audit.yaml", "--dry-run", "--json");
+  const durableWarning = envelope(durablePreview.stdout)?.warnings?.find((w) => w.code === "LIVE_DELIVERY_REQUIRED");
+  const durableApply = cotal(c, "team", "deploy", "audit.yaml", "--json");
+  const durableRefusal = envelope(durableApply.stdout);
+  check("open apply names the explicit durable card and gives the same remedy as preview",
+    durablePreview.status === 0 && durableWarning?.message.startsWith("Apply refuses: #audit-team does not set deliveryClass: live.") === true &&
+      durableWarning.message.endsWith(`${openRemedy}.`) && JSON.stringify(durableWarning.target.cards) === JSON.stringify(["audit-team"]) &&
+      durableApply.status === 2 && durableRefusal?.outcome === "refused" && durableRefusal.error?.code === "UNSUPPORTED" &&
+      durableRefusal.error.message?.includes("#audit-team does not set deliveryClass: live") === true && durableRefusal.error.remedy === openRemedy &&
+      JSON.stringify(durableRefusal.target?.cards) === JSON.stringify(durableWarning.target.cards), { preview: durablePreview.out, apply: durableApply.out });
+  const shownCard = cotal(c, "channel", "show", "audit-team", "--json");
+  const shownRegistry = envelope(shownCard.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined;
+  check("the refused apply did not create the durable card",
+    shownCard.status === 0 && shownRegistry?.channels !== undefined && !Object.hasOwn(shownRegistry.channels, "audit-team"), shownCard.out);
 
   manifest("audit.yaml", OTHER, { "audit-team": "    deliveryClass: live\n" }, openOptions);
   const openApplied = cotal(c, "team", "deploy", "audit.yaml", "--json");

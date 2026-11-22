@@ -18,6 +18,10 @@ export async function topology(args: ParsedArgs): Promise<void> {
     console.error(c.dim("cotal topology view -f <cotal.yaml>"));
     process.exit(1);
   }
+  if (positionals.length > (values.file === undefined ? 1 : 0)) {
+    stderrLine("✗ ", "pass exactly one manifest path, either positionally or with --file/-f", c.red);
+    process.exit(1);
+  }
   const file = values.file ?? positionals[0];
   if (!file) {
     stderrLine("✗ ", "a manifest file is required - `cotal topology view -f <cotal.yaml>`", c.red);

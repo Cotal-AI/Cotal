@@ -1,4 +1,4 @@
-import { clearGoalIndex, clearSpaceHistory, commitGoalResult, DEFAULT_SERVER, deprovisionTargetPrincipal, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, fenceLifecycleAcl, isChannelFamily, isConcreteChannel, managedRetirementOpId, mintCreds, newIdentity, parsePrincipalKey, principalKey, rejectionText, transitionGoal } from "@cotal-ai/core";
+import { assertValidName, clearGoalIndex, clearSpaceHistory, commitGoalResult, DEFAULT_SERVER, deprovisionTargetPrincipal, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, fenceLifecycleAcl, isChannelFamily, isConcreteChannel, managedRetirementOpId, mintCreds, newIdentity, parsePrincipalKey, principalKey, rejectionText, transitionGoal } from "@cotal-ai/core";
 import type { CleanupFailure, ControlReply, Presence } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
 import { controlShutdown } from "./control-shutdown.js";
@@ -98,6 +98,7 @@ export interface SeatStopDeps {
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   readManagedSessionState: (...args: Parameters<Manager["readManagedSessionState"]>) => ReturnType<Manager["readManagedSessionState"]>;
   recoverManagedSession: (...args: Parameters<Manager["recoverManagedSession"]>) => ReturnType<Manager["recoverManagedSession"]>;
+  refreshSeatRecord: (...args: Parameters<Manager["refreshSeatRecord"]>) => ReturnType<Manager["refreshSeatRecord"]>;
   releaseLifecycle: (...args: Parameters<Manager["releaseLifecycle"]>) => ReturnType<Manager["releaseLifecycle"]>;
   shredUserSecrets: (...args: Parameters<Manager["shredUserSecrets"]>) => ReturnType<Manager["shredUserSecrets"]>;
   trackDeprovision: (...args: Parameters<Manager["trackDeprovision"]>) => ReturnType<Manager["trackDeprovision"]>;
@@ -138,6 +139,7 @@ export function seatStopDeps(m: Manager): SeatStopDeps {
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     readManagedSessionState: (...args) => m["readManagedSessionState"](...args),
     recoverManagedSession: (...args) => m["recoverManagedSession"](...args),
+    refreshSeatRecord: (...args) => m["refreshSeatRecord"](...args),
     releaseLifecycle: (...args) => m["releaseLifecycle"](...args),
     shredUserSecrets: (...args) => m["shredUserSecrets"](...args),
     trackDeprovision: (...args) => m["trackDeprovision"](...args),
@@ -334,7 +336,8 @@ export class SeatStop {
    * records an already-offline seat quietly. Only a current view is a verdict, so a stale or
    * unpopulated one logs nothing. The match is {@link isOwnPresence}. A seat being stopped is left to
    * the reap line. The heartbeat is the seat's own record and nothing validated it, so an unreadable
-   * one prints as unknown instead of throwing inside the watch.
+   * one prints as unknown instead of throwing inside the watch. A live record also gives the seat's
+   * display name, which {@link noteShownName} keeps with the seat.
    */
   logSeatMeshTransitions(): void {
     if (typeof this.ep.presenceView === "function" && this.ep.presenceView().state !== "current") return;
@@ -342,7 +345,10 @@ export class SeatStop {
     for (const a of this.agents.values()) {
       const seen = roster.get(this.managedPrincipal(a));
       if (a.terminalizing || !this.isOwnPresence(a, seen)) continue;
-      if (seen.status !== "offline") a.joinIssue = undefined;
+      if (seen.status !== "offline") {
+        a.joinIssue = undefined;
+        this.noteShownName(a, seen.card.name);
+      }
       const who = `${a.name} (${a.id}, uid ${a.lifecycleUid}${a.handle.pid !== undefined ? `, pid ${a.handle.pid}` : ""})`;
       if (seen.status === "offline" && !a.offMesh) {
         a.offMesh = true;
@@ -354,6 +360,23 @@ export class SeatStop {
         console.error(`seat back on the mesh: ${who}`);
       }
     }
+  }
+
+  /** Keep the display name a live seat shows in its own presence (SPEC 13.22 `set-name`), so a
+   *  relaunch under the same alias starts with it. The record is the seat's own write and nothing
+   *  validated it, so a name the shared rule refuses is not kept and the last good one stays. */
+  private noteShownName(a: ManagedAgent, shown: string): void {
+    const displayName = shown === a.name ? undefined : shown;
+    if (displayName === a.displayName) return;
+    if (displayName !== undefined) {
+      try {
+        assertValidName(displayName);
+      } catch {
+        return;
+      }
+    }
+    a.displayName = displayName;
+    this.deps.refreshSeatRecord(a);
   }
 
   /** Whether a roster record is this seat's own: the readiness fence's exact principal and

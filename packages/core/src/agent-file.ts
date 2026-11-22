@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -173,8 +173,9 @@ export function loadAgentFile(path: string, options?: { deferRoleValidation?: bo
 export function parseAgentFileSource(src: string, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const encoding = utf16Problem(src);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
-  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
-  if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
+  const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const m = AGENT_FILE_FENCE.exec(normalized);
+  if (!m) throw new Error(`agent file ${path}: ${normalized.startsWith("---\n") ? 'missing closing "---" frontmatter fence on its own line' : 'missing "---" frontmatter block'}`);
   const fm = parseFrontmatter(m[1], path);
   const persona = m[2].trim();
 
@@ -198,6 +199,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const name = str("name");
   if (!name) throw new Error(`agent file ${path}: "name" is required`);
   assertValidName(name);
+  const agent = str("agent");
   const model = str("model");
   const variant = str("variant");
   assertLaunchSelectors({ model, variant }, `agent file ${path}`);
@@ -280,6 +282,8 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     try { assertValidRole(role); }
     catch { throw new Error(`agent file ${path}: "role" must be a single token using letters, digits, underscores or hyphens`); }
   }
+  if (fm.endpoints === null)
+    throw new Error(`agent file ${path}: "endpoints" must be a list, not null. Remove the key or supply a list such as endpoints: []`);
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
@@ -292,7 +296,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     kind,
     description: str("description"),
     tags: list("tags"),
-    agent: str("agent"),
+    agent: agent?.trim() ? agent : undefined,
     subscribe,
     allowSubscribe,
     allowPublish,

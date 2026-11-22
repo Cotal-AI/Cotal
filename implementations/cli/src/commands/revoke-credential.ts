@@ -86,8 +86,11 @@ export async function revokeCredential(args: ParsedArgs): Promise<void> {
   if (already === undefined) {
     await assertStopped(target, path ?? key);
     if (!yes) {
-      if (!canPrompt() || presentation === "json")
-        throw new ConfirmationRequired("auth revoke-credential needs a terminal confirmation or --yes", { target: named, remedy: `run ${codeSpan(`cotal auth revoke-credential ${shellPath(path ?? key)} --yes`)}` });
+      if (!canPrompt() || presentation === "json") {
+        const scope = typeof args.values.space === "string" ? ` --space ${shellPath(space)}` : "";
+        const format = args.values.json ? " --json" : args.values.plain ? " --plain" : "";
+        throw new ConfirmationRequired("auth revoke-credential needs a terminal confirmation or --yes", { target: named, remedy: `run ${codeSpan(`cotal auth revoke-credential ${shellPath(path ?? key)}${scope}${format} --yes`)}` });
+      }
       const answer = await prompts.confirm({ message: `Revoke ${key} in ${oneLine(space)}? The broker refuses it from the next up.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) {
         writeResult(presentation, { command: "auth revoke-credential", target: named, result: { kind: "credential-revoked", confirmed: false }, noOp: true }, (): Report => ({ sections: [{ title: "Credential kept", blocks: [{ kind: "lines", lines: ["Nothing was revoked."] }] }] }));

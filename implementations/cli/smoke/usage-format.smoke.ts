@@ -52,7 +52,7 @@
  * Run: pnpm smoke:usage-format
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -129,12 +129,32 @@ const noValue = run(["history", "--limit"]);
 check("an option given last with no value is refused naming it and its placeholder", usageShape(noValue, /--limit needs a value/) && /write --limit <n>/.test(noValue.stderr) && !/argument missing/.test(noValue.stderr), shown(noValue));
 const flagValue = run(["history", "--limit", "--from", "bob"]);
 check("an option followed by another of the command's options is refused as missing its value", usageShape(flagValue, /--limit needs a value/) && /write --limit <n>/.test(flagValue.stderr), shown(flagValue));
+const separatorValue = run(["history", "--json", "--limit", "--", "general"]);
+const separatorError = JSON.parse(separatorValue.stdout).error;
+check("an option followed by the separator asks for its value before the separator", separatorValue.status === 1 && separatorValue.stderr === ""
+  && separatorError.code === "USAGE_INVALID" && separatorError.message === "--limit needs a value"
+  && separatorError.remedy === "write --limit <n> before --", shown(separatorValue));
+for (const args of [["--search", "-1"], ["--search=-1"], ["--search", "first"]]) {
+  const repeated = run(["docs", "--json", ...args, "--search", "--"]);
+  const error = JSON.parse(repeated.stdout).error;
+  check(`a second --search with no value after ${args.join(" ")} asks to use --search once`, repeated.status === 1 && repeated.stderr === ""
+    && error.code === "USAGE_INVALID" && error.message === "--search cannot be repeated" && error.remedy === "use --search once", shown(repeated));
+}
+const numericQuery = run(["docs", "--json", "--search", "-1"]);
+check("one search accepts a dash and digit without an equals sign", numericQuery.status === 0 && numericQuery.stderr === ""
+  && JSON.parse(numericQuery.stdout).result.query === "-1", shown(numericQuery));
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+const shortHelp = run(["send", "-c", "general", "\u2013h"]);
+check("a typographic short help flag is refused with -h", usageShape(shortHelp, /starts with a typographic dash/)
+  && shortHelp.stderr.includes("type the option with hyphens: -h"), shown(shortHelp));
+const helpValue = run(["docs", "--search", "\u2014help", "--json"]);
+check("typographic help used as an option value stays literal", helpValue.status === 0 && helpValue.stderr === ""
+  && JSON.parse(helpValue.stdout).result.query === "\u2014help", shown(helpValue));
 const historyTypo = run(["history", "\u2013\u2013limit=10", "--json"]);
 check("the typographic history option correction retains the attached limit", historyTypo.status === 1 && historyTypo.stderr === ""
   && JSON.parse(historyTypo.stdout).error.remedy === "type the option with hyphens: --limit=10", shown(historyTypo));
@@ -171,14 +191,33 @@ if (process.platform !== "win32") {
   const cwd = realpathSync(neutral);
   const parent = "reviewer's $draft/nested";
   const dir = `${parent}/reviews`;
-  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--plain"], {}, cwd);
-  const next = /^Next\n  (.+)$/m.exec(scaffold.stderr)?.[1];
-  const unchanged = !existsSync(join(neutral, "reviewer's $draft"));
-  const retry = next && spawnSync("sh", ["-c", `node=$1\nbin=$2\ncotal() { "$node" "$bin" "$@"; }\n${next}`, "endpoint-init", process.execPath, BIN], { cwd: neutral, env, encoding: "utf8", timeout: 120_000 });
-  check("endpoint init names its missing parent without creating it, and its Next creates the scaffold",
-    scaffold.status === 2 && scaffold.stdout === "" && scaffold.stderr.split("\nNext")[0]!.includes("reviewer'\\''s $draft/nested") && unchanged
-    && !!retry && retry.status === 0 && existsSync(join(neutral, dir, "contract.json")) && existsSync(join(neutral, dir, "handler.mjs")),
-    { scaffold: shown(scaffold), retry });
+  const scaffold = run(["endpoint", "init", "com.example.reviews", "--dir", dir, "--json"], {}, cwd);
+  const receipt = JSON.parse(scaffold.stdout);
+  const directories = ["reviewer's $draft", parent, dir].map((path) => join(cwd, path));
+  const files = ["contract.json", "handler.mjs"].map((name) => join(cwd, dir, name));
+  const expected = [...directories.map((path) => ({ path, kind: "directory", complete: true })), ...files.map((path) => ({ path, kind: "file", complete: true }))];
+  check("endpoint init creates and reports all missing directories privately in one invocation",
+    scaffold.status === 0 && scaffold.stderr === "" && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
+    && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
+    && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
+
+  const original = readFileSync(files[0]!, "utf8");
+  const conflict = run(["endpoint", "init", "different", "--dir", dir, "--json"], {}, cwd);
+  check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
+    && readFileSync(files[0]!, "utf8") === original, shown(conflict));
+
+  symlinkSync(directories[0]!, join(cwd, "linked-parent"), "dir");
+  for (const blocked of ["linked-parent", `${dir}/contract.json`]) {
+    const rejected = run(["endpoint", "init", "scratch", "--dir", `${blocked}/missing/scratch`, "--json"], {}, cwd);
+    check("endpoint init refuses a parent symlink or non-directory", rejected.status === 2 && JSON.parse(rejected.stdout).error?.code === "PERMISSION_DENIED"
+      && !existsSync(join(directories[0]!, "missing")), shown(rejected));
+  }
+
+  const partial = run(["endpoint", "init", "scratch", "--dir", `partial-parent/${"x".repeat(256)}/scratch`, "--json"], {}, cwd);
+  const partialReceipt = JSON.parse(partial.stdout);
+  check("endpoint init reports directories created before a component exceeds the filename limit", partial.status === 4
+    && partialReceipt.error?.code === "OPERATION_PARTIAL" && JSON.stringify(partialReceipt.changed) === JSON.stringify([{ path: join(cwd, "partial-parent"), kind: "directory", complete: true }])
+    && (statSync(join(cwd, "partial-parent")).mode & 0o777) === 0o700, shown(partial));
 
   const authoring = run(["endpoint", "init", "reviews"], {}, cwd);
   const wrong = "reviews/wrong.json";
@@ -237,18 +276,33 @@ const misspelledStatus = run(["help", "service", "sttaus", "manager"]);
 check("explicit help still refuses a misspelled service subcommand before its operand",
   usageShape(misspelledStatus, /cotal service has no subcommand "sttaus" - did you mean status\?/), shown(misspelledStatus));
 
+for (const [command, word, title] of [
+  ["docs", "cli", "cotal docs"],
+  ["history", "general", "cotal history"],
+  ["h", "general", "cotal history"],
+  ["history", "clear", "cotal history clear"],
+  ["history", "limit", "cotal history limit"],
+] as const) {
+  const explicit = run(["help", command, word]);
+  const flag = run([command, word, "--help"]);
+  check(`both help forms for ${command} ${word} show ${title}`,
+    explicit.status === 0 && flag.status === 0 && explicit.stderr === "" && flag.stderr === ""
+    && explicit.stdout === flag.stdout && explicit.stdout.startsWith(`${title}\n`),
+    { explicit: shown(explicit), flag: shown(flag) });
+}
+
 const subcommand = run(["service", "frob"]);
 check("control: the parser's unknown subcommand has the same words", usageShape(subcommand, /cotal service has no subcommand "frob"/), shown(subcommand));
 
 // --help after a word that names no subcommand refuses as `cotal help` does, with the nearest one.
-// After a real subcommand, history's channel word or a leaf's argument it still prints the help.
+// After a real subcommand or a leaf's argument it prints the help.
 for (const args of [["space", "nosuch", "--help"], ["persona", "nosuch", "--help"], ["config", "nosuch", "--help"], ["channel", "nosuch", "--help"], ["team", "nosuch", "-h"]] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} refuses the unknown subcommand`, usageShape(r, new RegExp(`cotal ${args[0]} has no subcommand "nosuch"`)), shown(r));
 }
 const nearHelp = run(["space", "creat", "--help"]);
 check("space creat --help names the nearest subcommand", usageShape(nearHelp, /cotal space has no subcommand "creat" - did you mean create\?/), shown(nearHelp));
-for (const args of [["space", "create", "--help"], ["history", "general", "--help"], ["team", "show", "anything", "--help"]] as const) {
+for (const args of [["space", "create", "--help"], ["team", "show", "anything", "--help"]] as const) {
   const r = run([...args]);
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
@@ -369,8 +423,8 @@ for (const [args, usage, foreign] of [
     paths.push([cmd.name, ...path]);
     const examples = node.examples ?? [];
     const problems: string[] = [];
-    // Endpoint work and Manager unit installation are listed but have no runnable examples.
-    const unavailable = (cmd.name === "endpoint" && path[0] === "work") || (cmd.name === "manager" && path[0] === "install");
+    // Gated endpoint modes and Manager unit installation are listed but have no runnable examples.
+    const unavailable = (cmd.name === "endpoint" && ["watch", "session", "work"].some((mode) => mode === path[0])) || (cmd.name === "manager" && path[0] === "install");
     if (unavailable ? examples.length !== 0 : examples.length < 1 || examples.length > 3) problems.push(`declares ${examples.length} examples`);
     const lines: string[] = [];
     printHelpPath(cmd, path, (line) => lines.push(...line.replace(/\x1b\[[0-9;]*m/g, "").split("\n")), 80);
@@ -531,7 +585,7 @@ for (const [args, usage, foreign] of [
     webStart.status === 0 && /^  --no-open\b/m.test(webStart.stdout),
     { manager: shown(managerStart), refused: shown(rejectedNoOpen), web: shown(webStart) });
 
-  for (const path of [["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
+  for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
       help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));

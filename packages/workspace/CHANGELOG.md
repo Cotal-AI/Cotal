@@ -1,5 +1,52 @@
 # @cotal-ai/workspace
 
+## 0.174.3
+
+### Patch Changes
+
+- ab010b5: Chat refuses messages that exceed the broker's byte limit and confirms nothing was stored, so you can shorten or split the message.
+- f2158ba: Show runnable `who` commands for spaces on a shared broker, explain which space `whoami` reports after `space forget`, and tell users how to start a prepared space before describing or invoking an endpoint.
+- 52c5b11: The CRLF repair hint for a credential file now quotes the file path, so a path with spaces pastes as one argument to dos2unix.
+- 61b02ca: Finish an interrupted self-update after switching config folders without touching the original snapshot.
+- 43963e8: Save preferences for spaces named `__proto__` and make setup suggest usable local space names and report saved preparation when its log cannot open.
+- 4697bab: `cotal status` recommends restoring an exited manager without stopping its broker, and `status` and `ps` name an occupied port or invalid channel seed before suggesting a foreground stack restart.
+- b8c54dd: Keep the intended space in CLI retry and follow-up commands and name it in membership stream errors when local records identify it.
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+  - @cotal-ai/core@0.174.3
+
+## 0.174.2
+
+### Patch Changes
+
+- 1e5fbb4: Keep the intended space in `ps` and live endpoint retry guidance, and name the unknown space and how to correct it when saved endpoint inventory refuses.
+- Updated dependencies [7b7e60c]
+  - @cotal-ai/core@0.174.2
+
+## 0.174.1
+
+### Patch Changes
+
+- 0d29594: Self-update no longer stops on an interrupted-update record from another config folder when the current config folder does not exist yet. It retains the unusable record and continues, as it does when the folder exists.
+- @cotal-ai/core@0.174.1
+
+## 0.174.0
+
+### Patch Changes
+
+- f1abc70: When a credential file is incomplete, `cotal join` explains how to mint a provisioned replacement with read access to the landing channel and use its new lifecycle UID.
+- 9cc5f7a: When a manager cannot find the seat named by `stop`, the suggested `ps` command keeps the stop's space, broker and explicit manager selection.
+- 78d93f9: When a directory in an explicit credential file path is a symbolic link, the suggested physical path now includes the filename. The original path is still refused before connecting.
+- 96ef3da: Commands that rely on a saved space selection refuse if it cannot be read instead of connecting to a different space.
+- f670fe9: Watch and status now recommend `cotal up --no-manager` to restart a stopped broker-only controller stack.
+- 12bd829: Resume an interrupted self-update with the installed release and reconcile built-in connectors even when the npm registry is offline.
+- 5faf2c8: When `cotal space show` or `cotal who` cannot choose a space, the refusal names each choice and gives the command to read it without changing the default.
+- f3e469a: Keep status and self-update working when you switch from a symlinked home to its physical path, and stop reinstalling healthy built-in connectors on repeated updates.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+  - @cotal-ai/core@0.174.0
+
 ## 0.173.0
 
 ### Patch Changes

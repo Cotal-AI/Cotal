@@ -37,7 +37,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   completeness?: string;
-  result?: { requestedName?: string };
+  result?: { requestedName?: string; name?: string; path?: string; definition?: { name?: string }; source?: string };
   target: Record<string, unknown> | null;
   error?: { code: string; message?: string; remedy?: string };
 }
@@ -166,7 +166,7 @@ for (const [argv, rerun] of [
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
   [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
-  [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --on <instance>"],
+  [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --json --on <instance>"],
 ] as const) {
   const pinned = cotal(...argv, "--json");
   const said = `${pinned.envelope?.error?.message ?? ""} ${pinned.envelope?.error?.remedy ?? ""}`;
@@ -184,8 +184,9 @@ for (const [argv, rerun] of [
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
   [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
+  [["spawn", "--no-input", "-d", "--on=", "--name", "explicit", "--", "-persona"], "cotal spawn --no-input -d --name explicit --json --on <instance> -- -persona"],
 ] as const) {
-  const refused = cotal(...argv, "--json");
+  const refused = cotal("--json", ...argv);
   check(`${argv.join(" ")} names ${rerun}`,
     refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
 }
@@ -280,15 +281,38 @@ check("spawn --dry-run with no default persona previews the shipped default with
 
 const dottedCatalog = join(dirname(agentFilePath(root, "default")), "review.md.md");
 const dottedFile = join(root, "review.md");
-writeFileSync(dottedCatalog, "---\nname: reviewer\n---\n");
-writeFileSync(dottedFile, "---\nname: other\n---\n");
+const dottedSource = "---\nname: reviewer\n---\nReview this change.\n";
+const projectSource = "---\nname: other\n---\n";
+writeFileSync(dottedCatalog, dottedSource);
+writeFileSync(dottedFile, projectSource);
 try {
+  const listed = cotal("persona", "--space", "opsp", "--plain");
+  check("persona lists the dotted name", listed.status === 0 && /^  review\.md\s/m.test(listed.stdout), shown(listed));
+  const show = cotal("persona", "show", "review.md", "--space", "opsp", "--json");
+  const card = show.envelope?.result;
+  check("persona show reads the listed dotted name from the catalog rather than the project file",
+    show.status === 0 && card?.name === "review.md" && card.path === dottedCatalog && card.definition?.name === "reviewer" && card.source === dottedSource, shown(show));
+  const legacyShow = cotal("personas", "show", "review.md", "--space", "opsp");
+  check("legacy personas show copies the dotted catalog source", legacyShow.status === 0 && legacyShow.stdout === dottedSource, shown(legacyShow));
+  const fileRef = cotal("persona", "show", "./review.md", "--space", "opsp", "--json");
+  check("persona show refuses a path", fileRef.status === 1 && fileRef.envelope?.error?.code === "USAGE_INVALID", shown(fileRef));
+  const create = cotal("persona", "create", "new.review", "--prompt", "Review this.", "--subscribe", "", "--space", "opsp", "--json");
+  check("persona create still refuses dotted names",
+    create.status === 1 && create.envelope?.error?.code === "USAGE_INVALID" && !existsSync(join(dirname(dottedCatalog), "new.review.md")), shown(create));
   const preview = cotal("spawn", "review.md", "--dry-run", "--plain");
   check("spawn --dry-run previews the dotted catalog name instead of the project file",
     preview.status === 0 && preview.stdout.includes(dottedCatalog) && preview.stdout.includes("reviewer"), shown(preview));
+  const remove = cotal("personas", "rm", "review.md", "--space", "opsp");
+  check("legacy personas rm asks for confirmation without changing either file",
+    remove.status === 1 && remove.stderr.includes("cotal personas rm review.md --space opsp --force") &&
+    readFileSync(dottedCatalog, "utf8") === dottedSource && readFileSync(dottedFile, "utf8") === projectSource, shown(remove));
+  const forced = cotal("personas", "rm", "review.md", "--space", "opsp", "--force");
+  check("legacy personas rm --force removes only the dotted catalog entry",
+    forced.status === 0 && !existsSync(dottedCatalog) && existsSync(dottedFile) &&
+    readFileSync(dottedFile, "utf8") === projectSource, shown(forced));
 } finally {
-  rmSync(dottedCatalog);
-  rmSync(dottedFile);
+  rmSync(dottedCatalog, { force: true });
+  rmSync(dottedFile, { force: true });
 }
 
 // #7526: spawning or previewing an invalid native persona preserves the field/position error without

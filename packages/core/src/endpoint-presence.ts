@@ -8,6 +8,7 @@ import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import { presenceBucket } from "./subjects.js";
 import { isPresenceRow, assertPresenceRow } from "./subjects.js";
+import { assertValidName } from "./resolve.js";
 
 type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
@@ -375,6 +376,16 @@ export class EndpointPresence {
   async setCardCwd(cwd: string): Promise<void> {
     if (!cwd || this.identity.card.meta?.cwd === cwd) return;
     this.identity.card.meta = { ...(this.identity.card.meta ?? {}), cwd };
+    await this.publishPresence();
+  }
+
+  /** Change the card's display name and republish presence at once (SPEC §6). The principal, and so
+   *  `card.id`, stays as it is. Throws on a name {@link assertValidName} refuses, before anything
+   *  changes. The same name changes nothing. Every later message carries the new `from.name`. */
+  async setCardName(name: string): Promise<void> {
+    assertValidName(name);
+    if (this.identity.card.name === name) return;
+    this.identity.card.name = name;
     await this.publishPresence();
   }
 
@@ -760,11 +771,14 @@ export class EndpointPresence {
     // share `<owner>.<actor>`; a supervised respawn keeps the uid and is unaffected), so it MUST notify
     // watchers even when its status/activity match the prior lifecycle's lingering record. Omitting this
     // left a same-principal successor invisible to presence-event consumers (e.g. the manager's
-    // readiness race), which then timed out "uncertain" on a healthy agent (#29).
+    // readiness race), which then timed out "uncertain" on a healthy agent (#29). A changed display
+    // name is never a heartbeat either: `set-name` changes nothing else, and a watcher keyed on these
+    // events, such as the manager keeping a seat's name, would never see the rename.
     if (
       prev &&
       prev.status !== "offline" &&
       p.status !== "offline" &&
+      prev.card.name === p.card.name &&
       prev.lifecycleUid === p.lifecycleUid &&
       sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&

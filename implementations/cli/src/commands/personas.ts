@@ -199,7 +199,7 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
-  const path = personaPath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "show");
   const bytes = requirePersonaSource(path).bytes;
   validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
@@ -220,7 +220,7 @@ async function edit(name: string | undefined, values: { space?: string; server?:
   if (!resolvePreference("editor", { preferences: cachedPreferences() }).value)
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const catalog = personaCatalog(values);
-  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog, targetWords(values));
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
   else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
   else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
@@ -279,14 +279,14 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   }
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
-  commitPersona(path, expected, bytes);
+  commitPersona(path, expected, bytes, targetWords(v));
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  \`cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}\``));
 }
 
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
+  const path = personaPath(targetRoot(values), name, "show");
   const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));

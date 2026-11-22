@@ -1,7 +1,7 @@
 import { cliVersion } from "../lib/version.js";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 import {
   accountRevocations,
   credentialLifetime,
@@ -46,6 +46,7 @@ import {
   resolveMeshTarget,
   SHOWN_VALUE_MAX,
   spaceKey,
+  spaceNameTooLong,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -64,6 +65,7 @@ import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
 import { readStackJournal } from "../lib/stack-journal.js";
+import { checkSpaceName } from "./meshes-add.js";
 
 export const doctorFlags = [jsonFlag, plainFlag,
   { name: "fix", type: "boolean", description: "execute the safe repairs (re-sign the manager-remintable daemon creds, or mint one again that holds no key while its broker does not answer; needs the local signer)" },
@@ -127,7 +129,7 @@ export function validateDoctorArguments(args: ParsedArgs): void {
 
 /** The space recorded as open at this root, in its stack journal or registration. Missing signing
  *  trust alone is never read as an open space. */
-function recordedOpenSpace(root: string, space: string | undefined, fix: boolean): { space: string; checked: boolean } | undefined {
+function recordedOpenSpace(root: string, space: string | undefined, fix: boolean, cwd?: string): { root: string; space: string; checked: boolean } | undefined {
   const stack = readStackJournal(root)?.journal;
   // Bare, the scope is the one space registered at this root, not a selection made for other
   // commands: resolving the selection names another folder's space, and the open branch is missed.
@@ -137,21 +139,27 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
     target: { root, space: null, candidates: open },
     remedy: `run \`cotal doctor auth${fix ? " --fix" : ""} --space ${shellWord(open[0]!)}\` here, or name another listed space with --space`,
   });
-  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return { space: stack.space, checked: true };
+  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return { root, space: stack.space, checked: true };
   const named = space ?? (here.length === 1 ? here[0]!.space : undefined);
   try {
     const target = resolveMeshTarget(root, { ...(named === undefined ? {} : { space: named }), readOnly: true });
-    if (target.mode !== "open" || target.origin === undefined || canonicalRoot(target.root) !== canonicalRoot(root)) return undefined;
+    if (target.mode !== "open" || target.origin === undefined) return undefined;
+    const registered = canonicalRoot(target.root), local = canonicalRoot(root);
+    const child = relative(registered, local);
+    if (child) {
+      if (cwd === undefined) return undefined;
+      const fromRoot = relative(registered, canonicalRoot(cwd));
+      if (isAbsolute(fromRoot) || fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) return undefined;
+      // Do not cross a nearer project boundary on the way to the named registration.
+      if (existsSync(join(root, ".cotal")) && !isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`)) return undefined;
+    }
     const entry = here.find((m) => m.space === target.space) ?? findMesh(target.space);
-    return { space: target.space, checked: entry !== undefined && entry.unchecked !== true };
+    return { root: child ? target.root : root, space: target.space, checked: entry !== undefined && entry.unchecked !== true };
   } catch { return undefined; }
 }
 
-/** Where to run doctor auth when this folder's root holds no signing trust for the scope it names:
- *  the root `space` is registered at, when that is another folder; the root `space` was prepared
- *  in, once `cotal up` there starts it, when no `up` has; or else a space's root. Without `space`,
- *  only the space this root prepared and never started is named. The report stays root-local, so
- *  the step names the folder instead of reading another root's trust. */
+/** The next step for a diagnostic scope this root holds no signing trust for. Known spaces can
+ *  name their root, while an explicitly unknown space needs a corrected name or preparation. */
 function trustRootStep(root: string, space: string | undefined, fix: boolean): string {
   const command = `cotal doctor auth${space === undefined ? "" : ` --space ${space}`}${fix ? " --fix" : ""}`;
   let named = space;
@@ -160,6 +168,12 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
   if (named !== undefined) {
     try { const target = resolveMeshTarget(root, { space: named, readOnly: true }); if (space !== undefined && canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
     catch (error) {
+      if (space !== undefined && error instanceof MeshTargetError && error.code === "unknown-space") {
+        const correct = `Unknown space ${JSON.stringify(boundedValue(space, SHOWN_VALUE_MAX))}. Run \`cotal space\` to check the name`;
+        return checkSpaceName(space).ok && !spaceNameTooLong(space)
+          ? `${correct}. For a new local space, run \`cotal space create ${space}\` in its project folder, then run \`cotal up\` there.`
+          : `${correct}.`;
+      }
       if (error instanceof MeshTargetError && error.code === "not-started") {
         if (error.details.rootMissing) registered = error.details.root;
         else if (preparedNeverStarted(error.details)) prepared = error.details.root;
@@ -180,7 +194,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   validateDoctorArguments(args);
   if (!args.values.json && !args.values.plain) console.log(`Cotal ${cliVersion()}: ${cachedUpdateSummary(cliVersion())}`);
   const values = args.values as FlagValues<typeof doctorFlags>;
-  const root = findCotalRoot(process.cwd());
+  const cwd = process.cwd(), root = findCotalRoot(cwd);
   const repair: RepairObservation = { requested: values.fix === true, attempted: false, authority: null, results: [], migrationAttempted: false, migrations: [], coordinationCleanup: "not-opened" };
   if (!values.space) {
     // Several valid accounts are a target the caller picks with --space, not an inventory that failed
@@ -197,15 +211,15 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     try { files = accountInventory(authDir(root)).corrupt.map((file) => join(authDir(root), file)); } catch { /* the trust folder itself could not be read */ }
     throw new CommandFailure("refused", "SCHEMA_INVALID", `the local authority inventory under ${authDir(root)} could not be validated${files.length ? ` (${files.join(", ")})` : ""}; no repair was attempted`, { target: { root, space: values.space ?? null }, remedy: `restore ${files.length ? files.join(", ") : "the trust records in that folder"} from backup; do not remove other account records, then re-run \`cotal up\`` });
   }
-  const open = recordedOpenSpace(root, values.space ?? auth?.space, values.fix === true);
+  const open = recordedOpenSpace(root, values.space ?? auth?.space, values.fix === true, values.space && !auth ? cwd : undefined);
   if (open !== undefined && (!auth || auth.space === open.space)) {
-    const target = { root, space: open.space };
+    const target = { root: open.root, space: open.space };
     const warnings = open.checked ? [] : [{ code: "MODE_NOT_CHECKED", target, message: `The registration records open mode without checking the broker. Run ${codeSpan(`cotal space show ${shellWord(open.space)}`)} to see how to verify its mode.` }];
     writeResult(presentationOf(values), {
       command: "doctor auth", target, warnings, noOp: true,
       result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), ...target, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair },
     }, () => ({ sections: [{ title: open.checked ? "No credentials to check" : "Credential check skipped", blocks: [
-      { kind: "fields", rows: [["Root", root], ["Space", open.space], ["Mode", open.checked ? "open, as registered" : "open, not checked"]] },
+      { kind: "fields", rows: [["Root", target.root], ["Space", open.space], ["Mode", open.checked ? "open, as registered" : "open, not checked"]] },
       { kind: "lines", lines: [{ text: open.checked ? "This space is open: it authenticates no one and issues no credentials, so there are none to check." : "No credentials were inspected or repaired.", tone: "hint" }] },
     ] }] }));
     return;
@@ -398,8 +412,12 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
       Object.assign(row, { state: "other-account", repair: `the space's identity changed after it was written, so its broker refuses it; ${fresh}` });
     else if (revokedAt !== undefined && (claims.iat === undefined || claims.iat <= revokedAt))
       Object.assign(row, { state: "revoked", revokedAt, repair: `its key was revoked at ${at(revokedAt)}, and auth mint --identity refuses that key; ${fresh}` });
-    else if (health.state === "expired" || health.state === "near-expiry")
-      row.repair = `\`${cmd} auth mint ${entry.label}${profile}${provision} --identity ${quotedPath} --out ${quotedPath}\` signs the same key again${entry.profile === "agent" ? ` with the same grants${provision ? " and provisions its new lifecycle" : ""}` : ""}`;
+    else if (health.state === "expired" || health.state === "near-expiry") {
+      const renewal = `\`${cmd} auth mint ${entry.label}${profile}${provision} --identity ${quotedPath} --out ${quotedPath}\``;
+      row.repair = provision && health.state === "near-expiry"
+        ? `after expiry, run ${renewal} to keep the same key and grants. To switch before expiry, ${fresh}`
+        : `${renewal} signs the same key again${entry.profile === "agent" ? ` with the same grants${provision ? " and provisions its new lifecycle" : ""}` : ""}`;
+    }
     rows.push(row);
   }
   return rows.sort((x, y) => x.label.localeCompare(y.label) || x.path.localeCompare(y.path));

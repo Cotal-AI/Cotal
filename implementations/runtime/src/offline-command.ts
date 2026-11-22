@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -88,6 +88,18 @@ function scriptOf(file: string | undefined): SimScript {
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
+  // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
+  // simulation, naming the singular key when the typo is a plural of one.
+  const clockFields = new Set(["start", "turn", "ask", "checkpoint", "wait"]);
+  for (const key of Object.keys(clock ?? {})) {
+    if (clockFields.has(key)) continue;
+    const singular = key.endsWith("s") ? key.slice(0, -1) : undefined;
+    const known = singular !== undefined && clockFields.has(singular) ? singular : undefined;
+    throw new CommandFailure("refused", "SCHEMA_INVALID",
+      `unknown clock field '${key}' in the simulation results script ${file}${known === undefined ? "" : `; use clock.${known} instead`}`,
+      { target: { file }, remedy: known === undefined ? `remove clock.${key} from ${file}, then rerun the simulation` : `use clock.${known} in ${file} instead of clock.${key}, then rerun the simulation` });
+  }
   for (const key of ["turn", "ask", "checkpoint", "wait"] as const) {
     const delay = clock?.[key];
     if (delay === undefined) continue;
@@ -97,6 +109,12 @@ function scriptOf(file: string | undefined): SimScript {
       if (!(error instanceof DurationError)) throw error;
     }
     throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, { target: { file } });
+  }
+  for (const [index, fault] of ((script.faults ?? []) as unknown[]).entries()) {
+    const problem = faultProblem(fault);
+    if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted fault faults[${index}] in ${file}: ${problem}`, {
+      target: { file }, remedy: `correct faults[${index}] in ${file}, then rerun the simulation`,
+    });
   }
   for (const [name, entry] of Object.entries((script.checkpoints ?? {}) as Record<string, unknown>)) {
     for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
@@ -120,6 +138,22 @@ function scriptOf(file: string | undefined): SimScript {
     }
   }
   return script as SimScript;
+}
+
+/** Why a scripted fault is not one the simulator can raise, or undefined. The simulator matches
+ *  only `at` and raises only `kind`, so an entry that names no step, or carries a field the
+ *  reader does not know, is refused here rather than simulated as if it were not there. */
+function faultProblem(fault: unknown): string | undefined {
+  if (!fault || typeof fault !== "object" || Array.isArray(fault)) return "a fault must be an object";
+  const fields = fault as Record<string, unknown>;
+  const known = new Set(["at", "kind", "code", "message"]);
+  const unknown = Object.keys(fields).find((key) => !known.has(key));
+  if (unknown !== undefined) return `unknown field '${unknown}'`;
+  if (typeof fields.at !== "string" || !fields.at.length) return "at must name the step to fault";
+  if (typeof fields.kind !== "string" || !fields.kind.length) return "kind must name the failure to raise";
+  if (fields.code !== undefined && typeof fields.code !== "string") return "code must be a string";
+  if (fields.message !== undefined && typeof fields.message !== "string") return "message must be a string";
+  return undefined;
 }
 
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The
@@ -268,8 +302,11 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   const script = scriptOf(values.handler);
   const journal = new Journal({ run: "dry-run" });
   let report: Awaited<ReturnType<typeof dryRunOutcome>>;
+  // A simulation that throws never reaches the report, so the validation warnings go into the
+  // run's recorded warnings first: the failure envelope carries them, and text mode prints them
+  // with the failure.
   try { report = await dryRunOutcome(source, script, { file, journal }); }
-  catch (error) { throw simulationFailure(error, file, journal); }
+  catch (error) { for (const warning of warnings) recordOperationWarning(warning); throw simulationFailure(error, file, journal); }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;
   const result = { kind: "workflow-simulation", outcome: failure ? "failed" : "completed", failure, steps: "fault" in report ? null : report.steps, elapsedMs: report.elapsedMs, effects: report.effects, agents: report.agents, waits: report.waits, checkpoints: report.checkpoints, unusedScript: report.unusedScript, log: report.log };

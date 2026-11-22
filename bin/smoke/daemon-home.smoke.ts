@@ -170,8 +170,8 @@ async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.Proc
 
 /** A `daemon serve` child, read until it reports ready or exits. */
 interface Serve { child: ChildProcess; socket?: string; status?: number | null; out: string; err: string }
-async function serve(extra: string[]): Promise<Serve> {
-  const child = track(spawn(process.execPath, daemonArgv(["serve", ...extra]), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
+async function serve(extra: string[], env: NodeJS.ProcessEnv = childEnv): Promise<Serve> {
+  const child = track(spawn(process.execPath, daemonArgv(["serve", ...extra]), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] }));
   const s: Serve = { child, out: "", err: "" };
   child.stderr!.on("data", (b) => { s.err += String(b); });
   await new Promise<void>((resolve) => {
@@ -277,6 +277,12 @@ try {
       if (mode.startsWith("service-")) check(`G2 stopped ${mode} still reports the missing daemon for a valid space`, result.doc.error?.code === "TARGET_UNAVAILABLE" && result.doc.error.cause?.code === "NOT_RUNNING", result.doc);
       if (mode === "connect-check" || mode === "service-connect") check(`G2 stopped ${mode} names the same quoted foreground start`, result.doc.error?.cause?.code === "NOT_RUNNING" && result.doc.error.remedy === expected, result.doc);
     }
+    for (const mode of ["name", "spaces"]) {
+      const explicit = await cli([mode, "--daemon-home", managed, "--json"]);
+      check(`G2 stopped explicit ${mode} names the same quoted foreground start`, explicit.status === 2 && explicit.doc.error?.cause?.code === "NOT_RUNNING" && explicit.doc.error.remedy === expected, explicit.doc);
+      const bare = await cli([mode, "--json"]);
+      check(`G2 stopped default ${mode} keeps the bare foreground start`, bare.status === 2 && bare.doc.error?.cause?.code === "NOT_RUNNING" && bare.doc.error.remedy === "start it with `cotal daemon serve`", bare.doc);
+    }
     const plain = await cli(["connect-check", "--daemon-home", managed, "--space", "missing", "--plain"]);
     check("G2 stopped explicit connect-check prints the same Next in plain output", plain.status === 2 && plain.err.includes(expected), plain.err);
     const defaultCheck = await cli(["connect-check", "--space", "missing", "--json"]);
@@ -303,6 +309,39 @@ try {
       check(`H0c ${args.join(" ")} points to the same shorter private runtime for daemon and clients`, doc.error?.remedy === "Set XDG_RUNTIME_DIR to a shorter private directory owned by your user with mode 0700. Use the same XDG_RUNTIME_DIR for the daemon and its clients.", doc.error);
     }
     check("H0c the refusals leave the runtime and lifetime locks untouched", readdirSync(longRuntime).length === 0 && !existsSync(lockFile(join(home, "daemon"))) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("H0d a missing runtime refuses status and serve before creating state", async () => {
+    const missingRuntime = join(root, "absent-runtime");
+    const env = { ...childEnv, XDG_RUNTIME_DIR: missingRuntime };
+    for (const mode of ["status", "serve"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--json"], 30_000, env);
+      const { status, doc } = result;
+      check(`H0d ${mode} refuses NO_RUNTIME_DIR`, status === 2 && doc.outcome === "refused" && doc.error?.code === "TARGET_UNAVAILABLE" && doc.error.cause?.code === "NO_RUNTIME_DIR", result);
+      check(`H0d ${mode} names the missing runtime and tells the caller how to select a private one`, doc.error?.message?.includes(missingRuntime) === true && doc.error.remedy?.includes("owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it") === true, result);
+    }
+    check("H0d neither refusal created the runtime or lifetime lock", !existsSync(missingRuntime) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("H0e serve publishes a socket at the Linux pathname limit", async () => {
+    const nearLimit = join(root, "r".repeat(67 - Buffer.byteLength(root) - 1));
+    mkdirSync(nearLimit, { mode: 0o755 });
+    chmodSync(nearLimit, 0o755);
+    const env = { ...childEnv, XDG_RUNTIME_DIR: nearLimit };
+    const args = ["--daemon-home", managed];
+    const before = await cli(["status", ...args, "--json"], 30_000, env);
+    check("H0e status recommends foreground serve", before.status === 2 && before.doc.error?.cause?.code === "NOT_RUNNING" && before.doc.error.remedy?.includes("cotal daemon serve") === true, before);
+    const daemon = await serve(args, env);
+    try {
+      check("H0e serve publishes the 107-byte socket", live(daemon) && Buffer.byteLength(daemon.socket ?? "") === 107, daemon.err);
+      const after = await cli(["status", ...args, "--json"], 30_000, env);
+      check("H0e status reaches the foreground daemon", after.status === 0 && after.doc.result?.pid === daemon.child.pid, after);
+      check("H0e keeps the configured runtime at 0755 and protects the socket directory at 0700", (lstatSync(nearLimit).mode & 0o777) === 0o755 && daemon.socket !== undefined && (lstatSync(dirname(daemon.socket)).mode & 0o777) === 0o700);
+      check("H0e only the published socket remains", daemon.socket !== undefined && readdirSync(dirname(daemon.socket)).join() === "daemon.sock", daemon.err);
+    } finally {
+      await stop(daemon);
+    }
+    check("H0e shutdown removes the published socket", daemon.socket !== undefined && !existsSync(daemon.socket), daemon.err);
   });
 
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
@@ -364,6 +403,8 @@ try {
     const targetArgs = ["--daemon-home", managed, "--space", "unknown-space"];
     const connect = await cli(["service-connect", ...targetArgs, "--json"]);
     check("H1 connecting an unknown space names the missing registration and lists the remedy", connect.status === 2 && connect.doc.error?.code === "TARGET_NOT_FOUND" && connect.doc.error.cause?.code === "NOT_REGISTERED" && connect.doc.error.message?.includes("unknown-space is not registered") === true && connect.doc.error.remedy?.includes("`cotal space`") === true, connect);
+    const serviceStatus = await cli(["service-status", ...targetArgs, "--json"]);
+    check("H1 service status of an unknown space gives the same refusal and remedy as connect", serviceStatus.status === 2 && serviceStatus.doc.error?.code === connect.doc.error?.code && serviceStatus.doc.error?.cause?.code === connect.doc.error?.cause?.code && serviceStatus.doc.error?.remedy === connect.doc.error?.remedy, serviceStatus);
     for (let attempt = 0; attempt < 2; attempt++) {
       const disconnect = await cli(["service-disconnect", ...targetArgs, "--json"]);
       check("H1 disconnect is a no-op without Manager setup guidance", disconnect.status === 0 && disconnect.doc.result?.state === "disconnected" && disconnect.doc.result?.removedRecords?.length === 0 && !disconnect.doc.result?.manager?.next, disconnect);

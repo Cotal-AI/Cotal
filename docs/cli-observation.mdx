@@ -107,8 +107,10 @@ and opens a fresh single-use link in the default browser for a loopback listener
 start reuses the process and refreshes the link in that record even without a display or with `--no-open`.
 Existing browser sessions stay valid. The local launch capability is separate from readiness authority
 and is never printed. Use `--no-open` to retain the manual private-file route, including for remote listeners.
-Foreground starts remain manual. The existing cookie and origin gates remain in use. Confirmed close
-removes only this child's unchanged session/PID records; uncertainty retains custody.
+Foreground starts print the session file path in the original terminal. Repeating a loopback start
+for a foreground dashboard prints the refreshed session file path instead of a log command.
+The existing cookie and origin gates remain in use. Confirmed close removes only this child's
+unchanged session/PID records; uncertainty retains custody.
 
 Foreground service start uses the shared terminal lifetime. OS installation and full native caller
 parity are not supported. An old cached `command:web` descriptor is hidden and refuses with the matching
@@ -145,6 +147,8 @@ folder. The terminal gets the refusal's report, with the mesh it resolved and it
 `--json` gets that code, message and next step in the stream's `error` record, ahead of its `end`.
 Both records include `target.space` when a space resolved. `target.requestedSpace` holds the
 explicit `--space` value, or `null` when no space was requested.
+After a controller stack stops cleanly, the next step is `cotal up --no-manager` in its project
+folder if the stop records no manager or the broker's payload limit is too low to start one.
 
 
 ### Observer stream [#observer-stream]
@@ -166,6 +170,8 @@ control request. Connection or authorization failure is an error, not an empty c
 
 `watch --view` accepts `feed`, `events`, `messages`, `roster`, `channels`, `waiting`, `dms` and
 `topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
+With `--json`, an invalid view emits a `USAGE_INVALID` watch `error` record followed by an
+`end` record with `reason: "setup-failed"`. The command exits 1 without opening a connection.
 The roster includes agents and endpoints, including chat sessions and the manager, with each
 participant's kind and identity. Waiting rows cover agents reporting a waiting state.
 Both views show reported state without inventing blocked duration. Channel counts

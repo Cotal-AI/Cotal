@@ -16,6 +16,8 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
+import { CommandFailure } from "@cotal-ai/workspace";
+import { telemetryErrorText } from "../src/telemetry.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -117,6 +119,28 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("a stale lastInstallEventAt sends the install event again", nextDay.sent.length === 2 && nextDay.sent[0]!.event === "install", nextDay.sent.map((b) => b.event));
 }
 
+{
+  const s = sandbox();
+  const docs = await s.run(["docs", "--json"]);
+  await settled();
+  check("bundled docs sends command telemetry without collecting the install inventory",
+    docs.status === 0 && docs.stderr === "" && docs.envelope?.outcome === "ok" && docs.sent.length === 1 &&
+    docs.sent[0]?.event === "command" && docs.sent[0]?.command === "docs" && s.settings().lastInstallEventAt === undefined,
+    { ...shown(docs), events: docs.sent.map((event) => event.event) });
+  const version = await s.run(["version"]);
+  await settled();
+  check("another command still sends the deferred install event",
+    version.status === 0 && version.sent.length === 2 && version.sent[0]?.event === "install" &&
+    version.sent[1]?.event === "command", version.sent.map((event) => event.event));
+}
+
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const replay = await s.run(["ext", "__update-add", "expected-package", "actual-package"], { COTAL_TELEMETRY: level });
+  check(`an internal extension replay at ${level} keeps its refusal local and creates no install id`,
+    replay.status === 1 && replay.stderr.includes("must be launched by its recorded parent") && replay.sent.length === 0 && !existsSync(s.settingsPath), shown(replay));
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
@@ -138,9 +162,25 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
   check("…whose message masks the unknown word the user typed", typeof usage.sent[0]?.errorMessage === "string" && !(usage.sent[0]!.errorMessage as string).includes("frobnicate") && (usage.sent[0]!.errorMessage as string).includes("<value>"), usage.sent[0]?.errorMessage);
+  const prompt = "private `prompt` text";
+  const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
+  await settled();
+  check("a spawn pin refusal shows its retry locally but sends neither its message nor its stack",
+    spawn.status === 1 && spawn.stderr.includes(prompt) && spawn.sent.length === 1 && spawn.sent[0]?.errorCode === "USAGE_INVALID"
+    && spawn.sent[0]?.errorMessage === null && spawn.sent[0]?.errorStack === null, { ...shown(spawn), sent: spawn.sent });
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
+}
+
+// Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.
+{
+  const message = "sample seat exited on launch: ordinary terminal output";
+  const failure = new CommandFailure("failed", "OPERATION_FAILED", message, { native: { code: "failed" } });
+  const text = telemetryErrorText("spawn", failure);
+  check("native spawn messages and stacks stay local", text.message === null && text.stack === null && failure.message === message);
+  const usage = telemetryErrorText("spawn", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
+  check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
 }
 
 // ---- minimal ----

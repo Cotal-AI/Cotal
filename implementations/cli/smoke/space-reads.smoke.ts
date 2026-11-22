@@ -70,8 +70,8 @@ const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) 
   const r = spawnSync(process.execPath, [BIN, ...args], options);
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 };
-const json = (args: string[]) => {
-  const r = run([...args, "--json"]);
+const json = (args: string[], cwd = home) => {
+  const r = run([...args, "--json"], {}, cwd);
   let env: Record<string, any> | undefined;
   try {
     env = JSON.parse(r.stdout);
@@ -310,6 +310,10 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
   try {
     setCurrent("alpha");
+    const selection = json(["use"], project);
+    check("bare use reports the prepared folder without changing the selection or target", selection.status === 0 && selection.env?.target?.space === "alpha" && selection.env?.result?.current === "alpha" && selection.env?.result?.folder === "hint-live" && getCurrent() === "alpha", shown(selection));
+    const selectionPlain = run(["use", "--plain"], {}, project);
+    check("plain use names the selection and how to reach the prepared folder's space", selectionPlain.status === 0 && /^selected: alpha$/m.test(selectionPlain.stdout) && selectionPlain.stdout.includes("--space hint-live") && selectionPlain.stdout.includes("cotal use --clear"), shown(selectionPlain));
     const bare = run(["space", "show", "--plain"], {}, project);
     check("bare show prefers the prepared project space to the selection", bare.status === 0 && /^space:\s+hint-live$/m.test(bare.stdout), shown(bare));
     const named = run(["space", "show", "alpha", "--plain"], {}, project);

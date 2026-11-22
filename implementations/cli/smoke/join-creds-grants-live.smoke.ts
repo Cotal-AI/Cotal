@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -107,6 +107,21 @@ try {
     await killAndAwaitExit(run.proc);
     await run.exited;
   }
+  const truncated = join(dir, "truncated.creds");
+  writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });
+  const truncatedJoin = cli("join", "--space", space, "--creds", truncated, "--lifecycle-uid", other.uid, "--channel", "review.code");
+  check("truncated join refuses the incomplete file and explains how to pair the replacement", await truncatedJoin.exited === 1 &&
+    /Code: +SCHEMA_INVALID/.test(truncatedJoin.output()) && truncatedJoin.output().includes("no complete NATS user JWT block") &&
+    truncatedJoin.output().includes("--lifecycle-uid set to the new UID that mint reports"), truncatedJoin.output());
+  const truncatedAdvice = /`cotal auth mint (<name> [^`]+)`/.exec(truncatedJoin.output())?.[1];
+  assert.ok(truncatedAdvice && truncatedAdvice.includes(`--provision --allow-subscribe review.code --space ${space}`), truncatedJoin.output());
+  const truncatedRepair = join(dir, "truncated-repair.creds");
+  const truncatedMint = cli("auth", "mint", ...truncatedAdvice.split(" ").map((arg) => arg === "<name>" ? "truncated_repair" : arg === "<file>" ? truncatedRepair : arg));
+  check("the truncated-file remedy mints a replacement", await truncatedMint.exited === 0, truncatedMint.output());
+  const truncatedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(truncatedMint.output())?.[1];
+  assert.ok(truncatedUid && truncatedUid !== other.uid, truncatedMint.output());
+  await joins("truncated-repair", truncatedRepair, truncatedUid, "review.code");
+
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
   writeFileSync(foreign, await mintCreds(foreignAuth, newIdentity(), "agent", {

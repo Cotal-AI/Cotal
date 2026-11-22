@@ -12,7 +12,7 @@
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
@@ -214,6 +214,21 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
   check("an install line left after the stub is gone is reported with the stub missing", s.shellOf(dangling.env, "bash")?.state === "missing" && s.shellOf(dangling.env, "bash")?.wiredIn === rc, s.shellOf(dangling.env, "bash"));
   const danglingReport = s.run(["completion", "--plain"]);
   check("the report says that rc sources a missing stub", danglingReport.status === 0 && danglingReport.stdout.includes(`${rc} sources ${stub}, which is missing`), shown(danglingReport));
+}
+
+// ── Uninstall ignores a comment that only names the stub ─────────────────────────────────────────────
+// A comment cannot load the stub, so removing the stub cannot break it.
+{
+  const s = sandbox();
+  s.run(["completion", "install", "bash"]);
+  const rc = join(s.home, ".bashrc");
+  const stub = join(s.xdg, "cotal", "completion.bash");
+  appendFileSync(rc, `# Completion script: ${stub}\n`);
+  const removed = s.run(["completion", "uninstall", "bash", "--json"]);
+  const report = removed.stdout.startsWith("{") ? JSON.parse(removed.stdout) : undefined;
+  check("uninstall removes the managed block and stub but keeps a comment naming the stub",
+    removed.status === 0 && report?.result?.changed?.includes(stub) === true && !existsSync(stub) && readFileSync(rc, "utf8") === `# Completion script: ${stub}\n`,
+    { ...shown(removed), rc: readFileSync(rc, "utf8") });
 }
 
 // ── A file the status cannot read ───────────────────────────────────────────────────────────────────
@@ -562,6 +577,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("completion bash --json is refused with nothing on stdout", oldJson.status === 1 && oldJson.stdout === "" && oldJson.stderr.includes("cotal completion script bash"), shown(oldJson));
   const missing = s.run(["completion", "script"]);
   check("completion script without a shell is refused", missing.status === 1 && missing.stdout === "" && /choose a supported shell/.test(missing.stderr), shown(missing));
+  const unknownFlag = s.run(["completion", "script", "bash", "--not-a-flag"], { LC_ALL: "C.UTF-8" });
+  check("completion script asks to drop an unknown option instead of passing it as another shell", unknownFlag.status === 1 && unknownFlag.stdout === ""
+    && /Unknown option '--not-a-flag'\n  drop the unknown option\n/.test(unknownFlag.stderr) && !unknownFlag.stderr.includes("put -- before it"), shown(unknownFlag));
   for (const word of ["tcsh", "bsah"]) {
     const other = s.run(["completion", word]);
     check(`completion ${word} exits 1, writes nothing on stdout, and puts the help on stderr`, other.status === 1 && other.stdout === "" && new RegExp(`no subcommand "${word}"`).test(other.stderr) && /^Usage$/m.test(other.stderr), shown(other));

@@ -2,7 +2,7 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { codeSpan, shellPath } from "@cotal-ai/workspace";
@@ -32,6 +32,13 @@ const json = (cwd: string, ...args: string[]) => {
   const run = cli(cwd, ...args, "--json");
   return { ...run, envelope: JSON.parse(run.stdout) as Envelope };
 };
+const empty = join(scratch, "empty");
+mkdirSync(empty, { mode: 0o700 });
+const emptyAdoption = cli(other, "space", "create", "empty-adoption", "--adopt", "--root", empty, "--plain");
+check("adopting an empty folder refuses and leaves the folder untouched",
+  emptyAdoption.status === 2 && emptyAdoption.stderr.includes("TARGET_NOT_FOUND") &&
+  emptyAdoption.stderr.includes("without --adopt") && readdirSync(empty).length === 0);
+
 const space = "movedroot";
 let started = false;
 try {
@@ -169,7 +176,7 @@ for (const open of [false, true]) {
     assertSmokeSandboxDown(anchor, args, { cwd, env });
     if (cli(cwd, ...args).status !== 0) throw new Error("private stack did not stop");
   };
-  if (cli(project, "up", "--no-manager", "--server", server).status !== 0) throw new Error("private stack did not start");
+  if (cli(project, "up", "--open", "--no-manager", "--server", server).status !== 0) throw new Error("private stack did not start");
   try {
     check("store channel metadata before moving the project", cli(project, "channel", "set", "move.history", "--desc", "description before rename").status === 0);
     check("store a post before stopping and moving the project", cli(project, "send", "-c", "move.history", "retained after project rename").status === 0);
@@ -228,8 +235,12 @@ for (const open of [false, true]) {
   const printedAdopt = plainCreate.stderr.match(/\nNext\n  (.+)\n/)?.[1];
   check("plain create after forget refuses without rewriting the journal and prints a directly runnable adopt command",
     plainCreate.status === 2 && plainCreate.stderr.includes("CONFLICT") && printedAdopt === adopt && readFileSync(journal).equals(before));
-  check("following the printed adopt prepares the space in the renamed folder",
-    printedAdopt === adopt && shell(printedAdopt).status === 0 &&
+  const wrongName = cli(other, "space", "create", "wrong-name", "--adopt", "--root", renamed, "--plain");
+  const printedRetry = wrongName.stderr.match(/adopt it with (`+)(cotal space create .+?)\1$/m)?.[2];
+  check("adoption with the wrong name leaves the journal unchanged and quotes the retry",
+    wrongName.status === 2 && wrongName.stderr.includes("CONFLICT") && printedRetry === adopt && readFileSync(journal).equals(before));
+  check("following the printed retry prepares the space in the renamed folder",
+    printedRetry === adopt && shell(printedRetry).status === 0 &&
       cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
   const restarted = cli(renamed, "up", "--no-manager");
   check("the adopted stack starts at the renamed root and recorded broker address", restarted.status === 0 && restarted.stdout.includes(server));

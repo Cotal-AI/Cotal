@@ -28,7 +28,7 @@
  * Run: pnpm smoke:setup-destination
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
@@ -352,6 +352,21 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     literal(`create "research2" in another folder with --project <dir>; for "research", which uses this folder, start it with \`cotal up\` from ${dir}, select it with \`cotal use research\`, or forget it with \`cotal space forget research\``).test(other.env?.error?.remedy ?? ""), other.env?.error);
   const moved = await json(FULL("research", project("elsewhere")));
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
+}
+
+{
+  const dir = project("corrected-name");
+  const base = ["setup", "--destination", "local", "--harness", "codex", "--project", dir];
+  const bad = await json([...base, "--space=-my.space"]);
+  const remedy = bad.env?.error?.remedy;
+  check("a respelled local name does not start with a hyphen",
+    refused(bad, 1, "USAGE_INVALID") && remedy === "pass --space my_space, or another name of letters, digits, - and _", shown(bad));
+  const retry = await json([...base, "--space", /^pass --space ([^,]+),/.exec(remedy ?? "")?.[1] ?? "", "--yes"]);
+  check("the suggested name can be used as a flag value and prepared",
+    retry.status === 0 && retry.env?.result?.space === "my_space" && retry.env.result.spaceState === "created", shown(retry));
+  const long = await json([...base, `--space=${"a".repeat(64)}.`]);
+  check("setup does not suggest a concrete name too long for a local space",
+    refused(long, 1, "USAGE_INVALID") && /^choose a name/.test(long.env?.error?.remedy ?? ""), shown(long));
 }
 
 if (process.platform !== "win32") {
@@ -775,6 +790,53 @@ if (process.platform !== "win32") {
   check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
   const none = await json(FULL("rt", dir));
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
+}
+
+{
+  const dir = project("blocked-persona");
+  const agents = join(dir, ".cotal", "agents");
+  mkdirSync(join(dir, ".cotal"), { mode: 0o700 });
+  writeFileSync(agents, "keep this file");
+  const args = [...FULL("blocked-persona", "."), "--configure-only", "--yes"];
+  const blocked = await json(args, dir);
+  const saved = findPreparedSpace("blocked-persona");
+  const writes = blocked.env?.changed;
+  check("a blocked persona directory reports the saved space as partial, with its write and a way to retry",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL"
+      && blocked.env.target?.space === "blocked-persona" && blocked.env.target?.path === agents
+      && blocked.env.error.message.includes('prepared space "blocked-persona" is saved')
+      && blocked.env.error.remedy === `move the file at ${agents} aside, then run the same setup again`
+      && saved?.root === dir && writes?.length === 1 && writes[0]?.what === "prepared space" && existsSync(writes[0].path)
+      && readFileSync(agents, "utf8") === "keep this file", shown(blocked));
+  renameSync(agents, `${agents}.saved`);
+  const retried = await json(args, dir);
+  check("rerunning configure-only after moving the file seeds the persona and keeps the prepared record",
+    retried.status === 0 && retried.env?.result?.spaceState === "prepared" && retried.env.result.startup?.state === "not-requested"
+      && saved !== undefined && findPreparedSpace("blocked-persona")?.ts === saved.ts && existsSync(join(agents, "default.md")), shown(retried));
+}
+
+{
+  const dir = project("blocked-log");
+  const path = join(dir, ".cotal", "setup.log");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const args = [...FULL("blocked-log", "."), "--configure-only", "--yes"];
+  const blocked = await json(args, dir);
+  const saved = findPreparedSpace("blocked-log");
+  check("a blocked setup log reports the saved preparation and the path to repair",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL"
+      && blocked.env.target?.space === "blocked-log" && blocked.env.target.path === path
+      && blocked.env.error.remedy === `check and repair the log path ${path}, then run the same setup again`
+      && blocked.env.changed?.map((write: { what: string }) => write.what).join(", ") === "prepared space, default persona, harness preference of blocked-log"
+      && saved?.root === dir, shown(blocked));
+  const unchanged = await json(args, dir);
+  check("the same blocked log fails with no changes on a retry",
+    unchanged.status === 5 && unchanged.env?.outcome === "failed" && unchanged.env.error?.code === "OPERATION_FAILED"
+      && !unchanged.env.changed?.length, shown(unchanged));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup finish without replacing preparation",
+    retried.status === 0 && retried.env?.result?.spaceState === "prepared" && saved !== undefined
+      && findPreparedSpace("blocked-log")?.ts === saved.ts && existsSync(path), shown(retried));
 }
 
 if (process.platform !== "win32") {

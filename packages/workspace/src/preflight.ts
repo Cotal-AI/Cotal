@@ -2,7 +2,7 @@ import { createConnection } from "node:net";
 import { existsSync } from "node:fs";
 import { dialerFor, mintCreds, newIdentity, probeConnect, isReachable, token } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { brokerAddressKey, brokerUrlKey, getCurrent, loadMeshes } from "./mesh-registry.js";
+import { brokerAddressKey, brokerUrlKey, readCurrent, loadMeshes } from "./mesh-registry.js";
 import { isGenuineSpace, type MeshTarget } from "./mesh-target.js";
 import { stoppedLoopbackListener, parsePid, parseRecord, probeLiveness, readPidfile, assertRecordIdentity } from "./pid.js";
 import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
@@ -350,6 +350,7 @@ export async function brokerAnswers(server: string): Promise<boolean> {
  *  command resolves with, only the records at that address are probed: that resolve reads no other
  *  record's liveness. Other explicitly requested checks, such as status --all, have their own scope. */
 export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targets" = "brokers"): Promise<MeshSweep> {
+  const useInventory = scope === "targets" && server === undefined && readCurrent() === undefined && !isGenuineSpace(findCotalRoot());
   const sweep: MeshSweep = { offline: [] };
   const entries = loadMeshes().filter((m) => server === undefined || m.server === server);
   await Promise.all(
@@ -363,7 +364,7 @@ export async function pruneStaleMeshes(server?: string, scope: "brokers" | "targ
       sweep.offline.push(m.space);
     }),
   );
-  if (scope === "targets" && server === undefined && !getCurrent() && !isGenuineSpace(findCotalRoot())) {
+  if (useInventory) {
     const candidates = entries.filter((m) => !sweep.offline.includes(m.space));
     const inventories = new Map<string, Promise<string[] | undefined>>();
     const openInventory = { served: [] as string[], unserved: [] as string[] };

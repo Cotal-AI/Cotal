@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import type { FlagSpec, ParsedArgs } from "@cotal-ai/core";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, targetErrorCode, workspaceErrorParts, writeResult, type Report } from "@cotal-ai/workspace";
 import { endpointDeregister, validateEndpointDeregisterArguments } from "./endpoint-deregister.js";
 import { endpointAuthoring, validateEndpointAuthoringArguments } from "./endpoint-authoring.js";
 import { readEndpointInventory } from "../lib/endpoint-inventory.js";
@@ -48,11 +48,22 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (mode === "add" && (!name || args.values.file === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted endpoint add needs a name and --file; guided input requires an interactive terminal");
 }
 
-function selectedSpace(values: { space?: string }): string {
+function selectedSpace(args: ParsedArgs): string {
+  const values = args.values as { space?: string; server?: string };
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true }).space; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
+    if (error.code === "ambiguous-target" && (args.positionals[0] ?? "list") === "list") throw error;
+    if (error.code === "unknown-space") {
+      const { message, remedy } = workspaceErrorParts({ kind: "target", error });
+      const savedInventory = (args.positionals[0] ?? "list") === "list" && !args.values.live;
+      const format = args.values.json ? " --json" : args.values.plain ? " --plain" : "";
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", message, {
+        target: { requested: error.details.requested },
+        remedy: savedInventory ? `see \`cotal space\` for space names, then retry with \`cotal endpoint --space <name>${format}\`` : remedy,
+      });
+    }
     throw new CommandFailure("refused", targetErrorCode(error.code), "the selected reference space could not be resolved; no different space was selected");
   }
 }
@@ -68,7 +79,7 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   if (modeRequested === "describe") return describeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   if (modeRequested === "invoke") return invokeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   const presentation = presentationOf(args.values);
-  const space = selectedSpace(args.values as { space?: string });
+  const space = selectedSpace(args);
   recordOperationSpace(space);
   const [mode = "list", suppliedName] = args.positionals;
   if (mode === "list") {
@@ -79,7 +90,9 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     if (args.values.live) {
       try { live = await readEndpointInventory({ ...args.values, space } as { space?: string; server?: string; creds?: string }); }
       catch (error) {
-        const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : undefined;
+        const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure()
+          : isWorkspaceTargetError(error) ? { code: targetErrorCode(error.code), ...workspaceErrorParts({ kind: "target", error }) }
+          : undefined;
         unavailable = { code: failure?.code ?? "TARGET_UNAVAILABLE", message: failure?.message ?? "Authorized native registration reads were unavailable. The live inventory is not an empty complete result." };
         remedy = failure?.remedy;
       }
@@ -108,7 +121,8 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
     const row = readEndpointReference(space, suppliedName!);
     if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved reference has this full name in the selected space");
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name}${targetWords(args.values)} --yes\`` });
+      const format = presentation === "rich" ? "" : ` --${presentation}`;
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("forgetting a saved reference outside interactive input requires --yes", { target: { space, name: row.name }, remedy: `confirm with \`cotal endpoint remove ${row.name}${targetWords(args.values)} --yes${format}\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)}? No endpoint, process or credential will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentation, { command: "endpoint", target: { space, name: row.name }, result: { kind: "reference-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Reference kept", blocks: [{ kind: "lines", lines: ["No local record or remote resource was changed."] }] }] })); return; }
     }

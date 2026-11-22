@@ -4,7 +4,7 @@ import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -156,7 +156,7 @@ try {
   const home = join(other, "home");
   mkdirSync(home, { mode: 0o700 });
   const cli = (...args: string[]) => spawnSync(process.execPath, [bin, ...args], {
-    cwd: other, env: { ...ambient, ...registryEnv, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    cwd: other, env: { ...ambient, ...registryEnv, HOME: home, USERPROFILE: home, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1" },
     encoding: "utf8", timeout: 120_000,
   });
   const deleted = join(other, "project"), space = `deleted-${randomUUID()}`;
@@ -195,6 +195,26 @@ try {
   // Older up versions render these configurations before refusing an old broker binary.
   // Exercise the real resolver and built update commands against both retained formats.
   clearCurrent();
+  const pointer = join(process.env.COTAL_HOME!, "current-mesh"), marker = `${pointer}.adopted`;
+  const noSelection = cli("update");
+  assert.equal(noSelection.status, 0, noSelection.stdout + noSelection.stderr);
+  for (const damage of ["empty pointer", "unreadable marker"]) {
+    const saved = damage === "empty pointer" ? "" : space;
+    writeFileSync(pointer, saved, { mode: 0o600 });
+    if (damage === "unreadable marker") mkdirSync(marker);
+    try {
+      const update = cli("update");
+      assert.equal(update.status, noSelection.status, `${damage}: ${update.stdout}\n${update.stderr}`);
+      assert.match(update.stdout, /Built-in connectors/);
+      assert.match(update.stdout, /Registry latest:/);
+      assert.doesNotMatch(update.stderr, /running manager continuity check|current-mesh/);
+      assert.equal(readFileSync(pointer, "utf8"), saved, "update keeps the selection bytes");
+      if (damage === "unreadable marker") assert.ok(statSync(marker).isDirectory(), "update keeps the damaged marker");
+    } finally {
+      if (damage === "unreadable marker") rmdirSync(marker);
+      clearCurrent();
+    }
+  }
   const privateHome = join(root, "private-home");
   mkdirSync(privateHome, { mode: 0o700 });
   const env = { ...ambient, ...registryEnv, HOME: privateHome, COTAL_HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };

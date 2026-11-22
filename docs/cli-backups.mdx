@@ -71,10 +71,12 @@ folder. A destination check that finds a non-directory parent (`ENOTDIR`) or a s
 with a directory parent; no attempt was started and the preservation journal is unchanged.
 A destination inside the preserved store refuses `USAGE_INVALID` (exit 1). So does one
 inside a path `clean all` removes, such as `.cotal/auth` or the space's `.cotal/space.<hex>`
-folder, because that cleanup would remove the backup with them. One in a
-folder this account cannot write refuses `PERMISSION_DENIED` (exit 2) and names that folder.
-Its Next gives a shell-quoted `chmod` command when the path can be displayed unchanged, or you can
-choose a writable folder. A `--store-dir` that is not the cut's preserved store, such as an empty folder,
+folder, because that cleanup would remove the backup with them. If this account cannot write or
+search the destination's parent folder, create refuses `PERMISSION_DENIED` (exit 2) and names
+that folder without changing the preserved cut. Next suggests `chmod u+w` for missing write
+access or `chmod u+x` for missing search access on the parent, with a shell-quoted path when it can
+display one unchanged. You can also choose a folder this account can write and search.
+A `--store-dir` that is not the cut's preserved store, such as an empty folder,
 refuses `CONFLICT` (exit 2) and names both stores. A process that listens at the cut's recorded
 address refuses `CONFLICT` (exit 2), as `backup restore` and a resuming `up` refuse it, and its Next
 says to stop the process that listens there and run the same `backup create` again. Retry commands
@@ -548,14 +550,16 @@ because the interrupted `up` may have stopped before it made them. The mesh reco
 keeps the recorded attach host and session ceiling and the store cap the adopted broker started with.
 On a legacy root, a restore uses the cap recorded in the preserved state unless `up --restore`
 receives an explicit `--max-file-store <bytes>`. The restore journals the cap it uses so re-entry
-keeps it. If SIGINT, SIGTERM or SIGHUP interrupts a restore
-after commit intent and before the listener starts, the command names the attempt and tells you to run
-bare `cotal up` from that root. That command continues the same attempt and starts the listener. It does
-so only when no process of this account names the attempt and the recorded port is free, because a
-listener spawned and never bound may still be opening the restored store, and NATS does not stop a
-second server from opening it too. While such a process runs, `up` names its pid and refuses, and
-the attempt is preserved. A host that cannot read command lines refuses the same way. A later ordinary startup may pass an `active`
-restore only when its details prove manager commit and its exact recorded listener is dead.
+keeps it. If SIGINT, SIGTERM or SIGHUP interrupts a restore after commit intent and before the listener
+starts, the command names the attempt and tells you to run bare `cotal up` from that root. If SIGINT
+or SIGTERM makes foreground `up --restore` stop its listener before it answers, the command gives
+the same recovery step and exits 130 or 143, respectively. Bare `cotal up` continues the same attempt.
+If no listener was bound to the attempt, it starts one only when no process of this account names
+the attempt and the recorded port is free. A listener spawned and never bound may still be opening
+the restored store, and NATS does not stop a second server from opening it too. While such a process
+runs, `up` names its pid, refuses to start and preserves the attempt. A host that cannot read command
+lines refuses the same way. A later ordinary startup may pass an `active` restore only when its details
+prove manager commit and its exact recorded listener is dead.
 
 
 ### Offline creation [#offline-creation]

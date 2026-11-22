@@ -257,8 +257,11 @@ try {
     const invalidHost = cotal(["manager", "start", "--space", SPACE, "--console-host", "127.0.0.1 junk", "--plain"]);
     check("an invalid console host is refused without saving a replacement",
       invalidHost.status === 1 && out(invalidHost).includes("USAGE_INVALID") && out(invalidHost).includes("--console-host contains whitespace or controls") && !out(invalidHost).includes("saved manager again"), out(invalidHost));
+    const invalidName = cotal(["manager", "start", "--foreground", "--space", SPACE, "--name", "abcdefghijklmnopqrstuvwxyz", "--plain"]);
+    check("an instance-shaped manager name is refused without saving a replacement",
+      invalidName.status === 1 && out(invalidName).includes("USAGE_INVALID") && out(invalidName).includes("has the shape of an instance id") && !out(invalidName).includes("saved manager again"), out(invalidName));
     const kept = showManager(), stoppedAfter = stoppedManager();
-    check("the refused override leaves the definition and stopped instance unchanged",
+    check("the refused overrides leave the definition and stopped instance unchanged",
       saved.status === 0 && kept.status === 0 && saved.stdout === kept.stdout
       && stoppedBefore.status === 0 && stoppedAfter.status === 0 && stoppedBefore.recordedState === "stopped"
       && typeof stoppedBefore.instanceId === "string" && typeof stoppedBefore.revision === "string" && JSON.stringify(stoppedBefore) === JSON.stringify(stoppedAfter),
@@ -371,11 +374,12 @@ try {
     if (isManagerLog(goneLog)) rmSync(goneLog);
     const gone = upCotal(["manager", "logs"]);
     const goneJson = envelope(upCotal(["manager", "logs", "--json"])) as LogsEnvelope & { target?: { path?: string }; error?: { code?: string; message?: string; remedy?: string } };
+    const restart = `start the stack again with \`cotal up --root ${upProject} --space ${UP_SPACE}\``;
     check("cotal manager logs with that log removed says the log is gone and names only cotal up",
       goneJson.outcome === "refused" && goneJson.error?.code === "TARGET_NOT_FOUND" && goneJson.error.message === `the manager log at ${goneLog} is no longer there; nothing was read`
-        && goneJson.error.remedy === "start the stack again with `cotal up`" && goneJson.target?.path === goneLog, goneJson);
+        && goneJson.error.remedy === restart && goneJson.target?.path === goneLog, goneJson);
     check("  and its text says so, with no cotal manager start and no claim that none was started",
-      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && /Next\s+start the stack again with `cotal up`\s*$/.test(out(gone))
+      gone.status === 2 && out(gone).includes("is no longer there; nothing was read") && out(gone).trimEnd().endsWith(restart)
         && !out(gone).includes("cotal manager start") && !out(gone).includes("no manager has been started"), out(gone));
 
     // ---- A preset broker stops even when its log file was moved away -----------------------------
@@ -383,6 +387,16 @@ try {
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
+    const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];
+    const previewStart = cotal([...foregroundStart, "--dry-run"]);
+    const previewReceipt = JSON.parse(previewStart.stdout);
+    check("a foreground dry-run returns one JSON preview without allocating or signalling a process",
+      previewStart.status === 0 && previewReceipt.outcome === "ok" && previewReceipt.result?.kind === "service-operation-preview"
+        && previewReceipt.result.operation === "start" && previewReceipt.result.allocated === false && previewReceipt.result.signalled === false, out(previewStart));
+    const refusedStart = cotal(foregroundStart);
+    check("a live foreground start still refuses JSON", refusedStart.status === 1 && JSON.parse(refusedStart.stdout).error?.code === "USAGE_INVALID", out(refusedStart));
+    const afterPreview = cotal(["service", "status", "stack-broker", "--space", PRESET_SPACE, "--json"]);
+    check("the preview and refusal leave the service without an instance", afterPreview.status === 0 && JSON.parse(afterPreview.stdout).result?.instanceId === null, out(afterPreview));
     // #7642: an add that named its space suggests the start and show in that space.
     check("  and its Next starts and shows it with the same --space",
       new RegExp(`cotal svc start stack-broker --space ${PRESET_SPACE}\\s+Start it`).test(out(custom)) && new RegExp(`cotal svc show stack-broker --space ${PRESET_SPACE}\\s+Read`).test(out(custom)), out(custom));

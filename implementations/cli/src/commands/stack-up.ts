@@ -13,6 +13,7 @@ import { displayCmd } from "../lib/self-exec.js";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { basename, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
 import { awaitDeadDeliveryLease, CONTRACT_ARTIFACT_MAX_BYTES, deliveryLeaseHolderFor, isJetStreamMissing, isReachable, LEASE_TTL_MS, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, openPrivateAppend, type BrokerTransport, type ParsedArgs } from "@cotal-ai/core";
 import {
@@ -680,6 +681,38 @@ export function bindReaches(host: string, server: string): boolean {
   }
 }
 
+/** Refuse a busy broker address before launch. Only a recorded address held by TIME-WAIT gets a bounded retry. */
+async function assertStackBrokerAddress(request: StackUpRequest, root: string, space: string, server: string, bindHost: string | undefined, recorded: boolean): Promise<void> {
+  const { host: dialHost, port } = brokerListenAddress(server);
+  const host = bindHost ?? dialHost;
+  let deadline: number | undefined;
+  for (;;) {
+    const bindError = await listenerBindError(server, bindHost);
+    if (bindError === undefined || bindError === "timeout" || bindError.code !== "EADDRINUSE") return;
+    const { says, frees, timeWait } = await addressHolder("the stack's broker address", host, port);
+    if (recorded && timeWait) {
+      if (deadline === undefined) {
+        deadline = performance.now() + 60_000;
+        if (request.presentation !== "json") process.stderr.write(`Waiting up to a minute for TIME-WAIT to clear on the stack's broker address ${host}:${port}\n`);
+      }
+      const remaining = deadline - performance.now();
+      if (remaining > 0) {
+        await delay(Math.min(500, remaining));
+        continue;
+      }
+    }
+    // The socket can clear between a failed bind and the observation that ends the wait.
+    if (deadline !== undefined && !timeWait && await listenerBindError(server, bindHost) === undefined) return;
+    const retry = recorded ? undefined : await request.retryAtAnotherAddress?.(host);
+    throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
+      target: { root, space, server, bindError: bindError.code },
+      remedy: recorded
+        ? `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`
+        : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
+    });
+  }
+}
+
 /** Start the recorded stack and return its domain result without writing any receipt. */
 export async function startControllerStack(request: StackUpRequest, native: StackUpNative): Promise<StackUpResult> {
   const root = canonicalRoot(request.root), space = request.space;
@@ -925,17 +958,18 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     return { role, definition: STACK_DEFINITION[role], instanceId: recorded?.instanceId ?? null, process: roles.includes(role) ? undefined : recorded?.process, state: roles.includes(role) ? "planned" : "not-attempted" };
   });
   let journal: StackJournal = { schemaVersion: 1, kind: "cotal-stack-controller", root, space, server, mode, recovery: { home: resolve(homeCotalDir()), host: stackRecoveryHost() }, ...(recordedBroker ? { broker: recordedBroker } : {}), members, operation: newStackOperation("up"), updatedAt: new Date().toISOString() };
-  // The whole scoped plan is durable before the first effect. A crash after this reads as unsettled
-  // until the next whole-stack operation settles it from its members' evidence.
-  let snapshot: StackJournalSnapshot = writeStackJournal(root, current ?? recorded, journal);
+  // The whole scoped plan is durable before the first effect. It is written only once the broker
+  // address checks below pass, so a restart refused there keeps the proof that the stack stopped
+  // cleanly. Until that first write, settle and mark adjust only the in-memory plan.
+  let snapshot: StackJournalSnapshot | undefined;
   const changed: unknown[] = [];
   const settle = (phase: StackJournal["operation"]["phase"]) => {
     journal = { ...journal, operation: { ...journal.operation, phase }, updatedAt: new Date().toISOString() };
-    snapshot = writeStackJournal(root, snapshot, journal);
+    if (snapshot !== undefined) snapshot = writeStackJournal(root, snapshot, journal);
   };
   const mark = (role: StackRole, change: Partial<StackMember>) => {
     journal = { ...journal, members: journal.members.map((row) => row.role === role ? { ...row, ...change } : row), updatedAt: new Date().toISOString() };
-    snapshot = writeStackJournal(root, snapshot, journal);
+    if (snapshot !== undefined) snapshot = writeStackJournal(root, snapshot, journal);
   };
   // A redefinition retires the member's recorded instance with its old definition. The replacement's
   // IDs are journaled before that retirement and the new definition's revision before its launch.
@@ -961,7 +995,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     if (!started.noOp) changed.push(instanceProjection(started.instance));
     return started.instance;
   };
-  settle("applying");
   // Set only when a user stack's manager is withheld for want of an existing login and grant. That
   // is a known pre-effect refusal of one member, never a launch and never an unknown outcome.
   let loginBlock: CommandFailure | undefined;
@@ -998,21 +1031,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
           : `${stopHolder}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
       });
     }
-    // A program that holds the address without answering NATS, such as a web server, is refused here
-    // too, before any broker instance is recorded, so a first start names another address.
-    const bindError = brokerRunning ? undefined : await listenerBindError(server, brokerHost);
-    if (bindError !== undefined && bindError !== "timeout" && bindError.code === "EADDRINUSE") {
-      const { host: dialHost, port } = brokerListenAddress(server);
-      const host = brokerHost ?? dialHost;
-      const { says, frees } = await addressHolder("the stack's broker address", host, port);
-      const retry = previous === undefined ? await request.retryAtAnotherAddress?.(host) : undefined;
-      throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
-        target: { root, space, server, bindError: bindError.code },
-        remedy: previous === undefined
-          ? `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`
-          : `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`,
-      });
-    }
+    if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
+    snapshot = writeStackJournal(root, current ?? recorded, journal);
+    settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
     let pinnedWsPort: number | undefined;
     if (!brokerRunning && mode !== "open" && savedManager?.type === "adapter" && savedManager.adapter === STACK_ADAPTER.manager && savedManager.options.root === root) {
@@ -1180,6 +1201,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {
+    // A refused first start still records that the stack never started, so a later stop reports a no-op.
+    if (snapshot === undefined && current === undefined) snapshot = writeStackJournal(root, current ?? recorded, journal);
     // A reused broker that lost some of the space's streams, but not all of them as `cotal space delete`
     // leaves it, gets none back here; a broker start creates the missing ones.
     const error = brokerReused && isJetStreamMissing(caught, JetStreamApiCodes.StreamNotFound)

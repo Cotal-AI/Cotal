@@ -475,6 +475,7 @@ try {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home, DO_NOT_TRACK: "1" };
   for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
   childEnv.COTAL_HOME = home;
+  childEnv.COTAL_SKIP_CONNECTOR_SEED = "1";
   const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
@@ -625,6 +626,52 @@ try {
       readFileSync(decoyFile, "utf8") === decoy && readFileSync(encodedFile).equals(utf8), edit.stdout + edit.stderr);
   }
 
+  function checkTargetedRetries() {
+    if (process.platform === "win32") return;
+    const alphaFile = agentFilePath(ALPHA, "Reviewer");
+    const otherFile = agentFilePath(MESH, "Reviewer");
+    const alphaCard = "---\nname: Reviewer\n---\nAlpha instructions.\n";
+    const otherCard = alphaCard.replace("Alpha", "Other");
+    const invalid = "---\nname: Reviewer\nsubscribe: [\n---\nInvalid draft.\n";
+    const editor = join(scratch, "invalid-editor");
+    writeFileSync(alphaFile, alphaCard);
+    writeFileSync(otherFile, otherCard);
+    writeFileSync(editor, `#!/bin/sh\ncat > "$1" <<'EOF'\n${invalid}EOF\n`, { mode: 0o700 });
+    for (const selector of [["--space", "alpha"], ["--server", "nats://127.0.0.1:4301"]]) {
+      const conflict = native(["persona", "create", "reviewer", "--prompt", "Never saved.", "--subscribe=", ...selector, "--json"], scratch);
+      const failure = JSON.parse(conflict.stdout).error;
+      const edit = failure?.remedy.match(/`([^`]+)`/)?.[1];
+      check(`case-only conflict keeps ${selector[0]} in the suggested edit`,
+        conflict.status === 2 && failure?.code === "CONFLICT" && failure.message.includes("only in case") &&
+        edit === `cotal persona edit Reviewer ${selector.join(" ")}`, conflict.stdout);
+      const args = [...edit.split(" ").slice(1), "--json"];
+      const refused = native(args, scratch, { ...childEnv, VISUAL: editor, TMPDIR: scratch });
+      const receipt = JSON.parse(refused.stdout);
+      const draft = receipt.error?.remedy.match(/kept in (.*?); correct it/)?.[1];
+      const retry = receipt.error?.remedy.match(/`([^`]+)`/)?.[1];
+      check(`invalid draft keeps ${selector[0]} in the retry and leaves both catalogs intact`,
+        refused.status === 1 && receipt.target?.space === "alpha" && receipt.error?.code === "SCHEMA_INVALID" &&
+        retry === edit && draft && readFileSync(draft, "utf8") === invalid &&
+        readFileSync(alphaFile, "utf8") === alphaCard && readFileSync(otherFile, "utf8") === otherCard, refused.stdout);
+      const retried = native([...retry.split(" ").slice(1), "--json"], scratch, { ...childEnv, VISUAL: "true" });
+      const retriedReceipt = JSON.parse(retried.stdout);
+      check(`the printed retry with ${selector[0]} opens alpha`,
+        retried.status === 0 && retriedReceipt.target?.space === "alpha" && retriedReceipt.outcome === "no-op", retried.stdout + retried.stderr);
+    }
+  }
+  checkTargetedRetries();
+
+  const piped = Buffer.from("---\nname: piped-card\n---\nInstructions from standard input.\n");
+  const stdinMismatch = native(["persona", "create", "other-stdin", "--file", "-", "--space", "alpha", "--json"], scratch, childEnv, piped);
+  const stdinFailure = JSON.parse(stdinMismatch.stdout).error;
+  const stdinRetry = stdinFailure?.remedy.match(/pipe the original definition into `([^`]+)` again/)?.[1];
+  check("the stdin name-mismatch remedy says to pipe the original bytes into the same catalog",
+    stdinMismatch.status === 1 && stdinFailure?.code === "SCHEMA_INVALID" &&
+    stdinRetry === "cotal persona create piped-card --file - --space alpha" && !existsSync(agentFilePath(ALPHA, "other-stdin")), stdinMismatch.stdout);
+  const pipedRetry = native(stdinRetry.split(" ").slice(1), scratch, childEnv, piped);
+  check("the corrected command saves the original stdin definition to alpha",
+    pipedRetry.status === 0 && readFileSync(agentFilePath(ALPHA, "piped-card")).equals(piped), pipedRetry.stdout + pipedRetry.stderr);
+
   for (const [field, value, expected] of [
     ["model", "42", '"model" must be a string; got number'],
     ["subscribe", "true", '"subscribe" must be an array of strings; got boolean'],
@@ -654,6 +701,74 @@ try {
   check("persona create accepts correctly typed file", validCreate.status === 0, validCreate.stdout + validCreate.stderr);
   const validSpawn = native(["spawn", "typed-valid", "--foreground", "--dry-run", "--json"]);
   check("spawn dry-run accepts correctly typed file", validSpawn.status === 0 && validSpawn.stdout.includes('"42"'), validSpawn.stdout + validSpawn.stderr);
+
+  {
+    const path = agentFilePath(MESH, "-reviewer");
+    writeFileSync(path, "---\nname: reviewer\nagent: claude\n---\nReview the project.\n");
+    const shown = native(["persona", "show", "--plain", "--", "-reviewer"]);
+    const next = [...shown.stdout.matchAll(/^\s+(cotal .+?) {2,}\S.*$/gm)].map(match => match[1]);
+    check("persona show prints copyable follow-ups for a hyphen-leading catalog name", shown.status === 0 &&
+      JSON.stringify(next) === JSON.stringify(["cotal p edit -- -reviewer", "cotal spawn -- -reviewer", "cotal p show --json -- -reviewer"]), shown.stdout + shown.stderr);
+    if (process.platform !== "win32") {
+      const edit = native(next[0]!.split(" ").slice(1), MESH, { ...childEnv, VISUAL: "true" });
+      check("the printed edit command opens the local definition", edit.status === 0, edit.stdout + edit.stderr);
+    }
+    const spawn = native(["spawn", "--dry-run", "--json", ...next[1]!.split(" ").slice(2)]);
+    check("the printed spawn arguments select the correct file", spawn.status === 0 &&
+      JSON.parse(spawn.stdout).result?.persona?.path === path, spawn.stdout + spawn.stderr);
+    const json = native(next[2]!.split(" ").slice(1));
+    check("the printed JSON command returns the correct persona", json.status === 0 &&
+      JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
+    unlinkSync(path);
+  }
+  {
+    const path = agentFilePath(MESH, "nul-endpoints");
+    const card = "---\nname: nul-endpoints\nagent: claude\nendpoints:\n---\nReview the project.\n";
+    writeFileSync(path, card);
+    for (const args of [["persona", "show", "nul-endpoints"], ["spawn", "nul-endpoints", "--dry-run"]]) {
+      const refused = native([...args, "--json"]);
+      const { error } = JSON.parse(refused.stdout);
+      check(`${args[0]} refuses a blank endpoints declaration and explains how to fix it`, refused.status === 1 &&
+        error?.code === "SCHEMA_INVALID" && error.message.includes(path) && error.message.includes('"endpoints" must be a list, not null') &&
+        error.message.includes("Remove the key or supply a list"), refused.stdout + refused.stderr);
+    }
+    writeFileSync(path, card.replace("endpoints:", "endpoints: []"));
+    const shown = native(["persona", "show", "nul-endpoints", "--json"]);
+    check("persona show retains an explicit empty endpoints list", shown.status === 0 &&
+      JSON.stringify(JSON.parse(shown.stdout).result?.definition?.endpoints) === "[]", shown.stdout + shown.stderr);
+    unlinkSync(path);
+  }
+
+  {
+    const path = agentFilePath(MESH, "broken-fence");
+    writeFileSync(path, "---\nname: broken-fence\n---oops\nBody.\n");
+    for (const args of [["persona", "show", "broken-fence"], ["spawn", "broken-fence", "--foreground", "--dry-run"]]) {
+      const refused = native([...args, "--json"]);
+      const { error } = JSON.parse(refused.stdout);
+      check(`${args[0]} refuses a malformed closing fence`, refused.status === 1 && error?.code === "SCHEMA_INVALID" &&
+        error.message.includes(path) && error.message.includes('missing closing "---" frontmatter fence'), refused.stdout + refused.stderr);
+    }
+    writeFileSync(path, "---\r\nname: broken-fence\r\n--- \t\r\nBody.\r\n");
+    const repaired = native(["persona", "show", "broken-fence", "--json"]);
+    const definition = JSON.parse(repaired.stdout).result?.definition;
+    check("persona show accepts spaces and tabs on a closing fence without changing the body",
+      repaired.status === 0 && definition?.persona === "Body.", repaired.stdout);
+    unlinkSync(path);
+  }
+  for (const pin of ["", " \t"]) {
+    const path = agentFilePath(MESH, "blank-agent");
+    writeFileSync(path, `---\nname: blank-agent\nagent: ${JSON.stringify(pin)}\n---\nBody.\n`);
+    const show = native(["persona", "show", "blank-agent", "--plain"]);
+    check(`persona show treats ${JSON.stringify(pin)} as no application pin`,
+      show.status === 0 && show.stdout.includes("Application: user default"), show.stdout + show.stderr);
+    for (const [want, flags] of [["claude", []], ["jcode", ["--harness", "jcode"]]] as const) {
+      const spawn = native(["spawn", "blank-agent", "--foreground", "--dry-run", "--json", ...flags],
+        MESH, { ...childEnv, COTAL_DEFAULT_AGENT: "claude" });
+      check(`spawn preview of ${JSON.stringify(pin)} uses ${flags.length ? "the explicit harness" : "the default"}`,
+        spawn.status === 0 && JSON.parse(spawn.stdout).result?.harness === want, spawn.stdout + spawn.stderr);
+    }
+    unlinkSync(path);
+  }
 
   // FAIL CLOSED. A completer must never throw into the operator's interactive shell, and must not
   // guess a root when none resolves. With `--space` naming a mesh that is not registered there is

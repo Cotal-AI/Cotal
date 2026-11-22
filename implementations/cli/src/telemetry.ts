@@ -9,6 +9,7 @@ import {
   effectiveTelemetry,
   extensionProvides,
   homeCotalDir,
+  isCommandFailure,
   loadExtensionsManifest,
   markTelemetryInstallEvent,
   markTelemetryNoticeShown,
@@ -73,11 +74,14 @@ export function scrubStack(stack: string): string {
 }
 
 interface ErrorText {
-  readonly message: string;
+  readonly message: string | null;
   readonly stack: string | null;
 }
 
-function errorText(error: unknown): ErrorText {
+export function telemetryErrorText(command: string, error: unknown): ErrorText {
+  // A spawn diagnostic can include native terminal output or the original launch arguments.
+  if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
+      || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
@@ -168,7 +172,7 @@ export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode, error?
 /** Record the error a command threw, once: the first one recorded is the original, and a wrapper
  *  the kernel builds from it afterwards does not replace it. */
 export function recordTelemetryError(error: unknown): void {
-  if (pending && !pending.error) pending.error = errorText(error);
+  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error);
 }
 
 /**
@@ -179,6 +183,9 @@ export function recordTelemetryError(error: unknown): void {
  */
 export function armTelemetry(registry: Registry, cmd: Command, words: readonly string[], startedAt: number): void {
   if (pending || silent(cmd)) return;
+  const raw = cmd.rawArgs === true;
+  const subcommand = raw || !cmd.subcommands?.length ? null : subcommandName(cmd, words);
+  if (subcommand?.startsWith("__")) return;
   const effective = effectiveTelemetry(process.env);
   if (effective.level === "off" || !effective.settings) return;
   const url = telemetryUrl();
@@ -187,13 +194,12 @@ export function armTelemetry(registry: Registry, cmd: Command, words: readonly s
     console.error(TELEMETRY_NOTICE);
     settings = markTelemetryNoticeShown();
   }
-  const raw = cmd.rawArgs === true;
   pending = {
     level: effective.level,
     settings,
     account: effective.level === "regular" ? accountHash() : null,
     command: cmd.name,
-    subcommand: raw ? null : subcommandName(cmd, words),
+    subcommand,
     flags: raw ? [] : flagNames(cmd, words),
     startedAt,
     version: cliVersion(),
@@ -212,7 +218,8 @@ const sameUtcDay = (a: string, b: Date): boolean => a.slice(0, 10) === b.toISOSt
 /** The bodies to send: at `regular`, the day's install event first when none was sent today. */
 function eventsAtExit(registry: Registry, p: Pending, code: number, now: Date): string[] {
   const bodies: string[] = [];
-  if (p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
+  // Bundled docs never open the extension inventory. Leave the install event due for another command.
+  if (p.command !== "docs" && p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
     try {
       const body = JSON.stringify(installEvent(registry, p, now));
       markTelemetryInstallEvent(now);

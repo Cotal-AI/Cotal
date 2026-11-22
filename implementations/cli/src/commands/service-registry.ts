@@ -51,6 +51,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
     if (Object.keys(args.values).some((name) => !allowed.has(name))) throw new CommandFailure("refused", "USAGE_INVALID", "a supplied flag does not belong to the selected service preset");
   }
   if (args.values.file !== undefined && mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--file belongs to service add");
+  if (args.values.file !== undefined && !String(args.values.file).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--file cannot be empty", { remedy: "pass --file <definition.json> with the path to a service definition" });
   if (args.values.exec !== undefined && (mode !== "add" || args.values.file !== undefined || args.values.preset !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--exec belongs to service add and cannot combine with --file or --preset");
   if (args.values.cwd !== undefined && args.values.exec === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd belongs to service add --exec");
   if (args.values.cwd !== undefined && !String(args.values.cwd).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty");
@@ -59,7 +60,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
   if (args.values["no-open"] !== undefined && (mode !== "start" || name !== "web")) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
-  if (args.values.foreground && (mode !== "start" || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
+  if (args.values.foreground && (mode !== "start" || args.values.json && !args.values["dry-run"])) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
   if (mode === "uninstall" && args.values["dry-run"] && args.values.yes) throw new CommandFailure("refused", "USAGE_INVALID", "--yes cannot confirm a read-only native uninstall inspection");
