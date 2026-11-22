@@ -15,7 +15,7 @@ import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, read
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
-import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, exitCode, isCommandFailure, runOperation } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -626,6 +626,29 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   const said = ERR.join(" ").replace(/\s+/g, " ");
   c("a validator warning names its code, title, position and fix on stderr",
     said.includes(`L3021 \`fanOut\` has no stable key (${program}:1:7)`) && said.includes("Fix: Pass a key function"), said);
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// A simulation that fails after validation keeps the validation warning: the failure still
+// exits 5 as OPERATION_FAILED, and the warning is printed with the failure instead of lost.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-warning-"));
+  const program = join(dir, "warning-fail.js");
+  const handler = join(dir, "results.json");
+  writeFileSync(program, 'if (false) {\n  await fanOut(["x", "y"], (x) => sleep("1s", { name: "nap" }), { name: "fo" });\n}\nthrow "boom";\n');
+  writeFileSync(handler, "{}\n");
+  const err: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => { err.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  let got: unknown;
+  // The kernel runs a command inside its operation scope, where recorded warnings live; the
+  // direct call below does the same so the failure carries what the kernel would carry.
+  try { got = await runOperation({}, () => runWorkflow({ values: { handler }, positionals: ["simulate", program], raw: [] })).then(() => undefined, (e: Error) => e); }
+  finally { process.stderr.write = write; }
+  const said = err.join(" ").replace(/\s+/g, " ");
+  c("a failed simulation keeps its validation warning on stderr",
+    isCommandFailure(got) && got.outcome === "failed" && got.code === "OPERATION_FAILED" && exitCode(got.outcome, got.code) === 5
+    && said.includes("L3021") && said.includes("has no stable key"), { got, said });
   rmSync(dir, { recursive: true, force: true });
 }
 
