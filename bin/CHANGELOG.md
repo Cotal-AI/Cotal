@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.175.0
+
+### Patch Changes
+
+- ab0daa5: Show the file path and retry when `send` refuses an empty file, report when a `history` time cutoff may miss retained messages, and accept spaces in `chat --stdio` request IDs.
+- Updated dependencies [ab0daa5]
+- Updated dependencies [e91ed5b]
+- Updated dependencies [6d27a99]
+- Updated dependencies [4907c2d]
+- Updated dependencies [2262df5]
+- Updated dependencies [80a9729]
+- Updated dependencies [d48e0eb]
+- Updated dependencies [eca2941]
+  - @cotal-ai/cli@0.175.0
+  - @cotal-ai/workspace@0.175.0
+  - @cotal-ai/core@0.175.0
+  - @cotal-ai/auth@0.175.0
+  - @cotal-ai/manager@0.175.0
+  - @cotal-ai/delivery@0.175.0
+  - @cotal-ai/runtime@0.175.0
+  - @cotal-ai/connector-core@0.175.0
+  - @cotal-ai/registry@0.175.0
+  - @cotal-ai/seat@0.175.0
+
 ## 0.174.4
 
 ### Patch Changes
