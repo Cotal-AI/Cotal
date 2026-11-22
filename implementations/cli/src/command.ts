@@ -138,16 +138,10 @@ function structured(cmd: Command, first: string | undefined): boolean {
   return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
 }
 
-/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
- *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
- *  is the first positional after skipping declared option values. */
+/** Whether the words ask for JSON in a mode that supports it, even if parsing refuses them. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd, metadataPositionals(cmd, args).positionals[0]?.value)) return false;
-  const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
-  const end = args.indexOf("--");
-  return (end === -1 ? args : args.slice(0, end)).some(
-    (word) => word === "--json" || word === "-j" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes("j") && [...word.slice(1)].every((ch) => booleans.has(ch))),
-  );
+  const { positionals, values } = metadataPositionals(cmd, args);
+  return values.json === true && structured(cmd, positionals[0]?.value);
 }
 
 /** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
@@ -161,7 +155,7 @@ function debugStacks(failure: Error): void {
  *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
  *  or subcommand `words` name. Structured output is written synchronously, because stdout to a pipe is
  *  asynchronous on some platforms and `exit` would cut it short. */
-function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], validationArgs?: ParsedArgs): never {
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], historyArgs?: Pick<ParsedArgs, "values" | "positionals">): never {
   const warnings = scope ? scope.warnings ?? [] : operationWarnings();
   recordTelemetryFailure(failure.outcome, failure.code, failure);
   // A command's own usage refusal reads as the parser's: the error, its remedy, then the help. A
@@ -184,9 +178,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
-      && !findSubcommand(cmd, validationArgs.positionals[0]);
-    const lines = historyFollow ? historySetupFailureRecords(validationArgs, failure).map((record) => `${JSON.stringify(record)}\n`).join("")
+    const historyFollow = cmd.name === "history" && historyArgs?.values.follow === true && !plain
+      && !findSubcommand(cmd, historyArgs.positionals[0]);
+    const lines = historyFollow ? historySetupFailureRecords(historyArgs, failure).map((record) => `${JSON.stringify(record)}\n`).join("")
       : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeSync(1, lines);
   } catch (error) {
@@ -383,9 +377,12 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
-  // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
-  // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words);
+  if (cmd && json) {
+    const metadata = cmd.name === "history" ? metadataPositionals(cmd, words) : undefined;
+    const historyArgs = metadata && { values: metadata.values, positionals: metadata.positionals.map(({ value }) => value) };
+    const failure = new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` });
+    failureExit(cmd, failure, true, historyArgs?.values.plain === true, undefined, words, historyArgs);
+  }
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.

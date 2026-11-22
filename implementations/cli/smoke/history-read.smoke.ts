@@ -139,21 +139,43 @@ async function checkHistoryFollowValidation(): Promise<void> {
     const server = `nats://127.0.0.1:${address.port}`;
     const args = ["history", "--json", "--limit", "0"];
     const finite = await run(args);
-    const stream = await run([...args, "--follow", "--server", server]);
-    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
-      schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
-      data?: { code?: string; message?: string; reason?: string };
-    });
     check("finite history with --limit 0 writes one USAGE_INVALID receipt, exit 1",
       finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history"
         && finite.envelope.outcome === "refused" && finite.envelope.error?.code === "USAGE_INVALID", shown(finite));
-    check("invalid JSON history follow writes only error and setup-failed end, exit 1, without connecting",
-      stream.status === 1 && stream.stderr === "" && connections === 0
-        && records.map((r) => r.type).join() === "error,end"
-        && records.every((r) => r.schemaVersion === 1 && r.stream === "history" && r.target?.space === null && r.target?.channel === null && r.target?.dms === false)
-        && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
-        && records[1]?.data?.reason === "setup-failed",
-      { stream: shown(stream), finite: shown(finite), connections });
+    const cases = [
+      { words: ["--json", "--limit", "0", "--follow"], message: finite.envelope?.error?.message, label: "invalid JSON history follow" },
+      { words: ["general", "--follow", "--json", "--limit"], channel: "general", message: "--limit needs a value", remedy: "write --limit <n>" },
+      { words: ["--unknown-option", "--follow", "-jsread-space", "#general"], space: "read-space", channel: "general", message: "Unknown option '--unknown-option'" },
+      { words: ["--dms", "--limit", "--follow", "-j"], dms: true, message: "--limit needs a value", remedy: "write --limit <n>" },
+      { words: ["--follow", "-j", "--limit", "--", "general"], channel: "general", message: "--limit needs a value", remedy: "write --limit <n> before --" },
+    ];
+    for (const { words, label, message, remedy, channel, space: targetSpace, dms } of cases) {
+      const stream = await run(["history", "--server", server, ...words]);
+      const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+        schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null; dms: boolean };
+        data?: { code?: string; message?: string; remedy?: string; reason?: string };
+      });
+      check(`${label ?? `JSON history ${words.join(" ")}`} writes only error and setup-failed end, exit 1, without connecting`,
+        stream.status === 1 && stream.stderr === "" && connections === 0
+          && records.map((r) => r.type).join() === "error,end"
+          && records.every((r) => r.schemaVersion === 1 && r.stream === "history" && r.target?.space === (targetSpace ?? null)
+            && r.target?.channel === (channel ?? null) && r.target?.dms === (dms ?? false))
+          && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === message
+          && (remedy === undefined || records[0]?.data?.remedy === remedy) && records[1]?.data?.reason === "setup-failed",
+        { stream: shown(stream), connections });
+    }
+    for (const words of [["general", "--limit"], ["--grep=--follow", "--limit"], ["--limit", "--", "--follow"],
+      ["--follow", "--limit", "--plain"], ["clear", "--follow", "--limit"], ["limit", "--follow", "--max-age"]]) {
+      const receipt = await run(["history", "--json", "--server", server, ...words]);
+      check(`history ${words.join(" ")} still writes one USAGE_INVALID receipt, exit 1, without connecting`,
+        receipt.status === 1 && receipt.stderr === "" && connections === 0 && receipt.envelope?.command === "history"
+          && receipt.envelope.outcome === "refused" && receipt.envelope.error?.code === "USAGE_INVALID", shown(receipt));
+    }
+    for (const words of [["-sj", "--limit"], ["--limit", "--", "--json"]]) {
+      const text = await run(["history", "--follow", "--server", server, ...words]);
+      check(`history --follow ${words.join(" ")} does not select JSON output`,
+        text.status === 1 && text.stdout === "" && text.stderr.includes("--limit needs a value") && connections === 0, shown(text));
+    }
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
   }
