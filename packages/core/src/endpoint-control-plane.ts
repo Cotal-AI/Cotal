@@ -1,6 +1,8 @@
 // The control plane and service-invocation region of CotalEndpoint, as an internal component. Moved
 // verbatim from endpoint.ts; the endpoint keeps the public methods and forwards to them. Not
 // re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { CredentialState } from "./endpoint-credential-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
@@ -25,10 +27,7 @@ type GoalFollower = { cancel: () => void; reconnected: (nc: NatsConnection) => v
 /** What the control plane reads from its endpoint. State is read when it is used, never copied, and
  *  every method is looked up on the endpoint at call time. */
 export interface EndpointControlPlaneDeps {
-  stopped: () => boolean;
   authed: () => boolean;
-  presentedExp: () => number | undefined;
-  rebuildPromise: () => Promise<void> | undefined;
   subs: () => Subscription[];
   activeGoalFollowers: () => Set<GoalFollower>;
   notLiveMsg: () => string;
@@ -61,12 +60,9 @@ export class EndpointControlPlane {
    *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointControlPlaneDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly cred: Readonly<CredentialState>, private readonly deps: EndpointControlPlaneDeps) {}
 
-  private get stopped() { return this.deps.stopped(); }
   private get authed() { return this.deps.authed(); }
-  private get presentedExp() { return this.deps.presentedExp(); }
-  private get rebuildPromise() { return this.deps.rebuildPromise(); }
   private get subs() { return this.deps.subs(); }
   private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
@@ -259,7 +255,7 @@ export class EndpointControlPlane {
     opts: Pick<SubmitAndFollowGoalOptions, "reconcile" | "signal" | "prepare"> = {},
   ): Promise<EpAttributedReply> {
     if (!this.conn.nc) throw new Error(this.notLiveMsg());
-    if (this.stopped) throw new Error("endpoint stopped - cannot follow goal");
+    if (this.lifecycle.stopped) throw new Error("endpoint stopped - cannot follow goal");
     const abortController = new AbortController();
     const onAbort = () => abortController.abort();
     if (opts.signal?.aborted) onAbort();
@@ -355,7 +351,7 @@ export class EndpointControlPlane {
    *  credential carries no listing binding, because it predates listing issuance or has no expiry. */
   async listingCaller(): Promise<IssuedCaller | undefined> {
     if (!this.conn.nc) throw new Error(this.notLiveMsg());
-    return registryListingCaller(this.conn.nc, this.identity.space, this.serviceCaller(), { connId: this.identity.connId, ...(this.presentedExp !== undefined ? { exp: this.presentedExp } : {}) });
+    return registryListingCaller(this.conn.nc, this.identity.space, this.serviceCaller(), { connId: this.identity.connId, ...(this.cred.presentedExp !== undefined ? { exp: this.cred.presentedExp } : {}) });
   }
 
   /** One page of the registry's `endpoints` answer (SPEC 13.20) over this connection
@@ -426,7 +422,7 @@ export class EndpointControlPlane {
     opts: { target?: EpVerbTarget; deadlineMs?: number; follow?: boolean; signal?: AbortSignal; instanceId?: string; classInstanceId?: string } = {},
   ): Promise<EpAttributedReply> {
     const deadline = Date.now() + (opts.deadlineMs ?? 10_000);
-    const rebuilding = this.rebuildPromise;
+    const rebuilding = this.lifecycle.rebuildPromise;
     if (rebuilding) {
       await this.waitServiceRecovery(rebuilding, deadline, opts.signal,
         () => new EpEnvelopeError("deadline-exceeded", "the invocation deadline elapsed waiting for connection recovery", undefined, "not-executed"));
@@ -452,7 +448,7 @@ export class EndpointControlPlane {
           await Promise.allSettled([...pending]);
         }
         if (this.conn.nc === nc) await this.reconnect();
-        else await this.rebuildPromise;
+        else await this.lifecycle.rebuildPromise;
       })();
       await this.waitServiceRecovery(recovery, deadline, opts.signal, () => e);
       this.clearResolvedService(endpoint);

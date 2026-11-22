@@ -442,7 +442,7 @@ const stopFlight = starting.stop().then(
 // The controlled bind cannot finish until this fixture releases it. Observe the terminal decision
 // while that gate is held, but do not await stop completion ahead of the work it must join.
 await tick();
-const stoppedWhileBindParked = (starting.ep as unknown as { stopped: boolean }).stopped &&
+const stoppedWhileBindParked = (starting.ep as unknown as { lifecycle: { stopped: boolean } }).lifecycle.stopped &&
   !bindReleased && !bindFinished && !stopSettled;
 bindReleased = true;
 releaseBind();
@@ -499,7 +499,7 @@ const failingStop = failing.stop().then(
 // This bind succeeds, but its late connection refuses close. Unlike a stopped dial failure,
 // that teardown failure must reject stop and remain outside the diagnostic history.
 await tick();
-const stoppedWhileFailingBindParked = (failing.ep as unknown as { stopped: boolean }).stopped &&
+const stoppedWhileFailingBindParked = (failing.ep as unknown as { lifecycle: { stopped: boolean } }).lifecycle.stopped &&
   !startRejected && !failingBindFinished && !failingStopSettled;
 startRejected = true;
 releaseFailingStart();

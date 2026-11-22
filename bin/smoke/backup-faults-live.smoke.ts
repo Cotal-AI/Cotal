@@ -7,9 +7,9 @@
  *  and one in a folder this account cannot write. A `--store-dir` that is not the cut's store
  *  refuses CONFLICT naming both. */
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -96,6 +96,53 @@ const attemptResidue = (root: string): string[] => {
   return existsSync(attempts) ? readdirSync(attempts) : [];
 };
 
+function assertBackupUsage(run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const restore = run("backup", "restore", "--help");
+  const refused = run("backup", "restore", "sample-backup", "--only", "full");
+  assert.equal(restore.status, 0, restore.stderr);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /backup restore accepts only --only registry/);
+  for (const help of [restore.stdout, refused.stderr]) {
+    assert.match(help, /^\s+--only <selection>\s+/m);
+    assert.match(help.replace(/\s+/g, " "), /Restore takes only registry and follows the artifact's selection if omitted/);
+    assert.doesNotMatch(help, /<full\|registry>/);
+  }
+  const create = run("backup", "create", "--help");
+  assert.equal(create.status, 0, create.stderr);
+  assert.match(create.stdout, /\[--only full\|registry\]/);
+  assert.match(create.stdout.replace(/\s+/g, " "), /create takes full \(default\) or registry/);
+
+  const attempt = "restore-00000000-0000-4000-8000-000000000000";
+  const cleanup = run("backup", "cleanup-fallback", attempt, "--store-dir", ".cotal/nats", "--yes", "--plain");
+  assert.equal(cleanup.status, 1, cleanup.stderr);
+  assert.match(cleanup.stderr, /backup cleanup-fallback does not accept --store-dir\. The full attempt ID alone selects its recorded fallback/);
+  assert.match(cleanup.stderr, /Code:\s+USAGE_INVALID/);
+  const recover = run("backup", "recover", attempt, "--discard-history", "--yes", "--plain");
+  assert.equal(recover.status, 1, recover.stderr);
+  assert.match(recover.stderr, /backup recover does not accept --discard-history/);
+  assert.match(recover.stderr, /Code:\s+USAGE_INVALID/);
+}
+
+function assertArtifactSearchRefusal(root: string, folder: string, artifact: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal, "utf8");
+  const attempts = attemptResidue(root).sort();
+  chmodSync(folder, 0o600);
+  try {
+    for (const verb of ["inspect", "verify", "restore"]) {
+      const denied = run("backup", verb, artifact, "--plain");
+      assert.equal(denied.status, 2, denied.stderr);
+      assert.match(denied.stderr, /Code:\s+PERMISSION_DENIED/);
+      assert.ok(denied.stderr.includes(artifact) && denied.stderr.includes(`chmod u+x '${folder}'`), denied.stderr);
+      assert.doesNotMatch(denied.stderr, /Outcome unconfirmed|cotal status/);
+    }
+    assert.equal(readFileSync(journal, "utf8"), before, "the refusal leaves the cut unchanged");
+    assert.deepEqual(attemptResidue(root).sort(), attempts, "the refusal starts no restore attempt");
+  } finally {
+    chmodSync(folder, 0o700);
+  }
+}
+
 /** Parse a published artifact as a real consumer would: the format tag, the exact stream inventory
  *  for the selection, and a files list whose recorded SHA-256 matches the bytes on disk. */
 function assertValidManifest(directory: string, space: string, selection: SpaceBackupSelection): BackupManifest {
@@ -140,6 +187,7 @@ async function backupStageFaultScenario(): Promise<void> {
   };
   const sourcePath = join(root, ".cotal", "nats");
   try {
+    assertBackupUsage(run);
     must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
     must("seed registry", run("channel", "set", "preserved", "--desc", "survives every fault", "--space", space));
     must("preserve cut", run("down", "--preserve-state"));
@@ -162,6 +210,8 @@ async function backupStageFaultScenario(): Promise<void> {
       must("apply the printed chmod", spawnSync("sh", ["-c", command], { cwd: root, env, encoding: "utf8", timeout: 10_000 }));
       assert.ok(!existsSync(destination), "the refusal writes no backup");
       must("create in the searchable folder", run("backup", "create", destination, "--only", "registry"));
+      assertArtifactSearchRefusal(root, folder, destination, run);
+      must("inspect the backup once search access is restored", run("backup", "inspect", destination));
       must("verify the backup in the searchable folder", run("backup", "verify", destination));
       console.log("backup destination search permission: ok");
     }
@@ -532,6 +582,10 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(stderr.includes(`Interrupted: restore attempt ${attemptId} stopped before it committed`) && stderr.includes(recover), `the interrupt names what it left and its recovery\n${stderr}`);
     assert.equal(journalState(root), "restore-ready", "the interrupted restore leaves its pre-commit claim");
     assertRecoveryNext(run, recover);
+    const legacy = run("clean", "restore-fallback", "--attempt", attemptId, "--force");
+    assert.equal(legacy.status, 2, legacy.stderr);
+    assert.ok(legacy.stderr.includes(`restore attempt ${attemptId} is still pre-commit`) && legacy.stderr.includes(recover), legacy.stderr);
+    assert.equal(journalState(root), "restore-ready", "fallback cleanup does not advance a pre-commit attempt");
     // The brokers' watchdog stops them once the restore process is gone; recovery waits for that only.
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }

@@ -27,7 +27,8 @@ import {
   realDirNoSymlink,
   spaceBackupInventory,
 } from "@cotal-ai/core";
-import { CommandFailure, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, oneLine, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
 export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v3" as const;
@@ -463,7 +464,22 @@ export function missingBackupPath(path: string): "folder" | "artifact" | undefin
     if (statSync(path, { throwIfNoEntry: false })) return undefined;
     return statSync(folder, { throwIfNoEntry: false })?.isDirectory() ? "artifact" : "folder";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      let withChmod = "";
+      if (process.getuid && oneLine(folder) === folder) {
+        try {
+          const parent = statSync(folder);
+          if (parent.isDirectory() && parent.uid === process.getuid() && !(parent.mode & constants.S_IXUSR))
+            withChmod = ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}`;
+        } catch { /* The blocked folder may be farther up the path. */ }
+      }
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search the path to ${path}`, {
+        target: { directory: path, folder }, native: { code },
+        remedy: `make the path to ${folder} searchable${withChmod}, or name an accessible copy of the backup`,
+      });
+    }
+    if (code !== "ELOOP") throw error;
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup path ${path} contains a symbolic-link loop (ELOOP)`, { target: { directory: path, folder }, native: { code: "ELOOP" }, remedy: "fix the symbolic link or use a path to the backup folder that does not pass through the loop", selfContained: true });
   }
 }

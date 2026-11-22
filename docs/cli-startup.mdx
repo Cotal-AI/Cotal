@@ -84,8 +84,9 @@ and [public exchange flags](remote-supervision.mdx#split-host-bind) from a new p
 Use an unused space name and do not run `cotal space create` first. An existing legacy user-auth
 root can keep using these flags.
 
-If a separately started manager service at the same root blocks `up --no-manager`, the refusal
-names the command to stop that instance and the retry retains both `--space` and `--no-manager`.
+If a separately started manager service blocks `up`, the refusal names the command to stop that
+instance. When you used `--root` from another project, the retry keeps the target root and space.
+A broker-only retry also keeps `--no-manager`.
 
 A stopped controller stack that used the default bind accepts `--host 127.0.0.1` on restart without saving a bind override.
 A running broker that used the default payload limit accepts `--max-payload 1048576` without restarting.
@@ -659,7 +660,9 @@ stop request is recorded `stopping` under that request when its process is gone.
 recorded as a crash, and no `up`, `down` or `service` command relaunches it, removes its record or
 removes the stack's registration. A stop that has neither a completed nor a refused receipt, such
 as one whose manager was killed before it read the request, is cleared only on request:
-`cotal down --abandon-stop <request-id> --yes`, with the request ID the refusal names. It refuses
+`cotal down --abandon-stop <request-id> --yes`, with the request ID the refusal names. When `up --root`
+finds the retained stop from another folder, its recovery command changes to the stack's root first.
+The stop command refuses
 `LIFECYCLE_BLOCKED` while the manager or the `down` that sent the request still runs, and
 `TARGET_NOT_FOUND` when no member retains that request, as for the operation ID of the `down` that
 sent it. It looks the ID up before it asks for `--yes`, so that refusal comes with or without

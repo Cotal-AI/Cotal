@@ -4,6 +4,9 @@
 // endpoint.ts. It owns its timers, the taps, the record of its own watch consumers and the subscription
 // denials it reported, and it opens and clears the endpoint's ConnectionState; the endpoint keeps
 // connectAndBind, the supervisor and the retry loop and forwards to these. Not re-exported by the index.
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { CredentialState } from "./endpoint-credential-state.js";
+import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
@@ -25,7 +28,7 @@ import { nextHeartbeat } from "./presence-heartbeat.js";
 import { PRESENCE_STORAGE } from "./streams.js";
 import { presenceBucket, dmStream, dmDurable, parseSubject } from "./subjects.js";
 import { isFromSubjectSender, authenticatedMessage, isReadableMessagePart } from "./endpoint-messages.js";
-import type { CotalMessage, ChannelConfig, ChannelDefaults } from "./types.js";
+import type { CotalMessage } from "./types.js";
 import { type ConsumerMessages, type ConsumerInfo, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { type KV, Kvm } from "@nats-io/kv";
 import { type NatsConnection, type Subscription, PermissionViolationError } from "@nats-io/transport-node";
@@ -46,45 +49,19 @@ async function bucketExists(kv: KV): Promise<boolean> {
  *  field it reassigns is written back through its setter, and every method is looked up on the endpoint
  *  at call time, so a member a caller replaced on the endpoint is the one that runs. */
 export interface EndpointConnectionDeps {
-  currentBearer: () => string | undefined;
-  bearerRenewalFailures: () => number;
-  bearerAdoptedAtMs: () => number;
-  currentCreds: () => string | undefined;
-  stopped: () => boolean;
-  setStopped: (value: boolean) => void;
   authed: () => boolean;
   readsChannelsOnDemand: () => boolean;
   deliveryLease: () => EndpointDeliveryLease;
   livenessResponders: () => Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>;
   activeGoalFollowers: () => Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void; }>;
-  authExpiryReconnectTimer: () => NodeJS.Timeout | undefined;
-  setAuthExpiryReconnectTimer: (value: NodeJS.Timeout | undefined) => void;
   streamMsgs: () => ConsumerMessages[];
-  presenceEpoch: () => number;
-  setPresenceEpoch: (value: number) => void;
   presence: () => EndpointPresence;
   chatSubs: () => Map<string, Subscription>;
   chatSubDenied: () => Set<string>;
-  channelConfigs: () => Map<string, ChannelConfig>;
-  channelDefaults: () => ChannelDefaults;
-  setChannelDefaults: (value: ChannelDefaults) => void;
-  channelRead: () => Promise<void> | undefined;
-  setChannelRead: (value: Promise<void> | undefined) => void;
-  channelReadGeneration: () => number;
-  setChannelReadGeneration: (value: number) => void;
-  channelReadApplied: () => number;
-  setChannelReadApplied: (value: number) => void;
   deliveryPlane: () => EndpointDeliveryPlane;
   subs: () => Subscription[];
   principalServes: () => Map<string, PrincipalServeIntent>;
-  membershipPauses: () => Set<() => void>;
-  cancelBearerRenewal: () => (() => void) | undefined;
   dmOnlyInFlight: () => Promise<void> | undefined;
-  rebuildPromise: () => Promise<void> | undefined;
-  startPromise: () => Promise<void> | undefined;
-  reconnecting: () => boolean;
-  credsTxnsRunning: () => number;
-  residentSwap: () => Promise<void> | undefined;
   refreshBearer: (initial?: boolean) => Promise<void>;
   refreshCreds: (initial?: boolean) => Promise<void>;
   cancelCredsRefresh: () => void;
@@ -144,47 +121,21 @@ export class EndpointConnection {
   /** Service iterators and connection status can receive the same subscription denial. */
   private readonly reportedSubRefusals = new WeakSet<PermissionViolationError>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly deps: EndpointConnectionDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: ConnectionState, private readonly lifecycle: LifecycleState, private readonly cred: CredentialState, private readonly channelRegistry: ChannelRegistryState, private readonly deps: EndpointConnectionDeps) {}
 
-  private get currentBearer() { return this.deps.currentBearer(); }
-  private get bearerRenewalFailures() { return this.deps.bearerRenewalFailures(); }
-  private get bearerAdoptedAtMs() { return this.deps.bearerAdoptedAtMs(); }
-  private get currentCreds() { return this.deps.currentCreds(); }
-  private get stopped() { return this.deps.stopped(); }
-  private set stopped(value: boolean) { this.deps.setStopped(value); }
   private get authed() { return this.deps.authed(); }
   private get readsChannelsOnDemand() { return this.deps.readsChannelsOnDemand(); }
   private get deliveryLease() { return this.deps.deliveryLease(); }
   private get livenessResponders() { return this.deps.livenessResponders(); }
   private get activeGoalFollowers() { return this.deps.activeGoalFollowers(); }
-  private get authExpiryReconnectTimer() { return this.deps.authExpiryReconnectTimer(); }
-  private set authExpiryReconnectTimer(value: NodeJS.Timeout | undefined) { this.deps.setAuthExpiryReconnectTimer(value); }
   private get streamMsgs() { return this.deps.streamMsgs(); }
-  private get presenceEpoch() { return this.deps.presenceEpoch(); }
-  private set presenceEpoch(value: number) { this.deps.setPresenceEpoch(value); }
   private get presence() { return this.deps.presence(); }
   private get chatSubs() { return this.deps.chatSubs(); }
   private get chatSubDenied() { return this.deps.chatSubDenied(); }
-  private get channelConfigs() { return this.deps.channelConfigs(); }
-  private get channelDefaults() { return this.deps.channelDefaults(); }
-  private set channelDefaults(value: ChannelDefaults) { this.deps.setChannelDefaults(value); }
-  private get channelRead() { return this.deps.channelRead(); }
-  private set channelRead(value: Promise<void> | undefined) { this.deps.setChannelRead(value); }
-  private get channelReadGeneration() { return this.deps.channelReadGeneration(); }
-  private set channelReadGeneration(value: number) { this.deps.setChannelReadGeneration(value); }
-  private get channelReadApplied() { return this.deps.channelReadApplied(); }
-  private set channelReadApplied(value: number) { this.deps.setChannelReadApplied(value); }
   private get deliveryPlane() { return this.deps.deliveryPlane(); }
   private get subs() { return this.deps.subs(); }
   private get principalServes() { return this.deps.principalServes(); }
-  private get membershipPauses() { return this.deps.membershipPauses(); }
-  private get cancelBearerRenewal() { return this.deps.cancelBearerRenewal(); }
   private get dmOnlyInFlight() { return this.deps.dmOnlyInFlight(); }
-  private get rebuildPromise() { return this.deps.rebuildPromise(); }
-  private get startPromise() { return this.deps.startPromise(); }
-  private get reconnecting() { return this.deps.reconnecting(); }
-  private get credsTxnsRunning() { return this.deps.credsTxnsRunning(); }
-  private get residentSwap() { return this.deps.residentSwap(); }
   private refreshBearer(initial?: boolean): Promise<void> { return this.deps.refreshBearer(initial); }
   private refreshCreds(initial?: boolean): Promise<void> { return this.deps.refreshCreds(initial); }
   private cancelCredsRefresh(): void { this.deps.cancelCredsRefresh(); }
@@ -231,14 +182,14 @@ export class EndpointConnection {
     // present a dead bearer). While renewals are failing, their retry timer owns the source: a
     // fetch here too would add one call to the exchange per rebuild attempt.
     if (this.identity.bearerSource) {
-      if (!this.currentBearer) await this.refreshBearer(true);
-      else if (this.bearerRenewalFailures === 0 && Date.now() >= bearerRenewalDeadlineMs(this.currentBearer, this.bearerAdoptedAtMs)) await this.refreshBearer();
+      if (!this.cred.currentBearer) await this.refreshBearer(true);
+      else if (this.cred.bearerRenewalFailures === 0 && Date.now() >= bearerRenewalDeadlineMs(this.cred.currentBearer, this.cred.bearerAdoptedAtMs)) await this.refreshBearer();
     }
     // Creds-source endpoints likewise fetch before the FIRST connect, and re-fetch on a rebuild
     // whose cached cred is expired or inside its renewal window.
     if (this.identity.credsSource) {
-      const stale = !this.currentCreds || credsRenewalDelayMs(this.currentCreds) <= 0;
-      if (stale) await this.refreshCreds(!this.currentCreds);
+      const stale = !this.cred.currentCreds || credsRenewalDelayMs(this.cred.currentCreds) <= 0;
+      if (stale) await this.refreshCreds(!this.cred.currentCreds);
     }
     // Never dial with material we can already prove is dead. The refresh above is best-effort (a
     // failed renewal emits and retries rather than throwing, so a dead auth service does not
@@ -298,7 +249,7 @@ export class EndpointConnection {
       // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
       // (an empty credential) was never named. Routing it into the checked getter fails it loud
       // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.identity.token, user: this.identity.user, pass: this.identity.pass, creds: this.currentCreds !== undefined || this.identity.credsSource ? () => this.presentCreds() : undefined, bearer: this.identity.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
+      ...authOpts({ token: this.identity.token, user: this.identity.user, pass: this.identity.pass, creds: this.cred.currentCreds !== undefined || this.identity.credsSource ? () => this.presentCreds() : undefined, bearer: this.identity.userMode ? () => this.presentBearer() : undefined, sentinelCreds: this.identity.sentinelCreds, tls: this.identity.tls,
         onCreds: (creds) => {
           watchDeletePermission = undefined;
           try {
@@ -328,9 +279,9 @@ export class EndpointConnection {
     // Plane-3 or liveness responder, so the credential needs no row for any of them.
     if (this.identity.dmOnly) {
       await this.identity.beforeBind?.();
-      if (this.stopped) return;
+      if (this.lifecycle.stopped) return;
       await this.bindDmOnly(this.identity.dmOnly);
-      if (this.stopped) return;
+      if (this.lifecycle.stopped) return;
       this.emit("connection", { connected: true });
       return;
     }
@@ -349,7 +300,7 @@ export class EndpointConnection {
     }
 
     await this.identity.beforeBind?.();
-    if (this.stopped) return;
+    if (this.lifecycle.stopped) return;
 
     // A one-shot observer must not initialize an open space just to read it.
     const createBuckets = !this.authed && !this.identity.readOnce;
@@ -498,7 +449,7 @@ export class EndpointConnection {
     // also measured, by a separate cell that holds the rebuild's connectAndBind at
     // armPlane3 after a successful first bind and lands stop() in that window (#1028).
     // Shared-line reasoning is no longer the rebuild proof.
-    if (this.stopped) return;
+    if (this.lifecycle.stopped) return;
     this.emit("connection", { connected: true });
     if (this.conn.nc) {
       for (const follower of this.activeGoalFollowers) {
@@ -579,9 +530,9 @@ export class EndpointConnection {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   clearConnectionScoped(): void {
-    if (this.authExpiryReconnectTimer) {
-      clearTimeout(this.authExpiryReconnectTimer);
-      this.authExpiryReconnectTimer = undefined;
+    if (this.cred.authExpiryReconnectTimer) {
+      clearTimeout(this.cred.authExpiryReconnectTimer);
+      this.cred.authExpiryReconnectTimer = undefined;
     }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -599,7 +550,7 @@ export class EndpointConnection {
       }
     }
     this.streamMsgs.length = 0;
-    this.presenceEpoch++;
+    this.lifecycle.presenceEpoch++;
     this.presence.cancelRebind();
     this.presence.retireWatch();
     if (this.conn.channelWatchIter) this.retireKvWatch(this.conn.channelWatchIter);
@@ -616,12 +567,12 @@ export class EndpointConnection {
     this.chatSubDenied.clear();
     this.ownWatchDeletePrefixes.clear();
     this.presence.resetConnection();
-    this.channelConfigs.clear();
-    this.channelDefaults = {};
+    this.channelRegistry.channelConfigs.clear();
+    this.channelRegistry.channelDefaults = {};
     // A read in flight on the old connection must not land in the new connection's cache.
-    this.channelRead = undefined;
-    this.channelReadGeneration++;
-    this.channelReadApplied = this.channelReadGeneration;
+    this.channelRegistry.channelRead = undefined;
+    this.channelRegistry.channelReadGeneration++;
+    this.channelRegistry.channelReadApplied = this.channelRegistry.channelReadGeneration;
     for (const watch of this.conn.membershipFeedWatches)
       watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch)).catch((err) => { this.emit("error", err as Error); });
   }
@@ -730,7 +681,7 @@ export class EndpointConnection {
    *  in doRebuild narrows to `never` via TS inlining connectAndBind's assignment). Returns
    *  true iff it tore something down (caller bails out of the rebuild). */
   async tearDownIfStopped(): Promise<boolean> {
-    if (!this.stopped) return false;
+    if (!this.lifecycle.stopped) return false;
     const nc = this.conn.nc;
     if (nc) this.disableLibraryReconnect(nc);
     this.clearConnectionScoped();
@@ -741,12 +692,12 @@ export class EndpointConnection {
 
   async stopOnce(): Promise<void> {
     if (this.conn.nc) this.disableLibraryReconnect(this.conn.nc);
-    this.stopped = true;
+    this.lifecycle.stopped = true;
     for (const follower of this.activeGoalFollowers) {
       follower.cancel();
     }
     this.activeGoalFollowers.clear();
-    this.presenceEpoch++;
+    this.lifecycle.presenceEpoch++;
     // Every principal serve ends now, so a `ready` still waiting for the broker rejects and no new
     // request is taken. Its handlers in flight finish below, before the connection they reply on
     // closes, or their requests' deadlines pass.
@@ -755,12 +706,12 @@ export class EndpointConnection {
     // Wake a reestablishLoop sitting in backoff so it sees `stopped` and exits instead of
     // sleeping out retryMs; also clears the timer so it can't fire later.
     this.kickBackoff();
-    for (const wake of [...this.membershipPauses]) wake();
+    for (const wake of [...this.lifecycle.membershipPauses]) wake();
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.sweepTimer) clearInterval(this.sweepTimer);
-    this.cancelBearerRenewal?.();
+    this.cred.cancelBearerRenewal?.();
     this.cancelCredsRefresh();
-    if (this.authExpiryReconnectTimer) clearTimeout(this.authExpiryReconnectTimer);
+    if (this.cred.authExpiryReconnectTimer) clearTimeout(this.cred.authExpiryReconnectTimer);
     for (const watch of this.conn.membershipFeedWatches) {
       watch.stopped = true;
       watch.arm = watch.arm.catch(() => {}).then(async () => {
@@ -816,8 +767,8 @@ export class EndpointConnection {
     this.clearPresenceWriteFailure();
     // Custody callers must not observe stop completion while a concurrent rebind can still
     // publish a late consuming connection. doRebuild closes its stopped epoch before resolving.
-    await this.rebuildPromise;
-    await this.startPromise;
+    await this.lifecycle.rebuildPromise;
+    await this.lifecycle.startPromise;
     if ([...this.conn.ownedConnections].some((nc) => !nc.isClosed()))
       throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
     if (dmOnlyUnsettled)
@@ -832,14 +783,14 @@ export class EndpointConnection {
    *  is pending, and while the connection is down or redialing. */
   nativeConnections(): NativeConnectionBinding[] {
     const unsettled = (why: string) => new Error(`endpoint connection inventory is unsettled: ${why}`);
-    if (this.startPromise !== undefined || this.rebuildPromise !== undefined || this.reconnecting)
+    if (this.lifecycle.startPromise !== undefined || this.lifecycle.rebuildPromise !== undefined || this.lifecycle.reconnecting)
       throw unsettled("a start or rebuild is in flight");
     const open = [...this.conn.ownedConnections].filter((nc) => !nc.isClosed());
-    if (this.stopped) {
+    if (this.lifecycle.stopped) {
       if (open.length > 0) throw unsettled("the endpoint stopped but a connection has not closed");
       return [];
     }
-    if (this.credsTxnsRunning > 0 || this.residentSwap !== undefined)
+    if (this.cred.credsTxnsRunning > 0 || this.cred.residentSwap !== undefined)
       throw unsettled("a credential adoption is in flight");
     if (!this.conn.nc || !this.conn.nativeBound) throw unsettled("the connection is down or redialing");
     return open.map((nc) => nativeConnectionBinding(nc, "endpoint connection"));

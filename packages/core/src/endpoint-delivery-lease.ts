@@ -1,3 +1,4 @@
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
@@ -9,7 +10,6 @@ type LeaseWatch = Awaited<ReturnType<KV["watch"]>>;
 
 /** Connection and consumer custody shared with the endpoint's other broker readers. */
 export interface EndpointDeliveryLeaseDeps {
-  epoch: () => number;
   notLiveMsg: () => string;
   deleteWatchConsumer: (iter: LeaseWatch) => Promise<void>;
   recoverable: (error: Error) => void;
@@ -49,9 +49,8 @@ export class EndpointDeliveryLease {
    *  these first. Each is bounded by the JetStream request timeout. */
   private readonly leaseWatchBinds = new Set<Promise<void>>();
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointDeliveryLeaseDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointDeliveryLeaseDeps) {}
 
-  private get presenceEpoch() { return this.deps.epoch(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private emitRecoverable(error: Error) { this.deps.recoverable(error); }
   private emit(event: string, error: Error) { return this.deps.emit(event, error); }
@@ -242,9 +241,9 @@ export class EndpointDeliveryLease {
 
   private async bindDeliveryLeaseWatchOnce(): Promise<void> {
     const intent = this.leaseWatchIntent!;
-    const epoch = this.presenceEpoch;
+    const epoch = this.lifecycle.presenceEpoch;
     const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
-    if (this.leaseWatchIntent !== intent || epoch !== this.presenceEpoch) {
+    if (this.leaseWatchIntent !== intent || epoch !== this.lifecycle.presenceEpoch) {
       this.retireDeliveryLeaseWatch(iter);
       return;
     }

@@ -13,6 +13,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { displayCmd } from "../src/lib/self-exec.js";
 
@@ -185,6 +186,36 @@ channels:
     const error = r.stdout ? JSON.parse(r.stdout).error : undefined;
     check(`history limit --${flag} still reaches the seed gate`, r.status === 2 && error?.code === "DEPENDENCY_UNAVAILABLE" && GATE.test(error.message), shown(r));
   }
+}
+
+{
+  const { home, xdg, run } = sandbox();
+  const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const [selector, space, diagnosis] of [
+    [["--server", "http://127.0.0.1:1"], null, /--server scheme "http" is not a broker scheme/],
+    [["--space", ""], "", /--space\/-s is empty; name one space/],
+  ] as const) {
+    for (const [args, target] of [
+      [["watch"], { requestedSpace: space }],
+      [["history", "general", "--follow"], { space, channel: "general", dms: false }],
+    ] as const) {
+      const r = run([...args, ...selector, "--json"], offline);
+      const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+      const [error, end] = records;
+      check(`${args.join(" ")} frames an invalid ${selector[0]} as a stream failure`,
+        r.status === 1 && r.stderr === "" && records.length === 2 && records.every((record) =>
+          record.schemaVersion === 1 && record.stream === args[0] && isDeepStrictEqual(record.target, target)) &&
+        error.type === "error" && error.data.code === "USAGE_INVALID" && diagnosis.test(error.data.message) &&
+        end.type === "end" && end.data.reason === "setup-failed", shown(r));
+    }
+    const finite = run(["history", "general", ...selector, "--json"], offline);
+    const receipt = JSON.parse(finite.stdout);
+    check(`finite history keeps its refusal receipt for an invalid ${selector[0]}`,
+      finite.status === 1 && finite.stderr === "" && receipt.command === "history" && receipt.outcome === "refused" &&
+      receipt.error.code === "USAGE_INVALID" && diagnosis.test(receipt.error.message), shown(finite));
+  }
+  check("invalid stream selectors do not seed extensions or select a mesh",
+    !existsSync(join(xdg, "cotal", "extensions")) && !existsSync(join(home, ".cotal", "current-mesh")));
 }
 
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────

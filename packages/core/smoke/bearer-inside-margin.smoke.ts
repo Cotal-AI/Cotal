@@ -48,7 +48,7 @@ const mintAt = (expSec: number, sig = "sig", iatSec?: number): string =>
 const mintBearer = (expiresInMs: number, sig = "sig"): string =>
   mintAt(Math.floor((Date.now() + expiresInMs) / 1000), sig);
 
-type Internals = { refreshBearer: (initial?: boolean) => Promise<void>; currentBearer?: string };
+type Internals = { refreshBearer: (initial?: boolean) => Promise<void>; cred: { currentBearer?: string } };
 
 const endpoints: CotalEndpoint[] = [];
 /** One endpoint per source, each in its own space: `currentBearer` is the state under test, and
@@ -95,9 +95,9 @@ const SHORT = mintBearer(30_000);
 let shortReads = 0;
 const fresh = armed("s1561", async () => { shortReads++; return shortReads === 1 ? HEALTHY : SHORT; });
 await fresh.internals.refreshBearer(true);
-c("the initial fetch is adopted", fresh.internals.currentBearer === HEALTHY, shortReads);
+c("the initial fetch is adopted", fresh.internals.cred.currentBearer === HEALTHY, shortReads);
 await fresh.internals.refreshBearer();
-c("a token that is new material is adopted even with little life left", fresh.internals.currentBearer === SHORT);
+c("a token that is new material is adopted even with little life left", fresh.internals.cred.currentBearer === SHORT);
 
 // ── #1561 and the window edge, on a pinned clock ──────────────────────────────────────────────────
 // A 600s token issued at EDGE_IAT is overdue from 80% of its life, 480s in.
@@ -178,11 +178,11 @@ let initialRefusal: unknown;
 try { await dead.internals.refreshBearer(true); } catch (e) { initialRefusal = e; }
 c(
   "the initial fetch is adopted even when it is already expired",
-  initialRefusal === undefined && dead.internals.currentBearer === DEAD_OLD,
-  initialRefusal ?? dead.internals.currentBearer?.slice(0, 24),
+  initialRefusal === undefined && dead.internals.cred.currentBearer === DEAD_OLD,
+  initialRefusal ?? dead.internals.cred.currentBearer?.slice(0, 24),
 );
 await dead.internals.refreshBearer();
-c("an expired candidate is refused even though it ADVANCES the held one", dead.internals.currentBearer === DEAD_OLD, dead.internals.currentBearer?.slice(0, 24));
+c("an expired candidate is refused even though it ADVANCES the held one", dead.internals.cred.currentBearer === DEAD_OLD, dead.internals.cred.currentBearer?.slice(0, 24));
 c(
   "the expiry refusal is reported as a recoverable retry",
   dead.warnings.some((e) => /has already expired/.test(e.message) && /retrying/.test(e.message)),
@@ -197,7 +197,7 @@ let rotateReads = 0;
 const rotated = armed("s1572b", async () => { rotateReads++; return rotateReads === 1 ? BEFORE_ROTATION : AFTER_ROTATION; });
 await rotated.internals.refreshBearer(true);
 await rotated.internals.refreshBearer();
-c("a re-signed token carrying the same exp IS adopted", rotated.internals.currentBearer === AFTER_ROTATION, rotated.internals.currentBearer?.slice(0, 24));
+c("a re-signed token carrying the same exp IS adopted", rotated.internals.cred.currentBearer === AFTER_ROTATION, rotated.internals.cred.currentBearer?.slice(0, 24));
 c("and it is not reported as a failure", rotated.warnings.length === 0, rotated.warnings.map((e) => e.message));
 
 // The same re-signing past the held token's renewal window, where the re-serve refusal applies. Only
@@ -210,8 +210,8 @@ await resigned.internals.refreshBearer(true);
 await refreshAt(resigned.internals, OVERDUE_AT);
 c(
   "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
-  resigned.internals.currentBearer === EDGE_RESIGNED && resigned.warnings.length === 0,
-  { adopted: resigned.internals.currentBearer === EDGE_RESIGNED, warnings: resigned.warnings.map((e) => e.message) },
+  resigned.internals.cred.currentBearer === EDGE_RESIGNED && resigned.warnings.length === 0,
+  { adopted: resigned.internals.cred.currentBearer === EDGE_RESIGNED, warnings: resigned.warnings.map((e) => e.message) },
 );
 
 // ── A run of failures: one warning, growing jittered retries, and a new run warns again ───────────
