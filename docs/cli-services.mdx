@@ -347,6 +347,9 @@ a fact of the selected space: its registered root, its registered broker, or a p
 space under the root's `.cotal`, such as the delivery credential `cotal up` keeps there. A file
 default that does not exist refuses, naming the flag that replaces it; no other file is chosen. Cached preset and adapter declarations share
 one package-metadata fingerprint receipt. A changed selected declaration refuses during dispatch.
+If the selected preset's integrity check fails, both
+`cotal service start <name> --help` and `cotal help service start <name>` report the error without
+listing unverified options.
 Path annotations require absolute physical files/directories, or owned private files, without
 reading their contents during definition validation.
 

@@ -21,8 +21,8 @@ export async function help(args: ParsedArgs): Promise<void> {
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
-  const surface = cmd.name === "service" && path.length === 2 && path[0] === "start"
-    ? servicePresetCommand(cmd, path)
+  const surface = cmd.name === "service" && path[0] === "start"
+    ? servicePresetCommand(cmd, path, "help")
     : managerServiceCommand(cmd, path)?.cmd ?? cmd;
   paintFor(process.stdout, () => printHelpPath(surface, path));
 }

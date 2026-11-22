@@ -16,7 +16,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirS
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite } from "@cotal-ai/smoke-kit";
-import { privateGroupGap } from "@cotal-ai/workspace";
+import { privateGroupGap, protectedFileAccessAvailable } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -612,7 +612,7 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 }
 
 {
-  const { run } = sandbox();
+  const { run, xdg } = sandbox();
   const noOpen = /^  --no-open\b/m;
   for (const name of [undefined, "broker", "web", "my-service"]) {
     const path = ["service", "start", ...(name === undefined ? [] : [name])];
@@ -630,6 +630,31 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const refused = run(["service", "start", "broker", "--no-open", "--dry-run"]);
   check("broker rejects --no-open without listing it as a valid option in refusal help",
     refused.status === 1 && !refused.stdout && /--no-open belongs to service start web/.test(refused.stderr) && /^Usage$/m.test(refused.stderr) && !noOpen.test(refused.stderr), shown(refused));
+
+  const path = ["svc", "start", "web", "extra"];
+  const wordHelp = run(["help", ...path]);
+  const flagHelp = run([...path, "--help"]);
+  check("both help spellings select the web start options when another operand follows the service name",
+    wordHelp.status === 0 && flagHelp.status === 0 && !wordHelp.stderr && !flagHelp.stderr && noOpen.test(wordHelp.stdout) && wordHelp.stdout === flagHelp.stdout,
+    { wordHelp: shown(wordHelp), flagHelp: shown(flagHelp) });
+
+  if (protectedFileAccessAvailable()) {
+    const extensions = join(xdg, "cotal", "extensions");
+    mkdirSync(extensions, { recursive: true, mode: 0o700 });
+    writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
+      pkg: "@cotal-ai/web", spec: "@cotal-ai/web", version: "0.0.0", commands: [],
+      provides: [{ kind: "service-preset", name: "web" }],
+      servicePresets: [{ kind: "service-preset", name: "web", adapter: "cotal-web", summary: "Web fixture", timeoutMs: 1000 }],
+    }] }), { mode: 0o600 });
+    const deniedWord = run(["help", ...path]);
+    const deniedFlag = run([...path, "--help"]);
+    check("both service start help spellings refuse a selected preset without an integrity receipt",
+      deniedWord.status === 2 && deniedFlag.status === 2 && !deniedWord.stdout && !deniedFlag.stdout &&
+      /declaration-integrity receipt/.test(deniedWord.stderr) && deniedWord.stderr === deniedFlag.stderr,
+      { deniedWord: shown(deniedWord), deniedFlag: shown(deniedFlag) });
+    const completed = run(["__complete", "svc", "start", "web", "--"]);
+    check("completion refuses an unverified preset without offering any flags", completed.status === 1 && !completed.stdout, shown(completed));
+  }
 }
 
 // A file value completes from the shell's file names on a command with no completer of its own, a

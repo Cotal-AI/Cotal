@@ -299,31 +299,46 @@ function requestedPreset(flags: readonly FlagSpec[], argv: readonly string[], mo
     if (missingPreset || !name) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
     return name;
   }
-  return mode === "start" && service !== undefined && findServicePreset(service) ? service : undefined;
+  if (mode !== "start" || service === undefined) return undefined;
+  const claimed = registry.all<ServicePreset>("service-preset").some((preset) => preset.name === service) || (installedExtensionsEnabled() && loadExtensionsManifest().extensions.some(
+    (extension) => extensionProvides(extension).some((ref) => ref.kind === "service-preset" && ref.name === service),
+  ));
+  return claimed ? service : undefined;
 }
 
 export function isWebServiceStart(mode: string | undefined, name: string | undefined): boolean {
   return mode === "start" && name === "web";
 }
 
-/** Scope the service's options to the target and add the selected preset's flags without loading
- *  its provider. The CLI owns `--no-open`, so web help lists it even without the extension. */
-export function servicePresetCommand(cmd: Command, argv: readonly string[]): Command {
+function withServiceFlags(cmd: Command, mode: "add" | "start", names: readonly string[], flags?: readonly FlagSpec[]): Command {
+  return {
+    ...cmd,
+    ...(flags ? { flags: [...(cmd.flags ?? []), ...flags] } : {}),
+    subcommands: cmd.subcommands?.map((sub) => sub.name === mode ? { ...sub, flagNames: [...(sub.flagNames ?? []), ...names] } : sub),
+  };
+}
+
+/** Scope CLI-owned options even without a preset. Only verified preset metadata adds flags. */
+export function servicePresetCommand(cmd: Command, argv: readonly string[], purpose?: "help" | "refusal"): Command {
   if (cmd.name !== "service") return cmd;
   const allFlags = [...(cmd.flags ?? []), ...knownPresetFlags()];
   const [mode, service] = metadataPositionals({ flags: allFlags }, argv).positionals.map((item) => item.value);
-  const name = requestedPreset(allFlags, argv, mode, service);
-  const webStart = isWebServiceStart(mode, service);
-  if (name === undefined && !webStart) return cmd;
-  const preset = name === undefined ? undefined : resolveServicePreset(name);
-  const flags = preset ? servicePresetFlags(preset) : [];
-  const flagNames = [...(webStart ? ["no-open"] : []), ...flags.map((flag) => flag.name)];
-  const scoped: Command = {
-    ...cmd,
-    flags: [...(cmd.flags ?? []), ...flags],
-    subcommands: cmd.subcommands?.map((sub) => sub.name === mode ? { ...sub, flagNames: [...(sub.flagNames ?? []), ...flagNames] } : sub),
-  };
-  if (preset === undefined) return scoped;
+  if (mode !== "add" && mode !== "start") return cmd;
+  const scoped = isWebServiceStart(mode, service) ? withServiceFlags(cmd, mode, ["no-open"]) : cmd;
+  try {
+    const name = requestedPreset(allFlags, argv, mode, service);
+    return name === undefined ? scoped : withPresetFlags(scoped, mode, resolveServicePreset(name));
+  } catch (error) {
+    // An earlier usage refusal wins. General add help also works without a valid --preset argument.
+    if (purpose === "refusal" || (purpose === "help" && mode === "add")) return scoped;
+    if (isCommandFailure(error)) throw error;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed", { cause: error });
+  }
+}
+
+function withPresetFlags(cmd: Command, mode: "add" | "start", preset: ServicePreset): Command {
+  const flags = servicePresetFlags(preset);
+  const scoped = withServiceFlags(cmd, mode, flags.map((flag) => flag.name), flags);
   const metadata = serviceMetadataDigest({ preset, adapter: optionProperties(preset).adapter.pin });
   const check = () => {
     const current = resolveServicePreset(preset.name);
