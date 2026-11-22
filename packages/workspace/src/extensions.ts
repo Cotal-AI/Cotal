@@ -360,8 +360,8 @@ export function bindExtensionPeers(
   return bound;
 }
 
-/** An installed extension's package.json is present but is not JSON or names no version: the package
- *  is installed and damaged, so it must never read as not installed. */
+/** An installed extension has missing or malformed package metadata. This is distinct from an
+ *  absent extension and from a filesystem error accessing the metadata. */
 export class CorruptExtensionPackageError extends Error {
   constructor(pkg: string, path: string, reason: string) {
     super(`extension ${pkg} has a corrupt package.json ${path}: ${reason} - re-add it with \`cotal ext add\`, or \`cotal ext seed --repair\` for a built-in`);

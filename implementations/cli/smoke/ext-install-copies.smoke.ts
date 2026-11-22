@@ -210,7 +210,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 44 : 41, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 46 : 43, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
@@ -232,38 +232,47 @@ registry.register({ kind: "command", name: "greet-directory", summary: "Print a 
   };
   const add = () => cli(["ext", "add", "./example-extension"]);
   writePackage("1.0.0");
-  writeFileSync(join(dist, "index.js"), entry("directory index"));
-  writeFileSync(join(source, "dist.js"), 'throw new Error("selected a sibling of the declared directory");\n');
+  writeFileSync(join(dist, "index.js"), `await Promise.resolve();\n${entry("directory index")}`);
+  writeFileSync(join(dist, "package.json"), "\uFEFF" + JSON.stringify({ type: "module", main: "./other.mjs" }));
+  writeFileSync(join(dist, "other.mjs"), entry("nested main"));
   const first = add();
   if (first.status !== 0) console.error(first.stderr.trim());
-  check("directory main: ext add resolves the selected directory, not its sibling", first.status === 0);
-  check("directory main: a fresh CLI loads the directory index", dispatches("directory index"));
+  check("directory main: ext add accepts BOM-prefixed module metadata", first.status === 0);
+  check("directory main: a fresh CLI imports the index with top-level await, not the nested main", dispatches("directory index"));
 
   writePackage("2.0.0");
-  writeFileSync(join(dist, "package.json"), JSON.stringify({ main: "./greeting.mjs" }));
-  writeFileSync(join(dist, "greeting.mjs"), `await Promise.resolve();\n${entry("nested main")}`);
-  const updated = add();
-  if (updated.status !== 0) console.error(updated.stderr.trim());
-  check("directory main: nested package main wins over index and supports top-level await", updated.status === 0 && dispatches("nested main"));
+  writeFileSync(join(dist, "package.json"), JSON.stringify({ type: "module", main: "./missing.mjs" }));
+  check("directory main: a missing nested main does not block the index", add().status === 0 && dispatches("directory index"));
+  writePackage("3.0.0");
+  const sibling = join(source, "dist.js");
+  writeFileSync(sibling, entry("sibling file"));
+  const installed = add();
+  assert.equal(installed.status, 0, installed.stderr);
+  check("directory main: the sibling .js file has precedence over the index", dispatches("sibling file"));
+  rmSync(sibling);
 
   const manifestPath = join(prefix, "extensions.json");
   const before = readFileSync(manifestPath, "utf8");
-  writePackage("3.0.0", { exports: { ".": "./dist/index.js/" } });
+  writePackage("4.0.0", { exports: { ".": "./dist/index.js/" } });
   const trailing = add();
   check("directory main: an explicit file export with a trailing slash is refused", trailing.status === 1 && trailing.stderr.includes("index.js"));
-  writePackage("3.0.0", { exports: { ".": "./dist" } });
+  writePackage("4.0.0", { exports: { ".": "./dist" } });
   const exported = add();
   check("directory main: an explicit directory export is refused", exported.status === 1 && exported.stderr.includes("extension set installed no entry") && exported.stderr.includes("dist"));
-  writePackage("3.0.0");
-  writeFileSync(join(dist, "package.json"), JSON.stringify({ main: "../../../package.json" }));
-  const escaped = add();
-  check("directory main: a nested entry outside the extension package is refused", escaped.status === 1 && escaped.stderr.includes("resolves outside its package"));
-
-  rmSync(join(dist, "greeting.mjs"));
-  writeFileSync(join(dist, "package.json"), JSON.stringify({ main: "./missing.mjs" }));
+  writePackage("4.0.0");
+  const jsonSibling = join(source, "dist.json");
+  writeFileSync(jsonSibling, "{}");
+  const json = add();
+  check("directory main: an unloadable earlier legacy candidate does not fall through to the index",
+    json.status === 1 && json.stderr.includes("dist.json") && json.stderr.includes("attribute"));
+  rmSync(jsonSibling);
+  writeFileSync(join(dist, "package.json"), "{");
+  const corrupt = add();
+  check("directory main: corrupt module metadata refuses the add", corrupt.status === 1 && corrupt.stderr.includes("corrupt package.json"));
+  rmSync(join(dist, "index.js"));
   const missing = add();
-  check("directory main: a missing nested main is refused even with an index", missing.status === 1 && missing.stderr.includes("missing.mjs"));
-  check("directory main: refused adds keep the prior manifest and command", readFileSync(manifestPath, "utf8") === before && dispatches("nested main"));
+  check("directory main: the package is refused when no legacy candidate exists", missing.status === 1 && missing.stderr.includes("dist"));
+  check("directory main: refused adds keep the prior manifest and command", readFileSync(manifestPath, "utf8") === before && dispatches("sibling file"));
 }
 
 main();

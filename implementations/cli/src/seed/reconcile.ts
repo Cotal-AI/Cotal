@@ -12,7 +12,6 @@ import {
   connectorConfigDir,
   connectorMetadataStale,
   extensionEntry,
-  extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
   inheritConnectorConfig,
@@ -388,15 +387,15 @@ function builtinsMetadataCurrent(generation: string = seedGeneration()): boolean
  *  it is recorded and installed on disk at `generation` with its entry present. */
 function operatorPackageDiffers(entry: InstalledExtension, generation: string): string | undefined {
   if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
-  let installed: ReturnType<typeof installedExtensionPackage>;
   try {
-    installed = installedExtensionPackage(entry.pkg);
-  } catch {
-    return "corrupt package metadata on disk";
+    const installed = installedExtensionPackage(entry.pkg);
+    if (!installed) return "not installed on disk";
+    if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
+    if (!entryPresent(entry.pkg, installed)) return "entry file is missing";
+  } catch (e) {
+    if (e instanceof CorruptExtensionPackageError) return "corrupt package metadata on disk";
+    throw e;
   }
-  if (!installed) return "not installed on disk";
-  if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
-  if (!entryPresent(entry.pkg, installed)) return "entry file is missing";
   return undefined;
 }
 
@@ -942,7 +941,7 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
 /** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
-  return extensionEntry(installed, extensionPackageDir(pkg)).isFile;
+  return extensionEntry(installed, pkg).isFile;
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
@@ -950,15 +949,14 @@ function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolea
  *  is torn, which a maintenance run reinstalls rather than stopping on. */
 function installState(name: string): "absent" | "torn" | "intact" {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
-  let installed: ReturnType<typeof installedExtensionPackage>;
   try {
-    installed = installedExtensionPackage(pkg);
+    const installed = installedExtensionPackage(pkg);
+    if (!installed) return "absent";
+    return entryPresent(pkg, installed) ? "intact" : "torn";
   } catch (e) {
     if (e instanceof CorruptExtensionPackageError) return "torn";
     throw e;
   }
-  if (!installed) return "absent";
-  return entryPresent(pkg, installed) ? "intact" : "torn";
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {

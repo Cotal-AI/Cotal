@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
@@ -63,6 +64,29 @@ try {
       const out = `${unreadable.stdout}${unreadable.stderr}`;
       check("one read: an unreadable package.json surfaces EACCES, never a torn install", unreadable.status !== 0 && out.includes("EACCES") && !out.includes("torn install"), out);
     }
+  }
+
+  {
+    const cfg = track(freshCfg());
+    assert.ok(listNames(cfg).includes("hermes"), "the private seed must install Hermes before the repair probe");
+    const dir = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes");
+    const pkg = join(dir, "package.json");
+    const scope = join(dir, "dist", "package.json");
+    const original = readFileSync(pkg, "utf8");
+    const metadata: { exports?: unknown } = JSON.parse(original);
+    delete metadata.exports;
+    writeJson(pkg, { ...metadata, main: "./dist" });
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      writeFileSync(scope, '{"type":"module"}', { mode: 0o000 });
+      const unreadable = cotal(cfg, ["ext", "seed", "--repair"]);
+      chmodSync(scope, 0o600);
+      check("directory main: an unreadable module scope refuses repair without replacing the package",
+        unreadable.status !== 0 && unreadable.stderr.includes("EACCES") && JSON.parse(readFileSync(pkg, "utf8")).main === "./dist", unreadable);
+    }
+    writeFileSync(scope, "{");
+    const repaired = cotal(cfg, ["ext", "seed", "--repair"]);
+    check("directory main: repair reinstalls a connector with corrupt module scope metadata",
+      repaired.status === 0 && readFileSync(pkg, "utf8") === original && !existsSync(scope), repaired);
   }
 } finally {
   finishScenario();

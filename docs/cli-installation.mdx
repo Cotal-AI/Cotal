@@ -732,9 +732,9 @@ leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
-A legacy `main` can name a directory such as `./dist`. Cotal loads that directory's `index.js`
-or the entry file named by its own `package.json` if it declares a `main`. The file must be
-inside the extension package. A root export still needs to name a file.
+A legacy `main` such as `./dist` tries `dist.js` before `dist/index.js`. A nested `package.json`
+does not change the entry, and the resolved file must stay inside the extension package.
+A root export still needs to name a file.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 

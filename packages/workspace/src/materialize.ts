@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
+  CorruptExtensionPackageError,
   bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
@@ -76,24 +77,36 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-function directoryMain(path: string): string {
-  const manifest = join(path, "package.json");
+/** Node uses the nearest package.json for a .js file's module format, never for its entry name. */
+function validateLegacyScope(pkg: string, root: string, file: string): void {
+  if (!file.endsWith(".js")) return;
+  for (let dir = dirname(file); dir !== root && dirname(dir) !== dir; dir = dirname(dir)) {
+    if (validateScopeManifest(pkg, join(dir, "package.json"))) return;
+  }
+}
+
+function validateScopeManifest(pkg: string, manifest: string): boolean {
   let raw: string;
   try {
     raw = readFileSync(manifest, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "index.js";
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw e;
   }
-  // The install can be replaced under this path. Node's require.resolve caches directory mains.
-  const metadata: unknown = JSON.parse(raw);
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-    throw new Error(`${manifest} has invalid package metadata`);
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(raw.replace(/^\uFEFF/, ""));
+  } catch (e) {
+    throw new CorruptExtensionPackageError(pkg, manifest, (e as Error).message);
   }
-  const main = (metadata as { main?: unknown }).main;
-  if (main === undefined) return "index.js";
-  if (typeof main !== "string" || main.length === 0) throw new Error(`${manifest} has an invalid main entry`);
-  return main;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new CorruptExtensionPackageError(pkg, manifest, "expected a JSON object");
+  }
+  const { name, type } = metadata as { name?: unknown; type?: unknown };
+  if ((name !== undefined && typeof name !== "string") || (type !== undefined && typeof type !== "string")) {
+    throw new CorruptExtensionPackageError(pkg, manifest, '"name" and "type" must be strings when present');
+  }
+  return true;
 }
 
 function checkedPackagePath(root: string, path: string): string {
@@ -105,10 +118,28 @@ function checkedPackagePath(root: string, path: string): string {
   return physical;
 }
 
-/** Select the declared entry. With a package directory, report whether the resolved path is a file. */
+const legacySuffixes = [".js", ".json", ".node", "/index.js", "/index.json", "/index.node"];
+
+function legacyMainEntry(pkg: string, dir: string, main: string): { path: string; isFile: boolean } {
+  // Probe the declared main, not the package at that path. A nested main is not consulted.
+  const root = realpathSync(dir);
+  checkedPackagePath(root, main);
+  const atRoot = main === dir;
+  for (const suffix of legacySuffixes) {
+    if (atRoot && !suffix.startsWith("/")) continue;
+    const candidate = main + suffix;
+    if (!statSync(candidate, { throwIfNoEntry: false })?.isFile()) continue;
+    const file = checkedPackagePath(root, candidate);
+    validateLegacyScope(pkg, root, file);
+    return { path: file, isFile: true };
+  }
+  return { path: join(main, "index.js"), isFile: false };
+}
+
+/** Select the declared entry. With the package name, resolve it in the installed prefix. */
 export function extensionEntry(meta: InstalledExtensionPackage): string;
-export function extensionEntry(meta: InstalledExtensionPackage, dir: string): { path: string; isFile: boolean };
-export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): string | { path: string; isFile: boolean } {
+export function extensionEntry(meta: InstalledExtensionPackage, pkg: string): { path: string; isFile: boolean };
+export function extensionEntry(meta: InstalledExtensionPackage, pkg?: string): string | { path: string; isFile: boolean } {
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
   let exported: string | undefined;
   if (typeof dot === "string") exported = dot;
@@ -117,18 +148,14 @@ export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): s
     exported = conditions.import ?? conditions.default;
   } else if (typeof meta.exports === "string") exported = meta.exports;
   const entry = exported ?? meta.main ?? "index.js";
-  if (dir === undefined) return entry;
-  const path = join(resolve(dir), entry);
+  if (pkg === undefined) return entry;
+  const dir = resolve(extensionPackageDir(pkg));
+  const path = join(dir, entry);
   const stat = statSync(path, { throwIfNoEntry: false });
-  if (exported !== undefined || meta.main === undefined || !stat?.isDirectory()) {
-    return { path, isFile: stat?.isFile() ?? false };
+  if (exported === undefined && meta.main !== undefined && stat?.isDirectory()) {
+    return legacyMainEntry(pkg, dir, resolve(path));
   }
-  const root = realpathSync(dir);
-  const directory = checkedPackagePath(root, path);
-  // A root-valued main has already declared the directory, so use its index without rereading it.
-  const file = join(directory, directory === root ? "index.js" : directoryMain(directory));
-  const isFile = statSync(file, { throwIfNoEntry: false })?.isFile() ?? false;
-  return { path: isFile ? checkedPackagePath(root, file) : file, isFile };
+  return { path, isFile: stat?.isFile() ?? false };
 }
 
 /**
@@ -143,7 +170,7 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   try {
-    const { path: entry, isFile } = extensionEntry(meta, dir);
+    const { path: entry, isFile } = extensionEntry(meta, pkg);
     if (!isFile) throw new Error(`no entry file at ${entry}`);
     await import(pathToFileURL(entry).href);
   } catch (e) {
