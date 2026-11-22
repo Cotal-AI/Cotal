@@ -177,15 +177,15 @@ console.log("web-events-filter smoke");
   const mentions = src.split("chatOnly").length - 1;
   ok("5.1 SOURCE-SHAPE: chatOnly has exactly two call sites", mentions === 3, mentions);
 
-  // The route runs to its own closing brace at the guard's indentation. Both cells require the
-  // window to reach the page the route returns, so a restructured route fails them instead of
-  // shrinking what they read.
-  const byName = src.slice(src.indexOf('path.startsWith("/api/channels/")'));
-  const routeEnd = byName.indexOf("\n    }\n");
-  const routeBody = routeEnd < 0 ? "" : byName.slice(0, routeEnd);
+  // The GET-only guard shares the path predicate. Match the handler's full guard and stop at
+  // the closing brace at its indentation.
+  const routeStart = src.indexOf('\n    if (path.startsWith("/api/channels/") && path.endsWith("/history")) {');
+  const routeEnd = routeStart < 0 ? -1 : src.indexOf("\n    }\n", routeStart);
+  const routeBody = routeEnd < 0 ? "" : src.slice(routeStart, routeEnd);
   const returnsPage = routeBody.includes("json(res, page)");
   ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", returnsPage && !routeBody.includes("chatOnly"), routeBody.slice(-300));
-  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", returnsPage && routeBody.includes("channelHistory("));
+  ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named",
+    returnsPage && routeBody.includes("const name = channelNameFromPath(") && routeBody.includes("channelHistory(name,"));
 
   // Every channel in the fixture, as the live tap would receive it on the chat plane. An event
   // channel is published by its own principal, since the tap drops a frame from anyone else; a
