@@ -70,6 +70,15 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
+    const invalidWatch = run(["watch", "--view", "bad", "--json"]);
+    assert.equal(invalidWatch.status, 1, invalidWatch.stdout + invalidWatch.stderr);
+    assert.equal(invalidWatch.stderr, "");
+    const watchRecords = invalidWatch.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(watchRecords.map(({ schemaVersion, stream, type }) => [schemaVersion, stream, type]), [[1, "watch", "error"], [1, "watch", "end"]]);
+    assert.equal(watchRecords[0].data.code, "USAGE_INVALID");
+    assert.match(watchRecords[0].data.message, /watch --view takes feed/);
+    assert.equal(watchRecords[1].data.reason, "setup-failed");
+
     const upHelp = run(["up", "--help"]);
     assert.equal(upHelp.status, 0, upHelp.stderr);
     const upText = upHelp.stdout.replace(/\s+/g, " ");
