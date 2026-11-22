@@ -294,7 +294,7 @@ function registryView(result: { action: string; name?: string; space: string; re
     const undecodable = bad("=defaults");
     return { sections: [
       { title: "Channel defaults", blocks: [{ kind: "fields", rows: [["Space", result.space], ...(undecodable ? [["Saved entry", "not decoded"] as [string, string]] : []), ...policyFields(registry.defaults, undefined)] }, { kind: "lines", lines: [{ text: undecodable ? `The saved defaults do not decode (${undecodable.error}). The key was left as it is, and channels inherit the built-in policy.` : "Per-channel settings override these defaults. Replay is not an access control.", tone: undecodable ? "waiting" : "hint" }] }] },
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal ch defaults --replay --window 24h", description: "Set defaults for this space" }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal ch defaults --replay --window 24h${targetWords({ ...values, space: result.space })}`, description: "Set defaults for this space" }] }] },
     ] };
   }
   const entries = Object.entries(registry.channels ?? {}).sort(([a], [b]) => a.localeCompare(b));
