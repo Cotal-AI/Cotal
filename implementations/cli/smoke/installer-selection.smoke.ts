@@ -163,6 +163,22 @@ fi
   assert.equal(refresh.status, 0, output(refresh));
   assert.equal(readlinkSync(npmLauncher), npmLink);
   assert.equal(readFileSync(npmLauncher, "utf8"), launcherText, "refresh writes the same launcher as a fresh install");
+  const wrapper = realpathSync(npmLauncher);
+  for (const [contents, mode] of [
+    [oldLauncher, 0o775],
+    [oldLauncher.replace(/^  node='.*'$/m, '  node="unrecognized pin"'), 0o755],
+    [oldLauncher.replace(/^  node='.*'$/m, `  node='${join(root, "missing-node")}'`), 0o755],
+  ] as const) {
+    writeFileSync(wrapper, contents);
+    chmodSync(wrapper, mode);
+    const skipped = spawnSync(process.execPath, [join(npmPackage, postinstall), "--refresh", dirname(dirname(bootstrap))], { env: npmEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(skipped.status, 0, output(skipped));
+    assert.equal(readFileSync(wrapper, "utf8"), contents);
+    const version = spawnSync(npmLauncher, ["--version"], { env: { ...npmEnv, PATH: dirname(process.execPath) }, encoding: "utf8", timeout: 10_000 });
+    assert.equal(version.status, 0, output(version));
+    assert.equal(version.stdout.trim(), "cotal-ai 0.0.0");
+  }
+  writeFileSync(wrapper, launcherText);
   const npmTools = mkdirSync(join(npmHome, "npm-tools"), { recursive: true })!;
   const projectNpm = join(npmTools, "npm");
   writeFileSync(join(npmTools, "node"), "#!/bin/sh\nexit 18\n", { mode: 0o755 });

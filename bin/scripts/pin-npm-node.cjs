@@ -27,12 +27,12 @@ if (major < minMajor || (major === minMajor && (minor < minMinor || (minor === m
       let previous;
       if (refreshing) {
         const info = lstatSync(launcher);
-        if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) !== 0) throw new Error("unsafe npm launcher");
+        if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o022) !== 0) return;
         previous = readFileSync(launcher, "utf8");
         const pin = previous.match(/^  node=('(?:[^'\n]|'\\'')*')$/m);
-        if (!pin) throw new Error("cannot read the recorded Node executable from the npm launcher");
+        if (!pin) return;
         node = pin[1].slice(1, -1).replaceAll("'\\''", "'");
-        if (!isAbsolute(node)) throw new Error("the npm launcher has no absolute Node executable");
+        if (!isAbsolute(node) || !existsSync(node)) return;
       }
       // Linux's cwd link names the current inode even after its directory entry is removed.
       // Give it to sh before startup, then restore the caller's PWD without changing directories.

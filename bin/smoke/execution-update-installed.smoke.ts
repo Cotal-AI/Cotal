@@ -24,6 +24,8 @@ const mutableExecutionFiles = new Set(["dist/cotal.js", "dist/cotal-npm"]);
 export async function installedExecutionUpdate(input: { cli: string; installed: string; current: string; target: string; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
   const before = inventory(input.installed).filter(row => !mutableExecutionFiles.has(row.path));
   const link = lstatSync(input.cli).isSymbolicLink() ? readlinkSync(input.cli) : undefined;
+  const launcher = join(input.installed, "dist/cotal-npm");
+  const preserveLauncher = input.env.COTAL_EXECUTION_EXPECT_UNCHANGED_LAUNCHER === "1" ? readFileSync(launcher) : undefined;
   const records: { args: string[]; status: number | null; stdout: string; stderr: string }[] = [];
   const run = (args: string[]) => new Promise<typeof records[number]>((resolve, reject) => {
     const child = spawn(input.cli, args, { cwd: input.cwd, env: input.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -49,6 +51,7 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
   const selected = await run(["--version"]);
   assert.equal(selected.status, 0, selected.stderr);
   assert.equal(selected.stdout.split("\n")[0], `cotal-ai ${input.target}`);
+  if (preserveLauncher) assert.deepEqual(readFileSync(launcher), preserveLauncher, "skipped refresh preserves launcher bytes");
   assert.ok(probes.length > 0, "at least one actual public CLI starts during update");
   for (const probe of await Promise.all(probes)) {
     assert.equal(probe.status, 0, probe.stderr);

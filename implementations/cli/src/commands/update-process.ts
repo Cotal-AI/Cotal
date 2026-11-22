@@ -80,7 +80,7 @@ function npmInvocation(env: NodeJS.ProcessEnv) {
   const file = resolveOnPath("npm", lookup);
   if (!file) return { file: "npm", env, cwd };
   const node = resolveOnPath("node", lookup);
-  if (node && realpathSync(node) === process.execPath) return { file: "npm", env, cwd };
+  if (node && realpathSync(node) === realpathSync(process.execPath)) return { file: "npm", env, cwd };
   return { file, env: { ...env, PATH: `${dirname(process.execPath)}${delimiter}${env.PATH}` }, cwd };
 }
 
