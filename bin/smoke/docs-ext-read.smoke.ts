@@ -149,7 +149,8 @@ let specBody = "";
   const body = docs.envelope?.result?.body;
   const seats = typeof body === "string" ? /^## Managed seats\n([\s\S]*?)^### Control credentials$/m.exec(body)?.[1] : undefined;
   check("the bundled managed-seat flag table lists space and server without raw credentials",
-    docs.status === 0 && seats !== undefined && /^\| `--space <s>` /m.test(seats) && /^\| `--server <url>` /m.test(seats) && !seats.includes("--creds"),
+    docs.status === 0 && seats !== undefined && /^\| `--space <s>` /m.test(seats) && !seats.includes("--creds") &&
+    /^\| `--server <url>` .*`--server` alone targets `main`/m.test(seats),
     seats?.slice(0, 650) ?? shown(docs));
 
   const help = run(["ps", "--help"]);
@@ -159,6 +160,14 @@ let specBody = "";
   const completion = run(["__complete", "ps", "--"]);
   check("ps completion offers both selectors without raw credentials",
     completion.status === 0 && /^--space\t/m.test(completion.stdout) && /^--server\t/m.test(completion.stdout) && !/^--creds\t/m.test(completion.stdout), shown(completion));
+  for (const args of [["--creds", ""], ["--creds", "./cred"], ["--creds=./cred"]]) {
+    const hidden = run(["__complete", "ps", ...args]);
+    check(`ps offers no filename completion after ${args.map((arg) => JSON.stringify(arg)).join(" ")}`,
+      hidden.status === 0 && hidden.stdout === ":nofiles\n", shown(hidden));
+  }
+  const supported = run(["__complete", "who", "--creds", ""]);
+  check("who still delegates credential filename completion to the shell",
+    supported.status === 0 && supported.stdout === ":default\n", shown(supported));
 
   const refused = run(["ps", "--plain", "--server", "nats://127.0.0.1:1", "--creds", join(home, "missing.creds")]);
   check("ps still refuses explicit raw credentials before dialing and gives the supported route",

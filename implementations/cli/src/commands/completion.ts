@@ -109,8 +109,10 @@ async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): 
     emit(flags.map((flag) => ({ value: `--${flag.name}`, description: flag.description })), "nofiles");
     return;
   }
-  // Every `--space` names a space and every `--creds` a file, so one rule completes each for every
-  // command: the spaces `use` offers, and the shell's file names.
+  // A command can keep parsing --creds to explain a refusal without offering a file for it.
+  const completingCreds = context?.valueFlag?.name === "creds" ||
+    (context !== undefined && !context.optionsEnded && !context.valueFlag && word.startsWith("--creds="));
+  if (completingCreds && flagNames && !flagNames.includes("creds")) return emit([], "nofiles");
   const value = word.startsWith("-") ? undefined : context?.valueFlag?.name;
   const completer = value === "space" ? spaceCompletion : value === "creds" ? fileCompletion : cmd?.complete;
   if (!completer) {
