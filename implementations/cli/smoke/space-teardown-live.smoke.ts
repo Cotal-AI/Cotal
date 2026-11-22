@@ -97,7 +97,7 @@ for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete
 // Set before the stores are imported; they read COTAL_HOME on each call.
 process.env.COTAL_HOME = home;
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
-const { findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { shellWord } = await import("../src/lib/endpoint-errors.js");
 
@@ -123,6 +123,26 @@ const cli = (cwd: string, ...args: string[]): Run => {
   return { status: run.status, stdout: run.stdout, stderr: run.stderr, env: parsed };
 };
 const shown = (run: Run) => ({ status: run.status, error: run.env?.error, out: run.stdout.slice(-1000), err: run.stderr.slice(-1500) });
+
+function checkStoppedDeliveryLog(root: string, space: string, instanceId: string | null | undefined): void {
+  const credential = join(root, ".cotal", deliveryCredsKey(space, { injected: false, root }));
+  check("the stop removed the delivery launch credential", !existsSync(credential), credential);
+  const args = ["service", "logs", "stack-delivery", "--space", space, "--tail", "30", "--json"];
+  const logs = cli(root, ...args);
+  const result = logs.env?.result as { instance?: { instanceId?: string; observedProcess?: string; recordedState?: string }; lines?: string[]; path?: string } | undefined;
+  check("the stopped delivery instance's captured log is readable without its launch credential",
+    logs.status === 0 && typeof instanceId === "string" && result?.instance?.instanceId === instanceId && result.instance.observedProcess === "gone"
+    && result.instance.recordedState === "stopped" && (result.lines?.length ?? 0) > 0, shown(logs));
+  if (!result?.path) return;
+  const path = result.path, moved = `${path}.moved`;
+  renameSync(path, moved);
+  try {
+    const missing = cli(root, ...args);
+    check("the missing captured file is refused by its log path, not by a launch input",
+      missing.status === 2 && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.error.message.includes(path), shown(missing));
+  } finally { renameSync(moved, path); }
+}
+
 const journalOf = (root: string) => join(root, ".cotal", "stack-controller.json");
 const accountDigest = (root: string) => {
   const dir = join(root, ".cotal", "auth");
@@ -826,6 +846,7 @@ try {
       omitted.status === 2 && omitted.env?.error?.code === "LIFECYCLE_BLOCKED" && journalRows().find((row) => row.role === "manager")?.instanceId === manager, shown(omitted));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops every member, and no member process is left", stopped.status === 0 && JSON.stringify(ids(rows(stopped))) === JSON.stringify(ids(first)) && gone(firstPids), shown(stopped));
+    checkStoppedDeliveryLog(root, space, first.find((row) => row.role === "delivery")?.instanceId);
     const cycledUp = cli(root, "up", "--json"), cycledRows = rows(cycledUp), cycledPids = pidsOf();
     const cycledDown = cli(root, "down", "--yes", "--json");
     const spaceServiceDir = join(home, "services", Buffer.from(space, "utf8").toString("hex"));

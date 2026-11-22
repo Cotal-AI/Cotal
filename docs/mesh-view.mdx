@@ -30,7 +30,8 @@ The console narrows its tap to `chatWildcard(space)` whenever it has credentials
 That view exposes multicast traffic and hides DMs and anycast.
 An open-mesh console uses the whole-space tap.
 A space-wide subscription still requires broker permission. Authenticated admin grants cover the
-`chat`, `inst`, and `svc` planes individually, so the web server taps those three subjects separately.
+`chat`, `inst`, and `svc` planes individually. The web server taps each permitted messaging plane
+separately. The default dashboard observer credential permits only the `chat` plane among these three.
 
 On an open mesh, the interactive console starts a second, presence-only endpoint before the operator's first send.
 It shares the observer's card, so peers can address replies to the operator.

@@ -281,13 +281,13 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       return;
     }
     if (definition.record.value.launch.type === "adapter") {
-      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options);
+      const launch = definition.record.value.launch, adapter = resolveServiceAdapter(launch.adapter, launch.options, false);
       if (!controlsRecordedAdapter(selected!.record.value, adapter) || !adapter.declaration.capabilities.logs) throw new CommandFailure("refused", "UNSUPPORTED", "the pinned adapter does not declare log access through this controller, or its declaration changed; no different provider was loaded", { target });
     }
     const tail = values.tail === undefined ? 100 : Number(values.tail);
     if (values.follow) return followServiceLog(selected!, presentation, tail);
     // A tail that returned every line asked for is complete, even when earlier bytes were not read.
-    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail);
+    const row = instanceProjection(selected!), log = readServiceLog(space, selected!.name, tail, !row.foreground);
     writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", instance: row, ...log, encoding: "utf8-with-replacement", collection: row.foreground ? "foreground output is not captured in this log" : "owned background stdout/stderr" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial", partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: "Service log tail", blocks: [{ kind: "fields", rows: [["Definition", name], ["Instance", row.instanceId], ["Host", row.executionHost], ["Collection", result.collection], ["Encoding", result.encoding]] }, { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] }, { kind: "lines", lines: [{ text: "Service-produced output may contain secrets. This is a local authorized read, not a secret-redacted log or an upload.", tone: "hint" }] }] }] }));
     return;
   }
