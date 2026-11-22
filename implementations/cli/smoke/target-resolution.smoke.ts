@@ -136,6 +136,21 @@ const QUESTION = "Which one?";
     check("who in a shared folder refuses before opening the roster and names both exact reads",
       who.status === 2 && /Code:\s+TARGET_AMBIGUOUS/.test(who.stderr) && /this folder has 2 registered spaces: beta, gamma/.test(who.stderr) &&
         commands.length === 2 && commands[0]?.endsWith(" who --plain --space beta") && commands[1]?.endsWith(" who --plain --space gamma"), shown(who));
+    for (const flags of [["--plain"], ["list", "--live", "-j"]]) {
+      const inventory = run(["endpoint", ...flags], root);
+      const error = envelope(inventory)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : inventory.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check("ambiguous endpoint inventory names its spaces and preserves the requested inventory options",
+        inventory.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? inventory.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? inventory.stderr) &&
+          retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint ${flags.join(" ")} --space ${space}`)), shown(inventory));
+      if (flags[0] === "--plain" && process.platform !== "win32") for (const [i, space] of ["beta", "gamma"].entries()) {
+        const retry = spawnSync("sh", ["-c", retries[i] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check(`the printed inventory retry reads the saved references for ${space} without selecting it`,
+          retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint references") && getCurrent() === undefined, shown(retry));
+      }
+    }
     for (const space of ["beta", "gamma"]) {
       const picked = run(["who", "--plain", "--space", space], root);
       check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
