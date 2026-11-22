@@ -183,6 +183,8 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` on a prepared space whose controller stack launched a member and was
    *  stopped: its last operation, whether to restart without a manager, and its store cap. */
   stopped?: { operation: string; outcome: string; noManager?: true; storeCap?: number };
+  /** A retained local stack needs the user-auth launcher on restart. */
+  restartUserAuth?: true;
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
@@ -1129,7 +1131,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
           const { spaces } = rootInventory(root);
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
             if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
-            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space });
+            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space, ...(userAuthSpacesOnDisk(authDir(root)).includes(flags.space) ? { restartUserAuth: true } : {}) });
           }
         }
       }
@@ -1266,7 +1268,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // or take it over rather than start what the caller asked for. Name that folder instead.
       const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
       if (flags.allowStoppedLocal && named !== undefined && !elsewhere) return localTarget(root, retained.server, "local-space", flags.readOnly);
-      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
+      const restartUserAuth = !retained.open && named !== undefined && !elsewhere && userAuthSpacesOnDisk(authDir(root)).includes(named);
+      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }), ...(restartUserAuth ? { restartUserAuth: true } : {}) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

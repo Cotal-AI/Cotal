@@ -241,6 +241,16 @@ const unchecked = run(["doctor", "auth", "--space", "workshop-a", "--json"], wor
 check("doctor keeps the local open-space no-op and warns that the mode was not checked",
   unchecked.status === 0 && unchecked.envelope?.outcome === "no-op" && unchecked.envelope.result?.credentialScope === "open-space" &&
   unchecked.envelope.result.repair?.attempted === false && unchecked.envelope.warnings?.some(w => w.code === "MODE_NOT_CHECKED") === true, shown(unchecked));
+const child = join(workshop, "subdir"), sibling = `${workshop}-other`;
+for (const dir of [child, sibling]) mkdirSync(dir, { mode: 0o700 });
+const nested = run(["doctor", "auth", "--space", "workshop-a", "--json"], child);
+check("doctor from a subfolder reports the named open registration's root and keeps the unchecked warning without creating .cotal",
+  nested.status === 0 && nested.envelope?.target?.root === realpathSync(workshop) && nested.envelope?.result?.credentialScope === "open-space" &&
+  nested.envelope.result.repair?.attempted === false && nested.envelope.warnings?.some(w => w.code === "MODE_NOT_CHECKED") === true &&
+  [workshop, child].every(dir => !existsSync(join(dir, ".cotal"))), shown(nested));
+const elsewhere = run(["doctor", "auth", "--space", "workshop-a", "--json"], sibling);
+check("doctor refuses a named open registration from a sibling with a shared path prefix",
+  elsewhere.status === 2 && elsewhere.envelope?.error?.code === "AUTH_REQUIRED", shown(elsewhere));
 for (const fix of [[], ["--fix"]]) {
   const command = ["doctor", "auth", ...fix];
   const bare = run([...command, "--plain"], workshop);

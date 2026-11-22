@@ -135,7 +135,10 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
         return parts(`the mesh "${d.stackSpace}" in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and "${d.stackSpace}" is registered for ${d.recordedRoot}, not for this folder`, d.stackRemedy);
       if (d.home === undefined && d.recordedRoot !== undefined && d.stackRemedy !== undefined)
         return parts(`the stack journal in ${d.root} was recorded at ${d.recordedRoot}, so this folder is a copy or was moved from there`, d.stackRemedy);
-      if (d.lastRun) return { message: `the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, remedy: `start it again with \`cotal up\` in ${d.root}`, restartRoot: d.root };
+      if (d.lastRun) {
+        const restart = d.restartUserAuth && d.server && d.stackSpace ? `cotal up --user-auth --space ${shellPath(d.stackSpace)} --server ${shellPath(d.server)}` : "cotal up";
+        return { message: `the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, remedy: `start it again with ${codeSpan(restart)} in ${d.root}`, restartRoot: d.root };
+      }
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace === undefined ? "<space>" : shellPath(d.stackSpace)} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
         : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, d.stackRemedy ?? stackHomeRemedy());
