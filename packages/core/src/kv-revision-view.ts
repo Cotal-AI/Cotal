@@ -4,18 +4,21 @@ import { Bucket } from "@nats-io/kv/internal";
 import { scanLatestKvEntries } from "./kv-scan.js";
 
 type Head = Pick<StreamInfo, "created" | "config" | "state">;
-type Census = { info: Head; keys: Set<string> };
 type ReadPass = { head: Head; complete: boolean };
+const MAX_TAIL_READS = 16;
+
+function sameStore(a: Head, b: Head): boolean {
+  return a.created === b.created && a.config.max_msgs_per_subject === b.config.max_msgs_per_subject;
+}
 
 function sameHead(a: Head, b: Head): boolean {
-  return a.created === b.created && a.state.last_seq === b.state.last_seq &&
+  return sameStore(a, b) && a.state.last_seq === b.state.last_seq &&
     a.state.messages === b.state.messages &&
-    a.state.num_subjects === b.state.num_subjects && a.config.max_msgs_per_subject === b.config.max_msgs_per_subject;
+    a.state.num_subjects === b.state.num_subjects;
 }
 
 /** A local view of a KV stream. Check the leader on every read; never answer from a cached head on
- * its own. A complete ordered scan is causally fresh without matching the head observed later.
- * Keep marker keys in the census so native removal of a subject can be distinguished from a KV tombstone. */
+ * its own. Keep KV markers in the key count: native removal of a subject has no marker to replay. */
 export class KvRevisionView {
   private head?: Head;
   private through = 0;
@@ -42,7 +45,7 @@ export class KvRevisionView {
   }
 
   /** A writer may skip reading back its own overwrite of an existing, unprojected key. Verify
-   * the sequence and store census on the next refresh, like every other read. */
+   * the sequence and key count on the next refresh, like every other read. */
   skipOverwrite(key: string, revision: number): void {
     const head = this.head;
     if (!head || this.through !== head.state.last_seq || !this.keys.has(key) ||
@@ -78,58 +81,67 @@ export class KvRevisionView {
     // been overwritten and moved further ahead before the consumer gets to it.
     const entries = await scanLatestKvEntries(this.kv, undefined, undefined, start);
     const head = await this.headNow();
-    if (before.created !== head.created || before.config.max_msgs_per_subject !== head.config.max_msgs_per_subject)
-      return { head, complete: false };
+    if (!sameStore(before, head)) return { head, complete: false };
 
-    const last = entries.reduce((seq, e) => Math.max(seq, e.revision), 0);
-    const end = Math.max(before.state.last_seq, last);
-    let keyCount = start === undefined ? 0 : this.keys.size;
-    for (const e of entries) {
-      if (start === undefined || !this.keys.has(e.key)) keyCount++;
+    const end = entries.reduce((seq, e) => Math.max(seq, e.revision), before.state.last_seq);
+    if (end > head.state.last_seq) return { head, complete: false };
+    const latest = new Map(entries.map((e) => [e.key, e]));
+    if (head.config.max_msgs_per_subject === 1 && end < head.state.last_seq) {
+      return this.reconcileTail(latest, start, end, head);
     }
-    const exact = end === head.state.last_seq && keyCount === (head.state.num_subjects ?? 0);
-    if (exact && (sameHead(before, head) || before.config.max_msgs_per_subject === 1)) {
-      this.applyEntries(entries, start);
-      this.head = head;
-      this.through = end;
-      return { head, complete: true };
-    }
-    if (before.config.max_msgs_per_subject !== 1 || end > head.state.last_seq)
-      return { head, complete: false };
-
-    // The pass crossed the caller's fence, but the trailing count can include later writes.
-    // Reconcile key identity instead of waiting for equality with a moving stream head.
-    return this.reconcileCensus(head, end, entries, start);
+    if (head.config.max_msgs_per_subject !== 1 && !sameHead(before, head)) return { head, complete: false };
+    if (!this.countMatches(latest, start, head)) return { head, complete: false };
+    return this.accept(latest, start, head, end);
   }
 
-  private async reconcileCensus(head: Head, through: number, entries: KvEntry[], start?: number): Promise<ReadPass> {
-    const census = await this.census();
-    if (census.info.created !== head.created || census.info.config.max_msgs_per_subject !== 1 || census.info.state.last_seq < through)
-      return { head: census.info, complete: false };
-    // A census-only key was written after the completed pass, so it belongs to the next delta.
-    // Dropping an absent key is safe: a later recreation also has a revision after this pass.
-    this.applyEntries(entries.filter((e) => census.keys.has(e.key)), start);
-    for (const key of this.keys) {
-      if (!census.keys.has(key)) { this.keys.delete(key); this.apply(key); }
+  private async reconcileTail(latest: Map<string, KvEntry>, start: number | undefined, end: number, head: Head): Promise<ReadPass> {
+    const tail = await this.readTail(end, head);
+    if (tail) {
+      const checked = await this.headNow();
+      if (!sameStore(head, checked) || checked.state.last_seq < head.state.last_seq) return { head: checked, complete: false };
+      // A missing revision can only be counted as absent at the later reply, and only if all
+      // revisions at that reply were queried. A complete tail also proves the earlier head.
+      const proven = tail.every((e) => e !== undefined) ? head
+        : checked.state.last_seq === head.state.last_seq ? checked : undefined;
+      if (proven) {
+        for (const e of tail) if (e) latest.set(e.key, e);
+        return this.countMatches(latest, start, proven)
+          ? this.accept(latest, start, proven, proven.state.last_seq) : { head: checked, complete: false };
+      }
     }
-    // Do not jump to the census revision: it lists key names, not changed values. The next read
-    // starts from this pass's proven prefix and will still see writes after that prefix.
-    this.head = census.info;
+    // A fresh full pass can stand on its own. Keep its cursor, not the later head, so a
+    // following delta still has to account for every retained key before it can serve.
+    return start === undefined ? this.accept(latest, start, head, end) : { head, complete: false };
+  }
+
+  private countMatches(latest: ReadonlyMap<string, KvEntry>, start: number | undefined, head: Head): boolean {
+    let count = start === undefined ? 0 : this.keys.size;
+    for (const key of latest.keys()) if (start === undefined || !this.keys.has(key)) count++;
+    return count === (head.state.num_subjects ?? 0);
+  }
+
+  private accept(latest: ReadonlyMap<string, KvEntry>, start: number | undefined, head: Head, through: number): ReadPass {
+    this.applyEntries(latest.values(), start);
+    this.head = head;
     this.through = through;
-    return { head: census.info, complete: true };
+    return { head, complete: true };
   }
 
-  private async census(): Promise<Census> {
-    if (!(this.kv instanceof Bucket)) throw new Error("KV revision census requires a native bucket");
+  private async readTail(after: number, head: Head): Promise<(KvEntry | undefined)[] | undefined> {
+    const length = head.state.last_seq - after;
+    if (length > MAX_TAIL_READS) return undefined;
+    if (!(this.kv instanceof Bucket)) throw new Error("KV revision tail requires a native bucket");
     const bucket = this.kv;
-    const { created, config, state } = await bucket.jsm.streams.info(bucket.stream, { subjects_filter: `${bucket.prefix}.>` });
-    const { subjects, ...summary } = state;
-    const keys = new Set(Object.keys(subjects ?? {}).map((subject) => bucket.decodeKey(subject.slice(bucket.prefixLen))));
-    if (keys.size !== (state.num_subjects ?? 0)) throw new Error(`${bucket.stream} returned an incomplete key census`);
-    return { info: { created, config, state: summary }, keys };
+    // A retained revision cannot reappear with its old sequence. If every slot is readable, the
+    // scan and tail cover every live key at this head. A gap can hide an insertion balancing a
+    // markerless erase, so the subject count alone cannot confirm the projection.
+    return Promise.all(Array.from({ length }, async (_, i) => {
+      const msg = await bucket.jsm.streams.getMessage(bucket.stream, { seq: after + i + 1 });
+      return msg ? bucket.smToEntry(msg) : undefined;
+    }));
   }
 
-  private applyEntries(entries: KvEntry[], start?: number): void {
+  private applyEntries(entries: Iterable<KvEntry>, start?: number): void {
     if (start === undefined) {
       for (const key of this.keys) this.apply(key);
       this.keys.clear();

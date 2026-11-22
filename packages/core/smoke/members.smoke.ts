@@ -21,6 +21,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
+import type { KV } from "@nats-io/kv";
 import {
   membersBucket,
   memberKey,
@@ -76,6 +78,65 @@ const rec = (over: Partial<MembershipRecord> & Pick<MembershipRecord, "channel" 
   ...over,
 });
 
+function afterScan(kv: KV): { handle: KV; writeAfterScan: (write: () => Promise<unknown>) => void } {
+  const handle = Object.create(kv) as KV;
+  let pending: (() => Promise<unknown>) | undefined;
+  let checks = 0;
+  Object.defineProperty(handle, "status", { value: async () => {
+    if (pending && ++checks === 2) {
+      await pending();
+      pending = undefined;
+    }
+    return kv.status();
+  } });
+  return { handle, writeAfterScan: (write) => { pending = write; checks = 0; } };
+}
+
+async function lateRegistryWrites(nc: Awaited<ReturnType<typeof connect>>): Promise<void> {
+  const space = "revisionrace";
+  const kv = await openMembersRegistry(nc, space, { create: true });
+  const { handle, writeAfterScan } = afterScan(kv);
+  const jsm = await jetstreamManager(nc);
+  const target = rec({ channel: "target", owner: OA });
+  const unrelated = rec({ channel: "unrelated", owner: OB });
+  const enc = (row: MembershipRecord) => new TextEncoder().encode(JSON.stringify(row));
+  const put = (row: MembershipRecord) => kv.put(memberKey(row.channel, row.owner, row.lifecycleUid), enc(row));
+  const erased = await put(target);
+  await listMembers(handle, { owner: OA });
+  await jsm.streams.deleteMessage(`KV_${membersBucket(space)}`, erased, false);
+  await put(unrelated);
+  writeAfterScan(() => put({ ...target, generation: 2 }));
+  const rows = await listMembers(handle, { owner: OA });
+  check("erasing and recreating a key after the scan cannot return its erased generation", rows.length === 1 && rows[0]?.generation === 2);
+
+  const key = memberKey(target.channel, target.owner, target.lifecycleUid);
+  const nextErase = (await kv.get(key))!.revision;
+  await jsm.streams.deleteMessage(`KV_${membersBucket(space)}`, nextErase, false);
+  await put({ ...unrelated, generation: 2 });
+  writeAfterScan(async () => {
+    await put({ ...target, generation: 3 });
+    await put({ ...target, generation: 4 });
+  });
+  const repaired = await listMembers(handle, { owner: OA });
+  check("an overwritten tail revision cannot hide an erased generation",
+    repaired.length === 1 && repaired[0]?.generation === 4);
+
+  for (let offset = 0; offset < 3343; offset += 128) {
+    await Promise.all(Array.from({ length: Math.min(128, 3343 - offset) }, (_, i) =>
+      put(rec({ channel: `other.k${offset + i}`, owner: OB }))));
+  }
+  await listMembers(handle, { covering: "target" });
+  await put({ ...unrelated, generation: 3 });
+  writeAfterScan(() => put({ ...unrelated, generation: 4 }));
+  const before = nc.stats().inBytes;
+  const matches = await listMembers(handle, { covering: "target" });
+  const bytes = nc.stats().inBytes - before;
+  check(`a late unrelated overwrite in a 3,345-row registry transfers ${bytes} bytes`,
+    matches.length === 1 && matches[0]?.channel === "target" && bytes < 12_000);
+  const catchUp = await listMembers(handle, { channel: "unrelated" });
+  check("the next query includes the late overwrite", catchUp[0]?.generation === 4);
+}
+
 async function main() {
   for (let i = 0; i < 50; i++) {
     try {
@@ -88,6 +149,7 @@ async function main() {
   }
   const nc = await connect({ servers });
   const kv = await openMembersRegistry(nc, space, { create: true });
+  await lateRegistryWrites(nc);
 
   // ---- key encoding round-trips, incl. a dotted (hierarchical) channel ----
   // parseMemberKey peels the LAST dot token as the lifecycleUid and requires a valid principal dot-form.
