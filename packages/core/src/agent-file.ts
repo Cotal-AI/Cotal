@@ -226,14 +226,16 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const allowPublish = list("allowPublish");
   const quiet = list("quiet");
   const muted = list("muted");
-  // Reject channel names the wire layer would silently rewrite — a policy name must equal its wire
-  // token, or the ACL aliases (see assertValidChannel). Covers all three scope fields.
-  for (const ch of [...(subscribe ?? []), ...(allowSubscribe ?? []), ...(allowPublish ?? [])])
+  // A policy channel must match its wire token so the ACL cannot grant access to a different channel.
+  const checkChannel = (field: string, ch: string): void => {
     try {
       assertValidChannel(ch);
     } catch (e) {
-      throw new Error(`agent file ${path}: ${(e as Error).message}`);
+      throw new Error(`agent file ${path}: "${field}": ${(e as Error).message}`);
     }
+  };
+  for (const [field, chans] of [["subscribe", subscribe], ["allowSubscribe", allowSubscribe], ["allowPublish", allowPublish]] as const)
+    for (const ch of chans ?? []) checkChannel(field, ch);
   // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
   // subscribe ⇒ NOTHING; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
   // An omitted or empty read set means NO channels, not `general`: a file that names no channel
@@ -255,11 +257,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
     throw new Error(`agent file ${path}: channel(s) [${both.join(", ")}] are in both quiet and muted - pick one`);
   for (const [field, chans] of [["quiet", quiet], ["muted", muted]] as const)
     for (const ch of chans ?? []) {
-      try {
-        assertValidChannel(ch);
-      } catch (e) {
-        throw new Error(`agent file ${path}: ${(e as Error).message}`);
-      }
+      checkChannel(field, ch);
       if (!isConcreteChannel(ch))
         throw new Error(`agent file ${path}: ${field} channel "${ch}" must be a concrete channel (no wildcard)`);
       if (!channelInAllow(effAllow, ch))
@@ -574,7 +572,7 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
     accessSync(dir, constants.X_OK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(dir, { throwIfNoEntry: false })) return [];
     throw e;
   }
   return files.sort().map((f) => {
