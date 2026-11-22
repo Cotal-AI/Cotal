@@ -468,6 +468,8 @@ the folder's space is prepared and has not started. With an explicit selection, 
 `--space <name>` and `cotal use --clear`. In `use --json`, `folder` identifies the local folder's
 space without changing the selection. `cotal space` and `cotal status` mark the folder as the target
 only when no explicit selection overrides it.
+If `use <space>` cannot read the prepared-space records it needs to identify the folder's space,
+it refuses with `SCHEMA_INVALID`, exit 1, and keeps the saved selection.
 A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
 Bare `use` refuses with `SCHEMA_INVALID`, exit 1, if the saved selection is empty or unreadable.

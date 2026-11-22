@@ -180,6 +180,7 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+Both `--auto` and `--notify` refuse `--on`, even with an empty value, without changing preferences.
 If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
 save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
 report that path, and restore the defaults: automatic updates and notices on. A supplied
