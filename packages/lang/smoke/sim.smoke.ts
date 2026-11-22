@@ -6,9 +6,9 @@
  * invents a plausible turn result green-lights broken programs, which is worse than not having
  * one, so most of this suite is about what the simulator refuses to do.
  */
-import { SimHandler, SimUnscriptedError, type SimScript } from "../src/sim.js";
+import { SimHandler, SimUnscriptedError, simFaultStepKind, type SimScript } from "../src/sim.js";
 import { EffectError, type EffectContext } from "../src/effects.js";
-import { KeyScope, digest, requestId, type StepKey } from "../src/keys.js";
+import { KeyScope, digest, requestId, stepKeyString, type StepKey } from "../src/keys.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -214,6 +214,12 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 }
 
 // ---- 7) fault injection ----------------------------------------------------------------------------
+
+{
+  const scoped = new KeyScope().branch("parallel", "build", 0, "").branch("waitUntil", "checks", 1, "2");
+  const key = stepKeyString(scoped.nextEffect("sleep", "computed name"));
+  ok("a fault selector accepts nested observation scopes and computed step names", simFaultStepKind(key) === "sleep", key);
+}
 
 {
   // The adversarial cases the runtime has to survive: an agent dying at a specific occurrence.

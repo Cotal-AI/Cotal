@@ -141,6 +141,7 @@ export {
 export {
   SimHandler,
   SimUnscriptedError,
+  simFaultStepKind,
   type Scripted,
   type SimFault,
   type SimScript,

@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
-import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
+import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, simFaultStepKind, validate, type SimFault, type SimScript } from "@cotal-ai/lang";
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
@@ -132,28 +132,30 @@ function scriptOf(file: string | undefined): SimScript {
     }
   }
   const faults = script.faults as readonly unknown[] | undefined;
-  for (const [index, entry] of (faults ?? []).entries()) {
-    const problem = faultEntryProblem(entry);
-    if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid faults[${index}] in the simulation results script ${file}: ${problem}`, {
-      target: { file }, remedy: `correct faults[${index}] in ${file}, then rerun the simulation`,
-    });
-  }
+  if (faults !== undefined) script.faults = faults.map((entry, index) => faultEntryOf(entry, file, index));
   return script as SimScript;
 }
 
 const faultFields = { at: true, kind: true, code: true, message: true } satisfies Record<keyof SimFault, true>;
 
-function faultEntryProblem(entry: unknown): string | undefined {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "an entry must be an object";
+function faultEntryOf(entry: unknown, file: string, index: number): SimFault {
+  const invalid = (problem: string): never => {
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid faults[${index}] in the simulation results script ${file}: ${problem}`, {
+      target: { file }, remedy: `correct faults[${index}] in ${file}, then rerun the simulation`,
+    });
+  };
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return invalid("an entry must be an object");
   const fields = entry as Record<string, unknown>;
   const unknown = Object.keys(fields).find((key) => !Object.hasOwn(faultFields, key));
-  if (unknown !== undefined) return `unknown field ${JSON.stringify(unknown)}`;
-  if (typeof fields.at !== "string" || fields.at.trim() === "") return "at must be a nonempty step key";
-  if (typeof fields.kind !== "string") return "kind must be a string";
-  for (const key of ["code", "message"] as const) {
-    if (fields[key] !== undefined && typeof fields[key] !== "string") return `${key} must be a string`;
+  if (unknown !== undefined) return invalid(`unknown field ${JSON.stringify(unknown)}`);
+  const at = fields.at;
+  const stepKind = typeof at === "string" ? simFaultStepKind(at) : undefined;
+  if (stepKind === undefined) return invalid("at must be a full or short step key such as /sleep#0 or sleep#0");
+  for (const key of ["kind", "code", "message"] as const) {
+    if (fields[key] !== undefined && typeof fields[key] !== "string") return invalid(`${key} must be a string`);
   }
-  return undefined;
+  const fault = fields as Omit<SimFault, "kind"> & { kind?: string };
+  return { ...fault, kind: fault.kind ?? stepKind };
 }
 
 /** Why a scripted checkpoint result is not one `checkpoint()` can return, or undefined. The

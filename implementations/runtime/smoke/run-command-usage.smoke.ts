@@ -472,16 +472,17 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   };
   try {
     writeFileSync(program, 'await sleep("1s");\n');
+    const badKey = "at must be a full or short step key such as /sleep#0 or sleep#0";
     for (const [entry, problem] of [
-      [{ att: "/sleep#0", kind: "unreachable" }, 'unknown field "att"'],
+      [{ att: "/sleep#0" }, 'unknown field "att"'],
       [{ ...fault, misspelled: true }, 'unknown field "misspelled"'],
       [null, "an entry must be an object"],
       [[], "an entry must be an object"],
       ["sleep#0", "an entry must be an object"],
-      [{ kind: "unreachable" }, "at must be a nonempty step key"],
-      [{ ...fault, at: " " }, "at must be a nonempty step key"],
-      [{ ...fault, at: 0 }, "at must be a nonempty step key"],
-      [{ at: "/sleep#0" }, "kind must be a string"],
+      [{ kind: "unreachable" }, badKey],
+      ...["", " ", 0, "/", "/sleep", "/sleep:#0", "/sleep#00", "/sleep#0\n", "/slep#0",
+        "/parallel:build#0/sleep#0", "parallel:build#0/b:one/sleep#0", "/sleep#0/b:one/sleep#0"]
+        .map((at) => [{ ...fault, at }, badKey] as const),
       [{ ...fault, kind: false }, "kind must be a string"],
       [{ ...fault, code: null }, "code must be a string"],
       [{ ...fault, message: 42 }, "message must be a string"],
@@ -493,12 +494,22 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
         && error.message === `invalid faults[1] in the simulation results script ${handler}: ${problem}`
         && error.remedy === `correct faults[1] in ${handler}, then rerun the simulation`, { error, output });
     }
-    const { error, output } = await simulate([{ ...fault, code: "L4001", message: "custom fault" }]);
-    const envelope = JSON.parse(output);
-    c("a short fault key injects the supplied code and message at the step",
-      error === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed"
-      && envelope.result.elapsedMs === 0 && envelope.result.failure?.code === "L4001"
-      && envelope.result.failure.title === "custom fault" && envelope.result.failure.step === "/sleep#0", { error, envelope });
+    for (const [entry, code, title] of [
+      [{ at: "/sleep#0" }, "L4002", "simulated sleep at /sleep#0"],
+      [{ ...fault, code: "L4001", message: "custom fault" }, "L4001", "custom fault"],
+    ] as const) {
+      const { error, output } = await simulate([entry]);
+      const envelope = JSON.parse(output);
+      c(`a fault at ${entry.at} injects ${code} at the step`,
+        error === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "failed"
+        && envelope.result.elapsedMs === 0 && envelope.result.failure?.code === code
+        && envelope.result.failure.title === title && envelope.result.failure.step === "/sleep#0", { error, envelope });
+    }
+    const unmatched = await simulate([{ at: "/sleep#1" }]);
+    const envelope = JSON.parse(unmatched.output);
+    c("a well-formed fault key is allowed even when the program never reaches it",
+      unmatched.error === undefined && envelope?.outcome === "ok" && envelope.result?.outcome === "completed"
+      && envelope.result.elapsedMs === 1000, { unmatched, envelope });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
