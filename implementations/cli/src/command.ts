@@ -659,7 +659,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
   }
 }
 
