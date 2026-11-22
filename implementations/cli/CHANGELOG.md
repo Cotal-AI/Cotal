@@ -1,5 +1,51 @@
 # @cotal-ai/cli
 
+## 0.174.4
+
+### Patch Changes
+
+- ef3c8d8: Create missing endpoint scaffold directories privately, show exact inventory commands when several spaces match, and keep the live endpoint roster shortcut on the requested target.
+- a2c9581: Report a running foreground manager in JSON, identify unrelated stopped listeners without suggesting a signal, and show a damaged stack journal when `ps` names the saved broker address.
+- be465f3: Move the status command's component health pass out of `status.ts` into an internal `status-health.ts`. `status.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 9b4095b: Move the status command's mesh and selected-space readers out of `status.ts` into an internal `status-meshes.ts`. `status.ts` keeps every name it exported before, so the module surface is unchanged.
+- 42a088f: Move the status command's report rendering out of `status.ts` into an internal `status-render.ts`. `status.ts` re-exports every name it exported before, so the module surface is unchanged.
+- 547391e: Move the up command's bind-host checks out of `up.ts` into an internal `up-host.ts`. The module surface of `up.ts` is unchanged.
+- b441d03: Move the up command's stream and memory-bucket setup out of `up.ts` into an internal `up-stores.ts`. The module surface of `up.ts` is unchanged.
+- 23ca9cb: Open `#all` separately from the aggregate console feed and reopen chat on channels starting with a hyphen using the suggested command.
+- 33d9b6a: Preview history clears for explicitly named open brokers and clarify which history commands accept broker overrides.
+- ad42f2e: On Linux, restarting a controller stack waits up to 65 seconds for TIME-WAIT to clear so a broker port released just after one minute can be reused without another command.
+- fd92a4e: Join keeps prompts out of redirected transcripts, accepts displayed channel names such as `#general`, and refuses unsupported expiry flags before asking you to sign in to a user-auth space.
+- 21c8a3f: Channel replay retries keep the requested settings, target, and output format.
+- 283daff: When a named status read finds the Manager itself instead of an agent, its suggested status and endpoint reads keep the requested space and broker.
+- 5af398d: Keep the saved space when `cotal use` cannot read prepared-space records, and reject empty manager selectors without changing update preferences.
+- 897ee71: Refresh a manager with its current seat cap without restarting, preview a direct spawn in a stopped project, and get a valid retry when a foreground spawn specifies a manager runtime.
+- 10a88e2: Broker-only manifest starts skip the manager runtime check, manifest log rotation accepts a path from `--log-file`, and the CLI rejects extra topology paths and checkpoint-resume consent on fresh manifest starts.
+- bd76aab: Persona listings report broken catalog links, channel errors name the frontmatter key, and local creation rejects invalid launch names while existing personas with hyphen-leading catalog names keep copyable follow-up commands.
+- 4b2ecd3: Persona creation now distinguishes missing input files from permission failures and tells you how to correct a remote manager ID without dropping the original definition.
+- b478053: Self-update on Linux and macOS uses Cotal’s running Node to install built-in connectors even when an older Node is first on PATH.
+- 7bc808c: Keep the output format in endpoint removal confirmations, show where to restart stopped spaces in live inventory, and name the exact instance when a pinned invocation gets no contract reply.
+- f46f6dc: When a service preset or manager launch is missing required flags, keep the supplied options and preview or output mode when retrying.
+- 3738953: Keep the selected persona and all launch options in the retry command when `cotal spawn` rejects a manager ID.
+- 6c8e878: Create missing project and Zsh startup directories privately, and report a partial completion install when a read-only startup file prevents wiring.
+- fa3107a: Keep JSON refusals quiet when the reader closes the pipe, report failed JSON simulation warnings only in the receipt, and point local run failure views to the driving process instead of manager logs.
+- 814ea23: Refuse to reset stores at dangling links, quote store paths in preserved-stop advice, and recommend backup recovery only for artifacts owned by an interrupted create.
+- 76e6b4b: `cotal clean history` refuses `--attempt` without deleting any retained messages.
+- 7dc8fea: Start prepared spaces alongside manual connections, leave empty folders untouched when adoption is refused, show how to recover damaged prepared records during deletion, and reject invalid space names in config commands.
+- c4bcb08: Allow removal of a scoped extension whose package name starts with an underscore, using the same name shown in the extension inventory.
+- a9413a5: Report a partial extension inventory when the installed version differs from the recorded pin. The inventory and the command that refuses to load the mismatched package both give the appropriate reinstall step, including for a local path containing spaces.
+- c014b80: Give safe next steps for stopped or unreachable space deletion previews, let `meshes add` verify unchanged unchecked registrations, and have `meshes rm` direct prepared spaces to `space forget`.
+- 098f308: Keep channel follow-up commands in the intended space and suggest inspection instead of deletion when a channel removal finds a differently cased name.
+- d4633a8: Restart advice keeps the stopped space's user-auth mode and broker address, `doctor auth` recognizes a named open space from its project subfolders, and credential revocation keeps the selected space and output format in its confirmation retry.
+- 230a508: Make space adoption retries copyable, verify unchecked registrations with equivalent broker URLs, show spaces registered to empty folders, and reject invalid forget names before reading the registry.
+- 0ddea2f: Validate public exchange ports and first-time identity provider signing keys before startup, and show how to launch a user-auth space with a public exchange.
+- Updated dependencies [a2c9581]
+- Updated dependencies [8aceac1]
+- Updated dependencies [bd76aab]
+- Updated dependencies [a9413a5]
+- Updated dependencies [d4633a8]
+  - @cotal-ai/workspace@0.174.4
+  - @cotal-ai/core@0.174.4
+
 ## 0.174.3
 
 ### Patch Changes
