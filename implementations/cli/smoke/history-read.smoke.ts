@@ -801,6 +801,19 @@ try {
         channel.status === 0 && emptyDms.status === 0 && sequences(channel) === expected && sequences(emptyDms) === expected,
         { channel: shown(channel), mixed: shown(emptyDms) });
 
+      const cutoff = new Date(now - 2_000).toISOString();
+      const timeArgs = ["history", "volume", "--since", cutoff, "--space", openSpace];
+      const limited = await run([...timeArgs, "--limit", "1", "--json"]);
+      const complete = await run([...timeArgs, "--limit", "2", "--json"]);
+      const plain = await run([...timeArgs, "--limit", "1", "--plain"]);
+      check("a time cutoff at the first row cannot bound unread rows in broker order",
+        limited.status === 0 && texts(limited).length === 0 && limited.envelope?.result?.window.read === 1
+          && limited.envelope.result.window.olderRetained === true && limited.envelope.result.window.reachesSince === false
+          && complete.status === 0 && texts(complete).join() === "arrived-first" && sequences(complete) === String(first.seq)
+          && complete.envelope?.result?.window.olderRetained === false && complete.envelope.result.window.reachesSince === true
+          && plain.status === 0 && plain.stdout.includes(`the window may omit retained messages after --since ${cutoff}`),
+        { limited: shown(limited), complete: shown(complete), plain: shown(plain) });
+
       const dmSubject = unicastSubject(openSpace, "local", "bob", "local", "alice");
       await publish(dmSubject, "alice", "older-direct", now - 3_000, { to: "local.bob" });
       await publish(dmSubject, "alice", "direct", now - 1_000, { to: "local.bob" });
@@ -811,8 +824,9 @@ try {
           && texts(narrow).includes("direct") && sequences(narrow) === String(second.seq) && narrow.envelope?.result?.window.olderRetained === true,
         { mixed: shown(mixed), narrow: shown(narrow) });
       const byTime = await run(["history", "--dms", "--limit", "3", "--since", new Date(now - 1_500).toISOString(), ...args]);
-      check("a mixed window reaches a time cutoff even if its first row is newer than the cutoff",
-        byTime.status === 0 && byTime.envelope?.result?.window.reachesSince === true && texts(byTime).join() === "arrived-first,direct",
+      check("a mixed window with unread rows cannot establish time cutoff coverage",
+        byTime.status === 0 && byTime.envelope?.result?.window.olderRetained === true
+          && byTime.envelope.result.window.reachesSince === false && texts(byTime).join() === "arrived-first,direct",
         shown(byTime));
     } finally {
       await nc.close();
