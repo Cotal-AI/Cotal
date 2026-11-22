@@ -332,8 +332,8 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = join(extensionPackageDir(request.pkg), extensionEntry(meta));
-      if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
+      const { path, isFile } = extensionEntry(meta, extensionPackageDir(request.pkg));
+      if (!isFile) throw new Error(`extension set installed no entry for ${request.pkg} at ${path}`);
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {

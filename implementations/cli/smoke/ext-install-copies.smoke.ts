@@ -4,7 +4,7 @@
  * Build the workspace first. Run: pnpm smoke:ext-install-copies
  */
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -158,6 +158,11 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
       check("ext add refuses a missing root export even when main exists", refused.status === 1 && refused.stderr.includes("missing.mjs"));
       check("the refusal leaves the previous installation intact", readFileSync(manifestPath, "utf8") === before && cli(["greet-example"]).stdout.trim() === "Hello from the extension");
     }
+    {
+      const dir = join(root, "directory-entry");
+      const { prefix, cli } = sandbox(dir);
+      checkDirectoryEntries(dir, prefix, cli, check);
+    }
     // Two extensions that depend on one package with a bin. The second add's stage carries the bin
     // link the prefix already holds, so its promotion copies a link onto an existing one (#5669).
     {
@@ -205,10 +210,57 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 36 : 33, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 43 : 40, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
+}
+
+function checkDirectoryEntries(dir: string, prefix: string, cli: (args: string[]) => SpawnSyncReturns<string>, check: (name: string, ok: boolean) => void): void {
+  const source = join(dir, "example-extension");
+  const dist = join(source, "dist");
+  mkdirSync(dist, { recursive: true });
+  const meta = { name: "cotal-directory-entry-test", type: "module", main: "./dist", peerDependencies: { "@cotal-ai/core": "*" } };
+  const writePackage = (version: string, extra = {}) => writeFileSync(join(source, "package.json"), JSON.stringify({ ...meta, version, ...extra }));
+  const entry = (value: string) => `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "greet-directory", summary: "Print a greeting", run() { console.log(${JSON.stringify(value)}); } });
+`;
+  const dispatches = (value: string) => {
+    const result = cli(["greet-directory"]);
+    if (result.status !== 0) console.error(result.stderr.trim());
+    return result.status === 0 && result.stdout.trim() === value;
+  };
+  const add = () => cli(["ext", "add", "./example-extension"]);
+  writePackage("1.0.0");
+  writeFileSync(join(dist, "index.js"), entry("directory index"));
+  writeFileSync(join(source, "dist.js"), 'throw new Error("selected a sibling of the declared directory");\n');
+  const first = add();
+  if (first.status !== 0) console.error(first.stderr.trim());
+  check("directory main: ext add resolves the selected directory, not its sibling", first.status === 0);
+  check("directory main: a fresh CLI loads the directory index", dispatches("directory index"));
+
+  writePackage("2.0.0");
+  writeFileSync(join(dist, "package.json"), JSON.stringify({ main: "./greeting.mjs" }));
+  writeFileSync(join(dist, "greeting.mjs"), `await Promise.resolve();\n${entry("nested main")}`);
+  const updated = add();
+  if (updated.status !== 0) console.error(updated.stderr.trim());
+  check("directory main: nested package main wins over index and supports top-level await", updated.status === 0 && dispatches("nested main"));
+
+  const manifestPath = join(prefix, "extensions.json");
+  const before = readFileSync(manifestPath, "utf8");
+  writePackage("3.0.0", { exports: { ".": "./dist" } });
+  const exported = add();
+  check("directory main: an explicit directory export is refused", exported.status === 1 && exported.stderr.includes("extension set installed no entry") && exported.stderr.includes("dist"));
+  writePackage("3.0.0");
+  writeFileSync(join(dist, "package.json"), JSON.stringify({ main: "../../../package.json" }));
+  const escaped = add();
+  check("directory main: a nested entry outside the extension package is refused", escaped.status === 1 && escaped.stderr.includes("resolves outside its package"));
+
+  rmSync(join(dist, "greeting.mjs"));
+  writeFileSync(join(dist, "package.json"), JSON.stringify({ main: "./missing.mjs" }));
+  const missing = add();
+  check("directory main: a missing nested main is refused even with an index", missing.status === 1 && missing.stderr.includes("missing.mjs"));
+  check("directory main: refused adds keep the prior manifest and command", readFileSync(manifestPath, "utf8") === before && dispatches("nested main"));
 }
 
 main();

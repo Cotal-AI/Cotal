@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
@@ -29,15 +29,6 @@ export function isBundledDesktopRuntime(): boolean {
   } catch { /* Non-installed host or unresolvable peer root is not a bundled desktop runtime. */ }
   return false;
 }
-
-/**
- * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
- * its entry, and dynamic-`import()` it (which self-registers its extensions into the shared core
- * {@link registry}). It lives here — below `@cotal-ai/cli` — because both the CLI dispatcher and the
- * manager supervisor must materialize manifest extensions, and neither the manager nor this package
- * may import the CLI. It knows nothing about connectors or any other kind; callers supply the
- * name→package hint used to phrase a not-found error.
- */
 
 /**
  * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
@@ -85,16 +76,59 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-/** Select the same package-relative entry for on-disk checks and import. */
-export function extensionEntry(meta: InstalledExtensionPackage): string {
-  let entry = meta.main ?? "index.js";
+function directoryMain(path: string): string {
+  const manifest = join(path, "package.json");
+  let raw: string;
+  try {
+    raw = readFileSync(manifest, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "index.js";
+    throw e;
+  }
+  // The install can be replaced under this path. Node's require.resolve caches directory mains.
+  const metadata: unknown = JSON.parse(raw);
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error(`${manifest} has invalid package metadata`);
+  }
+  const main = (metadata as { main?: unknown }).main;
+  if (main === undefined) return "index.js";
+  if (typeof main !== "string" || main.length === 0) throw new Error(`${manifest} has an invalid main entry`);
+  return main;
+}
+
+function checkedPackagePath(root: string, path: string): string {
+  const physical = realpathSync(path);
+  const within = relative(root, physical);
+  if (within === ".." || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+    throw new Error(`extension entry resolves outside its package: ${path}`);
+  }
+  return physical;
+}
+
+/** Select the declared entry. With a package directory, report whether the resolved path is a file. */
+export function extensionEntry(meta: InstalledExtensionPackage): string;
+export function extensionEntry(meta: InstalledExtensionPackage, dir: string): { path: string; isFile: boolean };
+export function extensionEntry(meta: InstalledExtensionPackage, dir?: string): string | { path: string; isFile: boolean } {
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
+  let exported: string | undefined;
+  if (typeof dot === "string") exported = dot;
   else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  return entry;
+    const conditions = dot as Record<string, string>;
+    exported = conditions.import ?? conditions.default;
+  } else if (typeof meta.exports === "string") exported = meta.exports;
+  const entry = exported ?? meta.main ?? "index.js";
+  if (dir === undefined) return entry;
+  const path = resolve(join(dir, entry));
+  const stat = statSync(path, { throwIfNoEntry: false });
+  if (exported !== undefined || meta.main === undefined || !stat?.isDirectory()) {
+    return { path, isFile: stat?.isFile() ?? false };
+  }
+  const root = realpathSync(dir);
+  const directory = checkedPackagePath(root, path);
+  // A root-valued main has already declared the directory, so use its index without rereading it.
+  const file = resolve(directory, directory === root ? "index.js" : directoryMain(directory));
+  const isFile = statSync(file, { throwIfNoEntry: false })?.isFile() ?? false;
+  return { path: isFile ? checkedPackagePath(root, file) : file, isFile };
 }
 
 /**
@@ -109,8 +143,9 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   try {
-    const entry = extensionEntry(meta);
-    await import(pathToFileURL(join(dir, entry)).href);
+    const { path: entry, isFile } = extensionEntry(meta, dir);
+    if (!isFile) throw new Error(`no entry file at ${entry}`);
+    await import(pathToFileURL(entry).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }

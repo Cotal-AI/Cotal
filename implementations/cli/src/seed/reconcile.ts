@@ -942,7 +942,7 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
 /** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
-  return existsSync(join(extensionPackageDir(pkg), extensionEntry(installed)));
+  return extensionEntry(installed, extensionPackageDir(pkg)).isFile;
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
