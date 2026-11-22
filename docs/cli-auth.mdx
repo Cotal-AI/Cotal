@@ -452,12 +452,13 @@ space registered as open, with or without `--fix`, the local credential check is
 If `space add --force` recorded the mode without checking it, `doctor auth` warns with
 `MODE_NOT_CHECKED` and points to `cotal space show <name>` for verification. It makes no claim
 about what that broker enforces. A checked open space has no credentials to inspect. The same applies after
-`cotal down` when this root's stack journal still records that space as open, including with
-`--space` naming it. This is a local mode observation, not proof that a broker is running or accepts
-connections. With `--space` naming
+`cotal down` when this root's stack journal or retained `.cotal/server-open.conf` records the space as
+open, including with `--space` naming it. The command does not start or contact the broker. If a
+legacy stack's local records are incomplete, the diagnostic can name the record to restore without
+assuming that the broker ran open. With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
-no other root. If the name is neither registered nor prepared, the next step identifies it as
-unknown and points to `cotal space` to check the name. To start a new local space, run
+no other root. If no local record applies and the name is neither registered nor prepared, the
+next step identifies it as unknown and points to `cotal space` to check the name. To start a new local space, run
 `cotal space create <name>` in its project folder, then run `cotal up` there.
 For a space registered at another root, the next step names the folder where the same command
 runs. If the recorded folder no longer exists,

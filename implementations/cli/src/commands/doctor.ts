@@ -28,11 +28,14 @@ import {
   DELIVERY_CREDS_KIND,
   findCotalRoot,
   findMesh,
+  findPreparedSpace,
   folderSpaceHeld,
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
+  isGenuineSpace,
   legacyRenewalRecord,
+  legacyStackOtherHome,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
   meshesForRoot,
@@ -40,10 +43,13 @@ import {
   MeshTargetError,
   migrateLegacyCotalMaterial,
   preflightTarget,
+  preparedSpaceAt,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
+  retainedLegacyBroker,
+  retainedOpenSpace,
   SHOWN_VALUE_MAX,
   spaceKey,
   spaceNameTooLong,
@@ -52,6 +58,7 @@ import {
   storeContentsText,
   type StaleSystemCred, type MaterialMigrationReceipt,
   unparsableDaemonCreds,
+  userAuthSpacesOnDisk,
   workspaceSecretStore,
   writeRenewalRecord,
   recordOperationSpace,
@@ -127,9 +134,34 @@ export function validateDoctorArguments(args: ParsedArgs): void {
   }
 }
 
-/** The space recorded as open at this root, in its stack journal or registration. Missing signing
- *  trust alone is never read as an open space. */
-function recordedOpenSpace(root: string, space: string | undefined, fix: boolean): { space: string; checked: boolean } | undefined {
+type OpenScope = { space: string; source: "recorded" | "unchecked-registration" | "broker-config" } | { remedy: string };
+
+/** The legacy launcher leaves its rendered broker config when down removes the registration. */
+function retainedOpenScope(root: string, requested?: string): OpenScope | undefined {
+  if (lstatSync(join(root, ".cotal"), { throwIfNoEntry: false })?.isDirectory() !== true || !isGenuineSpace(root)) return undefined;
+  const config = join(root, ".cotal", "server-open.conf");
+  const hasConfig = lstatSync(config, { throwIfNoEntry: false }) !== undefined;
+  if (!hasConfig && !existsSync(join(root, ".cotal", "stack-home.json"))) return undefined;
+  if (legacyStackOtherHome(root) !== undefined) return undefined;
+  const prepared = preparedSpaceAt(root);
+  const retained = retainedLegacyBroker(root);
+  if (retained?.open === false || existsSync(join(authDir(root), "server.conf")) || userAuthSpacesOnDisk(authDir(root)).length) return undefined;
+  const space = retained ? retainedOpenSpace(root) : undefined;
+  if (!retained || space === undefined) {
+    if (prepared || (requested !== undefined && findPreparedSpace(requested))) return undefined;
+    if (retained) return { remedy: `restore the space key in ${config} from this stack's records, then retry` };
+    return { remedy: hasConfig
+      ? `restore the rendered broker address in ${config} from this stack's records, then retry`
+      : `restore ${config} if this stack ran open, or restore its local signing records in ${authDir(root)}, then retry` };
+  }
+  if ((requested !== undefined ? requested !== space : findMesh(space) !== undefined) || (prepared && prepared.space !== space)) return undefined;
+  const named = findPreparedSpace(space);
+  if (named && canonicalRoot(named.root) !== canonicalRoot(root)) return undefined;
+  return { space, source: "broker-config" };
+}
+
+/** Missing signing trust alone never establishes open mode. */
+function recordedOpenSpace(root: string, space: string | undefined, hasTrust: boolean, fix: boolean): OpenScope | undefined {
   const stack = readStackJournal(root)?.journal;
   // Bare, the scope is the one space registered at this root, not a selection made for other
   // commands: resolving the selection names another folder's space, and the open branch is missed.
@@ -139,13 +171,15 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
     target: { root, space: null, candidates: open },
     remedy: `run \`cotal doctor auth${fix ? " --fix" : ""} --space ${shellWord(open[0]!)}\` here, or name another listed space with --space`,
   });
-  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return { space: stack.space, checked: true };
+  if (stack?.mode === "open" && (space === undefined || space === stack.space)) return { space: stack.space, source: "recorded" };
+  if (!stack && !hasTrust && (space === undefined ? here : meshesForRoot(root)).length === 0 && (space === undefined || !findMesh(space)))
+    return retainedOpenScope(root, space);
   const named = space ?? (here.length === 1 ? here[0]!.space : undefined);
   try {
     const target = resolveMeshTarget(root, { ...(named === undefined ? {} : { space: named }), readOnly: true });
     if (target.mode !== "open" || target.origin === undefined || canonicalRoot(target.root) !== canonicalRoot(root)) return undefined;
     const entry = here.find((m) => m.space === target.space) ?? findMesh(target.space);
-    return { space: target.space, checked: entry !== undefined && entry.unchecked !== true };
+    return { space: target.space, source: entry !== undefined && entry.unchecked !== true ? "recorded" : "unchecked-registration" };
   } catch { return undefined; }
 }
 
@@ -202,22 +236,27 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     try { files = accountInventory(authDir(root)).corrupt.map((file) => join(authDir(root), file)); } catch { /* the trust folder itself could not be read */ }
     throw new CommandFailure("refused", "SCHEMA_INVALID", `the local authority inventory under ${authDir(root)} could not be validated${files.length ? ` (${files.join(", ")})` : ""}; no repair was attempted`, { target: { root, space: values.space ?? null }, remedy: `restore ${files.length ? files.join(", ") : "the trust records in that folder"} from backup; do not remove other account records, then re-run \`cotal up\`` });
   }
-  const open = recordedOpenSpace(root, values.space ?? auth?.space, values.fix === true);
-  if (open !== undefined && (!auth || auth.space === open.space)) {
+  const open = recordedOpenSpace(root, values.space ?? auth?.space, auth !== undefined, values.fix === true);
+  if (open && "space" in open && (!auth || auth.space === open.space)) {
     const target = { root, space: open.space };
-    const warnings = open.checked ? [] : [{ code: "MODE_NOT_CHECKED", target, message: `The registration records open mode without checking the broker. Run ${codeSpan(`cotal space show ${shellWord(open.space)}`)} to see how to verify its mode.` }];
+    const checked = open.source !== "unchecked-registration";
+    const mode = open.source === "broker-config" ? "open, as recorded in the broker configuration" : checked ? "open, as registered" : "open, not checked";
+    const warnings = checked ? [] : [{ code: "MODE_NOT_CHECKED", target, message: `The registration records open mode without checking the broker. Run ${codeSpan(`cotal space show ${shellWord(open.space)}`)} to see how to verify its mode.` }];
+    const note = open.source === "broker-config" ? "This stack was configured to run without credentials. Live broker authorization was not checked."
+      : checked ? "This space is open: it authenticates no one and issues no credentials, so there are none to check." : "No credentials were inspected or repaired.";
     writeResult(presentationOf(values), {
       command: "doctor auth", target, warnings, noOp: true,
       result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), ...target, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair },
-    }, () => ({ sections: [{ title: open.checked ? "No credentials to check" : "Credential check skipped", blocks: [
-      { kind: "fields", rows: [["Root", root], ["Space", open.space], ["Mode", open.checked ? "open, as registered" : "open, not checked"]] },
-      { kind: "lines", lines: [{ text: open.checked ? "This space is open: it authenticates no one and issues no credentials, so there are none to check." : "No credentials were inspected or repaired.", tone: "hint" }] },
+    }, () => ({ sections: [{ title: checked ? "No credentials to check" : "Credential check skipped", blocks: [
+      { kind: "fields", rows: [["Root", root], ["Space", open.space], ["Mode", mode]] },
+      { kind: "lines", lines: [{ text: note, tone: "hint" }] },
     ] }] }));
     return;
   }
   if (!auth) {
-    if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy: trustRootStep(root, values.space, values.fix === true) });
-    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: trustRootStep(root, undefined, false) } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
+    const remedy = open && "remedy" in open ? open.remedy : trustRootStep(root, values.space, values.fix === true);
+    if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy });
+    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
   }
   const target = { root, space: auth.space };

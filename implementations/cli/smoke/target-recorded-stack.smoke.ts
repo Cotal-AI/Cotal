@@ -53,7 +53,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, assertSmokeSandboxLinkedDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
@@ -65,8 +65,14 @@ if (!existsSync(BIN)) {
 
 interface Envelope {
   outcome: string;
-  target: { space?: string | null } | null;
-  result: { selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
+  target: { space?: string | null; root?: string } | null;
+  result: {
+    selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string };
+    hints?: string[];
+    credentialScope?: string;
+    brokerAuthorization?: string;
+    repair?: { attempted: boolean };
+  } | null;
   error?: { code: string; message: string; remedy?: string };
   warnings?: { code: string; message: string }[];
 }
@@ -79,7 +85,7 @@ mkdirSync(join(root, ".cotal"), { mode: 0o700 });
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
 const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 const readRemedy = (text: string) => text.replaceAll("`cotal ", `\`${launcher} `);
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -538,9 +544,57 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   const legacyStatus = run(["status"], legacy);
   check("status there reports the selection, and names no space for a folder whose stopped stack records none",
     /^Mesh: sel$/m.test(legacyStatus.stdout) && !/this folder holds/.test(legacyStatus.stdout) && noDefault(legacyStatus), shown(legacyStatus));
+
+  const config = join(legacy, ".cotal", "server-open.conf");
+  const nameless = readFileSync(config, "utf8");
+  checkDoctorOpenRecords(config, nameless, record, elsewhere);
+
   rmSync(record);
   rmSync(join(home, ".cotal", "current-mesh"));
   rmSync(elsewhere, { recursive: true, force: true });
+}
+
+function checkDoctorOpenRecords(config: string, nameless: string, record: string, elsewhere: string): void {
+  const space = "stoppedopen";
+  const doctor = (...args: string[]) => run(["doctor", "auth", ...args, "--json"], legacy);
+  const bare = doctor();
+  const unknown = doctor("--space", space);
+  check("an open config without a space key does not establish a credential scope",
+    bare.status === 4 && bare.envelope?.result?.credentialScope === "not-established" && (bare.envelope.error?.remedy ?? "").includes(`space key in ${config}`), shown(bare));
+  check("a named diagnosis of incomplete local records refuses and does not suggest creating a space",
+    unknown.status === 2 && unknown.envelope?.error?.code === "AUTH_REQUIRED" && unknown.envelope.error.remedy === bare.envelope?.error?.remedy, shown(unknown));
+  const named = `${nameless}# space key: ${Buffer.from(space).toString("hex")}\n`;
+  writeFileSync(config, named, { mode: 0o600 });
+  for (const flags of [[], ["--space", space], ["--fix"], ["--space", space, "--fix"]]) {
+    const good = doctor(...flags);
+    check(`doctor auth ${flags.join(" ")} uses the stopped root's own open record without a broker or repair`,
+      good.status === 0 && good.envelope?.outcome === "no-op" && good.envelope.target?.space === space && good.envelope.target.root === legacy &&
+      good.envelope.result?.credentialScope === "open-space" && good.envelope.result.brokerAuthorization === "not-checked" &&
+      good.envelope.result.repair?.attempted === false && readFileSync(config, "utf8") === named, shown(good));
+  }
+  const wrong = doctor("--space", "otheropen");
+  check("the stopped open record cannot diagnose a different requested space",
+    wrong.status === 2 && wrong.envelope?.error?.code === "AUTH_REQUIRED" && (wrong.envelope.error.remedy ?? "").includes('Unknown space "otheropen"'), shown(wrong));
+
+  const claim = join(dirname(record), `space.${Buffer.from(space).toString("hex")}.json`);
+  writeFileSync(claim, JSON.stringify({ space, server: "nats://127.0.0.1:24713", root: elsewhere, mode: "open", origin: "up", ts: new Date().toISOString() }), { mode: 0o600 });
+  const foreign = doctor("--space", space);
+  check("a registration of the same name at another root takes precedence over the retained config",
+    foreign.status === 2 && foreign.envelope?.error?.code === "AUTH_REQUIRED" && (foreign.envelope.error.remedy ?? "").includes(elsewhere), shown(foreign));
+  const foreignBare = doctor();
+  check("bare doctor auth cannot claim an open config whose space is now registered elsewhere",
+    foreignBare.status === 4 && foreignBare.envelope?.result?.credentialScope === "not-established", shown(foreignBare));
+  rmSync(claim);
+
+  writeFileSync(config, named.replace(/^port: .*\n/m, ""), { mode: 0o600 });
+  const noAddress = doctor("--space", space);
+  check("a space key cannot establish open mode without the rendered broker address",
+    noAddress.status === 2 && noAddress.envelope?.error?.code === "AUTH_REQUIRED" && (noAddress.envelope.error.remedy ?? "").includes(`broker address in ${config}`), shown(noAddress));
+  rmSync(config);
+  writeFileSync(join(legacy, ".cotal", "stack-home.json"), JSON.stringify({ home: env.COTAL_HOME }), { mode: 0o600 });
+  const missing = doctor();
+  check("when the local start record remains, an absent config is named without assuming open mode",
+    missing.status === 4 && missing.envelope?.result?.credentialScope === "not-established" && (missing.envelope.error?.remedy ?? "").includes(`restore ${config}`), shown(missing));
 }
 // A legacy root holding a space's records while this machine registers that space for ANOTHER
 // folder: a copy of that folder, the folder a later `up` took the name over from, or this folder
