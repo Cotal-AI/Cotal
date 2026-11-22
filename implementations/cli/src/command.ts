@@ -61,6 +61,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
+import { membershipSetupFailureRecords } from "./commands/channel-members.js";
 import { historySetupFailureRecords } from "./commands/history.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
@@ -157,8 +158,19 @@ function debugStacks(failure: Error): void {
   for (let depth = 0; error instanceof Error && depth < 8; error = error.cause, depth++) if (error.stack) console.error(c.dim(error.stack));
 }
 
-/** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
- *  for, and the exit code its outcome sets. A usage refusal is followed by the help of the command
+/** A validator can refuse before the selected follow writes its first record. */
+function validationFollowFailureRecords(cmd: Command, args: ParsedArgs, failure: CommandFailure) {
+  if (args.values.follow !== true || args.values.plain === true) return;
+  const [first, name] = args.positionals;
+  if (cmd.name === "history" && !findSubcommand(cmd, first)) return historySetupFailureRecords(args, failure);
+  if (cmd.name === "channel" && first === "members") {
+    const space = typeof args.values.space === "string" ? args.values.space : null;
+    return membershipSetupFailureRecords({ space, channel: name?.replace(/^#/, "") || null }, failure);
+  }
+}
+
+/** A classified failure: its line and remedy on stderr, its JSON output on stdout when requested,
+ *  and the exit code its outcome sets. A usage refusal is followed by the help of the command
  *  or subcommand `words` name. Structured output is written synchronously, because stdout to a pipe is
  *  asynchronous on some platforms and `exit` would cut it short. */
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain = false, scope?: OperationScope, words: readonly string[] = [], validationArgs?: ParsedArgs): never {
@@ -177,16 +189,15 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
-  // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
-  // envelope cannot be written, and the exit status below stands either way.
+  // Under --json the structured output reports the failure. Its text report goes to stderr only when
+  // stdout cannot be written, and the exit status below stands either way.
   if (!json) writeReport();
   else try {
     // Mint receipts identify the operation, not the auth namespace used by account reports.
     const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
       ? "auth mint" : cmd.name;
-    const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
-      && !findSubcommand(cmd, validationArgs.positionals[0]);
-    const lines = historyFollow ? historySetupFailureRecords(validationArgs, failure).map((record) => `${JSON.stringify(record)}\n`).join("")
+    const records = validationArgs && validationFollowFailureRecords(cmd, validationArgs, failure);
+    const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("")
       : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeSync(1, lines);
   } catch (error) {

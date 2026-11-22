@@ -521,9 +521,9 @@ the duration. For example, `--window ' 24h '` saves `24h`.
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
 the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
 or null when the roster has none. With `--follow --json`, it emits membership NDJSON
-records. If setup fails before the snapshot, it writes an `error` with the code and any remedy,
-then an `end` with `reason: "setup-failed"` and `lastAsOf: null`. Both records name the requested
-channel and the space when known.
+records. If validation of the parsed arguments or setup fails before the snapshot, it writes an
+`error` with the code and any remedy, then an `end` with `reason: "setup-failed"` and `lastAsOf: null`.
+Both records name the requested channel and space when known.
 
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with

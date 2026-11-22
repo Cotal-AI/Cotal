@@ -126,7 +126,7 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
 
-async function checkHistoryFollowValidation(): Promise<void> {
+async function checkFollowValidation(): Promise<void> {
   let connections = 0;
   const listener = createServer((socket) => { connections++; socket.destroy(); });
   await new Promise<void>((resolve, reject) => {
@@ -154,25 +154,31 @@ async function checkHistoryFollowValidation(): Promise<void> {
         && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === finite.envelope?.error?.message
         && records[1]?.data?.reason === "setup-failed",
       { stream: shown(stream), finite: shown(finite), connections });
+    await checkMembershipSetupRefusal(["channel", "members", "volume.posts", "--json", "--purge", "--server", server],
+      { space: null, channel: "volume.posts" }, "USAGE_INVALID", 1);
+    await checkMembershipSetupRefusal(["-j", "ch", "members", "#volume.posts", "--yes", "--space", space, "--server", server],
+      { space, channel: "volume.posts" }, "USAGE_INVALID", 1);
+    await checkMembershipSetupRefusal(["channel", "members", "--json", "--server", server],
+      { space: null, channel: null }, "USAGE_INVALID", 1);
+    check("invalid membership arguments open no connection", connections === 0, connections);
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
   }
 }
 
-async function checkMembershipSetupRefusal(targetSpace: string, channel: string, code: string, ...targetFlags: string[]): Promise<void> {
-  const args = ["channel", "members", channel, "--space", targetSpace, "--json", ...targetFlags];
+async function checkMembershipSetupRefusal(args: string[], target: { space: string | null; channel: string | null }, code: string, exit = 2): Promise<void> {
   const finite = await run(args);
   const stream = await run([...args, "--follow"]);
   const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
-    schemaVersion?: number; stream?: string; type?: string; target?: { space?: string; channel?: string };
+    schemaVersion?: number; stream?: string; type?: string; target?: { space: string | null; channel: string | null };
     data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
   });
   const error = finite.envelope?.error;
-  check(`membership follow frames ${code} as an error and end with the space and channel, exit 2`,
-    finite.status === 2 && finite.envelope?.command === "channel" && finite.envelope?.outcome === "refused"
-      && error?.code === code && Boolean(error.remedy) && stream.status === 2 && stream.stderr === ""
+  check(`membership follow for ${target.channel ?? "an omitted channel"} ${target.space ? "with" : "without"} a space frames ${code} as error and end, exit ${exit}`,
+    finite.status === exit && finite.stderr === "" && finite.envelope?.command === "channel" && finite.envelope.outcome === "refused"
+      && error?.code === code && (exit === 1 || Boolean(error.remedy)) && stream.status === exit && stream.stderr === ""
       && records.map((r) => r.type).join() === "error,end" && records.every((r) =>
-        r.schemaVersion === 1 && r.stream === "membership" && r.target?.space === targetSpace && r.target?.channel === channel)
+        r.schemaVersion === 1 && r.stream === "membership" && r.target?.space === target.space && r.target?.channel === target.channel)
       && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
       && records[1]?.data?.reason === "setup-failed" && records[1]?.data?.lastAsOf === null,
     { finite: shown(finite), stream: shown(stream) });
@@ -390,7 +396,7 @@ try {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
-  await checkHistoryFollowValidation();
+  await checkFollowValidation();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
@@ -1093,7 +1099,8 @@ try {
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
     const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
-    await checkMembershipSetupRefusal(openSpace, "general", "UNSUPPORTED");
+    await checkMembershipSetupRefusal(["channel", "members", "general", "--space", openSpace, "--json"],
+      { space: openSpace, channel: "general" }, "UNSUPPORTED");
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
@@ -1340,7 +1347,8 @@ try {
       && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
       && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
     { read: shown(stoppedRead), follow: shown(stoppedFollow) });
-  await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
+  await checkMembershipSetupRefusal(["channel", "members", "updates", "--space", space, "--json", "--server", servers],
+    { space, channel: "updates" }, "TARGET_UNAVAILABLE");
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});
