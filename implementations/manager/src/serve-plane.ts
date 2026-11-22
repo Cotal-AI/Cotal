@@ -64,8 +64,6 @@ export interface ServePlaneDeps {
   serviceServe(): ServiceServe | undefined;
   setServiceServe(value: ServiceServe | undefined): void;
   userMode(): boolean;
-  setGoalWriterIdentity(value: Identity): void;
-  setGoalWriterCreds(value: string | undefined): void;
   remoteStandingBudgetMs: number;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
   dialRemoteStanding: (opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number) => Promise<NatsConnection>;
@@ -101,8 +99,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     serviceServe: () => m["serviceServe"],
     setServiceServe: (value) => { m["serviceServe"] = value; },
     userMode: () => m["userMode"],
-    setGoalWriterIdentity: (value) => { m["goalWriterIdentity"] = value; },
-    setGoalWriterCreds: (value) => { m["goalWriterCreds"] = value; },
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
     dial: (...args) => m["dial"](...args),
     dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
@@ -153,7 +149,7 @@ export class ServePlane {
   sessionLedgerIdentity?: Identity;
   sessionLedgerCreds?: string;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal">) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">) {}
 
   private get auth(): SpaceAuth | undefined { return this.deps.auth(); }
   private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.deps.remoteAuthority(); }
@@ -311,9 +307,9 @@ export class ServePlane {
     const auth = this.auth;
     if (this.remoteAuthority) {
       const remote = this.remoteAuthority;
-      this.deps.setGoalWriterIdentity(remote.identities.goalWriter);
+      this.parts.goalWriter.goalWriterIdentity = remote.identities.goalWriter;
       this.sessionLedgerIdentity = remote.identities.sessionLedger;
-      this.deps.setGoalWriterCreds(remote.goalWriterCreds);
+      this.parts.goalWriter.goalWriterCreds = remote.goalWriterCreds;
       this.sessionLedgerCreds = remote.sessionLedgerCreds;
       const state = {
         handle: undefined as unknown as EpServeHandle,
@@ -377,7 +373,7 @@ export class ServePlane {
     const siblings = auth ? claimManagerSiblingIdentities(this.config.workspaceRoot, this.config.space) : { goalWriter: newIdentity(), sessionLedger: newIdentity() };
     // The STABLE goal-writer identity - a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), so the run block can family-stage it.
-    this.deps.setGoalWriterIdentity(siblings.goalWriter);
+    this.parts.goalWriter.goalWriterIdentity = siblings.goalWriter;
     // The STABLE session-LEDGER identity - another SIBLING in the SAME §13.1 family, so
     // the takeover barrier revokes a deposed manager's ledger cred alongside its goal-writer. The
     // per-session serving creds join the same family, each with its own fresh identity.
@@ -485,7 +481,7 @@ export class ServePlane {
     }
     if (!registration) throw new Error("manager registration produced no serve authority");
     const { grant, creds, goalWriterCreds, sessionLedgerCreds } = registration;
-    this.deps.setGoalWriterCreds(goalWriterCreds);
+    this.parts.goalWriter.goalWriterCreds = goalWriterCreds;
     this.sessionLedgerCreds = sessionLedgerCreds;
     // The serve connection presents the CURRENT credential on every (re)connect (the state object
     // is captured by the authenticator), so a fence-traversing renewal is adopted by reconnect

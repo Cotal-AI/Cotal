@@ -355,7 +355,7 @@ function standingMeta() {
     supervisor: m.credentialRenewal.remoteSupervisorCreds,
     executor: m.credentialRenewal.remoteExecutorCreds,
     serve: m.serviceServe?.creds,
-    goalWriter: m.goalWriterCreds,
+    goalWriter: m.goalWriterComponent.goalWriterCreds,
     sessionLedger: m.servePlane.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);

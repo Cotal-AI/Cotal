@@ -68,19 +68,19 @@ function relay(targetPort: number, listenPort: number) {
 
 type Inside = {
   serviceServe?: { nc: NatsConnection };
-  goalWriter?: { nc: NatsConnection };
   transportDown: WeakSet<NatsConnection>;
   stopServiceServe: () => Promise<void>;
   stopGoalWriter: () => Promise<void>;
   stopSessionPlane: () => Promise<void>;
   servePlane: { sessionLedgerConn?: { nc: NatsConnection }; };
+  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
 };
 type Step = { label: string; nc: NatsConnection; stop: () => Promise<void> };
 /** The three dedicated connections in the order `stop()` retires them, captured before any stop
  *  clears its holder. */
 const stepsOf = (inside: Inside): Step[] => [
   { label: "serve", nc: inside.serviceServe!.nc, stop: () => inside.stopServiceServe() },
-  { label: "goal-writer", nc: inside.goalWriter!.nc, stop: () => inside.stopGoalWriter() },
+  { label: "goal-writer", nc: inside.goalWriterComponent.goalWriter!.nc, stop: () => inside.stopGoalWriter() },
   { label: "session-ledger", nc: inside.servePlane.sessionLedgerConn!.nc, stop: () => inside.stopSessionPlane() },
 ];
 
@@ -99,7 +99,7 @@ const bootManager = async (): Promise<Manager> => {
   const mgr = new Manager({ space, servers: `nats://127.0.0.1:${relayPort}`, runtime: "pty", workspaceRoot: root, consolePort: 0 });
   await mgr.start();
   const inside = mgr as unknown as Inside;
-  const bound = await until(() => [inside.serviceServe, inside.goalWriter, inside.servePlane.sessionLedgerConn]
+  const bound = await until(() => [inside.serviceServe, inside.goalWriterComponent.goalWriter, inside.servePlane.sessionLedgerConn]
     .every((held) => held !== undefined && !inside.transportDown.has(held.nc)), 10_000);
   if (!bound) throw new Error("the manager never stood up its serve, goal-writer and session-ledger connections through the relay");
   return mgr;

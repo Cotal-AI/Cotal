@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -63,7 +63,7 @@ import { type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
@@ -593,50 +593,23 @@ export class Manager {
    *  than drains it ({@link retireConnection}). Keyed by the connection, so a re-dial that swaps in a
    *  fresh one starts from its own state. */
   protected readonly transportDown = new WeakSet<NatsConnection>();
-  /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
-   *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
-   *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
-   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from).
-   *  `gate` (auth mode) is the own-issuance-gate READER for the own-gate currency belt — the
-   *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
-   *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
-  protected goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
   /** The workflow-run host (SPEC 14.3): the drives this incarnation holds, each on its own
    *  per-run credential and connection. Absent under a remote authority, which mints no driver
    *  credentials, so the `run-*` family refuses there rather than connecting on a weaker identity. */
   protected runHosting?: RunHosting;
-  /** The STABLE goal-writer identity (auth mode) — minted once at
-   *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
-   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
-   *  goal-writer credential is minted INSIDE {@link registerManagerService}'s run block (fence
-   *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
-  protected goalWriterIdentity?: Identity;
-  protected goalWriterCreds?: string;
-  /** The acceptance replied for each goal this incarnation accepted, by {@link goalKey}, so an
-   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
-   *  without a second spawn. An entry lives while its goal is in flight and for
-   *  {@link ManagerConfig.goalAcceptanceRetentionMs} after its terminal commits; a later retry, or one at another
-   *  incarnation, is answered from the goal index while the goal runs and from its committed
-   *  result fact once it has ended. */
-  protected goalAcceptances = new Map<string, SpawnAcceptance>();
-  /** The boot reconcile of the durable goal index runs ONCE at start (a
-   *  fresh incarnation inherits the endpoint's accepted-but-unterminal goals from any predecessor).
-   *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
-   *  acceptance (settling one mid-flight would steal its real terminal). */
-  protected goalReconcileDone = false;
   /** The live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   protected agentGoals = new Map<string, GoalRef>();
   private turnRelayInstance?: TurnRelay;
   protected get turnRelay(): TurnRelay {
     return this.turnRelayInstance ??= new TurnRelay({
-      goalWriter: () => this.goalWriter,
+      goalWriter: () => this.goalWriterComponent.goalWriter,
       serviceServe: () => this.serviceServe,
       space: this.config.space,
       managerInstanceId: () => this.managerInstanceId,
       execution: this.execution,
       executionRefusal: this.executionRefusal(),
-      goalReconcileDone: () => this.goalReconcileDone,
+      goalReconcileDone: () => this.goalWriterComponent.goalReconcileDone,
       readinessTimeoutMs: () => this.config.readinessTimeoutMs,
       adoptsSeats: () => this.auth !== undefined && !this.userMode,
       onceSeatReconciling: (uid) => this.staticLifecycle.pendingLifecycle(uid),
@@ -758,13 +731,13 @@ export class Manager {
   protected readonly userProvision = new UserProvision(this.config, userProvisionDeps(this));
 
   /** Seat stop, exit, recursive reap and named despawn. Every dependency reads through at its use. */
-  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this));
+  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts);
 
   /** The typed command table and its admission. Every dependency reads through at its use. */
-  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this));
+  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts);
 
   /** The spawn and launch goal path. Every dependency reads through at its use. */
-  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this));
+  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts);
 
   /** The persona catalog doors. Every dependency reads through at its use. */
   private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this));
@@ -906,6 +879,7 @@ export class Manager {
       credentialRenewal: this.credentialRenewal,
       harnessResolution: this.harnessResolutionComponent,
       lease: this.lease,
+      goalWriter: this.goalWriterComponent,
       seatLaunch: this.seatLaunch,
       servePlane: this.servePlane,
     } satisfies ManagerParts);

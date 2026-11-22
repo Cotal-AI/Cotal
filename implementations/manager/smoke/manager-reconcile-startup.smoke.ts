@@ -319,9 +319,9 @@ try {
       turnRelay: {
         pendingTurns: Map<string, Record<string, unknown>>;
       };
-      goalReconcileDone: boolean;
+      goalWriterComponent: { goalReconcileDone: boolean; };
     };
-    seeded.goalReconcileDone = true;
+    seeded.goalWriterComponent.goalReconcileDone = true;
     const turnRow = (goalId: string, acceptedAt: number, deadlineAt: number) => ({
       ref: { endpoint: "m", caller: { owner: seat.owner, actor: seat.actor, uid: seat.uid }, goalId },
       goalId, seat: { name: "s", ...seat }, payload: goalId, acceptedAt, deadlineAt,
@@ -342,9 +342,9 @@ try {
         turnAcceptances: Map<string, { acceptance: Record<string, unknown>; leftoverSince?: number; settled?: { state: string; at: number } }>;
         sweepTurnDeadlines: () => Promise<void>;
       };
-      goalWriter?: unknown;
+      goalWriterComponent: { goalWriter?: unknown; };
     };
-    retryDoors.goalWriter = { ctx: {} };
+    retryDoors.goalWriterComponent.goalWriter = { ctx: {} };
     turnRelayOf(seeded).pendingTurns.delete("stale");
     turnRelayOf(seeded).pendingTurns.delete("live");
     turnRelayOf(retryDoors).turnAcceptances.set("done-already", {
@@ -430,16 +430,16 @@ try {
         pendingTurns: Map<string, { acceptedAt: number; seatDiedAt?: number; seat: { name: string } }>;
       };
       managerInstanceId: string;
-      goalWriter?: unknown;
       adoptTurnGoal: (e: { ref: GoalRef; iid: string; allocated?: { name: string; owner?: string; actor: string; uid: string }; note?: string }) => Promise<void>;
+      goalWriterComponent: { goalWriter?: unknown; };
     };
     // The fixture writes through the LIVE manager's own goal-writer connection: these records are
     // the ones a manager writes, and no other credential in this suite may write them.
-    const live = manager as unknown as { goalWriter?: { nc: unknown; ctx: Parameters<typeof bindGoal>[0]; identity: unknown } };
-    const gw = live.goalWriter;
+    const live = manager as unknown as { goalWriterComponent: { goalWriter?: { nc: unknown; ctx: Parameters<typeof bindGoal>[0]; identity: unknown }; } };
+    const gw = live.goalWriterComponent.goalWriter;
     if (gw === undefined) throw new Error("the live manager has no goal-writer connection; the adoption fixture cannot write its goal");
     const actx = gw.ctx;
-    doors.goalWriter = gw;
+    doors.goalWriterComponent.goalWriter = gw;
     // An unstarted Manager has no instance id yet (start() mints or restores one). The hold below
     // is minted under an instance id, and the goal-writer cred may schedule only under the LIVE
     // manager's, so the adopting incarnation presents as that instance: the shape a restart has,
@@ -501,9 +501,9 @@ try {
     // reply is "lost"), then retries the same goal and must hear the answer it earned.
     const adoptDoors = adopting as unknown as {
       serveTurnYield: (c: { owner: string; actor: string; uid: string }, raw: Record<string, unknown>) => Promise<{ goalId: string; state: string }>;
-      goalReconcileDone: boolean;
+      goalWriterComponent: { goalReconcileDone: boolean; };
     };
-    adoptDoors.goalReconcileDone = true;
+    adoptDoors.goalWriterComponent.goalReconcileDone = true;
     // The yield's commit proves the executor's LIVE currency against the agents map (a seat that
     // died between its yield and the commit refuses `expired`); the adopting manager here never
     // started, so its map is empty and the fixture registers the seat the way a resume would.
