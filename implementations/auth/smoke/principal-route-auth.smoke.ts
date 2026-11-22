@@ -1026,7 +1026,7 @@ try {
     }
     check("a rebuilt connection subscribes again: the agent answers on the same runtime id", after?.ok === true && (after.data as { runtime: { id: string } }).runtime.id === oldRuntime, after);
     // The serve keeps a handle per connection only until that connection is replaced.
-    const handles = () => (coderEp as unknown as { principalServes: Map<string, { handles: unknown[] }> }).principalServes.get(AGENT_ENDPOINT)?.handles.length;
+    const handles = () => (coderEp as unknown as { delivery: { principalServes: Map<string, { handles: unknown[] }> } }).delivery.principalServes.get(AGENT_ENDPOINT)?.handles.length;
     await coderEp.reconnect();
     for (let i = 0, done = false; i < 50 && !done; i++) {
       const r = await settle(call(webEp, coderAt, "prompts", "owner", {}, 1500));

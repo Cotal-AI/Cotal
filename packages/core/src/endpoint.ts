@@ -9,7 +9,6 @@ import {
   TimeoutError,
   type NatsConnection,
   type Msg,
-  type Subscription,
 } from "@nats-io/transport-node";
 import {
   responderFromLease,
@@ -46,7 +45,6 @@ import {
   JetStreamApiCodes,
   type JetStreamManager,
   type Consumer,
-  type ConsumerMessages,
   type ConsumerInfo,
   type JsMsg,
 } from "@nats-io/jetstream";
@@ -106,6 +104,7 @@ import { newConnectionState, type ConnectionState } from "./endpoint-connection-
 import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
 import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
 import { newChannelRegistryState, type ChannelRegistryState } from "./endpoint-channel-registry-state.js";
+import { newDeliveryState, type DeliveryState } from "./endpoint-delivery-state.js";
 import type { AnycastStatus } from "./anycast-requests.js";
 import {
   assertValidRole,
@@ -189,8 +188,6 @@ export class CotalEndpoint extends EventEmitter {
   readonly space: string;
   readonly channels: string[];
 
-  /** The DM-only handler now running, if any; stop awaits it. */
-  private dmOnlyInFlight?: Promise<void>;
 
   /** Consumer deletes of retired presence and channel-registry watches still in flight. A stop
    *  alone leaves each watch's ordered consumer on the broker for its five-minute inactive
@@ -213,12 +210,11 @@ export class CotalEndpoint extends EventEmitter {
   private readonly cred: CredentialState = newCredentialState();
   /** The channel registry this endpoint has read. The parts hold it by reference and read a field when they use it. */
   private readonly channelRegistry: ChannelRegistryState = newChannelRegistryState();
+  /** Subscriptions, consumers and responders on the connection. The parts hold it by reference and read a field when they use it. */
+  private readonly delivery: DeliveryState = newDeliveryState();
   /** The plane-3 delivery daemon side of this endpoint (fan-out writer, trusted reader, control
    *  responders) and the agent's DELIVER pump. Every dependency is read when it is used. */
-  private readonly deliveryPlane: EndpointDeliveryPlane = new EndpointDeliveryPlane(this.identity, this.conn, this.lifecycle, this.cred, {
-    anycastUnavailable: () => this.anycastUnavailable,
-    streamMsgs: () => this.streamMsgs,
-    subs: () => this.subs,
+  private readonly deliveryPlane: EndpointDeliveryPlane = new EndpointDeliveryPlane(this.identity, this.conn, this.lifecycle, this.cred, this.delivery, {
     maxPayload: () => this.maxPayload,
     aclForAlias: (...args) => this.aclForAlias(...args),
     channelHistory: (...args) => this.channelHistory(...args),
@@ -245,8 +241,6 @@ export class CotalEndpoint extends EventEmitter {
     sendMentionNotice: (...args) => this.anycastRail.sendMentionNotice(...args),
     emit: (event, ...args) => this.emit(event, ...args),
   });
-  /** Why the records are not open, when this daemon's credential cannot open them. */
-  private anycastUnavailable?: string;
   private readonly history = new EndpointHistory(this.identity, this.conn, {
     notLiveMsg: () => this.notLiveMsg(),
     requireLifecycleUid: (operation) => this.requireLifecycleUid(operation),
@@ -262,31 +256,6 @@ export class CotalEndpoint extends EventEmitter {
     authenticatedMessage,
     isPublishPermissionDenied,
   });
-  private readonly subs: Subscription[] = [];
-  /** The liveness responders {@link serveLiveness} was asked for, by plane. This is INTENT, re-bound
-   *  by {@link EndpointLiveness.bindLiveness} on every (re)connect: a rebuild closes the old connection and every
-   *  subscription on it, so a responder bound once would leave its plane to the broker's
-   *  no-responders answer, which a peer grades `unbound`, while this endpoint is connected and serving. */
-  private readonly livenessResponders = new Map<LivenessPlane, { readState: () => Promise<ResponderState> | ResponderState; sub?: Subscription }>();
-  /** The principal endpoints {@link servePrincipal} serves, by endpoint name: INTENT, re-bound on
-   *  every replaced connection. */
-  private readonly principalServes = new Map<string, PrincipalServeIntent>();
-  private readonly streamMsgs: ConsumerMessages[] = [];
-  /** Per-channel native core subscriptions (SPEC v0.3) — the manager-free live read path for boot +
-   *  runtime channels (there is no per-instance chat durable). Keyed by channel so leave unsubscribes
-   *  just one. */
-  private readonly chatSubs = new Map<string, Subscription>();
-  /** Channels whose core-sub the broker refused (async sub.allow violation) — read by the
-   *  broker-confirmed join: a denied subscribe is NOT a successful join (SPEC conformance #13). */
-  private readonly chatSubDenied = new Set<string>();
-  /** Channels this session has a Plane-3 durable backstop for (per-channel join GENERATION, from
-   *  durableJoin, so leave passes it back for the stale-leave guard). A durable channel's core-sub is
-   *  NOT coverage-dropped — it stays a live wake-hint, dedup-coalesced with the Plane-3 durable copy by
-   *  id-dedup. Drives the durable-state surface + routes leave to `durableLeave`. PERSISTS across
-   *  reconnect (like `this.channels`): the membership record + the `dlv_<id>` durable are persistent so
-   *  the backstop survives a reconnect on its own; the agent can't re-read the privileged members KV,
-   *  so this in-memory mirror is kept, not rebuilt. Cleared only on full stop. */
-  private readonly plane3Channels = new Map<string, number>();
   private readonly deliveryLease = new EndpointDeliveryLease(this.identity, this.conn, this.lifecycle, {
     notLiveMsg: () => this.notLiveMsg(),
     deleteWatchConsumer: (iter) => this.deleteOwnConsumer(kvWatchConsumer(iter)),
@@ -310,9 +279,6 @@ export class CotalEndpoint extends EventEmitter {
    *  Exposed via {@link actorIsEphemeral} so a caller deriving a per-agent resource name can refuse
    *  the mode instead of silently keying on a value that will not survive the process. */
   readonly actorIsEphemeral: boolean;
-  /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
-   *  and connection replacement / reconnect can trigger reconciliation. */
-  private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
@@ -630,20 +596,12 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The connection bind and teardown of this endpoint. Every dependency is read when it is used, so a
    *  field assigned after construction is seen. */
-  private readonly connection: EndpointConnection = new EndpointConnection(this.identity, this.conn, this.lifecycle, this.cred, this.channelRegistry, {
+  private readonly connection: EndpointConnection = new EndpointConnection(this.identity, this.conn, this.lifecycle, this.cred, this.channelRegistry, this.delivery, {
     authed: () => this.authed,
     readsChannelsOnDemand: () => this.readsChannelsOnDemand,
     deliveryLease: () => this.deliveryLease,
-    livenessResponders: () => this.livenessResponders,
-    activeGoalFollowers: () => this.activeGoalFollowers,
-    streamMsgs: () => this.streamMsgs,
     presence: () => this.presence,
-    chatSubs: () => this.chatSubs,
-    chatSubDenied: () => this.chatSubDenied,
     deliveryPlane: () => this.deliveryPlane,
-    subs: () => this.subs,
-    principalServes: () => this.principalServes,
-    dmOnlyInFlight: () => this.dmOnlyInFlight,
     refreshBearer: (initial) => this.refreshBearer(initial),
     refreshCreds: (initial) => this.credentials.refreshCreds(initial),
     cancelCredsRefresh: () => this.credentials.cancelCredsRefresh(),
@@ -1053,10 +1011,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The control plane and the service-invocation client of this endpoint. Every dependency is
    *  read when it is used, so a field assigned after construction is seen. */
-  private readonly controlPlane = new EndpointControlPlane(this.identity, this.conn, this.lifecycle, this.cred, {
+  private readonly controlPlane = new EndpointControlPlane(this.identity, this.conn, this.lifecycle, this.cred, this.delivery, {
     authed: () => this.authed,
-    subs: () => this.subs,
-    activeGoalFollowers: () => this.activeGoalFollowers,
     notLiveMsg: () => this.notLiveMsg(),
     requireLifecycleUid: (what) => this.requireLifecycleUid(what),
     reportSubscriptionDenial: (error) => this.connection.reportSubscriptionDenial(error),
@@ -1394,10 +1350,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Join, leave and channel listing, and the membership feed watches, of this endpoint. Every
    *  dependency is read when it is used, so a field assigned after construction is seen. */
-  private readonly subscriptions: EndpointSubscriptions = new EndpointSubscriptions(this.identity, this.conn, this.lifecycle, this.channelRegistry, {
+  private readonly subscriptions: EndpointSubscriptions = new EndpointSubscriptions(this.identity, this.conn, this.lifecycle, this.channelRegistry, this.delivery, {
     authed: () => this.authed,
-    chatSubDenied: () => this.chatSubDenied,
-    plane3Channels: () => this.plane3Channels,
     readsChannelsOnDemand: () => this.readsChannelsOnDemand,
     notLiveMsg: () => this.notLiveMsg(),
     readChannels: () => this.readChannels(),
@@ -1754,7 +1708,7 @@ export class CotalEndpoint extends EventEmitter {
           // The library re-subscribed on a connection the broker authorized again: re-run the check.
           this.rebindPrincipalServes(true);
           this.emit("transport", { connected: true, server: s.server } satisfies TransportState);
-          for (const follower of this.activeGoalFollowers) {
+          for (const follower of this.delivery.activeGoalFollowers) {
             follower.reconnected(nc);
           }
           continue;
@@ -2307,8 +2261,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The agent-side durable membership of this endpoint. Every dependency is read when it is used, so a
    *  field assigned after construction is seen. */
-  private readonly durable: EndpointDurable = new EndpointDurable(this.identity, this.conn, this.lifecycle, {
-    plane3Channels: () => this.plane3Channels,
+  private readonly durable: EndpointDurable = new EndpointDurable(this.identity, this.conn, this.lifecycle, this.delivery, {
     aclRegistry: () => this.aclRegistry(),
     deliveryClassFresh: (channel) => this.deliveryClassFresh(channel),
     deleteConsumerIfPresent: (stream, durable) => this.consumers.deleteConsumerIfPresent(stream, durable),
@@ -2395,11 +2348,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The anycast request rail of this endpoint. Every dependency is read when it is used, so a field
    *  assigned after construction is seen. */
-  private readonly anycastRail: EndpointAnycast = new EndpointAnycast(this.identity, this.conn, {
+  private readonly anycastRail: EndpointAnycast = new EndpointAnycast(this.identity, this.conn, this.delivery, {
     authed: () => this.authed,
-    subs: () => this.subs,
-    anycastUnavailable: () => this.anycastUnavailable,
-    setAnycastUnavailable: (value) => { this.anycastUnavailable = value; },
     emitRecoverable: (err) => this.emitRecoverable(err),
     plane3MayAct: () => this.deliveryPlane.plane3MayAct(),
     notLiveMsg: () => this.notLiveMsg(),
@@ -2413,9 +2363,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The peer-readable liveness responders and the probe, of this endpoint. Every dependency is read
    *  when it is used, so a field assigned after construction is seen. */
-  private readonly liveness = new EndpointLiveness(this.identity, this.conn, {
-    subs: () => this.subs,
-    livenessResponders: () => this.livenessResponders,
+  private readonly liveness = new EndpointLiveness(this.identity, this.conn, this.delivery, {
     notLiveMsg: () => this.notLiveMsg(),
     requestBoundReply: (nc, subject, body, reply, timeoutMs) => this.requestBoundReply(nc, subject, body, reply, timeoutMs),
     isNoResponders: (e) => this.isNoResponders(e),
@@ -2534,7 +2482,7 @@ export class CotalEndpoint extends EventEmitter {
     const nc = this.conn.nc;
     if (!nc) throw new Error(this.notLiveMsg());
     endpointToken(serve.endpoint);
-    if (this.principalServes.has(serve.endpoint))
+    if (this.delivery.principalServes.has(serve.endpoint))
       throw new Error(`this endpoint already serves "${serve.endpoint}" on the principal route`);
     const self: EpPrincipal = { owner: this.identity.owner, actor: this.identity.actor, uid, runtimeId: assertRuntimeToken(processRuntime(uid).id) };
     const serverKey = `${this.space}\n${self.runtimeId}\n${serve.endpoint}`;
@@ -2549,7 +2497,7 @@ export class CotalEndpoint extends EventEmitter {
     };
     // Construction refuses an invalid cluster before anything is kept or subscribed.
     const handle = this.bindPrincipalHandle(intent, nc);
-    this.principalServes.set(serve.endpoint, intent);
+    this.delivery.principalServes.set(serve.endpoint, intent);
     principalServers.set(serverKey, intent);
     // A fresh `seq` per serve: the last serve may have ended with prompts open, and the pair
     // `(runtime.id, seq)` it showed then must not name this serve's empty list (SPEC §6).
@@ -2560,8 +2508,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The principal serve and prompts of this endpoint. Every dependency is read when it is used, and
    *  every endpoint method is looked up at call time, so a member a caller replaced on the endpoint runs. */
-  private readonly principalServe = new EndpointPrincipalServe(this.identity, this.conn, {
-    principalServes: () => this.principalServes,
+  private readonly principalServe = new EndpointPrincipalServe(this.identity, this.conn, this.delivery, {
     principalServers: () => principalServers,
     publishPresence: () => this.publishPresence(),
     emitRecoverable: (err) => this.emitRecoverable(err),
@@ -2694,8 +2641,7 @@ export class CotalEndpoint extends EventEmitter {
   /** The boot durable self-join and its reconcile, and the membership read the leave path uses, of
    *  this endpoint. Every dependency is read when it is used, and every endpoint method is looked up
    *  at call time, so a test that replaces one on the endpoint is seen here. */
-  private readonly bootMemberships = new EndpointBootMemberships(this.identity, this.lifecycle, {
-    plane3Channels: () => this.plane3Channels,
+  private readonly bootMemberships = new EndpointBootMemberships(this.identity, this.lifecycle, this.delivery, {
     requestDelivery: (op, args, timeoutMs) => this.requestDelivery(op, args, timeoutMs),
     requireLifecycleUid: (what) => this.requireLifecycleUid(what),
     deliveryClassFresh: (channel) => this.deliveryClassFresh(channel),
@@ -2722,14 +2668,8 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The durable consumers of this endpoint. Every dependency is read when it is used, so a field
    *  assigned after construction is seen. */
-  private readonly consumers: EndpointConsumers = new EndpointConsumers(this.identity, this.conn, this.lifecycle, {
+  private readonly consumers: EndpointConsumers = new EndpointConsumers(this.identity, this.conn, this.lifecycle, this.delivery, {
     authed: () => this.authed,
-    streamMsgs: () => this.streamMsgs,
-    dmOnlyInFlight: () => this.dmOnlyInFlight,
-    setDmOnlyInFlight: (value) => { this.dmOnlyInFlight = value; },
-    chatSubs: () => this.chatSubs,
-    chatSubDenied: () => this.chatSubDenied,
-    plane3Channels: () => this.plane3Channels,
     notLiveMsg: () => this.notLiveMsg(),
     requireLifecycleUid: (what) => this.requireLifecycleUid(what),
     ensureDmDurable: (owner, actor, lifecycleUid, opts) => this.provisioning.ensureDmDurable(owner, actor, lifecycleUid, opts),

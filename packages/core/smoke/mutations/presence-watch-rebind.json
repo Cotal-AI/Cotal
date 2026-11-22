@@ -44,16 +44,16 @@
     {
       "name": "R6 stop() no longer moves the epoch, so only a rebuild retires an in-flight bind and a stop-time bind still lands",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.activeGoalFollowers.clear();\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
-      "replace": "    this.activeGoalFollowers.clear();\n",
+      "find": "    this.delivery.activeGoalFollowers.clear();\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
+      "replace": "    this.delivery.activeGoalFollowers.clear();\n",
       "expectRed": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)",
       "cell": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)"
     },
     {
       "name": "R7 clearConnectionScoped no longer moves the epoch, so an old epoch's late bind overwrites the fresh epoch's watch after a reconnect",
       "file": "packages/core/src/endpoint-connection.ts",
-      "find": "    this.streamMsgs.length = 0;\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
-      "replace": "    this.streamMsgs.length = 0;\n",
+      "find": "    this.delivery.streamMsgs.length = 0;\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
+      "replace": "    this.delivery.streamMsgs.length = 0;\n",
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch",
       "cell": "7.3 the old epoch's late bind does not overwrite the fresh watch"
     },
