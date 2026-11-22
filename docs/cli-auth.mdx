@@ -449,6 +449,7 @@ the report is partial (exit 4) and its next step is to run it in a space's root,
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
 space registered as open, with or without `--fix`, the local credential check is a no-op (exit 0).
+Name the open space with `--space` to run the same check from a subfolder of its project.
 If `space add --force` recorded the mode without checking it, `doctor auth` warns with
 `MODE_NOT_CHECKED` and points to `cotal space show <name>` for verification. It makes no claim
 about what that broker enforces. A checked open space has no credentials to inspect. The same applies after
@@ -702,7 +703,8 @@ The broker loads a revocation only when it starts, so the space must be stopped:
 refuses the same way while the root records a maintenance attempt. After that `down`, the command
 run in the folder revokes the space that folder holds even while another space is selected. A path
 in that refusal, and in the Next after a revocation, is one shell word. A connection held with the credential ends at the `down` and is refused after
-the `up`. It asks before it revokes, or takes `--yes`; `--json` without `--yes` refuses. A key
+the `up`. It asks before it revokes, or takes `--yes`; `--json` without `--yes` refuses. The
+confirmation retry keeps any explicit `--space`, `--json` or `--plain` flag. A key
 already revoked reports the time it was first revoked and changes nothing. `--json` reports
 `publicKey`, `revokedAt` in Unix seconds, `alreadyRevoked` and `takesEffect`.
 

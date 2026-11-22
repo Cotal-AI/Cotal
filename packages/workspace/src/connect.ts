@@ -41,7 +41,7 @@ import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from 
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, retainedLegacyBroker, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
 import { findPreparedSpace } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
@@ -640,12 +640,16 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // for that very space even when the registry lost (or never had) the entry — treating it as an
     // open broker would credless-connect into a callout denial whose copy sends the operator
     // port-hunting. Name the real state and the recovery instead.
-    if (hasUserAuthState(findCotalRoot(), flags.space))
+    const root = findCotalRoot();
+    if (hasUserAuthState(root, flags.space)) {
+      const retained = retainedLegacyBroker(root);
+      const restart = codeSpan(`cotal up --user-auth --space ${shellPath(flags.space)}${retained && !retained.open ? ` --server ${shellPath(retained.server)}` : ""}`);
       throw new ConnectRefusal(
-        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with ${restart} from its project folder, then sign in (\`cotal login\`)`,
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
+    }
     const tls = tlsIntent(flags.server, false);
     try {
       await reachableOrThrow(flags.server, { tls });

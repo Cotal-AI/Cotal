@@ -19,9 +19,11 @@
  * Run: pnpm smoke:foreground-up-signals:live */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { recordsBucket } from "@cotal-ai/core";
@@ -883,7 +885,56 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
   }
 }
 
+async function userAuthRestartCell(): Promise<void> {
+  const home = join(base, "user-auth-home"), mesh = join(base, "user-auth-project");
+  for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const key = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" });
+  const idp = createHttpServer((req, res) => {
+    if (req.url !== "/auth/jwks") { res.writeHead(404).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ keys: [{ ...key, kid: "fixture", use: "sig", alg: "EdDSA" }] }));
+  });
+  const listening = once(idp, "listening");
+  idp.listen(0, "127.0.0.1");
+  await listening;
+  try {
+    const space = "restart-user-auth", port = await freePort(), server = `nats://127.0.0.1:${port}`;
+    const restart = ["--user-auth", "--space", space, "--server", server];
+    const bootAndStop = async (args: string[]) => {
+      const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", ...args, "--foreground", "--no-manager"], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+      const state = observeOwnedChild(child);
+      let output = "";
+      for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      try {
+        await until(async () => {
+          if (state.error) throw state.error;
+          if (state.exited) throw new Error(output);
+          return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+        }, 90_000, () => output);
+      } finally {
+        if (!state.exited) child.kill("SIGTERM");
+        await waitForOwnedChild(() => state.closed, 30_000, output);
+      }
+      assert.equal(state.code, 143, output);
+      assert.equal(await portOpen(port), false, output);
+    };
+    await bootAndStop([...restart, "--idp", `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`]);
+    for (const args of [["whoami"], ["send", "--server", server, "-c", "general", "test message"]]) {
+      const r = await foregroundCliProbe(cliEntry, tsx, mesh, env, [...args, "--space", space, "--plain"]);
+      const text = (r.out + r.err).replace(/\s+/g, " ");
+      assert.equal(r.code, 2, text);
+      assert.ok(text.includes(`cotal up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}`), text);
+    }
+    await bootAndStop(restart);
+    passed++;
+    console.log("PASS foreground-up-signals stopped user-auth guidance keeps the space and broker address");
+  } finally {
+    await new Promise<void>(resolve => idp.close(() => resolve()));
+  }
+}
+
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await userAuthRestartCell();
 await cell("external-named", { auth: true, ready: true, externalDown: "named" });
 await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });
 await checkInheritedPipeCleanup();
