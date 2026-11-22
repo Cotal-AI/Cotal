@@ -518,16 +518,24 @@ function notAnArtifact(path: string): boolean {
   } catch { return false; }
 }
 
-/** Whether the claim on `root` names `path` as its backup destination. */
+/** Whether the claim on `root` names this canonical backup directory. */
 function claimedDestination(root: string, path: string): { attemptId: string; owned: boolean } | undefined {
   try {
     const journal = readMaintenanceJournal(root);
     if (journal?.state !== "claimed") return undefined;
-    const destination = journal.claim.ownedPaths?.find((entry) => entry.label === "destination" && entry.path === path);
-    if (!destination) return undefined;
-    const { dev, ino } = destination;
-    const owned = dev !== undefined && ino !== undefined && sameDirectoryIdentity(path, { dev: BigInt(dev), ino: BigInt(ino) });
-    return { attemptId: journal.claim.attemptId, owned };
+    let pending = false;
+    for (const entry of journal.claim.ownedPaths ?? []) {
+      if (entry.label !== "destination") continue;
+      // Recovery uses the recorded path without following a link in its final component.
+      try {
+        const recorded = lstatSync(entry.path, { bigint: true });
+        if (!recorded.isDirectory() || realpathSync.native(entry.path) !== path) continue;
+        if (entry.dev === undefined || entry.ino === undefined) pending = true;
+        else if (entry.dev === recorded.dev.toString() && entry.ino === recorded.ino.toString() && sameDirectoryIdentity(path, recorded))
+          return { attemptId: journal.claim.attemptId, owned: true };
+      } catch { /* An inaccessible slot cannot establish ownership. */ }
+    }
+    return pending ? { attemptId: journal.claim.attemptId, owned: false } : undefined;
   } catch { return undefined; }
 }
 

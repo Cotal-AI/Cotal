@@ -2,8 +2,8 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
@@ -17,11 +17,58 @@ import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, pre
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
 import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, eventPayloadStream, rotateSystemAccount, spaceBackupInventory, taskStream } from "@cotal-ai/core";
-import { acquireMaintenanceLock, authDir, beginMaintenanceCut, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, authDir, beginMaintenanceCut, claimMaintenanceReady, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordMaintenanceClaimResources, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
+
+function checkLinkedInterruptedBackup(root: string): void {
+  const parent = join(root, "backups"), alias = join(root, "backup-link");
+  mkdirSync(parent);
+  symlinkSync(realpathSync.native(parent), alias, "junction");
+  const named = join(alias, "interrupted");
+  const attemptId = "backup-00000000-0000-4000-8000-000000000000";
+  const now = new Date().toISOString();
+  const lock = acquireMaintenanceLock(root);
+  const real = join(realpathSync.native(parent), "interrupted");
+  const destination = { label: "destination" as const, path: named };
+  const check = (mode: "verify" | "inspect", path: string, recover: boolean) => {
+    assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) => {
+      if (!isCommandFailure(error)) return false;
+      const target = error.target as { directory?: unknown; fault?: unknown } | null;
+      return error.code === "SCHEMA_INVALID" && target?.directory === real && target.fault === "manifest-missing"
+        && error.remedy === (recover ? `run \`cotal backup recover ${attemptId} --yes\` from the original project once the attempt has stopped, then create a new backup`
+          : "verify another intact copy, or create a new backup from a stopped preserved cut");
+    }, `${mode} diagnoses ${path} with ${recover ? "claim recovery" : "the ordinary remedy"}`);
+  };
+  try {
+    claimMaintenanceReady(lock, { attemptId, deadline: now, coordinator: { pid: process.pid, host: hostname(), startedAt: now, id: attemptId }, owners: [], ownedPaths: [destination] });
+    const { dev, ino } = createArtifactWriter(named).identity;
+    check("verify", named, false);
+    recordMaintenanceClaimResources(lock, { ownedPaths: [{ ...destination, dev: dev.toString(), ino: ino.toString() }] });
+  } finally { releaseMaintenanceLock(lock); }
+  check("verify", named, true);
+  check("inspect", real, true);
+  writeFileSync(join(real, "checkpoints.json"), "[]\n");
+  check("verify", named, true);
+  check("inspect", real, true);
+
+  // Keep the old directory allocated so the replacement cannot reuse its inode.
+  const moved = join(parent, "moved");
+  renameSync(real, moved);
+  mkdirSync(real);
+  assert.throws(() => backupRead({ positionals: ["verify", named], values: {}, raw: [] }), (error: unknown) =>
+    isCommandFailure(error) && error.code === "TARGET_NOT_FOUND", "an empty replacement directory is not the interrupted artifact");
+  writeFileSync(join(real, "checkpoints.json"), "[]\n");
+  check("verify", named, false);
+
+  renameSync(real, join(parent, "replacement"));
+  symlinkSync(moved, real, "junction");
+  assert.throws(() => backupRead({ positionals: ["verify", named], values: {}, raw: [] }), (error: unknown) =>
+    isCommandFailure(error) && error.code === "SCHEMA_INVALID" && !(error.remedy ?? "").includes("backup recover"),
+  "recovery will not remove a symlink occupying the recorded destination");
+}
 
 for (const mode of ["open", "auth", "user"] as const) {
   const inventory = spaceBackupInventory("versioned");
@@ -509,6 +556,7 @@ try {
             && / or resume with bare .*up`; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force` again$/.test(error.remedy ?? ""),
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
+      checkLinkedInterruptedBackup(cleanRoot);
     } finally { process.chdir(previousCwd); }
   }
 
