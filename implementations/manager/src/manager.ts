@@ -16,7 +16,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { Retirement, retirementDeps, type TeardownTarget } from "./retirement.js";
-import type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
+import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { ServePlane, servePlaneDeps } from "./serve-plane.js";
 import { NamesCapacity, namesCapacityDeps, type Occupancy } from "./names-capacity.js";
