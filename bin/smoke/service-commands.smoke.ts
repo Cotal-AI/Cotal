@@ -13,6 +13,7 @@
  * Run: pnpm smoke:service-commands
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -273,16 +274,49 @@ try {
   check("the missing manager log names the stack root and previews starting the manager in the requested space",
     missingLog.status === 2 && logError.code === "TARGET_NOT_FOUND" && logError.remedy.includes(`\`cotal up --root ${prepared} --space ${PREPARED}\``)
       && managerPreview?.status === 0 && JSON.parse(managerPreview.stdout).target.space === PREPARED, { missingLog: out(missingLog), preview: managerPreview && out(managerPreview) });
+  const retryWith = (flags: string) => `rerun the original command with \`${flags}\`, keeping all other arguments and flags unchanged`;
+  const fills: Record<string, string> = { "--config": config, "--binary": binary, "--server": `nats://127.0.0.1:${await freePort()}` };
+  const brokerPreviewArgs = ["service", "start", "broker", "--space", PREPARED, "--dry-run", "--server", fills["--server"]!];
+  const brokerPartial = cotal(brokerPreviewArgs);
+  const brokerCorrected = cotal([...brokerPreviewArgs, "--config", config, "--binary", binary]);
+  check("a broker preview asks to add the missing files to the original preview, which then saves and launches nothing",
+    brokerPartial.status === 1 && out(brokerPartial).includes(retryWith("--config <file> --binary <file>"))
+      && brokerCorrected.status === 0 && out(brokerCorrected).includes("Nothing was saved, launched or loaded.")
+      && serviceDefinitionStore(PREPARED).read("broker") === undefined, { refused: out(brokerPartial), corrected: out(brokerCorrected) });
+
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
   check("a broker add missing its options prints all three options and keeps the explicit space",
     unready.status === 1 && out(unready).includes("the broker preset needs --config, --binary, which have no default, and --server, since space servicecommandsprep has no registered broker; nothing was saved or started")
       && printed === `cotal service add b0 --preset broker --config <file> --binary <file> --server <url> --space ${PREPARED}`, out(unready));
-  const fills: Record<string, string> = { "--config": config, "--binary": binary, "--server": `nats://127.0.0.1:${await freePort()}` };
   const tokens = printed.split(" ").slice(1);
   const followed = cotal(tokens.map((word, index) => /^<[a-z]+>$/.test(word) ? fills[tokens[index - 1]!] ?? word : word));
   check("  filling only its placeholders saves the broker in the requested space, not the selected space",
     followed.status === 0 && serviceDefinitionStore(PREPARED).read("b0") !== undefined && serviceDefinitionStore(SPACE).read("b0") === undefined, out(followed));
+
+  const managerArgs = ["manager", "start", "--space", PREPARED, "--dry-run", "--json"];
+  const launchFile = join(prepared, ".cotal", "manager launch.json"), launchBytes = "{}\n";
+  writeFileSync(launchFile, launchBytes, { mode: 0o600 });
+  const digest = createHash("sha256").update(launchBytes).digest("hex");
+  const managerPartial = cotal([...managerArgs, "--launch-sha256", digest]);
+  const managerError = JSON.parse(managerPartial.stdout);
+  check("a pinned manager preview asks for only its missing launch file and preserves the original command",
+    managerPartial.status === 1 && managerPartial.stderr === "" && managerError.target.space === PREPARED
+      && managerError.error?.code === "USAGE_INVALID" && managerError.error.remedy === retryWith("--launch <file>"), out(managerPartial));
+  const managerCorrected = cotal([...managerArgs, "--launch-sha256", digest, "--launch", launchFile]);
+  const managerResult = JSON.parse(managerCorrected.stdout);
+  check("  adding the launch file previews the requested manager without saving or allocating it",
+    managerCorrected.status === 0 && managerResult.command === "manager" && managerResult.target.space === PREPARED
+      && managerResult.result?.dryRun === true && managerResult.result.saved === false && managerResult.result.allocated === false
+      && serviceDefinitionStore(PREPARED).read("manager") === undefined, out(managerCorrected));
+
+  const brokerAddArgs = ["service", "add", "logs-check", "--preset", "broker", "--space", PREPARED, "--config", config, "--server", fills["--server"]!, "--json"];
+  const addPartial = cotal(brokerAddArgs);
+  const addCorrected = cotal([...brokerAddArgs, "--binary", binary]);
+  const addError = JSON.parse(addPartial.stdout), addResult = JSON.parse(addCorrected.stdout);
+  check("a partial broker add asks for only its missing binary, and the corrected command saves without starting",
+    addPartial.status === 1 && addPartial.stderr === "" && addError.error?.code === "USAGE_INVALID" && addError.error.remedy === retryWith("--binary <file>")
+      && addCorrected.status === 0 && addResult.target.space === PREPARED && addResult.result?.started === false, { refused: out(addPartial), corrected: out(addCorrected) });
 
   const brokerHelp = out(cotal(["service", "add", "b1", "--preset", "broker", "--space", PREPARED, "--help"]));
   check("broker preset help shows --log-file as a path, as `cotal up` does, described for a preset add", /--log-file <path> +the nats-server log file this configuration's log_file names/.test(brokerHelp) && !brokerHelp.includes("prepared by `cotal up`"), brokerHelp);

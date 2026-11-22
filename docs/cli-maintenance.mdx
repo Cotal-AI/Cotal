@@ -333,7 +333,8 @@ and its flags and the manager preset's options (`--runtime`, `--roster`, `--name
 `--console-port`, `--console-host`, `--ws-port`, `--max-sessions`, `--launch`, `--launch-sha256`) are
 taken on the line. Pass both launch flags together: `--launch` takes the absolute path to an
 existing private resolved launch spec for the selected space, and `--launch-sha256` takes the full
-SHA-256 of those file bytes. See [Native manager service definition](#native-manager-service-definition).
+SHA-256 of those file bytes. If you passed only one, add the other to your original command. Keep
+your other flags, including `--dry-run` for a preview. See [Native manager service definition](#native-manager-service-definition).
 `cotal help manager <verb>` and `cotal manager <verb> --help` print the verb's help with those
 options. The first
 start saves the space's `manager` service from the preset's defaults and says so on stderr; `cotal
