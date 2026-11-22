@@ -9,8 +9,12 @@ import { managerServiceCommand } from "./manager-service.js";
 import { manifestRepair, readUpdatePending } from "../lib/update-pending.js";
 
 /** `--all`, the older way to ask for every command, which help now always lists. It is accepted and
- *  changes nothing, and neither help nor completion offers it. */
-export const helpFlags = [{ name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" }] as const;
+ *  changes nothing, and neither help nor completion offers it. `--preset` names the preset whose
+ *  options `help service add` shows, as `service add <name> --preset <name> --help` does. */
+export const helpFlags = [
+  { name: "all", type: "boolean", description: "accepted for scripts written before help listed every command; it changes nothing" },
+  { name: "preset", type: "string", value: "<name>", description: "show the preset's options when asking for service add help" },
+] as const;
 
 /** `cotal help [command…]`: every command, or the help of the command the words name. The words
  *  select a command or alias, then its subcommands before any operands. A manager lifecycle
@@ -23,6 +27,14 @@ export async function help(args: ParsedArgs): Promise<void> {
   if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
   if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
     paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), ["start"]));
+    return;
+  }
+  // `service add` takes its preset as a flag, not a word, so the preset's options are shown only
+  // when `--preset` names one; an unknown preset falls through to the generic add help, as the
+  // suffix `--help` form does for a missing or unknown preset.
+  const preset = (args.values as FlagValues<typeof helpFlags>).preset;
+  if (cmd.name === "service" && path[0] === "add" && typeof preset === "string" && findServicePreset(preset)) {
+    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, ["add", ...(path[1] === undefined ? [] : [path[1]]), "--preset", preset]), ["add"]));
     return;
   }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
