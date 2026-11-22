@@ -152,6 +152,8 @@ if (process.platform !== "linux") {
     const transcript = join(fx.dir, "join.log");
     const mixed = launch({ space: a.space, name: "mixed-join" }, transcript);
     check("the prompt stays on the terminal with stdout redirected", await until(() => mixed.output.includes("mixed-join> ")));
+    mixed.child.stdin.write("/who\n");
+    check("the first redirected prompt accepts a command", await until(() => readFileSync(transcript, "utf8").includes("Roster:")));
     await sender.multicast("redirected-channel-post", { channel: "general" });
     check("the redirected transcript receives the channel post", await until(() => readFileSync(transcript, "utf8").includes(": redirected-channel-post")));
     mixed.child.stdin.write("/quit\n");

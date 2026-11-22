@@ -396,6 +396,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // A headless join holds presence and logs mesh events without reading stdin.
   const terminal = process.stdout.isTTY ? process.stdout : process.stderr.isTTY ? process.stderr : undefined;
   let rlClosed = false;
+  let promptReady = false;
   const rl = terminal && process.stdin.isTTY && !inputDisabledByFlag()
     ? readline.createInterface({
         input: process.stdin,
@@ -405,12 +406,12 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     : undefined;
 
   const print = (line: string) => {
-    if (terminal && rl && !rlClosed) {
+    if (terminal && rl && promptReady && !rlClosed) {
       readline.cursorTo(terminal, 0);
       readline.clearLine(terminal, 0);
     }
     console.log(line);
-    if (rl && !rlClosed) rl.prompt(true);
+    if (rl && promptReady && !rlClosed) rl.prompt(true);
   };
 
   const who = (card: { name: string; id?: string; role?: string }) => c.bold(joinPeerLabel(card));
@@ -588,8 +589,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           others.map((p) => who(p.card) + " " + statusBadge(p.status) + presenceDetail(p)).join(c.dim(", ")),
       );
   }, 400);
-  if (!leaving && !rlClosed) rl.prompt();
-
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
     await ep.setStatus(status);
@@ -677,5 +676,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
     if (!leaving && !rlClosed) rl.prompt();
   });
+  promptReady = true;
+  if (!leaving && !rlClosed) rl.prompt();
   await Promise.race([whenLost(), sessionFinished]);
 }
