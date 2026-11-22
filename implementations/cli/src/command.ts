@@ -164,7 +164,7 @@ function validationFollowFailureRecords(cmd: Command, args: ParsedArgs, failure:
   const [first, name] = args.positionals;
   if (cmd.name === "history" && !findSubcommand(cmd, first)) return historySetupFailureRecords(args, failure);
   if (cmd.name === "channel" && first === "members") {
-    const space = typeof args.values.space === "string" ? args.values.space : null;
+    const space = typeof args.values.space === "string" && args.values.space.trim() ? args.values.space : null;
     return membershipSetupFailureRecords({ space, channel: name?.replace(/^#/, "") || null }, failure);
   }
 }
@@ -516,11 +516,15 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   // History also accepts a root channel positional; only its reserved clear token is a mode.
   if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
     usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
+  const canonical = canonicalSubcommand(cmd, parsed);
+  // Shared option refusals keep their existing output outside the membership follow.
+  const refuseOption = (failure: CommandFailure): never => failureExit(cmd, failure, json, canonical.values.plain === true,
+    undefined, rest, cmd.name === "channel" ? canonical : undefined);
   // Target resolution reads an empty space as no space and falls back to the selected one, so a script
   // whose variable is unset would act on whichever space is selected.
   const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
   if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest);
+    refuseOption(new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }));
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
@@ -528,7 +532,6 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
-  const canonical = canonicalSubcommand(cmd, parsed);
   refuseRemovedFolder(cmd, canonical, rest);
   try {
     cmd.validate?.(canonical);
@@ -548,7 +551,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest);
+        refuseOption(new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }));
     }
   }
   return canonical;

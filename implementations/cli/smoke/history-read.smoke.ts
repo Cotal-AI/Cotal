@@ -160,13 +160,27 @@ async function checkFollowValidation(): Promise<void> {
       { space, channel: "volume.posts" }, "USAGE_INVALID", 1);
     await checkMembershipSetupRefusal(["channel", "members", "--json", "--server", server],
       { space: null, channel: null }, "USAGE_INVALID", 1);
+    await checkMembershipSetupRefusal(["channel", "members", "volume.posts", "--json", "--space=", "--server", server],
+      { space: null, channel: "volume.posts" }, "USAGE_INVALID", 1);
+    await checkMembershipSetupRefusal(["-j", "ch", "members", "#volume.posts", "-s", " ", "--server", server],
+      { space: null, channel: "volume.posts" }, "USAGE_INVALID", 1);
+    await checkMembershipSetupRefusal(["channel", "members", "volume.posts", "--json", "--space", space, "--server", `${server}/not-a-route`],
+      { space, channel: "volume.posts" }, "USAGE_INVALID", 1);
+    const userinfo = "userinfo-probe";
+    const { finite: userinfoFinite, stream: userinfoFollow } = await checkMembershipSetupRefusal(
+      ["channel", "members", "volume.posts", "--json", "--server", `nats://${userinfo}@127.0.0.1:${address.port}`],
+      { space: null, channel: "volume.posts" }, "USAGE_INVALID", 1);
+    check("the broker URL refusal does not repeat userinfo", !`${userinfoFinite.stdout}${userinfoFollow.stdout}`.includes(userinfo));
+    const unknown = await run(["channel", "members", "volume.posts", "--follow", "--json", "--bogus", "--server", server]);
+    check("an unknown membership option prevents parsing and keeps the one-shot refusal",
+      unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.command === "channel" && unknown.envelope.error?.code === "USAGE_INVALID", shown(unknown));
     check("invalid membership arguments open no connection", connections === 0, connections);
   } finally {
     await new Promise<void>((resolve) => listener.close(() => resolve()));
   }
 }
 
-async function checkMembershipSetupRefusal(args: string[], target: { space: string | null; channel: string | null }, code: string, exit = 2): Promise<void> {
+async function checkMembershipSetupRefusal(args: string[], target: { space: string | null; channel: string | null }, code: string, exit = 2) {
   const finite = await run(args);
   const stream = await run([...args, "--follow"]);
   const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
@@ -182,6 +196,7 @@ async function checkMembershipSetupRefusal(args: string[], target: { space: stri
       && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
       && records[1]?.data?.reason === "setup-failed" && records[1]?.data?.lastAsOf === null,
     { finite: shown(finite), stream: shown(stream) });
+  return { finite, stream };
 }
 
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
