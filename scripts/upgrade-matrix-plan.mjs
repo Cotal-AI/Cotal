@@ -242,6 +242,13 @@ export function boundedCells(plan) {
       "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
       "other-home-auth-required", "other-home-manager-preserved", "other-home-loaded-graph-preserved", "other-home-update-notice", "other-home-cleanup"],
   });
+  add("linux", "npm", "candidate-next-foreign-config-recovery", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000",
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "foreign-snapshot-retained", "candidate-source-identity", "candidate-next-target", "next-hop-success"],
+  });
   return cells;
 }
 /** Convenience wrapper for workflow callers. */
