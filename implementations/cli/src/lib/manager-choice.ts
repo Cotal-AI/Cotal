@@ -97,7 +97,7 @@ export async function managerPin(values: { on?: unknown; space?: unknown; server
     try { onInstanceId(on, verb); } catch (error) {
       throw new CommandFailure("refused", "USAGE_INVALID", `${(error as Error).message}. A manager's name or host is taken only on a user-auth mesh`, {
         target: { on },
-        remedy: `cotal ps prints each manager's instance id; rerun it as ${onRetry(verb)}`,
+        remedy: typeof verb === "object" && "remedy" in verb ? verb.remedy : `cotal ps prints each manager's instance id; rerun it as ${onRetry(verb)}`,
         selfContained: true,
       });
     }
