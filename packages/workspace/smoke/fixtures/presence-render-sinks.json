@@ -5560,16 +5560,16 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "from ${p.root})`, tone: \"waiting\" } : p.rootMissing ? { t",
+      "anchor": "d from ${root})`, tone: \"waiting\" };\n  if (!p.rootProblem",
       "class": "non-render/control",
       "rationale": "Space list root cell: the color tone describes a moved project, not a peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": " longer exists)`, tone: \"waiting\" } : { text: p.root, ton",
+      "anchor": "ot} (${reason})`, tone: \"waiting\" };\n}\n\nfunction spacesVi",
       "class": "non-render/control",
-      "rationale": "Space list root cell: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Space list root cell: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -5581,9 +5581,9 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "o longer exists`, tone: \"waiting\" }, { text: `forget it w",
+      "anchor": "p.rootProblem)}`, tone: \"waiting\" },\n      { text: disp",
       "class": "non-render/control",
-      "rationale": "Prepared space view: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Prepared space view: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -6491,9 +6491,9 @@
     {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
-      "anchor": "(s.current)}`)}`, tone: \"waiting\" }\n    : s.preparedState",
+      "anchor": "ent, problem))}`, tone: \"waiting\" }\n    : s.preparedState",
       "class": "non-render/control",
-      "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Use report line: \"waiting\" is the color tone for an unavailable project root, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/use.ts",

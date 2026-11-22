@@ -9,7 +9,7 @@ import { readBrokerPolicy } from "./broker-policy.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { CommandFailure, isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
-import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
+import { findPreparedSpace, preparedSpaceAt, projectRootProblem, projectRootProblemText, type ProjectRootProblem } from "./prepared-spaces.js";
 import {
   canonicalRoot,
   brokerUrlKey,
@@ -175,8 +175,10 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` in a folder whose stack journal another folder recorded: the next step that
    *  `up` and `down` name there too, from {@link stackElsewhereRemedy}. */
   stackRemedy?: string;
-  /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
+  /** For `not-started` on a prepared space: no project directory is available at its root. */
   rootMissing?: boolean;
+  /** Why the recorded project directory is unavailable. */
+  rootProblem?: ProjectRootProblem;
   /** For `not-started` on a root with no registration: `server` is the broker its last start
    *  configured, which a bare `cotal up` there starts again. */
   lastRun?: boolean;
@@ -442,10 +444,11 @@ export function isGenuineSpace(root: string): boolean {
 function notStarted(space: string, cwd?: string): void {
   const prepared = findPreparedSpace(space);
   if (!prepared) return;
-  if (!existsSync(prepared.root)) {
-    const stack = cwd === undefined ? undefined : stackRecord(findCotalRoot(cwd));
+  const rootProblem = projectRootProblem(prepared.root);
+  if (rootProblem !== undefined) {
+    const stack = cwd !== undefined && rootProblem === "missing" ? stackRecord(findCotalRoot(cwd)) : undefined;
     const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
-    throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
+    throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which ${projectRootProblemText(rootProblem)}${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, rootProblem, ...(moved ? { stackRemedy: moved } : {}) });
   }
   const lifecycle = preparedLifecycle(prepared.root, space);
   if (lifecycle.state === "unsettled") throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${lifecycle.unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled: lifecycle.unsettled, ...(lifecycle.stopped ? { stopped: lifecycle.stopped } : {}) });

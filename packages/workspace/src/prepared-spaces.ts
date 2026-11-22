@@ -24,6 +24,24 @@ export interface PreparedSpace {
   readonly ts: string;
 }
 
+export type ProjectRootProblem = "missing" | "not-directory" | "inaccessible";
+
+/** Whether the path resolves to a directory, without treating a failed lookup as a directory. */
+export function projectRootProblem(path: string): ProjectRootProblem | undefined {
+  try {
+    return statSync(path).isDirectory() ? undefined : "not-directory";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? "missing" : code === "ENOTDIR" ? "not-directory" : "inaccessible";
+  }
+}
+
+export function projectRootProblemText(problem: ProjectRootProblem): string {
+  if (problem === "missing") return "no longer exists";
+  if (problem === "not-directory") return "is not a directory";
+  return "could not be accessed";
+}
+
 export function preparedSpacesDir(): string {
   return join(homeCotalDir(), "prepared");
 }

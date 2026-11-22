@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, rmdirSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -30,7 +30,10 @@ import {
   pinnedFetch,
   PinnedFetchRefused,
   preparedRecordSpace,
+  preparedRootRemedy,
   preparedSpaceAt,
+  projectRootProblem,
+  projectRootProblemText,
   protectedLocalDirectory,
   readPreferences,
   recordMesh,
@@ -420,8 +423,8 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
  */
 export async function spaceCreate(name: string, rootFlag: string | undefined, adopt: boolean, presentation: Presentation): Promise<void> {
   const root = resolve(rootFlag ?? process.cwd());
-  const kind = projectRootKind(root);
-  if (kind !== "directory" && (kind !== "missing" || rootFlag === undefined || adopt))
+  const problem = projectRootProblem(root);
+  if (problem !== undefined && (problem !== "missing" || rootFlag === undefined || adopt))
     throw usage(`--root ${root} is not a directory`, "pass an existing directory");
   if (adopt) {
     // Its own rules come first, so a folder moved on this machine is told to move back, not to forget.
@@ -440,7 +443,7 @@ export async function spaceCreate(name: string, rootFlag: string | undefined, ad
     if (lstatSync(dir, { throwIfNoEntry: false })) protectedLocalDirectory(dir, "the project's .cotal directory");
   }
   const adoptedFrom = adopt ? adoptStackJournal(root, name) : undefined;
-  const createdRoot = kind === "missing" && mkdirPrivate(root, "the project root") !== undefined;
+  const createdRoot = problem === "missing" && mkdirPrivate(root, "the project root") !== undefined;
   const { file, preparedAt } = existing ? { file: undefined, preparedAt: existing.ts } : recordLocalSpace(name, root);
   const written = [...(createdRoot ? [{ what: "project folder", path: root }] : []), ...(adoptedFrom !== undefined ? [{ what: `stack journal, adopted from ${adoptedFrom}`, path: stackJournalPath(canonicalRoot(root)) }] : []), ...(file ? [{ what: "prepared space", path: file }] : [])];
   const personaPath = join(personaDir(root), "default.md");
@@ -501,10 +504,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
-    const gone = !existsSync(prepared.root);
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, target, gone
+    const problem = projectRootProblem(prepared.root);
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem === "missing"
       ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again`
-      : flag === "--project"
+      : problem ? displayRemedy(preparedRootRemedy(name, problem)) : flag === "--project"
         ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
         : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
@@ -586,14 +589,6 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");
 
-function projectRootKind(path: string): "directory" | "missing" | "other" {
-  try {
-    return statSync(path).isDirectory() ? "directory" : "other";
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "other";
-  }
-}
-
 function createdView(r: SpaceCreated): Report {
   const lines: Cell[] = [
     { text: `prepared ${r.space}`, tone: "ok", mark: "✓" },
@@ -657,7 +652,9 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       removeMesh(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
-    const runningOwner = liveMeshOwner(p.root, name);
+    // A non-directory cannot contain root-local ownership records. The space-wide check above
+    // still guards controller instances, and definition release checks their removability below.
+    const runningOwner = projectRootProblem(p.root) === "not-directory" ? undefined : liveMeshOwner(p.root, name);
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
     removeDamaged();
@@ -791,11 +788,15 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
 }
 
 function forgottenView(r: SpaceForgotten): Report {
+  const root = r.root === null ? "its record could not be read, so it named no folder"
+    : !existsSync(r.root) ? `its folder ${r.root} no longer exists`
+    : r.origin === "prepared" && projectRootProblem(r.root) === "not-directory" ? `the entry at ${r.root} was left untouched`
+    : `the files under ${r.root} are kept`;
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
     r.origin === null && r.root === null
       ? { text: "  its registration could not be read, so it named no broker or folder", tone: "hint" }
-      : { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${r.root === null ? "its record could not be read, so it named no folder" : existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
+      : { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${root}`, tone: "hint" },
   ];
   const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
   if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });
