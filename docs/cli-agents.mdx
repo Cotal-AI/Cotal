@@ -300,9 +300,9 @@ size limits and mixed-version recovery.
 
 The persona (`--file` or the positional name, else the [`persona` preference](config.mdx#preferences),
 else `default`) is loaded from the target mesh's `.cotal/agents/` when it is a bare name.
-For a direct launch or preview, a positional name ending in `.md` selects a matching catalog entry first.
-For example, `cotal spawn review.md` selects `.cotal/agents/review.md.md` if that entry exists.
-With no matching catalog entry, a positional `.md` name is read as a file relative to the mesh root.
+For a direct launch or preview, a bare name ending in `.md` selects a matching catalog entry first, whether it comes from the command line or the `persona` preference.
+For example, `cotal spawn review.md` and `COTAL_DEFAULT_PERSONA=review.md cotal spawn` both select `.cotal/agents/review.md.md` if that entry exists.
+With no matching catalog entry, a bare `.md` name is read as a file relative to the mesh root. Use `./review.md` to select that relative file even if the catalog has a matching name.
 A managed launch reads that positional `.md` name from the manager's catalog. Use `--file <persona-file>` to select a file explicitly.
 If `spawn` refuses the `--on` value and prints a retry with `<instance>`, replace that placeholder with the full manager instance ID from `cotal ps`. The retry keeps the persona and launch options you supplied.
 A reference with a path separator selects that file. A relative path resolves against the mesh root, except that
@@ -565,8 +565,10 @@ case also refuses with `CONFLICT`, since a case-insensitive file system holds th
 The suggested edit keeps the explicit target flags in this case too.
 Mutation receipts contain names and paths, not bodies.
 A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
-file it links to. `spawn` reads that file, but `persona show`, `edit` and `remove` refuse the link
-with `PERMISSION_DENIED`, and the next step names the file to copy in its place.
+file it links to. `spawn` can read that file, but `persona show`, `edit` and `remove` refuse the link
+with `PERMISSION_DENIED`. If the target is a readable regular file, the refusal suggests copying it
+in place of the link. If the target is missing, restore it if you still need it, or move the broken
+link aside and put a regular persona file in its place.
 A `.cotal/agents` that is a file or a link that loops holds no personas, so the listings, `show`,
 `create`, `edit` and `remove` refuse it with `CONFLICT`, naming it and what it is, and the next step
 is to move it out of the way.
