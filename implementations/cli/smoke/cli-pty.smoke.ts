@@ -229,8 +229,8 @@ try {
   const serviceAdd = await helpAt(["help", "service", "add"], 60);
   check("cotal help service add on a 60-column terminal fits every line", serviceAdd.exitCode === 0 && fit(serviceAdd.all.join("\n"), 60).length === 0, fit(serviceAdd.all.join("\n"), 60));
   check(
-    "on 60 columns cotal help service add breaks a compact group after its own |",
-    usageOf(serviceAdd.all).join("\n") === ['  cotal service add <name> --exec "<command>"', "  [--cwd <dir>] |", "  --preset <preset> [<options>] | --file <definition.json>"].join("\n"),
+    "wrapped service add help requires the name before the choice of source",
+    usageOf(serviceAdd.all).map((line) => line.trim()).join(" ") === 'cotal service add <name> (--exec "<command>" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>)',
     usageOf(serviceAdd.all),
   );
   const listing = await helpAt(["help"], 40);

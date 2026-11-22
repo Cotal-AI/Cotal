@@ -378,6 +378,27 @@ try {
   const confirmed = cotal(confirm.split(" ").slice(1));
   check("  and running it forgets that space's service and keeps this folder's",
     confirmed.status === 0 && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, out(confirmed));
+
+  const definitionFile = join(prepared, "service definition.json");
+  writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
+  for (const [name, source, preset] of [
+    ["preset-example", ["--preset", "manager", "--runtime", "pty"], "manager"],
+    ["file-example", ["--file", definitionFile], null],
+    ["exec-example", ["--exec", "echo 'hello world'", "--cwd", prepared], null],
+  ] as const) {
+    const flags = [...source, "--space", PREPARED, "--json"];
+    const refused = cotal(["service", "add", ...flags]);
+    const { outcome, error } = JSON.parse(refused.stdout);
+    check(`${source[0]} without a name asks to insert only the definition name`,
+      refused.status === 1 && refused.stderr === "" && outcome === "refused" && error?.code === "USAGE_INVALID"
+        && error.message === "scripted service add needs a definition name"
+        && error.remedy === "insert your definition name immediately after `add` in the original command, keeping all flags and values unchanged", out(refused));
+    const retry = cotal(["service", "add", name, ...flags]);
+    const { result } = JSON.parse(retry.stdout);
+    check(`adding the name to ${source[0]} saves in the requested space without starting the service`,
+      retry.status === 0 && result?.name === name && result.space === PREPARED && result.preset === preset && result.started === false
+        && serviceDefinitionStore(PREPARED).read(name) !== undefined && serviceDefinitionStore(SPACE).read(name) === undefined, out(retry));
+  }
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
