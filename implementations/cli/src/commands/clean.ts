@@ -634,8 +634,8 @@ function pathContains(parent: string, child: string): boolean {
 /** Inspect the same pinned local store path that the existing guarded cleanup deletes. */
 export function safeStoreCleanupPath(root: string, override: string | undefined): { path: string; identity?: { dev: bigint; ino: bigint } } {
   const requested = resolve(override ?? join(root, ".cotal", "nats"));
-  if (!existsSync(requested)) return { path: requested };
-  const stat = lstatSync(requested, { bigint: true });
+  const stat = lstatSync(requested, { bigint: true, throwIfNoEntry: false });
+  if (!stat) return { path: requested };
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`store cleanup target is not a real directory: ${requested}`);
   const target = realpathSync.native(requested);
   const canonicalRoot = realpathSync.native(root);
