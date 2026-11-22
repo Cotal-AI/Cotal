@@ -72,18 +72,16 @@ type Internals = {
   dialServeConnection(state: unknown, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
   sessionLedgerIdentity?: Identity;
   sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  remoteSupervisorCreds?: string;
-  remoteExecutorCreds?: string;
   goalWriterCreds?: string;
   sessionLedgerCreds?: string;
   serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   ep: { reconnect(): Promise<void> };
-  remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
   leaseStopping: boolean;
   renewRemoteBeforeRedial(label: string, read: () => string | undefined): Promise<void>;
   servePlane: {
     dialSessionLedgerConnection(sw: { nc: NatsConnection; creds?: string }, identity: Identity): Promise<void>;
   };
+  credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
 };
 
 // The operator-visible reason each failed re-dial attempt logs.
@@ -126,8 +124,8 @@ try {
   m = manager as unknown as Internals;
   // The standing holders registerManagerService seeds from the remote authority. The serve,
   // supervisor, executor and goal-writer connections are not dialed here.
-  m.remoteSupervisorCreds = initial.supervisor;
-  m.remoteExecutorCreds = initial.executor;
+  m.credentialRenewal.remoteSupervisorCreds = initial.supervisor;
+  m.credentialRenewal.remoteExecutorCreds = initial.executor;
   m.goalWriterCreds = initial.goalWriter;
   m.sessionLedgerCreds = initial.sessionLedger;
   m.sessionLedgerIdentity = held.sessionLedger;
@@ -156,11 +154,11 @@ try {
   });
   await cell("the first recovery attempt asks for the all-duty family, is refused, and keeps last-good with debt", async () => {
     assert.ok(await until(() => bundleCalls >= 1, 5_000), "the close handler never requested the all-duty family");
-    assert.ok(await until(() => m.remoteRenewalDebt !== undefined, 2_000));
-    assert.match(m.remoteRenewalDebt!.reason, /injected issuer refusal/);
-    assert.equal(m.remoteRenewalDebt!.processEpoch, 7);
+    assert.ok(await until(() => m.credentialRenewal.remoteRenewalDebt !== undefined, 2_000));
+    assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /injected issuer refusal/);
+    assert.equal(m.credentialRenewal.remoteRenewalDebt!.processEpoch, 7);
     assert.equal(sw.creds, initial.sessionLedger);
-    assert.equal(m.remoteExecutorCreds, initial.executor);
+    assert.equal(m.credentialRenewal.remoteExecutorCreds, initial.executor);
     assert.ok(logged.some((l) => /session-ledger re-dial attempt failed: injected issuer refusal/.test(l)),
       "the failed attempt must report the issuer's refusal, not a generic health failure");
   });
@@ -168,7 +166,7 @@ try {
     assert.ok(await until(() => sw.nc !== first, 15_000), "the session ledger was never re-dialed");
     await sw.nc.flush();
     assert.equal(bundleCalls, 2);
-    assert.equal(m.remoteRenewalDebt, undefined);
+    assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
     assert.equal(sw.creds, renewed.value!.sessionLedger);
     assert.equal(m.sessionLedgerCreds, renewed.value!.sessionLedger);
     assert.equal(m.serviceServe!.creds, renewed.value!.serve);

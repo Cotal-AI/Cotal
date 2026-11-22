@@ -94,7 +94,7 @@
     {
       "name": "stop closes before accepted standing renewal drains",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    await this.remoteBundleRenewal?.catch(() => {});\n",
+      "find": "    await this.credentialRenewal.remoteBundleRenewal?.catch(() => {});\n",
       "replace": "",
       "expectRed": "stop waits for already accepted host-issued renewal",
       "cell": "stop waits for already accepted host-issued renewal",
