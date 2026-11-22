@@ -63,8 +63,8 @@ If you selected an older release, run the installer again without `--version` to
 If the latest release cannot start, report the error at the [issue tracker](https://github.com/Cotal-AI/Cotal/issues).
 
 The launcher goes in `~/.local/bin/cotal`.
-If a directory occupies the launcher path, both `--dry-run` and a normal install stop before making changes.
-Move the directory aside or set `COTAL_BIN_DIR` to a different launcher directory.
+If a file occupies the launcher directory or a directory occupies the launcher path, both `--dry-run` and a normal install stop before making changes.
+Move the obstruction aside or set `COTAL_BIN_DIR` to a different launcher directory.
 The install root defaults to `${XDG_DATA_HOME:-~/.local/share}/cotal`.
 If the launcher directory is not already on PATH, the installer updates your shell configuration.
 On Linux with Bash, it updates `~/.bashrc` and the first readable login file: `~/.bash_profile`, `~/.bash_login`, or `~/.profile`.

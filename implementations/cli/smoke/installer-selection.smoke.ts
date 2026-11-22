@@ -397,6 +397,30 @@ exec "$FIXTURE_NODE" -e 'console.log(require("node:fs").readlinkSync(process.arg
     assert.deepEqual(readdirSync(obstructed.home).sort(), [".local", "old-bin"], "refusal writes no shell startup files");
   }
 
+  rmSync(obstructed.newBin, { recursive: true });
+  writeFileSync(obstructed.newBin, "keep-me\n");
+  for (const args of [[], ["--dry-run"]]) {
+    const blocked = runLauncherCheck(args);
+    assert.equal(blocked.status, 1, output(blocked));
+    assert(output(blocked).includes(`${quote(obstructed.newBin)} is not a directory.`));
+    assert.match(output(blocked), /set COTAL_BIN_DIR/);
+    assert.doesNotMatch(output(blocked), /Would write/);
+    assert.deepEqual(readdirSync(join(obstructed.home, ".local")), ["bin"], "refusal leaves the install root absent");
+    assert.deepEqual(readdirSync(obstructed.home).sort(), [".local", "old-bin"]);
+    assert.equal(readFileSync(obstructed.newBin, "utf8"), "keep-me\n");
+  }
+  for (const version of ["0.82.2", "0.82.3"]) {
+    const installed = spawnSync("/bin/sh", [driver, library], {
+      env: { ...obstructed.env, PATH: toolPath, COTAL_BIN_DIR: alternateBin, FIXTURE_TARGET: version }, encoding: "utf8",
+    });
+    assert.equal(installed.status, 0, output(installed));
+    const launched = spawnSync(join(alternateBin, "cotal"), ["--version"], { env: obstructed.env, encoding: "utf8" });
+    assert.equal(launched.status, 0, output(launched));
+    assert.equal(launched.stdout.trim(), `cotal-ai ${version}`);
+    assert.equal(readFileSync(obstructed.newBin, "utf8"), "keep-me\n");
+  }
+  assert.equal(readFileSync(obstructed.env.FIXTURE_UPDATE_ARGS, "utf8"), "update\n");
+
   const selected = fixture("selected");
   const direct = spawnSync("/bin/sh", [driver, library], { env: { ...selected.env, PATH: `${selected.newBin}:${selected.oldBin}:${toolPath}` }, encoding: "utf8" });
   assert.equal(direct.status, 0, output(direct));
