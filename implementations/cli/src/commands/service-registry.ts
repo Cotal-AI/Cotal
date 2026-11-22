@@ -51,6 +51,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
     if (Object.keys(args.values).some((name) => !allowed.has(name))) throw new CommandFailure("refused", "USAGE_INVALID", "a supplied flag does not belong to the selected service preset");
   }
   if (args.values.file !== undefined && mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--file belongs to service add");
+  if (args.values.file !== undefined && !String(args.values.file).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--file cannot be empty", { remedy: "pass --file <definition.json> with the path to a service definition" });
   if (args.values.exec !== undefined && (mode !== "add" || args.values.file !== undefined || args.values.preset !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--exec belongs to service add and cannot combine with --file or --preset");
   if (args.values.cwd !== undefined && args.values.exec === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd belongs to service add --exec");
   if (args.values.cwd !== undefined && !String(args.values.cwd).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty");
