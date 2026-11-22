@@ -91,7 +91,9 @@ A daemon process can host one isolated lane per space from a manifest. Each lane
 
 The membership feed polls broker connections to discover live subscriptions. It reuses its durable
 membership and feed snapshots when the broker reports no change, and reads new revisions as those
-stores change. A store replacement or a deletion without a KV marker requires a fresh snapshot.
+stores change. With the default of one revision per key, writes that arrive after a completed scan
+do not make it start over. If the broker's key counts cannot confirm the scan, the daemon checks the
+stored keys to account for deletions without KV markers. A replaced store gets a fresh snapshot.
 
 The reference still serves agent membership operations on `ctl.delivery` and administration on `ctl.delivery-admin`. These are implementation residue despite the hard cut in [SPEC §13.11](../SPEC.md#1311-the-hard-cut). The [delivery service reference](delivery-service-reference.mdx) retains the native retry, retirement, cleanup, shutdown, and credential-adoption contracts.
 

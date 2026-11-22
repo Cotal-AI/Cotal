@@ -100,6 +100,40 @@ async function revisionViewCases(kvm: Kvm, nc: Awaited<ReturnType<typeof connect
   check("deleting the latest revision in deeper history reveals the previous value", rows.get("restored") === "first");
 }
 
+async function concurrentRevisionView(kvm: Kvm, nc: Awaited<ReturnType<typeof connect>>): Promise<void> {
+  const kv = await kvm.create("revision_churn", { history: 1 });
+  const jsm = await jetstreamManager(nc);
+  const enc = (value: string) => new TextEncoder().encode(value);
+  const removed = await kv.put("erase", enc("original"));
+  await kv.put("unrelated", enc("initial"));
+  const handle = Object.create(kv) as KV;
+  let statuses = 0;
+  let churn = false;
+  Object.defineProperty(handle, "status", { value: async () => {
+    if (churn && ++statuses > 1) await kv.put("unrelated", enc(`late-${statuses}`));
+    return kv.status();
+  } });
+  const rows = new Map<string, string>();
+  const view = new KvRevisionView(handle, (key, entry) => {
+    if (entry) rows.set(key, new TextDecoder().decode(entry.value));
+    else rows.delete(key);
+  });
+  await view.refresh();
+  await kv.put("target", enc("committed-before-refresh"));
+  churn = true;
+  await view.refresh();
+  check("later overwrites cannot invalidate the refresh's required revision", statuses >= 2 && rows.get("target") === "committed-before-refresh");
+
+  await jsm.streams.deleteMessage("KV_revision_churn", removed, false);
+  await kv.put("replacement", enc("new-key"));
+  statuses = 0;
+  await view.refresh();
+  check("erasure plus a new key under churn reconciles by key identity, not count", !rows.has("erase") && rows.get("replacement") === "new-key");
+  churn = false;
+  await view.refresh();
+  check("the next refresh reads writes beyond the previous fence", rows.get("unrelated") === `late-${statuses}`);
+}
+
 try {
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -110,6 +144,7 @@ try {
   const enc = (s: string) => new TextEncoder().encode(s);
 
   await revisionViewCases(kvm, nc);
+  await concurrentRevisionView(kvm, nc);
 
   // ── 1. ROUND-TRIP SHAPE ────────────────────────────────────────────────────────────────────────
   // Count the client's OUTBOUND messages across the read. The old shape issued one STREAM.MSG.GET
