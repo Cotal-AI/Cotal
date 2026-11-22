@@ -1,7 +1,7 @@
 import { findSubcommand, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import type { ServicePreset } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
-import { findServicePreset, servicePresetCommand, servicePresetFlags } from "../lib/service-presets.js";
+import { servicePresetCommand, servicePresetFlags } from "../lib/service-presets.js";
 import { service } from "./service-registry.js";
 
 /** The manager group's lifecycle verbs. Each is `service <verb> manager`. */
@@ -22,9 +22,8 @@ const withName = (args: ParsedArgs): ParsedArgs => ({ ...args, positionals: [arg
 export function managerServiceCommand(manager: Command, argv: readonly string[], forRefusal = false): { cmd: Command; argv: string[] } | undefined {
   if (manager.name !== "manager") return undefined;
   const base = registry.resolve<Command>("command", "service");
-  const preset = forRefusal && registry.has("service-preset", "manager")
-    ? registry.resolve<ServicePreset>("service-preset", "manager") : findServicePreset("manager");
-  const presetFlags = preset ? servicePresetFlags(preset, forRefusal) : [];
+  const preset = registry.all<ServicePreset>("service-preset").find((item) => item.name === "manager");
+  const presetFlags = preset ? servicePresetFlags(preset, true) : [];
   const flags = [...(base.flags ?? []), ...(manager.flags ?? []), ...presetFlags];
   const at = verbAt(flags, argv);
   const verb = at < 0 ? undefined : argv[at] as (typeof MANAGER_LIFECYCLE)[number];

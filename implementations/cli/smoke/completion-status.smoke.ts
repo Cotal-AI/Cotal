@@ -38,11 +38,11 @@ function sandbox(shell = "/bin/bash") {
   const home = mkdtempSync(join(tmpdir(), "cotal-completion-status-"));
   roots.push(home);
   const xdg = join(home, ".config");
-  const run = (args: string[], extraEnv: Record<string, string> = {}) => {
+  const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
     // No down runs here, and this sandbox records no anchor, so the guard refuses one.
-    assertSmokeSandboxDown(undefined, args, { cwd: home });
+    assertSmokeSandboxDown(undefined, args, { cwd });
     const r = spawnSync(process.execPath, [BIN, ...args], {
-      cwd: home,
+      cwd,
       env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", SHELL: shell, ...extraEnv },
       encoding: "utf8",
       timeout: 120_000,
@@ -655,6 +655,61 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     const completed = run(["__complete", "svc", "start", "web", "--"]);
     check("completion refuses an unverified preset without offering any flags", completed.status === 1 && !completed.stdout, shown(completed));
   }
+}
+
+{
+  const { home, run: cli, xdg } = sandbox();
+  const project = join(home, "project");
+  mkdirSync(project, { mode: 0o700 });
+  const run = (args: string[]) => cli(args, {}, project);
+  const created = run(["space", "create", "preset-isolation", "--root", project, "--json"]);
+  const saved = run(["service", "add", "broker", "--exec", `'${process.execPath.replaceAll("'", "'\\''")}'`, "--json"]);
+  const preview = () => run(["service", "start", "broker", "--dry-run", "--json"]);
+  const before = preview();
+  check("control: a saved broker-named process can be previewed without launching it",
+    created.status === 0 && saved.status === 0 && before.status === 0 && before.stdout.includes('"kind":"service-operation-preview"'),
+    { created: shown(created), saved: shown(saved), preview: shown(before) });
+
+  const extensions = join(xdg, "cotal", "extensions");
+  mkdirSync(extensions, { recursive: true, mode: 0o700 });
+  const incompleteClaim = (name: string) => writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: [{
+    pkg: "incomplete-preset-fixture", spec: "incomplete-preset-fixture", version: "0.0.0", commands: [], provides: [{ kind: "service-preset", name }],
+  }] }), { mode: 0o600 });
+  incompleteClaim("unavailable");
+
+  const after = preview();
+  check("an unrelated preset claim without a declaration does not block a saved broker preview",
+    after.status === 0 && after.stdout.includes('"kind":"service-operation-preview"'), shown(after));
+  const listing = run(["service", "--json"]);
+  check("the full service inventory still reports the broken preset catalog as partial",
+    listing.status === 4 && listing.stdout.includes('"code":"CONFLICT"') && listing.stdout.includes("No empty or complete catalog was inferred"), shown(listing));
+  const brokerFlag = run(["service", "start", "--config", "web", "broker", "--help"]);
+  const brokerWord = run(["help", "service", "start", "broker"]);
+  const brokerComplete = run(["__complete", "service", "start", "--config", "web", "broker", "--"]);
+  check("an unrelated broken claim leaves broker help and completion scoped to broker even with a flag before the name",
+    brokerFlag.status === 0 && brokerWord.status === 0 && brokerFlag.stdout === brokerWord.stdout && /^  --config <file>/m.test(brokerFlag.stdout) &&
+    brokerComplete.status === 0 && /^--binary\t/m.test(brokerComplete.stdout) && !/^--no-open\t/m.test(brokerComplete.stdout),
+    { flagHelp: shown(brokerFlag), wordHelp: shown(brokerWord), completion: shown(brokerComplete) });
+  const managerFlag = run(["manager", "start", "--help"]);
+  const managerWord = run(["help", "manager", "start"]);
+  check("both manager start help spellings retain manager options with an unrelated broken claim",
+    managerFlag.status === 0 && managerWord.status === 0 && managerFlag.stdout === managerWord.stdout && /^  --runtime\b/m.test(managerFlag.stdout),
+    { flagHelp: shown(managerFlag), wordHelp: shown(managerWord) });
+
+  const denied = (r: ReturnType<typeof run>) => r.status === 2 && !r.stdout && /CONFLICT/.test(r.stderr) && /no cached declaration/.test(r.stderr);
+  const invalidPreset = ["service", "start", "unavailable", "--preset", "broker"];
+  const refusedFlag = run([...invalidPreset, "--help"]);
+  const refusedWord = run(["help", "--", ...invalidPreset]);
+  check("start help still refuses its selected preset when an invalid --preset option is supplied",
+    denied(refusedFlag) && denied(refusedWord) && refusedFlag.stderr === refusedWord.stderr,
+    { flagHelp: shown(refusedFlag), wordHelp: shown(refusedWord) });
+
+  incompleteClaim("manager");
+  const deniedManagerFlag = run(["manager", "start", "--help"]);
+  const deniedManagerWord = run(["help", "manager", "start"]);
+  check("both manager help spellings refuse a broken claim of the manager preset itself",
+    denied(deniedManagerFlag) && denied(deniedManagerWord) && deniedManagerFlag.stderr === deniedManagerWord.stderr,
+    { flagHelp: shown(deniedManagerFlag), wordHelp: shown(deniedManagerWord) });
 }
 
 // A file value completes from the shell's file names on a command with no completer of its own, a

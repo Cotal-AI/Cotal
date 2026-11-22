@@ -1,7 +1,7 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type InstalledExtension, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -27,40 +27,65 @@ export function assertManagerStartOptions(space: string, options: Record<string,
 
 const reserved = new Set(["help", "no-color", "no-input", "space", "json", "plain", "file", "preset", "exec", "cwd", "yes", "instance", "new-instance", "foreground", "no-open", "with-agents", "dry-run", "tail", "follow"]);
 
-export function servicePresets(): { preset: ServicePreset; package: string | null; version: string; validation: "not-checked" }[] {
-  const rows = registry.all<ServicePreset>("service-preset").map((preset) => ({ preset: cacheServicePreset(preset), package: null as string | null, version: cliVersion(), validation: "not-checked" as const }));
+type PresetClaim = { registered?: ServicePreset; owners: InstalledExtension[] };
+
+function presetClaims(): Map<string, PresetClaim> {
+  const claims = new Map<string, PresetClaim>();
+  for (const registered of registry.all<ServicePreset>("service-preset")) claims.set(registered.name, { registered, owners: [] });
   if (installedExtensionsEnabled()) for (const extension of loadExtensionsManifest().extensions) {
-    const refs = extensionProvides(extension).filter((ref) => ref.kind === "service-preset");
-    for (const ref of refs) {
-      const preset = extension.servicePresets?.find((preset) => preset.name === ref.name);
-      if (!preset) throw new CommandFailure("refused", "CONFLICT", "an installed service preset has no cached declaration; update or re-add its extension");
-      const live = rows.find((row) => row.preset.name === preset.name);
-      if (live) {
-        if (live.package !== null || serviceMetadataDigest(live.preset) !== serviceMetadataDigest(cacheServicePreset(preset))) throw new CommandFailure("refused", "CONFLICT", "several providers claim different service presets under one name");
-        live.package = extension.pkg; live.version = extension.version;
-      } else rows.push({ preset: cacheServicePreset(preset), package: extension.pkg, version: extension.version, validation: "not-checked" });
+    for (const { kind, name } of extensionProvides(extension)) {
+      if (kind !== "service-preset") continue;
+      const claim = claims.get(name) ?? { owners: [] };
+      claim.owners.push(extension);
+      claims.set(name, claim);
     }
   }
-  return rows.sort((a, b) => a.preset.name < b.preset.name ? -1 : a.preset.name > b.preset.name ? 1 : 0);
+  return new Map([...claims].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+}
+
+function presetDeclaration(name: string, { registered, owners }: PresetClaim): ServicePreset {
+  const [owner] = owners;
+  if (!owner) return cacheServicePreset(registered!);
+  const preset = owner.servicePresets?.find((candidate) => candidate.name === name);
+  if (!preset) throw new CommandFailure("refused", "CONFLICT", "an installed service preset has no cached declaration; update or re-add its extension");
+  const cached = cacheServicePreset(preset);
+  if (owners.length > 1 || (registered && serviceMetadataDigest(cacheServicePreset(registered)) !== serviceMetadataDigest(cached)))
+    throw new CommandFailure("refused", "CONFLICT", "several providers claim different service presets under one name");
+  return cached;
+}
+
+export function servicePresets(): { preset: ServicePreset; package: string | null; version: string; validation: "not-checked" }[] {
+  return [...presetClaims()].map(([name, claim]) => {
+    const [owner] = claim.owners;
+    return { preset: presetDeclaration(name, claim), package: owner?.pkg ?? null, version: owner?.version ?? cliVersion(), validation: "not-checked" };
+  });
 }
 
 /** The registered or installed preset of this name, or undefined; nothing is refused or loaded. */
 export function findServicePreset(name: string): ServicePreset | undefined {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) return undefined;
-  try { return servicePresets().find((row) => row.preset.name === name)?.preset; }
+  try {
+    const claim = presetClaims().get(name);
+    return claim && presetDeclaration(name, claim);
+  }
   catch { return undefined; }
 }
 
 export function resolveServicePreset(name: string): ServicePreset {
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared lower-case preset name");
-  const row = servicePresets().find((row) => row.preset.name === name);
-  if (!row) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare `cotal svc` lists the installed presets; add the dashboard provider with `cotal ext add @cotal-ai/web`" : "bare `cotal svc` lists the installed presets; add the extension that provides this one with `cotal ext add <package>`" });
-  if (row.package !== null) {
-    const owner = loadExtensionsManifest().extensions.find((extension) => extension.pkg === row.package);
-    const checked = owner && verifiedExtensionServicePresets(owner).find((preset) => preset.name === name);
-    if (!checked || serviceMetadataDigest(checked) !== serviceMetadataDigest(row.preset) || row.package.startsWith("@cotal-ai/") && row.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the service preset package/version or cached declaration changed; no provider code was imported");
+  const claim = presetClaims().get(name);
+  if (!claim) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `no registered or installed service preset is named "${name}"; install its provider explicitly or use a supported --file definition`, { remedy: name === "web" ? "bare `cotal svc` lists the installed presets; add the dashboard provider with `cotal ext add @cotal-ai/web`" : "bare `cotal svc` lists the installed presets; add the extension that provides this one with `cotal ext add <package>`" });
+  return verifyPreset(name, claim);
+}
+
+function verifyPreset(name: string, claim: PresetClaim): ServicePreset {
+  const preset = presetDeclaration(name, claim);
+  const [owner] = claim.owners;
+  if (owner) {
+    const checked = verifiedExtensionServicePresets(owner).find((candidate) => candidate.name === name);
+    if (!checked || serviceMetadataDigest(checked) !== serviceMetadataDigest(preset) || owner.pkg.startsWith("@cotal-ai/") && owner.version !== cliVersion()) throw new CommandFailure("refused", "CONFLICT", "the service preset package/version or cached declaration changed; no provider code was imported");
   }
-  return row.preset;
+  return preset;
 }
 
 function optionProperties(preset: ServicePreset, registeredOnly = false) {
@@ -262,21 +287,20 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   return { schemaVersion: 1, space, launch: { type: "adapter", adapter: preset.adapter, options }, readiness: { type: "adapter", timeoutMs: preset.timeoutMs } };
 }
 
-function knownPresetFlags(): FlagSpec[] {
+/** For locating operands only. A damaged claim must not remove flags from the other presets. */
+function knownPresetFlags(claims: ReadonlyMap<string, PresetClaim>): FlagSpec[] {
   const byName = new Map<string, FlagSpec>();
-  try {
-    for (const { preset } of servicePresets()) {
-      try {
-        for (const flag of servicePresetFlags(preset)) if (!byName.has(flag.name)) byName.set(flag.name, flag);
-      } catch { /* resolved when selected */ }
-    }
-  } catch { /* resolved when selected */ }
+  for (const [name, claim] of claims) {
+    try {
+      const preset = claim.registered ?? verifyPreset(name, claim);
+      for (const flag of servicePresetFlags(preset, claim.registered !== undefined)) if (!byName.has(flag.name)) byName.set(flag.name, flag);
+    } catch { /* resolved when selected */ }
+  }
   return [...byName.values()];
 }
 
-/** The preset a service invocation names: `--preset <name>` on add, or the name a start gives when
- *  that name is a preset's, so `service start web --creds <file>` takes the web preset's flags. */
-function requestedPreset(flags: readonly FlagSpec[], argv: readonly string[], mode: string | undefined, service: string | undefined): string | undefined {
+/** Only add selects a preset with a flag. Start selects it by its service operand. */
+function addPresetName(flags: readonly FlagSpec[], argv: readonly string[]): string | undefined {
   let name: string | undefined;
   let presetCount = 0;
   let missingPreset = false;
@@ -293,17 +317,10 @@ function requestedPreset(flags: readonly FlagSpec[], argv: readonly string[], mo
     const flag = flags.find((item) => word === `--${item.name}` || (item.short && word === `-${item.short}`));
     if (flag?.type === "string") index++;
   }
-  if (presetCount > 0) {
-    if (mode !== "add") return undefined;
-    if (presetCount > 1) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
-    if (missingPreset || !name) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
-    return name;
-  }
-  if (mode !== "start" || service === undefined) return undefined;
-  const claimed = registry.all<ServicePreset>("service-preset").some((preset) => preset.name === service) || (installedExtensionsEnabled() && loadExtensionsManifest().extensions.some(
-    (extension) => extensionProvides(extension).some((ref) => ref.kind === "service-preset" && ref.name === service),
-  ));
-  return claimed ? service : undefined;
+  if (presetCount === 0) return undefined;
+  if (presetCount > 1) throw new CommandFailure("refused", "USAGE_INVALID", "--preset cannot be supplied more than once");
+  if (missingPreset || !name) throw new CommandFailure("refused", "USAGE_INVALID", "--preset needs one declared preset name");
+  return name;
 }
 
 export function isWebServiceStart(mode: string | undefined, name: string | undefined): boolean {
@@ -321,13 +338,21 @@ function withServiceFlags(cmd: Command, mode: "add" | "start", names: readonly s
 /** Scope CLI-owned options even without a preset. Only verified preset metadata adds flags. */
 export function servicePresetCommand(cmd: Command, argv: readonly string[], purpose?: "help" | "refusal"): Command {
   if (cmd.name !== "service") return cmd;
-  const allFlags = [...(cmd.flags ?? []), ...knownPresetFlags()];
-  const [mode, service] = metadataPositionals({ flags: allFlags }, argv).positionals.map((item) => item.value);
-  if (mode !== "add" && mode !== "start") return cmd;
-  const scoped = isWebServiceStart(mode, service) ? withServiceFlags(cmd, mode, ["no-open"]) : cmd;
+  let scoped = cmd;
+  let mode: string | undefined;
   try {
-    const name = requestedPreset(allFlags, argv, mode, service);
-    return name === undefined ? scoped : withPresetFlags(scoped, mode, resolveServicePreset(name));
+    const claims = presetClaims();
+    const allFlags = [...(cmd.flags ?? []), ...knownPresetFlags(claims)];
+    const [verb, service] = metadataPositionals({ flags: allFlags }, argv).positionals.map((item) => item.value);
+    mode = verb;
+    if (mode === "add") {
+      const name = addPresetName(allFlags, argv);
+      return name === undefined ? cmd : withPresetFlags(cmd, mode, resolveServicePreset(name));
+    }
+    if (mode !== "start") return cmd;
+    if (isWebServiceStart(mode, service)) scoped = withServiceFlags(cmd, mode, ["no-open"]);
+    const claim = service === undefined ? undefined : claims.get(service);
+    return service === undefined || claim === undefined ? scoped : withPresetFlags(scoped, mode, verifyPreset(service, claim));
   } catch (error) {
     // An earlier usage refusal wins. General add help also works without a valid --preset argument.
     if (purpose === "refusal" || (purpose === "help" && mode === "add")) return scoped;

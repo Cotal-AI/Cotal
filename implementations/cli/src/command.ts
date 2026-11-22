@@ -649,7 +649,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
     const lifecycle = managerServiceCommand(found, words, forRefusal);
     return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
   } catch (error) {
-    if (forRefusal || (forHelp && found.name === "manager")) return { cmd: found, rest: words };
+    if (forRefusal) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
     return failureExit(found, failure, !forHelp && asksForJson(found, words), !forHelp && words.includes("--plain"));
   }
