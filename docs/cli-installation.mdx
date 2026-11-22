@@ -669,9 +669,10 @@ post confirms that nothing was sent and names the mint with `--allow-publish` fo
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
 The session can follow the pattern, but broadcasts from the join prompt require a concrete landing channel.
-If the file is incomplete, `join` refuses it before connecting. Pass the complete file as issued,
-or ask the space's owner to mint a replacement with `--provision`, `--allow-subscribe` for the
-landing channel, and `--out`. Use the lifecycle UID that the replacement mint reports.
+If the file is missing or incomplete, `join` refuses it before connecting. Check the path or pass
+the complete file as issued. If you need a replacement, ask the space's owner to mint it with
+`--provision`, `--space` for the target space, `--allow-subscribe` for the landing channel,
+`--no-persona`, and `--out`. Use the lifecycle UID that the replacement mint reports.
 `--provision` alone grants no channel access. A missing read grant is refused with
 `PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
 refused separately, naming the UID and the mint that reported its pair. Neither refusal points at

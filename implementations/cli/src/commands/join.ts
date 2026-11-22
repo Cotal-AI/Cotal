@@ -40,7 +40,7 @@ import {
   type ParsedArgs,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { CommandFailure, activateTerminalSeat, codeSpan, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
 import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -151,14 +151,18 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = values.channel ?? link?.channels?.[0] ?? "general";
-  const mintSpace = values.space ?? link?.space;
+  const namedSpace = values.space ?? link?.space;
+  const mintSpace = namedSpace === undefined ? "<space>" : shellWord(namedSpace);
+  const replacement = "If you need a replacement, ask the space's owner to mint it with " +
+    `${codeSpan(`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)} --space ${mintSpace} --no-persona --out <file>`)}, ` +
+    "then join with --lifecycle-uid set to the new UID that mint reports";
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
     creds: values.creds ? readCredsFile(values.creds, {
-      malformedRemedy: "pass the complete credential file as it was issued. If you need a replacement, ask the space's owner to mint it with " +
-        `\`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)}${mintSpace === undefined ? "" : ` --space ${shellWord(mintSpace)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`,
+      missingRemedy: `check the path. ${replacement}`,
+      malformedRemedy: `pass the complete credential file as it was issued. ${replacement}`,
     }) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
@@ -227,8 +231,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     if (expiresAt !== undefined) throw expiryRefusal("this join connects with a credential it was given");
     // With no space or broker named, the credential goes to the selected space or this folder's.
-    const resolved = values.space === undefined && link?.space === undefined && values.server === undefined ? credsSpace(process.cwd()) : undefined;
-    space = values.space ?? link?.space ?? resolved?.space ?? resolveSpace(process.cwd());
+    const resolved = namedSpace === undefined && values.server === undefined ? credsSpace(process.cwd()) : undefined;
+    space = namedSpace ?? resolved?.space ?? resolveSpace(process.cwd());
     // The credential goes only to a broker the caller paired it with: `--server`, the link's own
     // address, or the address the space is registered at. The default address is never assumed for it.
     const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;

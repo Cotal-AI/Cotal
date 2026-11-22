@@ -1,4 +1,4 @@
-/** Credential joins diagnose missing read grants and mismatched lifecycles (#6009).
+/** Credential joins diagnose file failures, missing read grants and mismatched lifecycles.
  * Runs the published command entry with credentials minted by `auth mint --provision`,
  * against a real authenticated broker and bound delivery responder. */
 import { strict as assert } from "node:assert";
@@ -109,18 +109,32 @@ try {
   }
   const truncated = join(dir, "truncated.creds");
   writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });
-  const truncatedJoin = cli("join", "--space", space, "--creds", truncated, "--lifecycle-uid", other.uid, "--channel", "review.code");
-  check("truncated join refuses the incomplete file and explains how to pair the replacement", await truncatedJoin.exited === 1 &&
-    /Code: +SCHEMA_INVALID/.test(truncatedJoin.output()) && truncatedJoin.output().includes("no complete NATS user JWT block") &&
-    truncatedJoin.output().includes("--lifecycle-uid set to the new UID that mint reports"), truncatedJoin.output());
-  const truncatedAdvice = /`cotal auth mint (<name> [^`]+)`/.exec(truncatedJoin.output())?.[1];
-  assert.ok(truncatedAdvice && truncatedAdvice.includes(`--provision --allow-subscribe review.code --space ${space}`), truncatedJoin.output());
-  const truncatedRepair = join(dir, "truncated-repair.creds");
-  const truncatedMint = cli("auth", "mint", ...truncatedAdvice.split(" ").map((arg) => arg === "<name>" ? "truncated_repair" : arg === "<file>" ? truncatedRepair : arg));
-  check("the truncated-file remedy mints a replacement", await truncatedMint.exited === 0, truncatedMint.output());
-  const truncatedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(truncatedMint.output())?.[1];
-  assert.ok(truncatedUid && truncatedUid !== other.uid, truncatedMint.output());
-  await joins("truncated-repair", truncatedRepair, truncatedUid, "review.code");
+  const absent = join(dir, "absent.creds");
+  const fileArgs = ["--creds", absent, "--lifecycle-uid", other.uid];
+  const unnamedMissing = cli("join", ...fileArgs);
+  check("missing-file advice asks for the target space if it was not named", await unnamedMissing.exited === 2 &&
+    unnamedMissing.output().includes("--allow-subscribe general --space <space> --no-persona --out <file>"), unnamedMissing.output());
+  const linkedMissing = cli("join", ...fileArgs, "--link", `${broker.servers.replace(/^nats:/, "cotal:")}/${space}?channel=review.%3E`);
+  check("missing-file advice uses the link's space and quotes its channel pattern", await linkedMissing.exited === 2 &&
+    linkedMissing.output().includes(`--allow-subscribe 'review.>' --space ${space} --no-persona --out <file>`), linkedMissing.output());
+  for (const [name, file, code, classification, diagnostic, firstStep] of [
+    ["missing", absent, 2, /Code: +TARGET_NOT_FOUND/, `creds file not found: ${absent}`, "check the path"],
+    ["truncated", truncated, 1, /Code: +SCHEMA_INVALID/, "no complete NATS user JWT block", "pass the complete credential file as it was issued"],
+  ] as const) {
+    const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, "--channel", "review.code");
+    const exit = await attempt.exited;
+    const out = attempt.output();
+    check(`${name} file refusal names the problem and how to pair a replacement`, exit === code && classification.test(out) && out.includes(diagnostic) &&
+      out.includes(firstStep) && out.includes("--lifecycle-uid set to the new UID that mint reports"), out);
+    const advice = /`cotal auth mint (<name> [^`]+)`/.exec(out)?.[1];
+    assert.equal(advice, `<name> --provision --allow-subscribe review.code --space ${space} --no-persona --out <file>`, out);
+    const repaired = join(dir, `${name}-repair.creds`);
+    const minted = cli("auth", "mint", ...advice.split(" ").map((arg) => arg === "<name>" ? `${name}_repair` : arg === "<file>" ? repaired : arg));
+    check(`the ${name}-file remedy mints a replacement`, await minted.exited === 0, minted.output());
+    const uid = /^\s*Lifecycle:\s+(\S+)/m.exec(minted.output())?.[1];
+    assert.ok(uid && uid !== other.uid, minted.output());
+    await joins(`${name}-repair`, repaired, uid, "review.code");
+  }
 
   const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
   const foreignAuth = await createSpaceAuth("elsewhere");
