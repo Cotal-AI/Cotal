@@ -521,6 +521,10 @@ decodable defaults in `result.registry.defaults` or reports a defaults-key decod
 
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.
+
+Use `--replay` to turn replay on and `--no-replay` to turn it off. If you write `--replay off`,
+the command refuses without saving and gives a retry that keeps your other settings, target and output format.
+
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
 the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,

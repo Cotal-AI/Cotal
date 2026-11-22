@@ -57,6 +57,7 @@ import {
 import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { execWords } from "../src/lib/exec-words.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
@@ -125,6 +126,32 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+
+async function checkChannelReplayRetry(): Promise<void> {
+  const name = "remedy.probe";
+  const scope = ["--space", openSpace, "--json"];
+  const set = ["channel", "set", name];
+  const seeded = await run([...set, "--desc", "Old note", "--window", "6h", "--replay", ...scope]);
+  const changed = { replay: false, replayWindow: "48h", description: "New note", instructions: "-Owner's instructions", deliveryClass: "live" };
+  const refused = await run([...set, "--desc", changed.description, "--window", changed.replayWindow,
+    `--instructions=${changed.instructions}`, "--delivery", changed.deliveryClass, "--replay", "off", ...scope]);
+  const readback = () => run(["channel", "show", name, ...scope]);
+  const before = await readback();
+  const entry = (r: Awaited<ReturnType<typeof readback>>) =>
+    (r.envelope?.result as unknown as { registry?: ChannelRegistryRead } | undefined)?.registry?.channels?.[name];
+  check("a replay usage refusal leaves the channel unchanged",
+    seeded.status === 0 && refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID"
+      && before.status === 0 && entry(before)?.replay === true && entry(before)?.description === "Old note" && entry(before)?.replayWindow === "6h",
+    { refused: shown(refused), before: shown(before) });
+  const command = /^run `(.+)`$/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+  const retried = command ? await run(execWords(command).slice(1)) : undefined;
+  const after = await readback();
+  const saved = entry(after);
+  check("the replay retry keeps the settings, target and JSON output",
+    retried?.status === 0 && retried.envelope?.outcome === "ok" && after.status === 0
+      && Object.entries(changed).every(([key, value]) => saved?.[key as keyof typeof changed] === value),
+    { command, retried: retried && shown(retried), after: shown(after) });
+}
 
 async function checkHistoryFollowValidation(): Promise<void> {
   let connections = 0;
@@ -1102,6 +1129,8 @@ try {
       saved.status === 0 && patch?.replayWindow === "24h" && readback.status === 0 && registry?.channels?.["wire.window"]?.replayWindow === "24h",
       { saved: shown(saved), readback: shown(readback) });
   }
+
+  await checkChannelReplayRetry();
 
   // Empty wire IDs are independent deliveries, including after a retained snapshot.
   {
