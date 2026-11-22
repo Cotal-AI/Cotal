@@ -4220,30 +4220,26 @@ async function serveReadyListener(l: {
   // an authoritative registry entry (marker-without-registry is a refused start, not a guess),
   // so the record must exist by the time it boots. A manager/delivery failure after this leaves
   // a recorded-but-degraded mesh — the documented, healable posture.
-  // Resolve exposure BEFORE recording. A RESUME of an already-recorded mesh (`down
-  // --preserve-state` then a bare `up`) carries the operator's `--host` only in the registry, and
-  // the record below is written whole, so reading it afterwards would find the field this very call
-  // had just erased.
+  // Read the prior host and session limit before replacing the registry entry on resume.
   const attachHost = attachHostFor(space, l.host);
   const maxSessions = maxSessionsFor(space, l.maxSessions);
-  recordOurMesh({
-    space, server, root: cotalRoot(),
-    mode: setup?.prepared ? "user" : setup ? "auth" : "open",
-    // Written ALWAYS, as a boolean, unlike `attachHost` below. Absence and `false` resolve
-    // identically for clients, so an omitted field would be indistinguishable from a deliberate
-    // plaintext mesh — and this is the one field whose whole purpose is that the answer was
-    // stated rather than defaulted.
-    tlsRequired: transport.kind === "tls-required",
-    ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
-    // Only a real decision is persisted — an explicit `--host` now, or one carried forward from a
-    // previous launch. The bare case stays absent rather than recording the loopback default as
-    // though the operator had chosen it.
-    ...(attachHost ? { attachHost } : {}),
-    ...(maxSessions !== undefined ? { maxSessions } : {}),
-    ...(l.maxFileStore !== undefined ? { maxFileStore: l.maxFileStore } : {}),
-    storeDir: l.storeDir,
-    ts: new Date().toISOString(),
-  }, "started", l.quietBoot);
+  try {
+    recordOurMesh({
+      space, server, root: cotalRoot(),
+      mode: setup?.prepared ? "user" : setup ? "auth" : "open",
+      // Record the transport decision even for plaintext. Omit the host unless the operator chose one.
+      tlsRequired: transport.kind === "tls-required",
+      ...(svc.userAuth ? { userAuth: svc.userAuth } : {}),
+      ...(attachHost ? { attachHost } : {}),
+      ...(maxSessions !== undefined ? { maxSessions } : {}),
+      ...(l.maxFileStore !== undefined ? { maxFileStore: l.maxFileStore } : {}),
+      storeDir: l.storeDir,
+      ts: new Date().toISOString(),
+    }, "started", l.quietBoot);
+  } catch (e) {
+    await stopFailedListener(child);
+    throw e;
+  }
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
